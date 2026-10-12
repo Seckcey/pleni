@@ -1,0 +1,26 @@
+Pleni (Plenipo Browser)
+Copyright (c) 2026 8 West Ventures, LLC
+
+This software is licensed under the Elastic License 2.0. The full terms are in the
+LICENSE file in this repository, and at https://www.elastic.co/licensing/elastic-license.
+
+In short, and without changing anything the LICENSE says: you may read, run, change,
+and share Pleni. You may not offer Pleni to others as a hosted or managed service, or
+remove or hide this notice or any other copyright or license notice.
+
+"Plenipo", "Pleni", "8 West Ventures", and the Plenipo logo are trademarks of
+8 West Ventures, LLC. The Elastic License 2.0 grants no trademark rights.
+
+Brand assets: the Plenipo logos, the icons made from them, and Pip, the robot mascot,
+are trademarks and artwork of 8 West Ventures, LLC. They are in public/brand/ and
+assets/, and they also appear in the pictures in docs/assets/. They are not licensed
+under the Elastic License 2.0.
+
+Pleni only reads files that other AI tools write on your computer: Claude Code (and
+the Claude desktop app) and Codex. It does not include, run, or change those tools.
+They are licensed by their own makers under their own terms and are not covered by
+this license. Pleni is not affiliated with, endorsed by, or sponsored by the makers
+of those tools. Their names belong to their owners.
+
+Pleni has no third-party code dependencies. It uses only Node.js and its built-in
+modules, which keep their own licenses.

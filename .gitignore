@@ -1,0 +1,23 @@
+# Dependencies (Pleni has none, but keep them out if one sneaks in)
+node_modules/
+
+# Test output
+coverage/
+
+# Logs
+*.log
+
+# Local environment and secrets: never commit
+.env*
+
+# Local settings that belong to one person
+settings.local.json
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+._*
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini

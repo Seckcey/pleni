@@ -1,0 +1,450 @@
+# Pleni architecture
+
+Pleni ("Plenipo Browser") is a small local web app. It reads the session files that Claude Code and
+Codex already write on your computer, works out who is working on what, and shows it live in your
+browser as an organization map with the hand-offs between agents drawn as moving lines.
+
+Version 0.1 only **watches**. It never starts, stops, sends to or changes a session, and it never
+writes into Claude Code's, Codex's or a mailbox's folders. Sending work and approving actions come
+later and will get their own design.
+
+## Ground rules
+
+- **Zero runtime dependencies.** Node.js 22.12 or newer, ES modules, `node:` built-ins only. No
+  build step: the files in `public/` are served as they are.
+- **Local by default.** The server binds `127.0.0.1` only. Other devices can reach it only through a
+  reverse proxy you configure (for example `tailscale serve`) and only for the host names and
+  Tailscale logins you list in settings.
+- **Only the person who started it.** Every account on the computer can reach `127.0.0.1`, so the
+  API also needs a random key made at each start and printed in Pleni's address (see Server).
+- **Read-only.** Pleni reads; it does not write anywhere except its own settings file.
+- **Private by default.** Nothing leaves the computer. No telemetry, no network calls. The page shows
+  short snippets of session text only when `content` is `"snippets"` (the default); `"none"` shows
+  only tool names and states.
+- **Robust to big, live files.** Session files can be gigabytes and are appended while we read them.
+  Pleni reads from the end, splits only on `\n` bytes, never parses a line that has no newline yet,
+  and treats every field as optional.
+- **Stable layout.** Tiles never re-order because of activity. Order is by name, then key.
+
+## Layout
+
+```
+bin/pleni.js            command line: node bin/pleni.js [--port N] [--demo] [--open] [--config FILE]
+src/config.js           settings: defaults, validation, load/save, folder discovery
+src/jsonl.js            safe incremental JSONL reading (tail, head scan, BOM)
+src/sources/claude.js   Claude Code sessions and sub-agents
+src/sources/codex.js    Codex threads and sub-agents
+src/sources/mailbox.js  optional coordination mailbox (task folders of Markdown files)
+src/model.js            builds the snapshot the page draws (nodes, edges, events)
+src/store.js            owns the sources, polls them, caches the snapshot
+src/demo.js             synthetic, moving demo data (no files needed)
+src/server.js           HTTP server, security gate, routes
+public/index.html       the page (no inline script or style)
+public/app.js           the page logic (ES module, vanilla JS)
+public/styles.css       Plenipo design tokens and page styles
+public/brand/           logos, favicons, mascot
+test/                   node:test suites; fixtures are generated into temp folders
+```
+
+## Settings (`src/config.js`)
+
+Settings live outside the repository, in `PLENI_HOME` if set, else `%APPDATA%\pleni` on Windows,
+`~/Library/Application Support/pleni` on macOS and `$XDG_CONFIG_HOME/pleni` (default
+`~/.config/pleni`) elsewhere. The file is `settings.json` (UTF-8, a BOM is tolerated).
+
+```js
+export const DEFAULTS = {
+  version: 1,
+  port: 8790,
+  displayName: 'You',                 // the person at the top of the map, max 40 chars
+  titles: 'plain',                    // 'plain' | 'military' | 'company'
+  content: 'snippets',                // 'snippets' | 'none'
+  groupBy: 'project',                 // 'project' | 'none'
+  window: { activeMinutes: 10, recentHours: 24, staleMinutes: 30 },
+  showReviewers: false,               // Codex automatic-review sub-agents
+  modelTiers: { senior: ['opus', 'fable', 'astra'], junior: ['sonnet', 'haiku', 'sol', 'luna', 'mini'] },
+  sources: {
+    claude: { enabled: true, root: null },            // null = $CLAUDE_CONFIG_DIR or ~/.claude
+    claudeDesktop: { enabled: true, root: null },     // null = platform default (see below)
+    codex: { enabled: true, root: null },             // null = $CODEX_HOME or ~/.codex
+    mailbox: { enabled: false, root: null, planner: null, coordinator: null },
+  },
+  people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role } }  max 500 entries
+  projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
+  remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
+}
+// Role = 'superintendent' | 'coordinator' | 'lead' | 'worker' | 'hidden'
+```
+
+Exports:
+
+- `configDir(env, platform, home)` and `settingsFile(env, platform, home)`.
+- `cleanSettings(raw)` returns a complete, valid settings object: unknown keys dropped, wrong types
+  replaced by defaults, strings trimmed and clipped, numbers clamped (`port` 1024–65535,
+  `activeMinutes` 1–240, `recentHours` 1–720, `staleMinutes` 5–1440), arrays de-duplicated, node keys
+  validated with `isNodeKey`, roots must be absolute paths or `null`.
+- `loadSettings(file)` returns `{ settings, file, error }` and never throws (a missing file gives
+  defaults and no error; a broken file gives defaults and an `error` string).
+- `saveSettings(settings, file)` writes `cleanSettings(settings)` atomically (temp file, then rename),
+  creating the folder.
+- `resolveRoots(settings, env, platform, home)` returns `{ claude, claudeDesktop, codex, mailbox }`
+  absolute paths or `null`. Defaults: `claude` = `$CLAUDE_CONFIG_DIR` or `~/.claude`; `codex` =
+  `$CODEX_HOME` or `~/.codex`; `claudeDesktop` = `%APPDATA%\Claude` on Windows,
+  `~/Library/Application Support/Claude` on macOS, `~/.config/Claude` elsewhere; `mailbox` only when
+  set.
+- `isNodeKey(s)`: `/^(claude|codex):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/` or `you` or
+  `project:<name>` (name 1–120 chars, no control characters).
+- Environment overrides applied by the CLI: `PLENI_PORT`, `PLENI_HOME`.
+
+## Reading JSONL (`src/jsonl.js`)
+
+```js
+export class JsonlTail {
+  constructor(file, { maxInitialBytes = 4 * 1024 * 1024, maxLineBytes = 8 * 1024 * 1024 } = {})
+  read()        // -> { records: object[], reset: boolean, size: number }
+  get offset()  // byte offset of the next unread byte
+  badLines      // count of skipped lines (invalid JSON or too long)
+}
+export function readHeadLine(file, maxBytes = 8 * 1024 * 1024)   // -> object | null
+export function scanHead(file, maxBytes, predicate)              // -> object[] (complete lines only)
+export function stripBom(text)
+export function readJsonFile(file)                               // -> object | null (BOM tolerated)
+```
+
+`JsonlTail.read()` uses synchronous `fs` calls (`openSync`, `fstatSync`, `readSync`) in chunks of
+1 MB:
+
+- On the first call, if the file is larger than `maxInitialBytes`, start at
+  `size - maxInitialBytes` and drop everything up to and including the first `\n` (a partial line).
+- Afterwards read only from `offset` to the current size. If the file shrank, or its identity changed
+  (`ino`/`birthtimeMs`), start again as on the first call and return `reset: true`.
+- Split on the byte `0x0A` only. Never use `readline` or string `split` on decoded text that could
+  break on U+2028 or U+2029. Bytes after the last `\n` are carried over and not parsed until their
+  newline arrives.
+- A line longer than `maxLineBytes` is skipped (and counted in `badLines`) but the offset still moves
+  past it. Invalid JSON is skipped and counted. A trailing `\r` is removed before parsing.
+
+## Sources
+
+Every source is created once and then polled about every 2.5 seconds. Polling must be incremental:
+directory listings are refreshed on their own slower timer, known files are checked with `fstat`, and
+only new bytes are read. A source never throws from `poll()`; it returns `ok: false` and an `error`
+message instead. Times are milliseconds since the epoch.
+
+All sources return sessions in this common shape:
+
+```js
+Session = {
+  platform: 'claude' | 'codex',
+  key: string,              // 'claude:<sessionId>' | 'claude:<sessionId>/<agentId>' | 'codex:<threadId>'
+  id: string,               // session or thread id
+  parentKey: string | null, // who started it, if anyone
+  kind: 'session' | 'agent' | 'reviewer',
+  title: string | null,     // best available name (≤120 chars)
+  titleSource: string | null,
+  cwd: string | null,       // normalised: no \\?\ prefix
+  branch: string | null,
+  entrypoint: string | null,// claude: 'claude-desktop' | 'claude-vscode' | 'cli' | 'sdk-cli'; codex: originator
+  model: string | null,
+  effort: string | null,
+  startedAt: number | null,
+  lastAt: number | null,    // newest timestamp seen in a conversation record
+  status: 'working' | 'ready' | 'idle' | 'done' | 'error',
+  activity: { tool: string | null, detail: string | null, at: number } | null,
+  lastText: string | null,  // last assistant text, whitespace collapsed, ≤280 chars; null when content = 'none'
+  links: Link[],            // hand-offs this session took part in, newest last, max 50
+  archived: boolean,
+}
+Link = { at: number, dir: 'down' | 'up', other: string /* node key, or 'path:<agentPath>' for codex */, label: string | null }
+```
+
+Status meanings: **working** = a turn is running and the file moved within `staleMinutes`; **ready** =
+the last turn finished within `activeMinutes` (waiting for you); **idle** = nothing recent, or a turn
+that looks open but went stale; **done** = a sub-agent that finished; **error** = the last turn ended
+in an error.
+
+`detail` strings are short (≤140 chars) and only present when `content` is `"snippets"`. Build them
+from tool inputs: a shell command's `description` or its first line (≤80 chars); the base name of a
+`file_path`; a search `pattern`; a sub-agent `description`; the host name of a URL. Otherwise `null`.
+
+Each source also exports `detail(key, since)` for the side drawer: up to 200 recent events
+`{ at, kind: 'user' | 'assistant' | 'thinking' | 'tool' | 'result' | 'error', tool: string | null,
+text: string | null }` (`text` ≤2000 chars and only with snippets; thinking text is never returned,
+only the fact that the model was thinking) and a `next` cursor (a byte offset) for the following
+poll.
+
+### Claude Code (`src/sources/claude.js`)
+
+```js
+export function createClaudeSource({ root, desktopRoot, settings, now = Date.now })
+// -> { poll(): { ok, error, root, sessions: Session[] }, detail(key, since) }
+```
+
+- Transcripts: `<root>/projects/<encoded cwd>/<sessionId>.jsonl`. The folder name is a lossy
+  encoding of `cwd`; always read `cwd` from the records. Refresh the folder listing every 15 s and
+  track files modified within `recentHours`.
+- Sub-agents: `<root>/projects/<enc>/<sessionId>/subagents/agent-<agentId>.jsonl` with
+  `agent-<agentId>.meta.json` (`agentType`, `description`, `toolUseId`, `spawnDepth`,
+  `parentAgentId`, `model`). Workflow agents live in
+  `subagents/workflows/<runId>/agent-*.jsonl`; their labels are in that folder's `journal.jsonl`
+  `started` records (`agentId`, `label`). A sub-agent's key is `claude:<sessionId>/<agentId>`; its
+  parent is `claude:<sessionId>/<parentAgentId>` when nested, else `claude:<sessionId>`.
+- Conversation records are `user`, `assistant`, `attachment` and `system`. They carry `timestamp`
+  (ISO), `sessionId`, `cwd`, `gitBranch`, `entrypoint`, `version`. Metadata records (`custom-title`,
+  `agent-name`, `ai-title`, `last-prompt`, `cost-state`, `queue-operation`, …) have no timestamp and
+  are re-appended often; the last one wins. Never use file mtime as `lastAt`.
+- Titles: last `custom-title`/`agent-name`, else last `ai-title`, else the Claude desktop app's
+  session title, else (sub-agents) the meta `description` or workflow label. `ai-title` can appear
+  only near the start of a long file: if the tail has no title, `scanHead` the first 2 MB once.
+- The Claude desktop app keeps per-session metadata in
+  `<desktopRoot>/claude-code-sessions/<uuid>/<uuid>/local_<uuid>.json`. Read only `cliSessionId`,
+  `title`, `titleSource`, `model`, `effort`, `cwd`, `isArchived`, `lastActivityAt`; cache by mtime;
+  refresh the listing every 30 s; ignore every error. Archived sessions get `archived: true`.
+- One API message can be split across several `assistant` lines (same `message.id`); treat them as
+  one. Synthetic error turns have `message.model` `"<synthetic>"` and `isApiErrorMessage`.
+- Status: **working** if the last conversation record is a `user` record, an assistant record with
+  `stop_reason` `tool_use`, or an assistant `tool_use` with no later `tool_result` for its id, and
+  `lastAt` is within `staleMinutes`. **error** if the last assistant record is a synthetic error.
+  **ready** if the last assistant record ended the turn (`end_turn` or `stop_sequence`) within
+  `activeMinutes`. Otherwise **idle**. A sub-agent whose parent has received its result is **done**.
+  Then, within each session's group, a session or sub-agent that would be **ready** or **idle** is
+  **working** while any sub-agent below it (at any depth, workflow agents included) is
+  **working**: it writes nothing to its own file while a long `Agent` or `Workflow` call runs, or
+  while background helpers it launched do the work. **error** and **done** are never changed.
+- Activity: the newest unanswered `tool_use` (name plus `detail`), else the newest text.
+- Links: an assistant `tool_use` named `Agent` (or legacy `Task`) is a **down** link from the session
+  to the sub-agent whose meta `toolUseId` equals the `tool_use.id` (label: its `description`). The
+  matching `tool_result`, or for background agents the sub-agent's final assistant text, is the
+  **up** link. `SendMessage` tool uses to a known sub-agent are **down** links too.
+
+### Codex (`src/sources/codex.js`)
+
+```js
+export function createCodexSource({ root, settings, now = Date.now })
+// -> { poll(): { ok, error, root, sessions: Session[] }, detail(key, since) }
+```
+
+- Rollouts: `<root>/sessions/YYYY/MM/DD/rollout-<local time>-<threadId>.jsonl`. A file stays in the
+  folder of the day it was created, so discovery walks all day folders but keeps only files modified
+  within `recentHours` (newest 300 at most). Refresh every 30 s. `archived_sessions/` holds archived
+  threads (`archived: true`).
+- Every line is `{ timestamp, ordinal?, type, payload }`. Line 1 is `session_meta` (read it with
+  `readHeadLine`; it can be several MB): `id`, `timestamp`, `cwd`, `originator`, `cli_version`,
+  `git { branch }`, and for sub-agents `parent_thread_id`, `agent_nickname`, `agent_path`,
+  `subagent_history_start_ordinal`, `source.subagent.thread_spawn { parent_thread_id, depth }`.
+  Records whose `ordinal` is below `subagent_history_start_ordinal` are the parent's inherited history;
+  skip them.
+- Automatic reviewers (`source.subagent.other === 'guardian'` or model `codex-auto-review`) get
+  `kind: 'reviewer'`.
+- Model and effort: the latest `turn_context` `model` and `effort`.
+- Turns: `event_msg` `task_started { turn_id }` opens a turn; `task_complete { turn_id, error? }` or
+  `turn_aborted` closes it. **working** = an open turn and `lastAt` within `staleMinutes`; **error** =
+  the last `task_complete` has `error`; **ready** = the last turn closed within `activeMinutes`;
+  **done** = a sub-agent whose parent recorded it completed; else **idle**.
+- Activity: a `response_item` `function_call` or `custom_tool_call` with no output for its `call_id`
+  yet (the shell tool is `exec`). `lastText`: `task_complete.last_agent_message`, else the last
+  assistant `message` text.
+- Titles: `<root>/session_index.jsonl` `{ id, thread_name, updated_at }`, last line per id wins.
+  Sub-agents are not in the index: use `agent_nickname`.
+- Links: `function_call` `spawn_agent` is a **down** link (label: `task_name` when snippets);
+  `send_message`/`followup_task` are **down** links to the named agent; an `item_completed` item of
+  type `SubAgentActivity` with `kind: 'completed'` (`agent_thread_id`) is an **up** link from that
+  child. Use `other: 'codex:<threadId>'` when the thread id is known, else `path:<agent_path>`.
+- Paths: strip a leading `\\?\`; compare paths case-insensitively on Windows.
+
+### Mailbox (`src/sources/mailbox.js`)
+
+An optional folder that two agents use to coordinate through Markdown files: a **planner** assigns
+work and a **coordinator** reports back.
+
+```
+<root>/QUEUE.md (or CODEX-QUEUE.md)   planner-owned queue and log
+<root>/STATUS.md                      coordinator-owned board
+<root>/tasks/<taskId>/assignment.md   planner
+<root>/tasks/<taskId>/answers.md      planner
+<root>/tasks/<taskId>/review.md       planner
+<root>/tasks/<taskId>/status.md       coordinator; holds "**Current state:** <STATE>"
+<root>/tasks/<taskId>/questions.md    coordinator; "## Q<n> — <time> — BLOCKING|NON-BLOCKING"
+<root>/tasks/<taskId>/handoff.md      coordinator
+<root>/tasks/<taskId>/workers/W<n>.run.json, W<n>-report.md   optional worker runs
+<root>/.relay/coordinator.json        optional: { session_id } of the coordinator's Claude session
+<root>/.relay/state.json, relay.lock, PAUSE, STOP   optional relay state
+```
+
+```js
+export function createMailboxSource({ root, settings, now = Date.now })
+// -> { poll(): MailboxState }
+MailboxState = {
+  ok, error, root, name,
+  tasks: [{ id, title, state, updatedAt, attention: ('question' | 'review')[], workers: [{ id, state, model, startedAt, finishedAt }] }],
+  events: [{ at, dir: 'down' | 'up', taskId, file, title }],   // newest first, max 300
+  relay: null | { running, paused, halted, coordinatorKey },     // coordinatorKey = 'claude:<session_id>'
+}
+```
+
+- Entries are Markdown headings (`##` or `###`) that contain a time stamp: ISO 8601, or
+  `YYYY-MM-DD HH:MM[:SS]` read as local time (a trailing zone word such as `Pacific` is ignored).
+  Planner files give **down** events, coordinator files and worker reports give **up** events. The
+  event `title` is the heading text without the time stamp (≤120 chars, only with snippets).
+- `state` comes from the `**Current state:**` line: its leading run of capital words joined with
+  `_` (`NO CLAUDE DISPATCH — reason` → `NO_CLAUDE_DISPATCH`, `IN PROGRESS` → `IN_PROGRESS`), or,
+  when the state is not written in capitals, its first word in capitals (`done` → `DONE`); `-`
+  becomes `_`; at most 40 characters. `title` is the first heading of `assignment.md` (only with
+  snippets; otherwise the task id).
+- Finished states: `DONE`, `CANCELLED`, `CANCELED`, `COMPLETE`, `COMPLETED` and
+  `NO_CLAUDE_DISPATCH`, alone or followed by `_` and more words (`DONE_PR`). Finished tasks are read
+  again only when the task listing refreshes.
+- Attention: a BLOCKING question without a matching answer, or a task in `IN_REVIEW` whose newest
+  handoff is newer than its newest review. Finished tasks get none.
+- Task ids must match `/^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/`. Files may start with a UTF-8 BOM.
+- `relay.running` is true when `.relay/relay.lock` names a process that is alive.
+
+## Snapshot (`src/model.js`)
+
+```js
+export function buildSnapshot({ now, settings, claude, codex, mailbox })  // any source may be null
+Snapshot = {
+  version: 1, now,
+  sources: { claude: SourceInfo, codex: SourceInfo, mailbox: SourceInfo | null },
+  nodes: Node[], edges: Edge[], events: Event[], counts: { working, ready, idle, done, error, total },
+  attention: [{ key, kind, text, at }],
+  tasks: MailboxState['tasks'] | null,
+}
+SourceInfo = { enabled, ok, error, count }
+Node = {
+  key, parent, platform: 'human' | 'group' | 'claude' | 'codex',
+  kind: 'person' | 'project' | 'session' | 'agent' | 'reviewer',
+  title, subtitle, rank, role, tier: 'senior' | 'junior' | null,
+  model, modelLabel, effort, status, startedAt, lastAt, activity, lastText,
+  project, entrypoint, hidden, archived,
+}
+Edge = { from, to, kind: 'spawn' | 'mailbox' | 'contains', lastDown, lastUp, downLabel, upLabel, active: 'down' | 'up' | 'both' | null }
+Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, to, text }
+```
+
+- Tree: `you` (the person, `displayName`) → projects (when `groupBy` is `project`) → top-level
+  sessions → sub-agents, recursively. A sub-agent whose parent is not listed hangs under its project.
+- Project name: the last segment of `cwd`, except inside a worktrees folder (`/_worktrees/`,
+  `/.codex/worktrees/<id>/`, `/.claude/worktrees/`) where it is the repository folder name. For
+  `/_worktrees/<name>`, Pleni reads that worktree's `.git` pointer file (only on a local drive, only
+  when it is a file of at most 4 KB; cached) and takes the repository name from its `gitdir:` line. This is the only
+  file Pleni reads inside a project folder, and `docs/privacy.md` lists it. Settings
+  `projects[name].label` renames, `hidden` hides.
+- Listed sessions: active within `recentHours`, not archived, role not `hidden`, reviewers only with
+  `showReviewers`.
+- Edges: `contains` (person → project → session), `spawn` (parent → sub-agent, from links), and
+  `mailbox` (planner → coordinator, from mailbox events, when both nodes are listed; the coordinator
+  defaults to `relay.coordinatorKey`). `active` is set when `lastDown`/`lastUp` is within
+  `PULSE_MS = 120000`.
+- Ranks: `plain` — the person shows only `displayName`, session "Lead", sub-agent "Agent",
+  reviewer "Reviewer", and a session with the role superintendent or coordinator "Superintendent"
+  or "Coordinator"; `military` — person "General", superintendent "Colonel", coordinator and lead
+  "Sergeant", senior-tier agent "Specialist", other agent "Private"; `company` — person "Owner",
+  superintendent "Vice President", coordinator "Manager", lead "Supervisor", agent "Worker". Roles come
+  from `people[key].role`, else top-level sessions are `lead` and sub-agents `worker`. Tier comes from
+  `modelTiers` word matches on the model name.
+- `modelLabel`: a short readable name (`claude-opus-5-5` → "Opus 5.5", `gpt-6.1-sol` → "GPT-6.1 Sol").
+- Sorting: children by title (locale compare), then key. Never by activity.
+
+## Store (`src/store.js`)
+
+```js
+export function createStore({ settings, roots, demo = false, now = Date.now })
+// -> { snapshot(): Snapshot, detail(key, since), reload(settings, roots), close() }
+```
+
+Creates the enabled sources (or the demo source), polls at most every 2 s on demand, caches the
+snapshot with its JSON and its ETag, and rebuilds when settings change. The ETag is
+`snapshotTag(snapshot)` from `src/model.js`: `W/"<sha1 of the JSON with now set to 0>"`. `now`
+changes on every build, and the page needs it only to allow for a clock difference, so a snapshot
+that changed only its time keeps its ETag and the page's poll gets `304`.
+
+## Server (`src/server.js`)
+
+```js
+export function newKey()  // -> 43 random base64url characters (32 bytes)
+export function createServer({ store, getSettings, saveSettings, publicDir, version, key })  // -> http.Server
+export async function start({ port, configFile, demo, open })  // -> { server, url, key, close }
+```
+
+- Bind `127.0.0.1` only.
+- **Host gate:** allow `localhost`, `127.0.0.1` and `[::1]` with any port. Any other host is allowed
+  only when it is listed in `remote.hosts` and the request's `Tailscale-User-Login` header is listed
+  in `remote.tailscaleUsers` (both compared lower-case). Otherwise `403`. This also blocks DNS
+  rebinding.
+- **Key gate:** the host gate stops web sites, but every account and program on the computer can
+  reach `127.0.0.1` and send any header, Tailscale's included. So `start()` makes a new key with
+  `newKey()` each run (never saved) and `url` is `http://localhost:<port>/?t=<key>`, which the CLI
+  prints and `--open` opens. `createServer` takes the key (letters, digits, `-`, `_`; at least 16;
+  a new one when left out) and keeps only its SHA-256.
+  - `GET`/`HEAD /?t=<key>` answers `303` to `/`. When the key is right it also sets
+    `pleni-<local port>=<key>; Path=/; HttpOnly; SameSite=Strict` (one name per port, so two Plenis
+    do not overwrite each other). A wrong key gets the redirect without a cookie.
+  - Every `/api/` route except `/api/health` needs that cookie, compared in constant time (SHA-256
+    of both, then `timingSafeEqual`), after the method check. Without it: `401` with a plain
+    message. Remote requests need it too: the Tailscale headers prove nothing on their own.
+  - The page files and `/brand/` need no key; they hold no session data.
+- **Headers on every response:** `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`,
+  `Cross-Origin-Resource-Policy: same-origin`. HTML also gets
+  `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`.
+- **Routes:** `GET /` (index.html; `/?t=<key>` redirects, see above), `GET /app.js`, `GET /styles.css`, `GET /brand/<file>` (names
+  `[a-z0-9._-]+`, extensions png, svg, ico, webp; resolved inside `public/brand` only),
+  `GET /favicon.ico`, `GET /api/health`, `GET /api/snapshot` (weak ETag, `304` on match),
+  `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`.
+  `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
+- `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
+  them the same way (`snapshotTag`) for a store that did not.
+- **POST /api/settings** requires the key cookie, `X-Pleni: settings`, `Content-Type:
+  application/json`, a body of at most 64 KB, and an `Origin` (when present) whose host equals the
+  request host. The body is cleaned with `cleanSettings`, saved, and the store reloaded.
+- `GET /api/settings` returns `{ settings, file, roots, nodes: [{ key, title, platform, kind }] }`.
+- JSON responses use `Content-Type: application/json; charset=utf-8`. Errors are `{ error }` with a
+  plain-words message and never include stack traces or file contents.
+
+## Page (`public/`)
+
+- Hash routes: `#/` map (default), `#/list`, `#/activity`, `#/tasks` (only with a mailbox),
+  `#/settings`.
+- **Map:** a left-to-right tidy tree of tiles (`W 268 × H 128`, gaps 96 × 22, padding 48) joined by
+  rounded orthogonal lines. A line glows while its edge is `active`; three small packets travel down
+  (planner/parent → child, teal) or up (child → parent, purple). Pan with drag, zoom with Ctrl+wheel,
+  pinch, the `+`/`−`/fit buttons, and the keyboard (`+`, `-`, `0`, arrow keys) when the map has focus.
+  The view refits only when the content no longer fits and the person has not moved it. A
+  Working/Everyone switch (remembered in `localStorage` as `pleni.mapMode`) hides quiet sessions.
+- **Tile:** platform mark (Claude or Codex), title, rank, model label, status dot and words
+  ("Working", "Waiting for you", "Idle", "Done", "Error"), the current activity or last text, and how
+  long ago.
+- **List:** a table of sessions grouped by project with status filters; it is also the accessible
+  alternative to the map.
+- **Activity:** the event feed, newest first.
+- **Tasks:** mailbox tasks with state and attention.
+- **Drawer:** clicking a tile opens the session's details and live recent events from
+  `/api/session`. Esc closes it; focus is trapped while open and returned afterwards.
+- **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. Before saving, the page
+  checks the form: whole numbers within the server's limits, full folder paths, host names, and
+  Tailscale logins (`name@domain`), at most 20 of each. A bad field gets `aria-invalid="true"` and
+  a plain message tied to it with `aria-describedby`, focus moves to the first one, and nothing is
+  sent. After a save, the page compares what the server saved with what it sent and names any
+  value the server had to change; the port message uses the saved port.
+- **Missing key:** a `401` from the API shows "Pleni needs its key" with what to do, instead of
+  "Cannot reach Pleni", and the page keeps polling.
+- **Focus:** keyboard focus is never left under the sticky app bar or the Settings button row: the
+  page scrolls the focused control clear of both (WCAG 2.4.11), and `scroll-padding-top` follows
+  the app bar's height.
+- **Theme:** Plenipo tokens, dark by default, light with `prefers-color-scheme` or the toggle
+  (`localStorage` `pleni.theme`). Logos switch between the on-dark and on-light versions.
+- Polling: `/api/snapshot` every 2.5 s with `If-None-Match`, paused while the tab is hidden.
+- Reduced motion: no packets, no dash animation, solid glowing lines instead.
+- No inline scripts. Every text value is inserted with `textContent` or escaped.
+
+## Demo (`src/demo.js`)
+
+```js
+export function createDemoSource({ now = Date.now })  // -> { poll(): { claude, codex, mailbox }, detail(key, since) }
+```
+
+A deterministic, time-driven cast: a person, two projects, a Codex planner with two sub-agents, a
+Claude coordinator with three sub-agents (one working, one waiting, one done), and a small mailbox,
+with hand-offs that light up every few seconds. It is used by `node bin/pleni.js --demo`, the screenshots and the
+tests, so that no real session data is ever needed to show Pleni.

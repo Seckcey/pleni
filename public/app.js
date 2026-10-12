@@ -1,0 +1,2309 @@
+// Pleni page logic: polls /api/snapshot and draws the map, list, activity, tasks and settings views.
+// Plain ES module, no build step. Every value from the server is escaped or set with textContent.
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+const POLL_MS = 2500;
+const QUIET_MS = 10 * 60 * 1000; // a session stays on the Working map this long after it was last active
+const ANNOUNCE_MS = 15000; // screen readers hear the count summary at most this often
+const FEED_PAGE = 150;
+const FL = { W: 268, H: 128, GX: 96, GY: 22, PAD: 48 };
+const ZOOM_MIN = 0.3;
+const ZOOM_MAX = 1.6;
+const VIEWS = ['map', 'list', 'activity', 'tasks', 'settings'];
+const VIEW_NAMES = { map: 'Map', list: 'List', activity: 'Activity', tasks: 'Tasks', settings: 'Settings' };
+const STATUS_WORDS = { working: 'Working', ready: 'Waiting for you', idle: 'Idle', done: 'Done', error: 'Error' };
+const FILTERS = [['all', 'All'], ['working', 'Working'], ['ready', 'Waiting for you'], ['error', 'Error'], ['idle', 'Idle'], ['done', 'Done']];
+const FEED_FILTERS = [['all', 'Everything'], ['down', 'Work handed out'], ['up', 'Reports back'], ['error', 'Errors']];
+const EFFORT_WORDS = { minimal: 'minimal effort', low: 'low effort', medium: 'medium effort', high: 'high effort', xhigh: 'extra high effort', max: 'max effort' };
+const PLATFORM_WORDS = { claude: 'Claude Code', codex: 'Codex' };
+const KIND_WORDS = { person: 'Person', project: 'Project', session: 'Session', agent: 'Helper agent', reviewer: 'Automatic reviewer' };
+const ENTRY_WORDS = { 'claude-desktop': 'Claude desktop app', 'claude-vscode': 'VS Code', cli: 'Terminal', 'sdk-cli': 'Agent SDK' };
+const ATTN_WORDS = { ready: 'Waiting for you', error: 'Error', question: 'Question', review: 'Ready for review' };
+const EVENT_KIND_WORDS = { user: 'Prompt', assistant: 'Said', thinking: 'Thinking', tool: 'Tool', result: 'Result', error: 'Error' };
+const ROLE_OPTIONS = [['', 'Automatic'], ['superintendent', 'Superintendent'], ['coordinator', 'Coordinator'], ['lead', 'Lead'], ['worker', 'Worker'], ['hidden', 'Hide it']];
+
+// Mirror of DEFAULTS in src/config.js, used by "Restore defaults". Keep the two in step.
+const DEFAULTS = {
+  version: 1,
+  port: 8790,
+  displayName: 'You',
+  titles: 'plain',
+  content: 'snippets',
+  groupBy: 'project',
+  window: { activeMinutes: 10, recentHours: 24, staleMinutes: 30 },
+  showReviewers: false,
+  modelTiers: { senior: ['opus', 'fable', 'astra'], junior: ['sonnet', 'haiku', 'sol', 'luna', 'mini'] },
+  sources: {
+    claude: { enabled: true, root: null },
+    claudeDesktop: { enabled: true, root: null },
+    codex: { enabled: true, root: null },
+    mailbox: { enabled: false, root: null, planner: null, coordinator: null },
+  },
+  people: {},
+  projects: {},
+  remote: { hosts: [], tailscaleUsers: [] },
+};
+
+const ICONS = {
+  claude: '<path d="M12 3.5v17M4.6 7.75l14.8 8.5M4.6 16.25l14.8-8.5"/>',
+  codex: '<rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="m7.5 10 3 2.5-3 2.5M13 15.5h3.5"/>',
+  human: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
+  group: '<path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h4l2 2h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
+};
+
+const S = {
+  view: 'map',
+  snap: null,
+  index: null,
+  etag: null,
+  skew: 0,
+  conn: 'starting',
+  connError: '',
+  lastOk: 0,
+  mapMode: readStore('pleni.mapMode') === 'all' ? 'all' : 'working',
+  fv: { x: 0, y: 0, k: 1, user: false, sig: '' },
+  layout: null,
+  layoutSig: '',
+  dragUntil: 0,
+  listFilter: 'all',
+  feedFilter: 'all',
+  feedLimit: FEED_PAGE,
+  drawer: null,
+  set: null,
+  roots: null,
+  recentHours: null,
+  rootsAsked: false,
+  said: '',
+  saidAt: 0,
+  sayTimer: 0,
+};
+
+const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
+const lightQuery = matchMedia('(prefers-color-scheme: light)');
+
+// ---------------------------------------------------------------------------------------------
+// small helpers
+// ---------------------------------------------------------------------------------------------
+
+const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (c) => ESC[c]);
+}
+
+function readStore(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStore(key, value) {
+  try {
+    if (value == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    // Storage can be blocked (private windows); the page still works without it.
+  }
+}
+
+const own = (obj, key) => (obj && Object.hasOwn(obj, key) ? obj[key] : undefined);
+const clone = (value) => JSON.parse(JSON.stringify(value));
+const cap = (s) => (s ? String(s).charAt(0).toUpperCase() + String(s).slice(1) : '');
+const safeClass = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const f1 = (v) => (Math.round(v * 10) / 10).toString();
+const num = (v) => (Number.isFinite(v) ? v : 0);
+// Dates past 8.64e15 ms make toISOString() throw, which would stop the whole page from drawing.
+const isTime = (ms) => Number.isFinite(ms) && ms > 0 && ms < 8.64e15;
+const toTime = (v) => (isTime(v) ? v : v && isTime(v.at) ? v.at : null);
+const isSession = (n) => !!n && (n.kind === 'session' || n.kind === 'agent' || n.kind === 'reviewer');
+const svgIcon = (paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
+
+function serverNow() {
+  return Date.now() - S.skew;
+}
+
+function ago(ms) {
+  if (!isTime(ms)) return '';
+  const s = Math.max(0, Math.round((serverNow() - ms) / 1000));
+  if (s < 45) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return h === 1 ? '1 hour ago' : `${h} hours ago`;
+  const d = Math.round(h / 24);
+  return d === 1 ? '1 day ago' : `${d} days ago`;
+}
+
+function clock(ms, seconds = false) {
+  if (!isTime(ms)) return '';
+  const opts = seconds ? { hour: 'numeric', minute: '2-digit', second: '2-digit' } : { hour: 'numeric', minute: '2-digit' };
+  return new Date(ms).toLocaleTimeString([], opts);
+}
+
+function stamp(ms) {
+  if (!isTime(ms)) return '';
+  return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function iso(ms) {
+  return isTime(ms) ? new Date(ms).toISOString() : '';
+}
+
+function timeHtml(ms, text) {
+  if (!isTime(ms)) return '';
+  return `<time datetime="${esc(iso(ms))}" title="${esc(stamp(ms))}">${esc(text)}</time>`;
+}
+
+// A "5 min ago" that setHtml keeps current in place. Its whole text is ago(ms), nothing else.
+function agoHtml(ms, attrs = '') {
+  if (!isTime(ms)) return '';
+  return `<time${attrs} datetime="${esc(iso(ms))}" title="${esc(stamp(ms))}" data-ago="${esc(ms)}">${esc(ago(ms))}</time>`;
+}
+
+function dayLabel(ms) {
+  const d = new Date(ms);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const same = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  if (same(d, today)) return 'Today';
+  if (same(d, yesterday)) return 'Yesterday';
+  return d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+}
+
+// Relative times ("5 min ago") change every minute while nothing else does. Markup is compared
+// without them, and when only they changed, their text is set in place instead, so the element
+// under the pointer or in focus stays the same element.
+const AGO_TEXT = /(<[^>]*\sdata-ago="[^"]*"[^>]*>)[^<]*/g;
+const shapeOf = (html) => (html.includes('data-ago="') ? html.replace(AGO_TEXT, '$1') : html);
+
+function refreshAgo(el) {
+  for (const t of el.querySelectorAll('[data-ago]')) {
+    const text = ago(Number(t.dataset.ago));
+    if (t.textContent !== text) t.textContent = text;
+  }
+}
+
+function setText(el, text) {
+  if (el && el.textContent !== text) el.textContent = text;
+}
+
+// Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
+// If something inside had focus, the matching new element gets it back.
+const painted = new WeakMap();
+const FOCUS_ATTRS = ['data-node', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project'];
+let restoringFocus = false;
+function setHtml(el, html) {
+  if (!el) return false;
+  const last = painted.get(el);
+  if (last && last.html === html) return false;
+  const shape = shapeOf(html);
+  if (last && last.shape === shape) {
+    refreshAgo(el);
+    last.html = html;
+    return false;
+  }
+  const active = document.activeElement;
+  const restore = active && active !== el && el.contains(active) ? focusSelector(active) : null;
+  el.innerHTML = html;
+  painted.set(el, { html, shape });
+  if (restore) {
+    const next = el.querySelector(restore);
+    if (next) {
+      restoringFocus = true;
+      try {
+        next.focus({ preventScroll: true });
+      } finally {
+        restoringFocus = false;
+      }
+    }
+  }
+  return true;
+}
+
+// A repaint between pressing and releasing would swap out the button under the pointer and the
+// click would be lost, so timed repaints wait until the press ends (at most a few seconds).
+const press = { on: false, at: 0, timer: 0, waiting: false };
+
+function pressing() {
+  return press.on && Date.now() - press.at < 5000;
+}
+
+function releasePress(ms) {
+  clearTimeout(press.timer);
+  press.timer = setTimeout(() => {
+    press.on = false;
+    if (press.waiting) {
+      press.waiting = false;
+      render();
+    }
+  }, ms);
+}
+
+document.addEventListener(
+  'pointerdown',
+  () => {
+    clearTimeout(press.timer);
+    press.on = true;
+    press.at = Date.now();
+  },
+  true,
+);
+// On a touch screen the click comes a little while after the finger lifts.
+document.addEventListener('pointerup', () => releasePress(500), true);
+document.addEventListener('pointercancel', () => releasePress(0), true);
+document.addEventListener('click', () => releasePress(0), true);
+window.addEventListener('blur', () => releasePress(0));
+
+function focusSelector(node) {
+  if (node.id) return `#${CSS.escape(node.id)}`;
+  for (const attr of FOCUS_ATTRS) {
+    if (node.hasAttribute(attr)) {
+      const field = node.dataset.field ? `[data-field="${CSS.escape(node.dataset.field)}"]` : '';
+      return `[${attr}="${CSS.escape(node.getAttribute(attr))}"]${field}`;
+    }
+  }
+  return null;
+}
+
+async function readJson(res) {
+  try {
+    return JSON.parse(await res.text());
+  } catch {
+    return null;
+  }
+}
+
+function plainError(err) {
+  if (err instanceof TypeError) return 'The Pleni server is not answering. Is it still running?';
+  return String((err && err.message) || err || 'Something went wrong.');
+}
+
+// The error keeps the HTTP status, so a missing key (401) can be told apart from other problems.
+function answerError(res, body) {
+  return Object.assign(new Error((body && body.error) || `Pleni answered with code ${res.status}.`), { status: res.status });
+}
+
+async function getJson(url) {
+  const res = await fetch(url, { cache: 'no-store' });
+  const body = await readJson(res);
+  if (!res.ok) throw answerError(res, body);
+  return body;
+}
+
+// "claude-opus-5-5" -> "Opus 5.5", "gpt-6.1-sol" -> "GPT-6.1 Sol". Only used when the server sends no label.
+function prettyModel(model) {
+  const m = String(model || '').replace(/\[1m\]$/i, '').trim();
+  if (!m) return '';
+  let x = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:\b|-)/i.exec(m);
+  if (x) return `${cap(x[1].toLowerCase())} ${x[2]}${x[3] ? '.' + x[3] : ''}`;
+  x = /^gpt-([\d.]+)(?:-([a-z]+))?$/i.exec(m);
+  if (x) return `GPT-${x[1]}${x[2] ? ' ' + cap(x[2].toLowerCase()) : ''}`;
+  return m;
+}
+
+// ---------------------------------------------------------------------------------------------
+// snapshot index
+// ---------------------------------------------------------------------------------------------
+
+const byTitle = (a, b) => String(a.title || '').localeCompare(String(b.title || '')) || String(a.key).localeCompare(String(b.key));
+
+function indexSnapshot(snap) {
+  const nodes = (Array.isArray(snap.nodes) ? snap.nodes : []).filter((n) => n && typeof n.key === 'string' && !n.hidden);
+  const byKey = new Map(nodes.map((n) => [n.key, n]));
+  const kids = new Map();
+  const roots = [];
+  for (const n of nodes) {
+    const parent = treeParent(n, byKey);
+    if (!parent) roots.push(n);
+    else if (kids.has(parent)) kids.get(parent).push(n);
+    else kids.set(parent, [n]);
+  }
+  for (const list of kids.values()) list.sort(byTitle);
+  roots.sort((a, b) => (b.kind === 'person') - (a.kind === 'person') || byTitle(a, b));
+  const edges = (Array.isArray(snap.edges) ? snap.edges : []).filter((e) => e && typeof e.from === 'string' && typeof e.to === 'string');
+  const edgeBy = new Map(edges.map((e) => [`${e.from}\n${e.to}`, e]));
+  const lit = new Set();
+  for (const e of edges) if (e.active) lit.add(e.from).add(e.to);
+  const counts = new Map();
+  const tally = (n) => {
+    const c = { working: 0, ready: 0, error: 0, idle: 0, done: 0, total: 0 };
+    for (const k of kids.get(n.key) || []) {
+      const kc = tally(k);
+      for (const s of Object.keys(c)) c[s] += kc[s];
+      if (isSession(k)) {
+        c.total++;
+        if (Object.hasOwn(c, k.status) && k.status !== 'total') c[k.status]++;
+      }
+    }
+    counts.set(n.key, c);
+    return c;
+  };
+  roots.forEach(tally);
+  return { nodes, byKey, kids, roots, edges, edgeBy, lit, counts };
+}
+
+// The parent to hang a node under, or null. A broken or looping parent chain makes it a root.
+function treeParent(n, byKey) {
+  if (!n.parent || n.parent === n.key || !byKey.has(n.parent)) return null;
+  const seen = new Set([n.key]);
+  for (let p = n.parent; p && byKey.has(p); p = byKey.get(p).parent) {
+    if (seen.has(p)) return null;
+    seen.add(p);
+  }
+  return n.parent;
+}
+
+function titleOf(n) {
+  if (n.title) return String(n.title);
+  if (n.kind === 'person') return 'You';
+  if (n.kind === 'project') return n.project || 'Project';
+  if (n.kind === 'agent') return 'Helper agent';
+  if (n.kind === 'reviewer') return 'Reviewer';
+  return 'Untitled session';
+}
+
+function personName() {
+  const person = S.index && S.index.nodes.find((n) => n.kind === 'person');
+  return person ? titleOf(person) : 'You';
+}
+
+// A readable name for any key: a known node's title, else a short form of the key.
+function keyName(key) {
+  const n = S.index && S.index.byKey.get(key);
+  if (n) return titleOf(n);
+  const k = String(key || '');
+  if (k === 'you') return personName();
+  const m = /^(claude|codex):([0-9a-f]{8})/i.exec(k);
+  if (m) return `${PLATFORM_WORDS[m[1].toLowerCase()]} session ${m[2]}`;
+  if (k.startsWith('path:')) return `agent ${k.slice(5).split('/').filter(Boolean).pop() || ''}`.trim();
+  if (k.startsWith('project:')) return k.slice(8);
+  return k || 'a session not shown here';
+}
+
+function projectLabel(name) {
+  if (!name) return 'No project';
+  const n = S.index && S.index.byKey.get(`project:${name}`);
+  return n ? titleOf(n) : name;
+}
+
+function rankLine(n) {
+  if (n.kind === 'person') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'Your sessions';
+  if (n.kind === 'project') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'Project';
+  return [n.rank, PLATFORM_WORDS[n.platform], n.subtitle].filter(Boolean).join(' · ');
+}
+
+function modelText(n) {
+  return [n.modelLabel || prettyModel(n.model), EFFORT_WORDS[n.effort] || (n.effort ? `${n.effort} effort` : '')].filter(Boolean).join(' · ');
+}
+
+function statusOf(n) {
+  return isSession(n) && Object.hasOwn(STATUS_WORDS, n.status) ? n.status : '';
+}
+
+// What a session is doing now (while working), else what it last said.
+function doing(n) {
+  const a = n.activity;
+  const act = a && (a.tool || a.detail) ? a : null;
+  if (act && n.status === 'working') return { label: 'Now', tool: act.tool, text: act.detail };
+  if (n.lastText) return { label: 'Last said', tool: null, text: n.lastText };
+  if (act) return { label: 'Last step', tool: act.tool, text: act.detail };
+  return null;
+}
+
+function doingHtml(d) {
+  if (!d) return '';
+  const tool = d.tool ? `<b>${esc(d.tool)}</b>` : '';
+  return tool + (tool && d.text ? ' ' : '') + esc(d.text || '');
+}
+
+function markFor(n) {
+  let kind = 'codex';
+  if (n.platform === 'claude' || n.platform === 'codex') kind = n.platform;
+  else if (n.kind === 'person' || n.platform === 'human') kind = 'human';
+  else if (n.kind === 'project' || n.platform === 'group') kind = 'group';
+  return { cls: `mk-${kind}`, svg: svgIcon(ICONS[kind]) };
+}
+
+function markHtml(n, extra = '') {
+  const m = markFor(n);
+  return `<span class="mark ${m.cls}${extra ? ' ' + extra : ''}" aria-hidden="true">${m.svg}</span>`;
+}
+
+function hasSessions() {
+  return !!S.index && S.index.nodes.some(isSession);
+}
+
+function countsLine() {
+  const c = (S.snap && S.snap.counts) || {};
+  const parts = [plural(c.total || 0, 'session', 'sessions'), `${c.working || 0} working`, `${c.ready || 0} waiting for you`];
+  if (c.error) parts.push(plural(c.error, 'error', 'errors'));
+  return parts.join(' · ');
+}
+
+// ---------------------------------------------------------------------------------------------
+// polling
+// ---------------------------------------------------------------------------------------------
+
+let pollTimer = 0;
+let polling = false;
+
+function schedule(ms = POLL_MS) {
+  clearTimeout(pollTimer);
+  if (!document.hidden) pollTimer = setTimeout(poll, ms);
+}
+
+async function poll() {
+  if (polling) return;
+  polling = true;
+  clearTimeout(pollTimer);
+  try {
+    const headers = S.etag ? { 'If-None-Match': S.etag } : {};
+    const res = await fetch('/api/snapshot', { headers, cache: 'no-store' });
+    if (res.status !== 304) {
+      const body = await readJson(res);
+      if (!res.ok || !body || typeof body !== 'object') throw answerError(res, body);
+      S.snap = body;
+      S.index = indexSnapshot(body);
+      S.etag = res.headers.get('ETag');
+      if (isTime(body.now)) S.skew = Date.now() - body.now;
+    }
+    S.conn = 'live';
+    S.connError = '';
+    S.lastOk = Date.now();
+    if (S.drawer) fetchDrawerEvents();
+  } catch (err) {
+    S.conn = err && err.status === 401 ? 'locked' : 'error';
+    S.connError = plainError(err);
+  } finally {
+    polling = false;
+    // Scheduled first, so a drawing error can never stop the polling.
+    schedule();
+    render();
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearTimeout(pollTimer);
+    renderFacts();
+  } else {
+    poll();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// shell: routing, facts, notices, theme, live summary
+// ---------------------------------------------------------------------------------------------
+
+function viewFromHash() {
+  const h = location.hash;
+  if (h && !h.startsWith('#/')) return null; // an in-page anchor such as the skip link
+  const v = h.replace(/^#\/?/, '').split(/[/?]/)[0];
+  return VIEWS.includes(v) ? v : 'map';
+}
+
+function setView(v, focus) {
+  S.view = v;
+  for (const id of VIEWS) $(`#view-${id}`).hidden = id !== v;
+  for (const a of $$('.views a[data-view]')) {
+    if (a.dataset.view === v) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  }
+  if (v === 'map' && !S.fv.user) S.fv.sig = '';
+  if (v === 'settings') loadSettings(false);
+  render();
+  if (focus) {
+    window.scrollTo(0, 0);
+    const h = $(`#${v}-title`);
+    if (h) h.focus({ preventScroll: true });
+  }
+}
+
+window.addEventListener('hashchange', () => {
+  const v = viewFromHash();
+  if (!v) return;
+  closeDrawer();
+  setView(v, true);
+});
+
+function render() {
+  if (pressing()) {
+    press.waiting = true;
+    return;
+  }
+  renderFacts();
+  renderNotices();
+  $('#nav-tasks').hidden = !(S.snap && Array.isArray(S.snap.tasks));
+  const ready = (S.snap && S.snap.counts && S.snap.counts.ready) || 0;
+  document.title = `${ready ? `(${ready}) ` : ''}${VIEW_NAMES[S.view]} · Pleni`;
+  if (S.view === 'map') renderMap();
+  else if (S.view === 'list') renderList();
+  else if (S.view === 'activity') renderActivity();
+  else if (S.view === 'tasks') renderTasks();
+  if (S.drawer) renderDrawerParts();
+  announce();
+}
+
+function renderFacts() {
+  const c = (S.snap && S.snap.counts) || {};
+  let live = ['', 'Live'];
+  if (S.conn === 'error') live = ['bad', 'Cannot reach Pleni'];
+  else if (S.conn === 'locked') live = ['bad', 'Needs its key'];
+  else if (document.hidden) live = ['paused', 'Paused'];
+  else if (S.conn === 'starting') live = ['paused', 'Starting'];
+  const parts = [`<span class="live ${live[0]}">${live[1]}</span>`];
+  if (S.snap) {
+    parts.push(`<span class="f-working"><b>${num(c.working)}</b> working</span>`);
+    parts.push(`<span class="f-ready"><b>${num(c.ready)}</b> waiting for you</span>`);
+    if (num(c.error)) parts.push(`<span class="f-error"><b>${c.error}</b> ${c.error === 1 ? 'error' : 'errors'}</span>`);
+    parts.push(`<span class="f-idle"><b>${num(c.idle)}</b> idle</span>`);
+  }
+  if (S.lastOk) parts.push(`<span class="f-updated">Updated ${esc(clock(S.lastOk, true))}</span>`);
+  setHtml($('#facts'), parts.join(''));
+}
+
+function notice(bad, title, text) {
+  return `<div class="notice${bad ? ' bad' : ''}"><span class="k">${esc(title)}</span><span class="v">${esc(text)}</span></div>`;
+}
+
+function renderNotices() {
+  const out = [];
+  if (S.conn === 'error') out.push(notice(true, 'Cannot reach Pleni.', `${S.connError} The page keeps trying every few seconds.`));
+  if (S.conn === 'locked') {
+    out.push(notice(true, 'Pleni needs its key.', 'Open the full address Pleni printed in the terminal when it started. It ends with "?t=" and a long key, which keeps other people on this computer out. The key is new each time Pleni starts.'));
+  }
+  const src = (S.snap && S.snap.sources) || {};
+  for (const [name, label] of [['claude', 'Claude Code'], ['codex', 'Codex'], ['mailbox', 'The mailbox']]) {
+    const s = src[name];
+    if (s && s.enabled && s.ok === false) out.push(notice(false, `${label} could not be read.`, s.error || 'Pleni will try again.'));
+  }
+  setHtml($('#notices'), out.join(''));
+}
+
+function storedTheme() {
+  const t = readStore('pleni.theme');
+  return t === 'light' || t === 'dark' ? t : null;
+}
+
+function applyTheme() {
+  const t = storedTheme();
+  if (t) document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+  const effective = t || (lightQuery.matches ? 'light' : 'dark');
+  const label = effective === 'dark' ? 'Use the light theme' : 'Use the dark theme';
+  const btn = $('#theme-toggle');
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
+  const select = $('#s-theme');
+  if (select) select.value = t || 'system';
+}
+
+function setTheme(choice) {
+  writeStore('pleni.theme', choice === 'light' || choice === 'dark' ? choice : null);
+  applyTheme();
+}
+
+function toggleTheme() {
+  const effective = storedTheme() || (lightQuery.matches ? 'light' : 'dark');
+  setTheme(effective === 'dark' ? 'light' : 'dark');
+}
+
+lightQuery.addEventListener('change', applyTheme);
+
+// The polite live region says the counts out loud, only when they change and at most every 15 s.
+function summaryText(c) {
+  const parts = [`${c.working || 0} working`, `${c.ready || 0} waiting for you`];
+  if (c.error) parts.push(`${c.error} with an error`);
+  return `${parts.join(', ')}.`;
+}
+
+function announce() {
+  const c = S.snap && S.snap.counts;
+  if (!c) return;
+  const text = summaryText(c);
+  if (!S.said) {
+    S.said = text; // the first numbers are on screen already; stay quiet
+    S.saidAt = Date.now();
+    return;
+  }
+  if (text === S.said) {
+    clearTimeout(S.sayTimer);
+    S.sayTimer = 0;
+    return;
+  }
+  const wait = S.saidAt + ANNOUNCE_MS - Date.now();
+  if (wait <= 0) {
+    $('#live-summary').textContent = text;
+    S.said = text;
+    S.saidAt = Date.now();
+  } else if (!S.sayTimer) {
+    S.sayTimer = setTimeout(() => {
+      S.sayTimer = 0;
+      announce();
+    }, wait);
+  }
+}
+
+function attentionHtml() {
+  const list = (S.snap && Array.isArray(S.snap.attention) ? S.snap.attention : []).filter((a) => a && a.key);
+  if (!list.length) return '';
+  const items = list.slice(0, 6).map((a) => {
+    const kind = ATTN_WORDS[a.kind] || cap(a.kind) || 'Needs a look';
+    const inner = `<span class="k">${esc(kind)}</span><span class="v">${esc(a.text || keyName(a.key))}</span>`;
+    const cls = `attn k-${safeClass(a.kind)}`;
+    if (S.index.byKey.has(a.key)) return `<button type="button" class="${cls}" data-node="${esc(a.key)}">${inner}</button>`;
+    if (String(a.key).startsWith('task:')) return `<a class="${cls}" href="#/tasks">${inner}</a>`;
+    return `<span class="${cls}">${inner}</span>`;
+  });
+  if (list.length > 6) items.push(`<span class="attn"><span class="v">and ${list.length - 6} more</span></span>`);
+  return `<h2 class="sr-only">Needs you</h2>${items.join('')}`;
+}
+
+// First run, or nothing recent: say where Pleni looks and how to try the demo.
+function welcomeHtml() {
+  if (!S.roots && !S.rootsAsked) {
+    S.rootsAsked = true;
+    getJson('/api/settings')
+      .then((info) => {
+        S.roots = (info && info.roots) || {};
+        S.recentHours = info && info.settings && info.settings.window ? info.settings.window.recentHours : null;
+        render();
+      })
+      .catch(() => {});
+  }
+  const src = (S.snap && S.snap.sources) || {};
+  const roots = S.roots || {};
+  const hours = S.recentHours || 24;
+  const join = (root, sub) => (root ? root.replace(/[\\/]+$/, '') + (root.includes('\\') && !root.includes('/') ? '\\' : '/') + sub : '');
+  const state = (info) => {
+    if (!info) return '';
+    if (!info.enabled) return ' <span class="quiet">Turned off.</span>';
+    if (info.ok === false) return ` <span class="src-bad">Could not read it. ${esc(String(info.error || 'Pleni will try again.').replace(/\.?$/, '.'))}</span>`;
+    return ` <span class="src-ok">On, found ${num(info.count)}.</span>`;
+  };
+  const where = (path, fallback) => `<code>${esc(path || fallback)}</code>`;
+  const mailbox = src.mailbox && src.mailbox.enabled
+    ? `<li><b>Mailbox:</b> ${where(roots.mailbox, 'the folder you chose')}.${state(src.mailbox)}</li>`
+    : '<li><b>Mailbox:</b> off. If two agents hand work to each other through a folder of notes, you can add it in Settings.</li>';
+  return `<div class="welcome panel">
+    <img src="/brand/pip-welcome.webp" alt="" width="168" height="168">
+    <div>
+      <h2>No sessions to show yet</h2>
+      <p>Pleni shows the Claude Code and Codex sessions on this computer that were active in the last ${esc(plural(hours, 'hour', 'hours'))}, the helpers they start, and the work they hand to each other. It only reads their files. It never changes them, and nothing leaves this computer.</p>
+      <h3>Where Pleni looks</h3>
+      <ul>
+        <li><b>Claude Code:</b> ${where(join(roots.claude, 'projects'), '~/.claude/projects')}, or the folder in <code>CLAUDE_CONFIG_DIR</code>.${state(src.claude)}</li>
+        <li><b>Claude desktop app:</b> ${where(roots.claudeDesktop, 'its own settings folder')}, for better session names.</li>
+        <li><b>Codex:</b> ${where(join(roots.codex, 'sessions'), '~/.codex/sessions')}, or the folder in <code>CODEX_HOME</code>.${state(src.codex)}</li>
+        ${mailbox}
+      </ul>
+      <p>Start a Claude Code or Codex session and it shows up here within a few seconds.</p>
+      <h3>Just want to look around?</h3>
+      <p>In the Pleni folder, run <code>node bin/pleni.js --demo</code> in a terminal and open the address it prints. The demo uses made-up sessions, so it needs nothing from you.</p>
+      <p><a href="#/settings">Change where Pleni looks</a></p>
+    </div>
+  </div>`;
+}
+
+// ---------------------------------------------------------------------------------------------
+// map
+// ---------------------------------------------------------------------------------------------
+
+// Working mode keeps the person, sessions that are busy, waiting, failing, carrying a hand-off or
+// active in the last 10 minutes, and everything above them.
+function workingSet(ix) {
+  const keep = new Set();
+  const now = serverNow();
+  const live = (n) =>
+    n.status === 'working' || n.status === 'ready' || n.status === 'error' || ix.lit.has(n.key) || (isTime(n.lastAt) && now - n.lastAt < QUIET_MS);
+  const visit = (n) => {
+    let any = false;
+    for (const k of ix.kids.get(n.key) || []) any = visit(k) || any;
+    if (any || n.kind === 'person' || (isSession(n) && live(n))) {
+      keep.add(n.key);
+      return true;
+    }
+    return false;
+  };
+  ix.roots.forEach(visit);
+  return keep;
+}
+
+// A left-to-right tidy tree. Positions come from here, not from measuring the page, so lines and
+// tiles always agree. Map order is pre-order, which is also the keyboard order of the tiles.
+function layoutTree(ix, keep) {
+  const pos = new Map();
+  const quiet = new Map();
+  let depthMax = 0;
+  const shown = (n) => !keep || keep.has(n.key);
+  const place = (n, depth, y0, parent) => {
+    const x = FL.PAD + depth * (FL.W + FL.GX);
+    depthMax = Math.max(depthMax, depth);
+    pos.set(n.key, null);
+    const all = ix.kids.get(n.key) || [];
+    const kids = all.filter(shown);
+    if (kids.length < all.length) quiet.set(n.key, all.length - kids.length);
+    if (!kids.length) {
+      pos.set(n.key, { n, x, y: y0, parent, kids: 0 });
+      return y0 + FL.H;
+    }
+    let y = y0;
+    for (const k of kids) y = place(k, depth + 1, y, n.key) + FL.GY;
+    const first = pos.get(kids[0].key);
+    const last = pos.get(kids[kids.length - 1].key);
+    const top = Math.max(y0, (first.y + last.y) / 2);
+    pos.set(n.key, { n, x, y: top, parent, kids: kids.length });
+    return Math.max(y - FL.GY, top + FL.H);
+  };
+  let bottom = FL.PAD;
+  let y = FL.PAD;
+  for (const root of ix.roots.filter(shown)) {
+    bottom = place(root, 0, y, null);
+    y = bottom + FL.GY * 2;
+  }
+  return { pos, quiet, w: FL.PAD * 2 + (depthMax + 1) * FL.W + depthMax * FL.GX, h: bottom + FL.PAD };
+}
+
+// Orthogonal line with softened corners.
+function roundPath(pts, r = 7) {
+  const p = pts.filter((q, i) => !i || Math.abs(q[0] - pts[i - 1][0]) > 0.01 || Math.abs(q[1] - pts[i - 1][1]) > 0.01);
+  let d = `M${f1(p[0][0])} ${f1(p[0][1])}`;
+  for (let i = 1; i < p.length - 1; i++) {
+    const [x0, y0] = p[i - 1];
+    const [x1, y1] = p[i];
+    const [x2, y2] = p[i + 1];
+    const l1 = Math.hypot(x1 - x0, y1 - y0);
+    const l2 = Math.hypot(x2 - x1, y2 - y1);
+    const rr = Math.min(r, l1 / 2, l2 / 2);
+    if (rr < 0.5) {
+      d += ` L${f1(x1)} ${f1(y1)}`;
+      continue;
+    }
+    d += ` L${f1(x1 - ((x1 - x0) / l1) * rr)} ${f1(y1 - ((y1 - y0) / l1) * rr)} Q${f1(x1)} ${f1(y1)} ${f1(x1 + ((x2 - x1) / l2) * rr)} ${f1(y1 + ((y2 - y1) / l2) * rr)}`;
+  }
+  const z = p[p.length - 1];
+  return `${d} L${f1(z[0])} ${f1(z[1])}`;
+}
+
+function stepPoints(a, b, o) {
+  const sx = a.x + FL.W;
+  const sy = a.y + FL.H / 2 + o;
+  const tx = b.x;
+  const ty = b.y + FL.H / 2 + o;
+  const mx = sx + FL.GX / 2 + o;
+  return [[sx, sy], [mx, sy], [mx, ty], [tx, ty]];
+}
+
+// A curve between two tiles that are not parent and child (for example a mailbox planner and its
+// coordinator). Tiles in the same column get an arc that bows out to the right.
+function crossPath(a, b) {
+  const ay = a.y + FL.H / 2;
+  const by = b.y + FL.H / 2;
+  if (Math.abs(a.x - b.x) < 1) {
+    const x = a.x + FL.W;
+    const bow = Math.min(FL.GX * 0.8, 36 + Math.abs(by - ay) / 6);
+    return `M${f1(x)} ${f1(ay)} C${f1(x + bow)} ${f1(ay)}, ${f1(x + bow)} ${f1(by)}, ${f1(x)} ${f1(by)}`;
+  }
+  const right = a.x < b.x;
+  const sx = right ? a.x + FL.W : a.x;
+  const tx = right ? b.x : b.x + FL.W;
+  const dx = Math.max(60, Math.abs(tx - sx) / 2) * (right ? 1 : -1);
+  return `M${f1(sx)} ${f1(ay)} C${f1(sx + dx)} ${f1(ay)}, ${f1(tx - dx)} ${f1(by)}, ${f1(tx)} ${f1(by)}`;
+}
+
+function packets(d, cls) {
+  if (motionQuery.matches) return '';
+  return [0, 1, 2]
+    .map((i) => `<circle r="3.4" class="${cls}"><animateMotion dur="1.8s" begin="${f1(-i * 0.6)}s" repeatCount="indefinite" path="${d}"/></circle>`)
+    .join('');
+}
+
+// Glowing line plus packets for each direction that is moving; returns how many are moving.
+function flowWires(out, active, down, up) {
+  let moving = 0;
+  if (active === 'down' || active === 'both') {
+    out.push(`<path class="e-flow e-down" d="${down}"/>${packets(down, 'pk-down')}`);
+    moving++;
+  }
+  if (active === 'up' || active === 'both') {
+    const u = up();
+    out.push(`<path class="e-flow e-up" d="${u}"/>${packets(u, 'pk-up')}`);
+    moving++;
+  }
+  return moving;
+}
+
+function countsHtml(c) {
+  const parts = [];
+  if (c.working) parts.push(`<span class="c-working">${c.working} working</span>`);
+  if (c.ready) parts.push(`<span class="c-ready">${c.ready} waiting for you</span>`);
+  if (c.error) parts.push(`<span class="c-error">${plural(c.error, 'error', 'errors')}</span>`);
+  if (!parts.length) parts.push(`<span>${c.total ? `${plural(c.total, 'session', 'sessions')}, all quiet` : 'No sessions'}</span>`);
+  return `<span class="tile-counts">${parts.join('')}</span>`;
+}
+
+function countsPlain(c) {
+  const parts = [];
+  if (c.working) parts.push(`${c.working} working`);
+  if (c.ready) parts.push(`${c.ready} waiting for you`);
+  if (c.error) parts.push(plural(c.error, 'error', 'errors'));
+  return parts.join(', ') || (c.total ? `${plural(c.total, 'session', 'sessions')}, all quiet` : 'no sessions');
+}
+
+// The time is left out of the tile's name and given as its description instead, so the name and
+// markup stay the same as the minutes pass and the time can be updated in place.
+function tileHtml(p, L, ix, i) {
+  const n = p.n;
+  const status = statusOf(n);
+  const cls = ['tile', `k-${safeClass(n.kind || 'session')}`];
+  if (status) cls.push(`st-${status}`);
+  if (ix.lit.has(n.key)) cls.push('lit');
+  const title = titleOf(n);
+  const rank = rankLine(n);
+  const quiet = L.quiet.get(n.key) || 0;
+  let body;
+  let label;
+  let described = '';
+  if (isSession(n)) {
+    const model = modelText(n);
+    const d = doing(n);
+    const timeId = `tile-ago-${i}`;
+    const when = agoHtml(n.lastAt, ` class="tile-ago" id="${timeId}"`);
+    if (when) described = ` aria-describedby="${timeId}"`;
+    body =
+      `<span class="tile-meta"><span class="pill">${esc(STATUS_WORDS[status] || 'Unknown')}</span>` +
+      `<span class="tile-model">${esc(model)}</span>${when || '<span class="tile-ago"></span>'}</span>` +
+      (d ? `<span class="tile-text">${doingHtml(d)}</span>` : '');
+    label = [title, rank, STATUS_WORDS[status], model].filter(Boolean).join(', ');
+  } else {
+    const c = ix.counts.get(n.key) || { total: 0 };
+    body = `<span class="tile-meta">${countsHtml(c)}</span>`;
+    label = [title, rank, countsPlain(c)].filter(Boolean).join(', ');
+  }
+  if (quiet) label += `, ${quiet} quiet not shown`;
+  return (
+    `<button type="button" class="${cls.join(' ')}" data-node="${esc(n.key)}" style="left:${f1(p.x)}px;top:${f1(p.y)}px" aria-label="${esc(label)}"${described}>` +
+    (p.parent ? '<span class="hd l" aria-hidden="true"></span>' : '') +
+    (p.kids ? '<span class="hd r" aria-hidden="true"></span>' : '') +
+    markHtml(n) +
+    `<span class="tile-title">${esc(title)}</span><span class="tile-rank">${esc(rank)}</span>` +
+    body +
+    (quiet ? `<span class="tile-quiet" aria-hidden="true">+${quiet} quiet</span>` : '') +
+    '</button>'
+  );
+}
+
+function flowsHtml(ix) {
+  const flows = [];
+  const label = (text) => (text ? `: ${esc(text)}` : '');
+  for (const e of ix.edges) {
+    if (e.active === 'down' || e.active === 'both') {
+      const at = toTime(e.lastDown);
+      flows.push({
+        at: at || 0,
+        html: `<li class="flow down" title="${esc(e.downLabel || '')}"><span class="ar" aria-hidden="true">↓</span><b>${esc(keyName(e.from))}</b> handed work to <b>${esc(keyName(e.to))}</b>${label(e.downLabel)}${at ? `, ${esc(clock(at))}` : ''}</li>`,
+      });
+    }
+    if (e.active === 'up' || e.active === 'both') {
+      const at = toTime(e.lastUp);
+      flows.push({
+        at: at || 0,
+        html: `<li class="flow up" title="${esc(e.upLabel || '')}"><span class="ar" aria-hidden="true">↑</span><b>${esc(keyName(e.to))}</b> reported back to <b>${esc(keyName(e.from))}</b>${label(e.upLabel)}${at ? `, ${esc(clock(at))}` : ''}</li>`,
+      });
+    }
+  }
+  if (!flows.length) return '<li class="none">No hand-offs moving right now. A line lights up for two minutes after work is handed out or reported back.</li>';
+  flows.sort((a, b) => b.at - a.at);
+  // Three on a wide screen, one on a phone, then a count of the rest.
+  const more =
+    (flows.length > 3 ? `<li class="flow more-d">+${flows.length - 3} more moving</li>` : '') +
+    (flows.length > 1 ? `<li class="flow more-m">+${flows.length - 1} more moving</li>` : '');
+  return flows.slice(0, 3).map((f) => f.html).join('') + more;
+}
+
+function renderMap() {
+  for (const b of $$('[data-map-mode]')) b.setAttribute('aria-pressed', String(b.dataset.mapMode === S.mapMode));
+  if (!S.snap) return;
+  const ix = S.index;
+  const empty = !hasSessions();
+  setText($('#map-meta'), countsLine());
+  setHtml($('#map-attention'), attentionHtml());
+  setHtml($('#map-welcome'), empty ? welcomeHtml() : '');
+  $('#map-body').hidden = empty;
+  if (empty) return;
+
+  const keep = S.mapMode === 'all' ? null : workingSet(ix);
+  const L = layoutTree(ix, keep);
+  S.layout = L;
+  const tiles = [];
+  const wires = [];
+  const treeLinks = new Set();
+  let moving = 0;
+  for (const [key, p] of L.pos) {
+    tiles.push(tileHtml(p, L, ix, tiles.length));
+    if (!p.parent) continue;
+    const pp = L.pos.get(p.parent);
+    const d = roundPath(stepPoints(pp, p, 0));
+    wires.push(`<path class="e-base" d="${d}"/>`);
+    treeLinks.add(`${p.parent}\n${key}`);
+    const e = ix.edgeBy.get(`${p.parent}\n${key}`);
+    if (e) moving += flowWires(wires, e.active, d, () => roundPath(stepPoints(pp, p, 4).reverse()));
+  }
+  for (const e of ix.edges) {
+    if (e.kind === 'contains' || treeLinks.has(`${e.from}\n${e.to}`)) continue;
+    const a = L.pos.get(e.from);
+    const b = L.pos.get(e.to);
+    if (!a || !b || a === b) continue;
+    const d = crossPath(a, b);
+    wires.push(`<path class="e-cross" d="${d}"/>`);
+    moving += flowWires(wires, e.active, d, () => crossPath(b, a));
+  }
+  const svg = $('#map-wires');
+  svg.setAttribute('width', L.w);
+  svg.setAttribute('height', L.h);
+  svg.setAttribute('viewBox', `0 0 ${L.w} ${L.h}`);
+  setHtml(svg, wires.join(''));
+  setHtml($('#map-nodes'), tiles.join(''));
+  setHtml($('#flows'), flowsHtml(ix));
+
+  const onlyPeople = [...L.pos.values()].every((p) => !isSession(p.n));
+  const emptyBox = $('#map-empty');
+  emptyBox.hidden = !(onlyPeople && S.mapMode === 'working');
+  setHtml(
+    emptyBox,
+    emptyBox.hidden
+      ? ''
+      : '<img src="/brand/pip-thinking.webp" alt="" width="72" height="72"><p>Nobody is working right now.</p><button type="button" class="btn" data-map-mode="all">Show everyone</button>',
+  );
+  const foot = S.conn === 'error' ? 'Not live: cannot reach Pleni' : S.conn === 'locked' ? 'Not live: Pleni needs its key' : document.hidden ? 'Paused while this tab is hidden' : `Live · updated ${clock(S.lastOk, true)}`;
+  setHtml(
+    $('#map-foot'),
+    `<span>${esc(foot)}</span><span class="${moving ? 'moving' : ''}">${moving ? esc(plural(moving, 'hand-off', 'hand-offs')) + ' moving' : 'No hand-offs moving'}</span>`,
+  );
+
+  // Refit only on first show, or when the content no longer fits and the view was not moved by hand.
+  const sig = `${L.w}x${L.h}|${[...L.pos.keys()].join(',')}`;
+  S.layoutSig = sig;
+  const cv = $('#map-canvas');
+  const v = S.fv;
+  const fits = v.sig && cv.clientWidth && v.x >= -1 && v.y >= -1 && v.x + L.w * v.k <= cv.clientWidth + 1 && v.y + L.h * v.k <= cv.clientHeight + 1;
+  if (!v.user && v.sig !== sig) {
+    if (fits) v.sig = sig;
+    else if (fitView()) v.sig = sig;
+  }
+  applyView();
+}
+
+function setMapMode(mode) {
+  S.mapMode = mode === 'all' ? 'all' : 'working';
+  writeStore('pleni.mapMode', S.mapMode);
+  if (!S.fv.user) S.fv.sig = '';
+  renderMap();
+}
+
+// ---------- pan and zoom ----------
+
+function applyView() {
+  const v = S.fv;
+  const stage = $('#map-stage');
+  const cv = $('#map-canvas');
+  stage.style.transform = `translate(${f1(v.x)}px, ${f1(v.y)}px) scale(${v.k.toFixed(3)})`;
+  const g = 22 * v.k;
+  cv.style.backgroundSize = `${f1(g)}px ${f1(g)}px`;
+  cv.style.backgroundPosition = `${f1(v.x)}px ${f1(v.y)}px`;
+}
+
+function fitView() {
+  const cv = $('#map-canvas');
+  const L = S.layout;
+  if (!cv || !L || !cv.clientWidth) return false;
+  const cw = cv.clientWidth;
+  const ch = cv.clientHeight;
+  let k = Math.max(ZOOM_MIN, Math.min(1, cw / L.w, ch / L.h));
+  let x = (cw - L.w * k) / 2;
+  let y = (ch - L.h * k) / 2;
+  // On a narrow screen the whole map would be too small to read: fit the height, start at the left.
+  if (k < 0.55 && cw < 720) {
+    k = Math.max(0.5, Math.min(0.85, ch / L.h));
+    x = 0;
+    y = Math.max(0, (ch - L.h * k) / 2);
+  }
+  Object.assign(S.fv, { x, y, k, user: false });
+  applyView();
+  return true;
+}
+
+function zoomAt(px, py, k) {
+  const v = S.fv;
+  const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, k));
+  v.x = px - (px - v.x) * (next / v.k);
+  v.y = py - (py - v.y) * (next / v.k);
+  v.k = next;
+  v.user = true;
+  applyView();
+}
+
+function zoomButton(kind) {
+  if (kind === 'fit') {
+    S.fv.sig = '';
+    if (fitView()) S.fv.sig = S.layoutSig;
+    return;
+  }
+  const cv = $('#map-canvas');
+  zoomAt(cv.clientWidth / 2, cv.clientHeight / 2, S.fv.k * (kind === 'in' ? 1.25 : 0.8));
+}
+
+function panBy(dx, dy) {
+  S.fv.x += dx;
+  S.fv.y += dy;
+  S.fv.user = true;
+  applyView();
+}
+
+(function mapInput() {
+  const cv = $('#map-canvas');
+  const down = new Map();
+  let g = null;
+  let pointerAt = 0;
+  const pointerSeen = () => {
+    pointerAt = Date.now();
+  };
+  cv.addEventListener('pointerdown', pointerSeen, true);
+  cv.addEventListener('pointerup', pointerSeen, true);
+  const local = (p) => {
+    const r = cv.getBoundingClientRect();
+    return { x: p.x - r.left, y: p.y - r.top };
+  };
+  const begin = () => {
+    const pts = [...down.values()];
+    g = { x: S.fv.x, y: S.fv.y, k: S.fv.k, pts: pts.map((p) => ({ ...p })), moved: g ? g.moved : false };
+    if (pts.length === 2) {
+      g.d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+      g.c = local({ x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 });
+    }
+  };
+  cv.addEventListener('pointerdown', (ev) => {
+    if ((ev.pointerType === 'mouse' && ev.button !== 0) || ev.target.closest('.map-ctrl, .map-empty')) return;
+    down.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (down.size <= 2) begin();
+  });
+  cv.addEventListener('pointermove', (ev) => {
+    if (!down.has(ev.pointerId) || !g) return;
+    down.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    const pts = [...down.values()];
+    if (pts.length === 1) {
+      const dx = pts[0].x - g.pts[0].x;
+      const dy = pts[0].y - g.pts[0].y;
+      if (!g.moved && Math.hypot(dx, dy) < 5) return;
+      if (!g.moved) {
+        g.moved = true;
+        try {
+          cv.setPointerCapture(ev.pointerId);
+        } catch {
+          // The pointer may already be gone; panning still works without capture.
+        }
+        cv.classList.add('dragging');
+      }
+      Object.assign(S.fv, { x: g.x + dx, y: g.y + dy, user: true });
+      applyView();
+    } else if (pts.length === 2 && g.d) {
+      g.moved = true;
+      const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      const c = local({ x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 });
+      const k = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, (g.k * d) / g.d));
+      Object.assign(S.fv, { x: c.x - (g.c.x - g.x) * (k / g.k), y: c.y - (g.c.y - g.y) * (k / g.k), k, user: true });
+      applyView();
+    }
+  });
+  const end = (ev) => {
+    if (!down.delete(ev.pointerId)) return;
+    if (g && g.moved) S.dragUntil = Date.now() + 300;
+    if (down.size) begin();
+    else {
+      g = null;
+      cv.classList.remove('dragging');
+    }
+  };
+  cv.addEventListener('pointerup', end);
+  cv.addEventListener('pointercancel', end);
+  // A plain wheel scrolls the page; Ctrl (or Cmd) + wheel and trackpad pinch zoom the map.
+  cv.addEventListener(
+    'wheel',
+    (ev) => {
+      if (!ev.ctrlKey && !ev.metaKey) return;
+      ev.preventDefault();
+      const p = local({ x: ev.clientX, y: ev.clientY });
+      zoomAt(p.x, p.y, S.fv.k * Math.exp(-ev.deltaY * 0.0025));
+    },
+    { passive: false },
+  );
+  // Safari's trackpad pinch.
+  let gestureK = 1;
+  cv.addEventListener('gesturestart', (ev) => {
+    ev.preventDefault();
+    gestureK = S.fv.k;
+  });
+  cv.addEventListener('gesturechange', (ev) => {
+    ev.preventDefault();
+    const p = local({ x: ev.clientX, y: ev.clientY });
+    zoomAt(p.x, p.y, gestureK * ev.scale);
+  });
+  // Keyboard, while the map or anything in it has focus: arrows move it, + and - zoom, 0 fits.
+  cv.addEventListener('keydown', (ev) => {
+    if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
+    const step = ev.shiftKey ? 240 : 60;
+    const zoom = (factor) => zoomAt(cv.clientWidth / 2, cv.clientHeight / 2, S.fv.k * factor);
+    const keys = {
+      ArrowLeft: () => panBy(step, 0),
+      ArrowRight: () => panBy(-step, 0),
+      ArrowUp: () => panBy(0, step),
+      ArrowDown: () => panBy(0, -step),
+      '+': () => zoom(1.25),
+      '=': () => zoom(1.25),
+      '-': () => zoom(0.8),
+      _: () => zoom(0.8),
+      0: () => zoomButton('fit'),
+    };
+    const act = Object.hasOwn(keys, ev.key) ? keys[ev.key] : null;
+    if (!act) return;
+    ev.preventDefault();
+    act();
+  });
+  // Focus can scroll an overflow box; the map moves only through its own transform.
+  cv.addEventListener('scroll', () => {
+    cv.scrollLeft = 0;
+    cv.scrollTop = 0;
+  });
+  // Tabbing to a tile that is off screen brings it into view. A click is left alone (the tile
+  // would slide out from under the pointer and the click would miss), and so is focus put back
+  // after a repaint (that would undo the person's own panning every few seconds).
+  cv.addEventListener('focusin', (ev) => {
+    if (restoringFocus || Date.now() - pointerAt < 600) return;
+    const tile = ev.target.closest('.tile');
+    const p = tile && S.layout && S.layout.pos.get(tile.dataset.node);
+    if (!p) return;
+    const v = S.fv;
+    const x0 = v.x + p.x * v.k;
+    const y0 = v.y + p.y * v.k;
+    if (x0 >= 0 && y0 >= 0 && x0 + FL.W * v.k <= cv.clientWidth && y0 + FL.H * v.k <= cv.clientHeight) return;
+    Object.assign(v, { x: cv.clientWidth / 2 - (p.x + FL.W / 2) * v.k, y: cv.clientHeight / 2 - (p.y + FL.H / 2) * v.k, user: true });
+    applyView();
+  });
+  // Fit as soon as the canvas can be measured: first show, a tab coming back, a turned phone.
+  if ('ResizeObserver' in window) {
+    new ResizeObserver(() => {
+      if (S.view !== 'map' || !S.layout) return;
+      if (S.fv.user) applyView();
+      else if (fitView()) S.fv.sig = S.layoutSig;
+    }).observe(cv);
+  }
+})();
+
+// Packets are drawn in markup, so a change of the motion setting needs a fresh draw.
+motionQuery.addEventListener('change', () => {
+  if (S.view === 'map') renderMap();
+});
+
+// ---------------------------------------------------------------------------------------------
+// list
+// ---------------------------------------------------------------------------------------------
+
+// Sessions in map order with their depth below the nearest top-level session.
+function sessionRows(ix) {
+  const rows = [];
+  const visit = (n, depth) => {
+    const self = isSession(n);
+    if (self) rows.push({ n, depth });
+    for (const k of ix.kids.get(n.key) || []) visit(k, self ? depth + 1 : depth);
+  };
+  ix.roots.forEach((r) => visit(r, 0));
+  return rows;
+}
+
+function rowHtml(n, depth) {
+  const status = statusOf(n);
+  const d = doing(n);
+  return (
+    `<tr class="${status ? `st-${status}` : ''}">` +
+    `<td><div class="who" style="--depth:${depth}">${markHtml(n, 'small')}<span class="tx">` +
+    `<button type="button" class="open" data-node="${esc(n.key)}">${esc(titleOf(n))}</button>` +
+    `<span class="sub">${esc(rankLine(n))}</span></span></div></td>` +
+    `<td><span class="pill">${esc(STATUS_WORDS[status] || 'Unknown')}</span></td>` +
+    `<td class="doing">${d ? `<span class="quiet">${esc(d.label)}:</span> ${doingHtml(d)}` : ''}</td>` +
+    `<td class="model">${esc(modelText(n))}</td>` +
+    `<td class="when">${agoHtml(n.lastAt)}</td></tr>`
+  );
+}
+
+function renderList() {
+  if (!S.snap) {
+    setHtml($('#list-body'), '<p class="empty">Reading your sessions…</p>');
+    return;
+  }
+  const ix = S.index;
+  setText($('#list-meta'), countsLine());
+  setHtml($('#list-attention'), attentionHtml());
+  if (!hasSessions()) {
+    setHtml($('#list-filters'), '');
+    setHtml($('#list-body'), welcomeHtml());
+    return;
+  }
+  const rows = sessionRows(ix);
+  const tally = { all: rows.length };
+  for (const r of rows) tally[r.n.status] = (tally[r.n.status] || 0) + 1;
+  setHtml(
+    $('#list-filters'),
+    FILTERS.map(
+      ([key, label]) =>
+        `<button type="button" class="chip" data-list-filter="${key}" aria-pressed="${S.listFilter === key}">${esc(label)} <span class="n">${tally[key] || 0}</span></button>`,
+    ).join(''),
+  );
+  const filtered = S.listFilter !== 'all';
+  const shown = filtered ? rows.filter((r) => r.n.status === S.listFilter) : rows;
+  if (!shown.length) {
+    setHtml($('#list-body'), '<p class="empty">No sessions match this filter right now.</p>');
+    return;
+  }
+  const groups = new Map();
+  for (const r of shown) {
+    const name = r.n.project || '';
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(r);
+  }
+  const names = [...groups.keys()].sort((a, b) => (!a) - (!b) || projectLabel(a).localeCompare(projectLabel(b)));
+  const bodies = names.map((name) => {
+    const list = groups.get(name);
+    return (
+      `<tbody><tr class="grp"><th scope="rowgroup" colspan="5">${esc(projectLabel(name))}<span class="quiet">${esc(plural(list.length, 'session', 'sessions'))}</span></th></tr>` +
+      list.map((r) => rowHtml(r.n, filtered ? 0 : r.depth)).join('') +
+      '</tbody>'
+    );
+  });
+  setHtml(
+    $('#list-body'),
+    `<div class="table-wrap"><table class="list"><caption class="sr-only">Sessions grouped by project</caption>` +
+      '<thead><tr><th scope="col">Session</th><th scope="col">Status</th><th scope="col">Doing now or last said</th><th scope="col">Model</th><th scope="col">Last active</th></tr></thead>' +
+      `${bodies.join('')}</table></div>`,
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// activity
+// ---------------------------------------------------------------------------------------------
+
+function nameHtml(key) {
+  if (key && S.index.byKey.has(key)) return `<button type="button" class="name" data-node="${esc(key)}">${esc(keyName(key))}</button>`;
+  return `<b>${esc(keyName(key))}</b>`;
+}
+
+// Direction and wording of a feed event. A report is always told child-to-parent, whichever way
+// round the server lists the pair.
+function describeEvent(ev) {
+  const ix = S.index;
+  let from = ev.from;
+  let to = ev.to;
+  const fwd = ix.edgeBy.has(`${from}\n${to}`);
+  const back = ix.edgeBy.has(`${to}\n${from}`);
+  switch (ev.kind) {
+    case 'spawn':
+      return { dir: 'down', from, to, verb: 'handed work to' };
+    case 'message':
+      return { dir: 'down', from, to, verb: 'sent a message to' };
+    case 'report':
+      if (fwd && !back) [from, to] = [to, from];
+      return { dir: 'up', from, to, verb: 'reported back to' };
+    case 'mailbox':
+      return back && !fwd ? { dir: 'up', from, to, verb: 'wrote back through the mailbox to' } : { dir: 'down', from, to, verb: 'wrote through the mailbox to' };
+    case 'error':
+      return { dir: 'error', from, to: null, verb: 'ran into an error' };
+    default:
+      return { dir: '', from, to, verb: 'passed something to' };
+  }
+}
+
+function eventHtml(ev) {
+  const d = describeEvent(ev);
+  const arrow = { down: '↓', up: '↑', error: '!' }[d.dir] || '·';
+  const dirWords = { down: 'Work going down.', up: 'Report coming up.', error: 'Error.' }[d.dir] || '';
+  const sentence = `${nameHtml(d.from)} ${esc(d.verb)}${d.to ? ' ' + nameHtml(d.to) : ''}`;
+  return (
+    `<li class="ev dir-${d.dir || 'none'}">${timeHtml(ev.at, clock(ev.at))}` +
+    `<span class="dir" aria-hidden="true">${arrow}</span>` +
+    `<div><p class="what"><span class="sr-only">${dirWords} </span>${sentence}</p>${ev.text ? `<p class="text">${esc(ev.text)}</p>` : ''}</div></li>`
+  );
+}
+
+function feedEvents() {
+  const list = S.snap && Array.isArray(S.snap.events) ? S.snap.events.filter((e) => e && isTime(e.at)) : [];
+  return list.slice().sort((a, b) => b.at - a.at);
+}
+
+function renderActivity() {
+  if (!S.snap) {
+    setHtml($('#feed'), '<p class="empty">Reading your sessions…</p>');
+    return;
+  }
+  const all = feedEvents().map((ev) => ({ ev, dir: describeEvent(ev).dir }));
+  const tally = { all: all.length, down: 0, up: 0, error: 0 };
+  for (const x of all) if (Object.hasOwn(tally, x.dir)) tally[x.dir]++;
+  setHtml(
+    $('#feed-filters'),
+    FEED_FILTERS.map(
+      ([key, label]) =>
+        `<button type="button" class="chip" data-feed-filter="${key}" aria-pressed="${S.feedFilter === key}">${esc(label)} <span class="n">${tally[key]}</span></button>`,
+    ).join(''),
+  );
+  const matching = S.feedFilter === 'all' ? all : all.filter((x) => x.dir === S.feedFilter);
+  if (!matching.length) {
+    const msg = all.length ? 'Nothing matches this filter yet.' : 'No hand-offs yet. When a session starts a helper, sends it work or gets a report back, it shows up here.';
+    setHtml($('#feed'), `<p class="empty">${msg}</p>`);
+    return;
+  }
+  const out = [];
+  let day = null;
+  for (const { ev } of matching.slice(0, S.feedLimit)) {
+    const label = dayLabel(ev.at);
+    if (label !== day) {
+      if (day) out.push('</ol></section>');
+      out.push(`<section class="day"><h2>${esc(label)}</h2><ol class="feed">`);
+      day = label;
+    }
+    out.push(eventHtml(ev));
+  }
+  out.push('</ol></section>');
+  const rest = matching.length - S.feedLimit;
+  if (rest > 0) out.push(`<button type="button" class="btn older" id="feed-older">Show ${Math.min(FEED_PAGE, rest)} older</button>`);
+  setHtml($('#feed'), out.join(''));
+}
+
+// ---------------------------------------------------------------------------------------------
+// tasks
+// ---------------------------------------------------------------------------------------------
+
+const STATE_WORDS = {
+  IN_PROGRESS: 'In progress', IN_REVIEW: 'In review', DONE: 'Done', CANCELLED: 'Cancelled', CANCELED: 'Cancelled', COMPLETE: 'Complete',
+  COMPLETED: 'Completed', NO_CLAUDE_DISPATCH: 'No Claude dispatch', BLOCKED: 'Blocked', NEW: 'New', ACCEPTED: 'Accepted', RETURNED: 'Sent back for changes',
+};
+// The same finished states as CLOSED in src/sources/mailbox.js. Keep the two in step.
+const CLOSED_STATE = /^(DONE|CANCELL?ED|COMPLETED?|NO_CLAUDE_DISPATCH)(_|$)/;
+
+function taskState(state) {
+  const s = String(state || '').trim();
+  const word = s.split(/[\s.(]/)[0].toUpperCase();
+  let cls = '';
+  if (CLOSED_STATE.test(word)) cls = 's-closed';
+  else if (/BLOCKED/.test(word)) cls = 's-blocked';
+  else if (/REVIEW/.test(word)) cls = 's-review';
+  const label = STATE_WORDS[word] || (s ? cap(s.replace(/_/g, ' ').toLowerCase()) : 'No state yet');
+  return { label, cls, closed: cls === 's-closed' };
+}
+
+function taskHtml(t) {
+  const st = taskState(t.state);
+  const attention = Array.isArray(t.attention) ? t.attention : [];
+  const badges = attention.map((a) => `<span class="badge">${esc(a === 'question' ? 'Has a question' : a === 'review' ? 'Ready for review' : cap(a))}</span>`).join('');
+  const workers = (Array.isArray(t.workers) ? t.workers : []).filter((w) => w && typeof w === 'object').map(
+    (w) => `<span class="wtag">${esc([w.id, w.state ? String(w.state).toLowerCase() : '', prettyModel(w.model)].filter(Boolean).join(' · '))}</span>`,
+  );
+  return (
+    `<li class="task${attention.length && !st.closed ? ' needs' : ''}"><div class="task-head">` +
+    `<span class="task-title">${esc(t.title || t.id)}</span><span class="task-state ${st.cls}">${esc(st.label)}</span>${st.closed ? '' : badges}</div>` +
+    `<div class="task-sub"><span class="mono">${esc(t.id)}</span>${isTime(t.updatedAt) ? `<span>updated ${agoHtml(t.updatedAt)}</span>` : ''}${workers.join('')}</div></li>`
+  );
+}
+
+function renderTasks() {
+  const tasks = S.snap && Array.isArray(S.snap.tasks) ? S.snap.tasks.filter((t) => t && t.id) : null;
+  if (!tasks) {
+    setText($('#tasks-meta'), '');
+    setHtml(
+      $('#tasks'),
+      '<p class="empty">Tasks come from a mailbox: a folder where one agent hands out work and another reports back. No mailbox is turned on. You can add one in <a href="#/settings">Settings</a>.</p>',
+    );
+    return;
+  }
+  const sorted = tasks.slice().sort((a, b) => String(b.id).localeCompare(String(a.id)));
+  const open = sorted.filter((t) => !taskState(t.state).closed);
+  const closed = sorted.filter((t) => taskState(t.state).closed);
+  const needs = open.filter((t) => Array.isArray(t.attention) && t.attention.length).length;
+  setText($('#tasks-meta'), `${open.length} open · ${needs} need a look · ${closed.length} closed`);
+  const details = $('#tasks details.fold');
+  const wasOpen = details ? details.open : false;
+  setHtml(
+    $('#tasks'),
+    (open.length ? `<ul class="tasks">${open.map(taskHtml).join('')}</ul>` : '<p class="empty">No open tasks.</p>') +
+      (closed.length ? `<details class="fold"${wasOpen ? ' open' : ''}><summary>${esc(plural(closed.length, 'closed task', 'closed tasks'))}</summary><ul class="tasks">${closed.map(taskHtml).join('')}</ul></details>` : ''),
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// drawer
+// ---------------------------------------------------------------------------------------------
+
+function setInert(on) {
+  for (const el of [$('.skip'), $('.appbar'), $('#main')]) el.inert = on;
+}
+
+function openDrawer(key, opener) {
+  const prev = S.drawer;
+  S.drawer = { key, tab: 'now', events: [], next: null, loaded: false, error: null, busy: false, frame: '', opener: prev ? prev.opener : opener || document.activeElement };
+  $('#layer').hidden = false;
+  setInert(true);
+  renderDrawerParts();
+  $('#drawer [data-close]').focus();
+  fetchDrawerEvents();
+}
+
+function closeDrawer() {
+  if (!S.drawer) return;
+  const { opener, key } = S.drawer;
+  S.drawer = null;
+  $('#layer').hidden = true;
+  setInert(false);
+  $('#drawer').innerHTML = '';
+  let back = opener && opener.isConnected && !opener.closest('[hidden]') ? opener : null;
+  if (!back) back = $(`.view:not([hidden]) [data-node="${CSS.escape(key)}"]`) || $('#main');
+  back.focus();
+}
+
+function focusables(root) {
+  return $$('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])', root).filter(
+    (el) => !el.closest('[hidden]') && el.getClientRects().length > 0,
+  );
+}
+
+// The frame (title, tabs, empty panels) is rebuilt only when the kind of drawer changes.
+function drawerFrame(group) {
+  const tabs = group ? [['now', 'Overview'], ['details', 'Details']] : [['now', 'Now'], ['details', 'Details'], ['handoffs', 'Hand-offs']];
+  const d = S.drawer;
+  if (!tabs.some(([id]) => id === d.tab)) d.tab = 'now';
+  return (
+    `<div class="dhead"><span class="mark" id="drawer-mark" aria-hidden="true"></span>` +
+    '<div class="dtitles"><h2 id="drawer-title"></h2><p class="dsub" id="drawer-sub"></p></div>' +
+    `<button type="button" class="icon-btn" data-close aria-label="Close the details">${svgIcon(ICONS.close)}</button></div>` +
+    '<div class="dstatus" id="drawer-status"></div>' +
+    `<div class="tabs" role="tablist" aria-label="${group ? 'About this group' : 'About this session'}">` +
+    tabs
+      .map(
+        ([id, label]) =>
+          `<button type="button" role="tab" id="dtab-${id}" data-tab="${id}" aria-controls="dpanel-${id}" aria-selected="${id === d.tab}" tabindex="${id === d.tab ? 0 : -1}">${label}</button>`,
+      )
+      .join('') +
+    '</div>' +
+    tabs.map(([id]) => `<div role="tabpanel" id="dpanel-${id}" aria-labelledby="dtab-${id}" tabindex="0"${id === d.tab ? '' : ' hidden'}></div>`).join('')
+  );
+}
+
+function selectTab(id, focus) {
+  if (!S.drawer) return;
+  S.drawer.tab = id;
+  for (const t of $$('#drawer [role="tab"]')) {
+    const on = t.dataset.tab === id;
+    t.setAttribute('aria-selected', String(on));
+    t.tabIndex = on ? 0 : -1;
+    if (on && focus) t.focus();
+  }
+  for (const p of $$('#drawer [role="tabpanel"]')) p.hidden = p.id !== `dpanel-${id}`;
+}
+
+function renderDrawerParts() {
+  const d = S.drawer;
+  if (!d) return;
+  const n = S.index && S.index.byKey.get(d.key);
+  const group = !!n && !isSession(n);
+  const frame = group ? 'group' : 'session';
+  const drawer = $('#drawer');
+  if (d.frame !== frame) {
+    const hadFocus = drawer.contains(document.activeElement);
+    drawer.innerHTML = drawerFrame(group);
+    d.frame = frame;
+    if (hadFocus) $('#drawer [data-close]').focus();
+  }
+  const mark = n ? markFor(n) : { cls: 'mk-codex', svg: '' };
+  const markEl = $('#drawer-mark');
+  markEl.className = `mark ${mark.cls}`;
+  setHtml(markEl, mark.svg);
+  const title = n ? titleOf(n) : keyName(d.key);
+  if ($('#drawer-title').textContent !== title) $('#drawer-title').textContent = title;
+  const sub = n ? [rankLine(n), isSession(n) ? modelText(n) : ''].filter(Boolean).join(' · ') : '';
+  if ($('#drawer-sub').textContent !== sub) $('#drawer-sub').textContent = sub;
+  setHtml($('#drawer-status'), drawerStatusHtml(n));
+  if (group) {
+    setHtml($('#dpanel-now'), groupNowHtml(n));
+    setHtml($('#dpanel-details'), detailsHtml(n));
+  } else {
+    setHtml($('#dpanel-now'), sessionNowHtml(n, d));
+    setHtml($('#dpanel-details'), n ? detailsHtml(n) : '<p class="empty">No details: this session is not listed right now.</p>');
+    setHtml($('#dpanel-handoffs'), handoffsHtml(d.key));
+  }
+}
+
+function drawerStatusHtml(n) {
+  if (!n) return '<span>This session is not listed right now. It may have been quiet for longer than the time window in Settings.</span>';
+  if (!isSession(n)) return '';
+  const status = statusOf(n);
+  const parts = [`<span class="pill st-${status || 'idle'}">${esc(STATUS_WORDS[status] || 'Unknown')}</span>`];
+  if (isTime(n.lastAt)) parts.push(`<span>Last active ${agoHtml(n.lastAt)}</span>`);
+  if (isTime(n.startedAt)) parts.push(`<span>Started ${timeHtml(n.startedAt, stamp(n.startedAt))}</span>`);
+  return parts.join('');
+}
+
+function sessionEventHtml(e) {
+  const kind = Object.hasOwn(EVENT_KIND_WORDS, e.kind) ? e.kind : 'other';
+  const label = (EVENT_KIND_WORDS[kind] || cap(e.kind) || 'Event') + (e.tool ? `: ${e.tool}` : '');
+  const text = kind === 'thinking' ? '' : e.text;
+  return `<li class="k-${kind}">${timeHtml(e.at, clock(e.at, true)) || '<span></span>'}<div><span class="k">${esc(label)}</span>${text ? `<div class="tx">${esc(text)}</div>` : ''}</div></li>`;
+}
+
+function sessionNowHtml(n, d) {
+  const out = [];
+  const now = n ? doing(n) : null;
+  if (now) out.push(`<p class="dnow"><b>${esc(now.label)}:</b> ${doingHtml(now)}</p>`);
+  out.push('<h3>Recent events</h3>');
+  if (d.error) out.push(`<p class="empty">Could not load recent events. ${esc(d.error)}</p>`);
+  else if (!d.loaded) out.push('<p class="empty">Loading recent events…</p>');
+  else if (!d.events.length) out.push('<p class="empty">No recent events.</p>');
+  else out.push(`<ol class="dev">${d.events.slice().reverse().map(sessionEventHtml).join('')}</ol>`);
+  if (d.loaded && d.events.length && !d.events.some((e) => e.text)) {
+    out.push('<p class="note">Only the kind of each event is shown. Snippets are turned off in Settings, or these events have no text.</p>');
+  }
+  return out.join('');
+}
+
+function groupNowHtml(n) {
+  const ix = S.index;
+  const c = ix.counts.get(n.key) || { total: 0 };
+  const kids = ix.kids.get(n.key) || [];
+  const list = kids
+    .map((k) => {
+      const status = statusOf(k);
+      const right = status ? `<span class="pill st-${status}">${esc(STATUS_WORDS[status])}</span>` : `<span class="quiet">${esc(countsPlain(ix.counts.get(k.key) || { total: 0 }))}</span>`;
+      return `<li><button type="button" data-node="${esc(k.key)}">${markHtml(k, 'small')}<span class="t">${esc(titleOf(k))}</span>${right}</button></li>`;
+    })
+    .join('');
+  return `<p class="dnow">${esc(cap(countsPlain(c)))}.</p><h3>${n.kind === 'person' ? 'Under you' : 'In this project'}</h3>${list ? `<ul class="kids">${list}</ul>` : '<p class="empty">Nothing listed right now.</p>'}`;
+}
+
+function detailsHtml(n) {
+  const rows = [];
+  const add = (k, v) => {
+    if (v != null && v !== '') rows.push(`<tr><th scope="row">${esc(k)}</th><td>${v}</td></tr>`);
+  };
+  add('Kind', esc(KIND_WORDS[n.kind] || cap(n.kind)));
+  add('Where', esc(PLATFORM_WORDS[n.platform] || ''));
+  add('Opened from', esc(ENTRY_WORDS[n.entrypoint] || n.entrypoint || ''));
+  add('Rank', esc(n.rank || ''));
+  add('Role', esc(cap(n.role || '')));
+  add('Project', esc(n.project ? projectLabel(n.project) : ''));
+  if (isSession(n)) {
+    add('Model', esc([n.modelLabel || prettyModel(n.model), n.model && n.modelLabel !== n.model ? `(${n.model})` : ''].filter(Boolean).join(' ')));
+    add('Effort', esc(EFFORT_WORDS[n.effort] || n.effort || ''));
+    add('Tier', esc(n.tier === 'senior' ? 'Senior' : n.tier === 'junior' ? 'Junior' : ''));
+    add('Started', isTime(n.startedAt) ? timeHtml(n.startedAt, stamp(n.startedAt)) : '');
+    add('Last active', isTime(n.lastAt) ? `${timeHtml(n.lastAt, stamp(n.lastAt))} (${agoHtml(n.lastAt)})` : '');
+    add('Archived', n.archived ? 'Yes' : '');
+  }
+  add('Key', `<span class="mono">${esc(n.key)}</span>`);
+  return `<table class="facts-t"><tbody>${rows.join('')}</tbody></table><p class="note">Read from the session files on this computer. Pleni never changes them.</p>`;
+}
+
+function handoffsHtml(key) {
+  const ix = S.index;
+  if (!ix) return '';
+  const lines = [];
+  const line = (at, dirCls, words, other, text, now) =>
+    lines.push({
+      at: at || 0,
+      html: `<div class="hand"><div class="meta"><span class="${dirCls}">${esc(words)}</span> ${nameHtml(other)}${at ? `, ${timeHtml(at, stamp(at))}` : ''}${now ? ' (moving now)' : ''}</div>${text ? `<div class="tx">${esc(text)}</div>` : ''}</div>`,
+    });
+  for (const e of ix.edges) {
+    if (e.kind === 'contains' || (e.from !== key && e.to !== key)) continue;
+    const down = toTime(e.lastDown);
+    const up = toTime(e.lastUp);
+    const dNow = e.active === 'down' || e.active === 'both';
+    const uNow = e.active === 'up' || e.active === 'both';
+    if (e.from === key) {
+      if (down) line(down, 'd-down', 'Handed work to', e.to, e.downLabel, dNow);
+      if (up) line(up, 'd-up', 'Got a report from', e.to, e.upLabel, uNow);
+    } else {
+      if (down) line(down, 'd-down', 'Got work from', e.from, e.downLabel, dNow);
+      if (up) line(up, 'd-up', 'Reported back to', e.from, e.upLabel, uNow);
+    }
+  }
+  lines.sort((a, b) => b.at - a.at);
+  const events = feedEvents().filter((ev) => ev.from === key || ev.to === key).slice(0, 50);
+  const out = [];
+  out.push('<h3>Lines to other sessions</h3>');
+  out.push(lines.length ? lines.map((l) => l.html).join('') : '<p class="empty">No hand-offs with other sessions yet.</p>');
+  if (events.length) out.push(`<h3>Recent hand-offs</h3><ol class="feed">${events.map(eventHtml).join('')}</ol>`);
+  return out.join('');
+}
+
+async function fetchDrawerEvents() {
+  const d = S.drawer;
+  if (!d || d.busy) return;
+  const n = S.index && S.index.byKey.get(d.key);
+  if (n && !isSession(n)) return;
+  d.busy = true;
+  try {
+    // No cursor on the first call: the server then sends the most recent events.
+    const since = d.next === null ? '' : `&since=${encodeURIComponent(d.next)}`;
+    const body = await getJson(`/api/session?key=${encodeURIComponent(d.key)}${since}`);
+    if (S.drawer !== d) return;
+    const list = Array.isArray(body && body.events) ? body.events.filter((e) => e && typeof e === 'object') : [];
+    const next = body && Number.isSafeInteger(body.next) && body.next >= 0 ? body.next : d.next;
+    const restarted = (body && body.reset) || (d.next !== null && next !== null && next < d.next);
+    d.events = restarted ? list : d.events.concat(list);
+    d.events = d.events.slice(-200);
+    d.next = next;
+    d.loaded = true;
+    d.error = null;
+  } catch (err) {
+    if (S.drawer === d) d.error = plainError(err);
+  } finally {
+    d.busy = false;
+    if (S.drawer === d) {
+      if (pressing()) press.waiting = true;
+      else renderDrawerParts();
+    }
+  }
+}
+
+document.addEventListener('keydown', (ev) => {
+  if (!S.drawer) return;
+  if (ev.key === 'Escape') {
+    ev.preventDefault();
+    closeDrawer();
+    return;
+  }
+  const tab = ev.target.closest && ev.target.closest('[role="tab"]');
+  if (tab && ['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(ev.key)) {
+    const tabs = $$('[role="tab"]', tab.parentElement);
+    let i = tabs.indexOf(tab);
+    if (ev.key === 'ArrowRight') i = (i + 1) % tabs.length;
+    else if (ev.key === 'ArrowLeft') i = (i - 1 + tabs.length) % tabs.length;
+    else if (ev.key === 'Home') i = 0;
+    else i = tabs.length - 1;
+    ev.preventDefault();
+    selectTab(tabs[i].dataset.tab, true);
+    return;
+  }
+  if (ev.key !== 'Tab') return;
+  // Keep focus inside the open drawer.
+  const drawer = $('#drawer');
+  const items = focusables(drawer);
+  if (!items.length) {
+    ev.preventDefault();
+    drawer.focus();
+    return;
+  }
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  if (ev.shiftKey && (active === first || !drawer.contains(active))) {
+    ev.preventDefault();
+    last.focus();
+  } else if (!ev.shiftKey && (active === last || !drawer.contains(active))) {
+    ev.preventDefault();
+    first.focus();
+  }
+});
+
+document.addEventListener('focusin', (ev) => {
+  if (S.drawer && !$('#layer').contains(ev.target)) {
+    const close = $('#drawer [data-close]');
+    if (close) close.focus();
+  }
+});
+
+// Keyboard focus must never hide under the sticky app bar or the sticky Save row (WCAG 2.4.11).
+// The browser scrolls a focused control into view only when it is off screen, not when a sticky
+// bar covers it, so this scrolls the control clear of both bars: once right away, and once more
+// after the browser's own focus scrolling has run.
+const FOCUS_GAP = 8;
+
+function keepFocusClear(el) {
+  if (document.activeElement !== el || !el.matches(':focus-visible')) return;
+  if ($('#layer').contains(el) || el.closest('.appbar, .btnrow')) return;
+  const box = el.getBoundingClientRect();
+  if (!box.height) return;
+  const bar = $('.appbar');
+  const top = bar ? bar.getBoundingClientRect().bottom + FOCUS_GAP : 0;
+  const row = el.closest('#view-settings') ? $('#view-settings .btnrow') : null;
+  const bottom = row ? row.getBoundingClientRect().top - FOCUS_GAP : innerHeight;
+  if (box.top < top) scrollBy(0, box.top - top);
+  else if (box.bottom > bottom) scrollBy(0, Math.min(box.bottom - bottom, box.top - top));
+}
+
+document.addEventListener('focusin', (ev) => {
+  const el = ev.target;
+  if (!(el instanceof Element)) return;
+  keepFocusClear(el);
+  setTimeout(() => keepFocusClear(el), 0);
+});
+
+// The app bar's height, for scroll-padding in styles.css (links to parts of the page use it too).
+function measureAppBar() {
+  const bar = $('.appbar');
+  if (bar) document.documentElement.style.setProperty('--pl-appbar-h', `${Math.ceil(bar.getBoundingClientRect().height)}px`);
+}
+if ('ResizeObserver' in window) new ResizeObserver(measureAppBar).observe($('.appbar'));
+measureAppBar();
+
+$('#scrim').addEventListener('click', closeDrawer);
+
+// ---------------------------------------------------------------------------------------------
+// settings
+// ---------------------------------------------------------------------------------------------
+
+async function loadSettings(force) {
+  if (!S.set) S.set = { info: null, draft: null, msg: null, search: '', error: null };
+  const st = S.set;
+  if (st.info && !force) {
+    renderSettingsForm();
+    return;
+  }
+  if (!st.info) setHtml($('#settings'), '<p class="empty">Loading settings…</p>');
+  try {
+    const info = await getJson('/api/settings');
+    if (!info || typeof info.settings !== 'object') throw new Error('Pleni sent settings this page cannot read.');
+    st.info = info;
+    st.draft = clone(info.settings);
+    st.error = null;
+    S.roots = info.roots || S.roots;
+    S.recentHours = info.settings.window ? info.settings.window.recentHours : S.recentHours;
+  } catch (err) {
+    st.error = plainError(err);
+  }
+  if (S.view === 'settings') renderSettingsForm();
+}
+
+function getPath(obj, path, fallback) {
+  let v = obj;
+  for (const part of path.split('.')) v = v && typeof v === 'object' ? own(v, part) : undefined;
+  return v === undefined ? fallback : v;
+}
+
+function setPath(obj, path, value) {
+  const parts = path.split('.');
+  let o = obj;
+  for (const part of parts.slice(0, -1)) {
+    if (!o[part] || typeof o[part] !== 'object') o[part] = {};
+    o = o[part];
+  }
+  const lastKey = parts[parts.length - 1];
+  if (value === undefined) delete o[lastKey];
+  else o[lastKey] = value;
+}
+
+// Sets a map entry without letting a key such as "__proto__" touch the prototype.
+function putEntry(map, key, value) {
+  if (value) Object.defineProperty(map, key, { value, enumerable: true, writable: true, configurable: true });
+  else delete map[key];
+}
+
+function same(a, b) {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || !a || !b) return a === b || (a == null && b == null);
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) if (!same(a[k], b[k])) return false;
+  return true;
+}
+
+function desc(id, help) {
+  return help ? ` aria-describedby="${id}-help"` : '';
+}
+
+function helpHtml(id, help) {
+  return help ? `<p class="help" id="${id}-help">${esc(help)}</p>` : '';
+}
+
+function textRow(id, label, path, { help, max, placeholder, kind = 'text' } = {}) {
+  const d = S.set.draft;
+  let value = getPath(d, path, '');
+  if (Array.isArray(value)) value = value.join(', ');
+  return (
+    `<div class="srow"><label for="${id}">${esc(label)}</label><div><input class="field" id="${id}" type="text" data-path="${path}" data-kind="${kind}"` +
+    ` value="${esc(value ?? '')}"${max ? ` maxlength="${max}"` : ''}${placeholder ? ` placeholder="${esc(placeholder)}"` : ''} autocomplete="off" spellcheck="false"${desc(id, help)}></div>${helpHtml(id, help)}</div>`
+  );
+}
+
+function numberRow(id, label, path, min, max, help) {
+  const value = getPath(S.set.draft, path, '');
+  return (
+    `<div class="srow"><label for="${id}">${esc(label)}</label><div><input class="field num" id="${id}" type="number" inputmode="numeric" step="1"` +
+    ` min="${min}" max="${max}" data-path="${path}" data-kind="int" value="${esc(value)}"${desc(id, help)}></div>${helpHtml(id, help)}</div>`
+  );
+}
+
+function selectRow(id, label, path, options, help) {
+  const value = getPath(S.set.draft, path, '');
+  const opts = options.map(([v, text]) => `<option value="${esc(v)}"${v === value ? ' selected' : ''}>${esc(text)}</option>`).join('');
+  return `<div class="srow"><label for="${id}">${esc(label)}</label><div><select class="field" id="${id}" data-path="${path}" data-kind="text"${desc(id, help)}>${opts}</select></div>${helpHtml(id, help)}</div>`;
+}
+
+function checkRow(id, label, path, text, help) {
+  const on = getPath(S.set.draft, path, false) === true;
+  return (
+    `<div class="srow"><span class="lbl" id="${id}-lbl">${esc(label)}</span><div class="checks"><label><input type="checkbox" id="${id}" data-path="${path}" data-kind="bool"${on ? ' checked' : ''}${desc(id, help)}>` +
+    `${esc(text)}</label></div>${helpHtml(id, help)}</div>`
+  );
+}
+
+function sessionOptions(current) {
+  const nodes = (S.set.info.nodes || []).filter((n) => n && (n.platform === 'claude' || n.platform === 'codex'));
+  const opts = ['<option value="">Not set</option>'];
+  if (current && !nodes.some((n) => n.key === current)) opts.push(`<option value="${esc(current)}" selected>A saved session that is not listed now</option>`);
+  for (const n of nodes) {
+    opts.push(`<option value="${esc(n.key)}"${n.key === current ? ' selected' : ''}>${esc(`${n.title || keyName(n.key)} (${PLATFORM_WORDS[n.platform]})`)}</option>`);
+  }
+  return opts.join('');
+}
+
+function sourceRow(name, label, text, help) {
+  const id = `s-src-${name}`;
+  const roots = S.set.info.roots || {};
+  const on = getPath(S.set.draft, `sources.${name}.enabled`, false) === true;
+  const root = getPath(S.set.draft, `sources.${name}.root`, null);
+  const auto = roots[name] ? `Automatic: ${roots[name]}` : 'Automatic';
+  return (
+    `<div class="srow"><span class="lbl" id="${id}-lbl">${esc(label)}</span><div class="src">` +
+    `<div class="checks"><label><input type="checkbox" id="${id}-on" data-path="sources.${name}.enabled" data-kind="bool"${on ? ' checked' : ''}>${esc(text)}</label></div>` +
+    `<label class="sr-only" for="${id}-root">${esc(label)} folder</label>` +
+    `<input class="field" id="${id}-root" type="text" data-path="sources.${name}.root" data-kind="root" value="${esc(root || '')}" placeholder="${esc(auto)}" autocomplete="off" spellcheck="false"${desc(id, help)}>` +
+    `</div>${helpHtml(id, help)}</div>`
+  );
+}
+
+function mailboxRows() {
+  const d = S.set.draft;
+  const id = 's-src-mailbox';
+  const on = getPath(d, 'sources.mailbox.enabled', false) === true;
+  const root = getPath(d, 'sources.mailbox.root', null);
+  const help = 'A folder where a planner agent hands out tasks and a coordinator agent reports back in Markdown files. Pleni only reads it.';
+  return (
+    `<div class="srow"><span class="lbl" id="${id}-lbl">Mailbox</span><div class="src">` +
+    `<div class="checks"><label><input type="checkbox" id="${id}-on" data-path="sources.mailbox.enabled" data-kind="bool"${on ? ' checked' : ''}>Read a coordination mailbox</label></div>` +
+    `<label class="sr-only" for="${id}-root">Mailbox folder</label>` +
+    `<input class="field" id="${id}-root" type="text" data-path="sources.mailbox.root" data-kind="root" value="${esc(root || '')}" placeholder="The full path of the mailbox folder" autocomplete="off" spellcheck="false"${desc(id, help)}>` +
+    `</div>${helpHtml(id, help)}</div>` +
+    `<div class="srow"><label for="s-planner">Planner</label><div><select class="field" id="s-planner" data-path="sources.mailbox.planner" data-kind="key" aria-describedby="s-planner-help">${sessionOptions(getPath(d, 'sources.mailbox.planner', null))}</select></div>` +
+    '<p class="help" id="s-planner-help">The session that hands out the tasks.</p></div>' +
+    `<div class="srow"><label for="s-coordinator">Coordinator</label><div><select class="field" id="s-coordinator" data-path="sources.mailbox.coordinator" data-kind="key" aria-describedby="s-coordinator-help">${sessionOptions(getPath(d, 'sources.mailbox.coordinator', null))}</select></div>` +
+    '<p class="help" id="s-coordinator-help">The session that reports back. If you leave it unset, Pleni uses the one the mailbox names, if any.</p></div>'
+  );
+}
+
+function peopleHtml() {
+  const st = S.set;
+  const people = st.draft.people && typeof st.draft.people === 'object' ? st.draft.people : {};
+  const nodes = (st.info.nodes || []).filter((n) => n && typeof n.key === 'string');
+  const byKey = new Map(nodes.map((n) => [n.key, n]));
+  const q = st.search.trim().toLowerCase();
+  const keys = Object.keys(people);
+  if (q) {
+    for (const n of nodes) {
+      if (keys.length >= 60) break;
+      if (!Object.hasOwn(people, n.key) && (String(n.title || '').toLowerCase().includes(q) || n.key.toLowerCase().includes(q))) keys.push(n.key);
+    }
+  }
+  if (!keys.length) {
+    return `<p class="note">${q ? 'No session matches that search.' : 'No names or roles are set. Search above to give a session a name or a role.'}</p>`;
+  }
+  const rows = keys.map((key) => {
+    const entry = own(people, key) || {};
+    const kind = key === 'you' ? 'person' : key.startsWith('project:') ? 'project' : 'session';
+    const n = byKey.get(key) || { key, title: '', platform: key.split(':')[0], kind };
+    const title = n.title || keyName(key);
+    const role = ROLE_OPTIONS.map(([v, text]) => `<option value="${v}"${(entry.role || '') === v ? ' selected' : ''}>${esc(text)}</option>`).join('');
+    return (
+      `<tr><td><div class="who">${markHtml(n, 'small')}<span>${esc(title)}<span class="key">${esc(key)}</span></span></div></td>` +
+      `<td><input class="field" type="text" data-person="${esc(key)}" data-field="label" value="${esc(entry.label || '')}" maxlength="80" placeholder="${esc(title)}" aria-label="${esc(`Name for ${title}`)}" autocomplete="off"></td>` +
+      `<td><select class="field" data-person="${esc(key)}" data-field="role" aria-label="${esc(`Role for ${title}`)}">${role}</select></td></tr>`
+    );
+  });
+  return `<table class="edit"><thead><tr><th scope="col">Session</th><th scope="col">Show it as</th><th scope="col">Role</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+}
+
+function projectsHtml() {
+  const st = S.set;
+  const projects = st.draft.projects && typeof st.draft.projects === 'object' ? st.draft.projects : {};
+  const names = new Set(Object.keys(projects));
+  for (const n of st.info.nodes || []) if (n && typeof n.key === 'string' && n.key.startsWith('project:')) names.add(n.key.slice(8));
+  if (S.index) for (const n of S.index.nodes) if (n.project) names.add(n.project);
+  const list = [...names].filter(Boolean).sort((a, b) => a.localeCompare(b)).slice(0, 200);
+  if (!list.length) return '<p class="note">No projects yet. They appear here once Pleni finds sessions.</p>';
+  const rows = list.map((name) => {
+    const entry = own(projects, name) || {};
+    return (
+      `<tr><td>${esc(name)}</td>` +
+      `<td><input class="field" type="text" data-project="${esc(name)}" data-field="label" value="${esc(entry.label || '')}" maxlength="80" placeholder="${esc(name)}" aria-label="${esc(`Name for project ${name}`)}" autocomplete="off"></td>` +
+      `<td><input type="checkbox" data-project="${esc(name)}" data-field="hidden"${entry.hidden ? ' checked' : ''} aria-label="${esc(`Hide project ${name}`)}"></td></tr>`
+    );
+  });
+  return `<table class="edit"><thead><tr><th scope="col">Project folder</th><th scope="col">Show it as</th><th scope="col">Hide</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+}
+
+function settingsMsgHtml() {
+  const st = S.set;
+  if (st.msg) return `<span class="saved ${st.msg.kind}">${esc(st.msg.text)}</span>`;
+  if (st.info && !same(st.draft, st.info.settings)) return '<span class="saved dirty">You have changes that are not saved yet.</span>';
+  return '';
+}
+
+function renderSettingsForm() {
+  const st = S.set;
+  if (!st) return;
+  if (st.error && !st.info) {
+    setHtml($('#settings'), `<p class="empty">Could not load the settings. ${esc(st.error)}</p><button type="button" class="btn" id="s-retry">Try again</button>`);
+    return;
+  }
+  if (!st.info || !st.draft) return;
+  const theme = storedTheme() || 'system';
+  const html = `<form class="settings" id="settings-form" novalidate>
+    ${st.info.file ? `<p class="lead">Saved on this computer in <code>${esc(st.info.file)}</code>.</p>` : ''}
+    <section class="panel" aria-labelledby="s-h-you"><h2 id="s-h-you">You and the map</h2>
+      ${textRow('s-name', 'Your name', 'displayName', { help: 'Shown on the top tile of the map.', max: 40 })}
+      ${selectRow('s-titles', 'Rank words', 'titles', [['plain', 'Plain: Lead and Agent (plus Superintendent and Coordinator for those roles)'], ['military', 'Military: General, Colonel, Sergeant, Specialist, Private'], ['company', 'Company: Owner, Vice President, Manager, Supervisor, Worker']], 'The words used for ranks on the tiles.')}
+      ${selectRow('s-group', 'Group sessions', 'groupBy', [['project', 'By project'], ['none', 'Not at all']], 'With projects, the map has a tile for each project folder.')}
+      ${checkRow('s-reviewers', 'Reviewers', 'showReviewers', 'Show the automatic reviewers that Codex starts', '')}
+      <div class="srow"><label for="s-theme">Theme</label><div><select class="field" id="s-theme" data-local="theme" aria-describedby="s-theme-help">
+        <option value="system"${theme === 'system' ? ' selected' : ''}>Match this computer</option>
+        <option value="dark"${theme === 'dark' ? ' selected' : ''}>Dark</option>
+        <option value="light"${theme === 'light' ? ' selected' : ''}>Light</option>
+      </select></div><p class="help" id="s-theme-help">Kept in this browser only. It changes right away.</p></div>
+    </section>
+    <section class="panel" aria-labelledby="s-h-show"><h2 id="s-h-show">What the page shows</h2>
+      <div class="srow" role="radiogroup" aria-labelledby="s-content-lbl" aria-describedby="s-content-help"><span class="lbl" id="s-content-lbl">Session text</span><div class="checks">
+        <label><input type="radio" name="s-content" id="s-content-snippets" data-path="content" data-kind="text" value="snippets"${getPath(st.draft, 'content', 'snippets') === 'snippets' ? ' checked' : ''}>Short snippets of what sessions say and do</label>
+        <label><input type="radio" name="s-content" id="s-content-none" data-path="content" data-kind="text" value="none"${getPath(st.draft, 'content', '') === 'none' ? ' checked' : ''}>Only tool names and states</label>
+      </div><p class="help" id="s-content-help">Snippets stay on this computer either way.</p></div>
+      ${numberRow('s-recent', 'Show sessions from the last', 'window.recentHours', 1, 720, 'Hours. Older sessions are left off the page.')}
+      ${numberRow('s-active', 'Waiting for you, for', 'window.activeMinutes', 1, 240, 'Minutes. A session that finished its turn this recently shows "Waiting for you".')}
+      ${numberRow('s-stale', 'Call a turn stuck after', 'window.staleMinutes', 5, 1440, 'Minutes. A turn whose file has not moved for this long counts as idle.')}
+    </section>
+    <section class="panel" aria-labelledby="s-h-tiers"><h2 id="s-h-tiers">Model tiers</h2>
+      ${textRow('s-senior', 'Senior models', 'modelTiers.senior', { kind: 'words', help: 'A model whose name has any of these words is senior. Separate the words with commas.' })}
+      ${textRow('s-junior', 'Junior models', 'modelTiers.junior', { kind: 'words', help: 'A model whose name has any of these words is junior.' })}
+    </section>
+    <section class="panel" aria-labelledby="s-h-where"><h2 id="s-h-where">Where Pleni looks</h2>
+      ${sourceRow('claude', 'Claude Code', 'Read Claude Code sessions', 'Leave the folder empty to use CLAUDE_CONFIG_DIR, or the .claude folder in your home folder.')}
+      ${sourceRow('claudeDesktop', 'Claude desktop app', 'Read session names from the Claude desktop app', 'Gives desktop sessions the names you see in the app.')}
+      ${sourceRow('codex', 'Codex', 'Read Codex threads', 'Leave the folder empty to use CODEX_HOME, or the .codex folder in your home folder.')}
+      ${mailboxRows()}
+    </section>
+    <section class="panel" aria-labelledby="s-h-people"><h2 id="s-h-people">Names and roles</h2>
+      <div class="srow"><label for="s-people-search">Find a session</label><div><input class="field" id="s-people-search" type="search" value="${esc(st.search)}" placeholder="Search by name" autocomplete="off" aria-describedby="s-people-search-help"></div>
+      <p class="help" id="s-people-search-help">Give a session a shorter name, set its role, or hide it.</p></div>
+      <div id="people-rows">${peopleHtml()}</div>
+    </section>
+    <section class="panel" aria-labelledby="s-h-projects"><h2 id="s-h-projects">Projects</h2>
+      <div id="project-rows">${projectsHtml()}</div>
+    </section>
+    <section class="panel" aria-labelledby="s-h-remote"><h2 id="s-h-remote">Other devices</h2>
+      <p class="note">Pleni only listens on this computer. To open it from another device, put a private proxy such as <code>tailscale serve</code> in front of it, then list the host name and the Tailscale logins that may use it. The other device also needs Pleni's key: open the address Pleni printed when it started, with your Tailscale address in place of the part before <code>/?t=</code>.</p>
+      ${textRow('s-hosts', 'Allowed host names', 'remote.hosts', { kind: 'words', placeholder: 'pleni.example.ts.net', help: 'Separate names with commas. Up to 20.' })}
+      ${textRow('s-users', 'Allowed Tailscale logins', 'remote.tailscaleUsers', { kind: 'words', placeholder: 'ada@example.com', help: 'Separate logins with commas. Up to 20.' })}
+      ${numberRow('s-port', 'Port', 'port', 1024, 65535, 'Pleni uses a new port the next time it starts.')}
+    </section>
+    <div class="btnrow">
+      <button type="submit" class="btn primary" id="s-save">Save settings</button>
+      <button type="button" class="btn" id="s-undo">Undo changes</button>
+      <button type="button" class="btn" id="s-defaults">Restore defaults</button>
+      <span id="s-msg" role="status">${settingsMsgHtml()}</span>
+    </div>
+  </form>`;
+  // Always repaint: typing changes the fields without changing the last painted markup, so after
+  // "Undo changes" the markup can match while the fields still show the undone edits.
+  const box = $('#settings');
+  painted.delete(box);
+  setHtml(box, html);
+}
+
+function updateSettingsMsg() {
+  const el = $('#s-msg');
+  if (el) setHtml(el, settingsMsgHtml());
+}
+
+function readValue(el) {
+  const v = el.value;
+  switch (el.dataset.kind) {
+    case 'bool':
+      return el.checked;
+    case 'int':
+      return v.trim() === '' ? undefined : Number(v);
+    case 'words':
+      return [...new Set(v.split(/[\s,]+/).map((w) => w.trim().toLowerCase()).filter(Boolean))];
+    case 'root':
+    case 'key':
+      return v.trim() || null;
+    default:
+      return v;
+  }
+}
+
+function onSettingsInput(el) {
+  const st = S.set;
+  if (!st || !st.draft) return;
+  if (el.id === 's-people-search') {
+    st.search = el.value;
+    setHtml($('#people-rows'), peopleHtml());
+    return;
+  }
+  if (el.dataset.local === 'theme') {
+    setTheme(el.value);
+    return;
+  }
+  if (el.dataset.path) {
+    if (el.type === 'radio' && !el.checked) return;
+    clearFieldError(el);
+    setPath(st.draft, el.dataset.path, readValue(el));
+  } else if (el.dataset.person) {
+    if (!st.draft.people || typeof st.draft.people !== 'object') st.draft.people = {};
+    editEntry(st.draft.people, el.dataset.person, el);
+  } else if (el.dataset.project) {
+    if (!st.draft.projects || typeof st.draft.projects !== 'object') st.draft.projects = {};
+    editEntry(st.draft.projects, el.dataset.project, el);
+  } else {
+    return;
+  }
+  st.msg = null;
+  updateSettingsMsg();
+}
+
+// One person or project entry; an entry with nothing left in it is removed.
+function editEntry(map, key, el) {
+  const entry = { ...(own(map, key) || {}) };
+  const field = el.dataset.field;
+  if (field === 'label') {
+    const label = el.value.trim();
+    if (label) entry.label = label;
+    else delete entry.label;
+  } else if (field === 'role') {
+    if (el.value) entry.role = el.value;
+    else delete entry.role;
+  } else if (field === 'hidden') {
+    if (el.checked) entry.hidden = true;
+    else delete entry.hidden;
+  }
+  putEntry(map, key, Object.keys(entry).length ? entry : null);
+}
+
+// ---- checking the form before it is saved ----
+
+const HOST_NAME = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*|\[[0-9a-f:.]+\])(?::\d{1,5})?$/i;
+const LOGIN = /^[^\s@]+@[^\s@]+$/;
+const MAX_REMOTE = 20;
+// A full folder path on Windows (C:\ or \\server) or on macOS and Linux (/). The server makes the
+// final check for its own system.
+const FULL_PATH = /^(?:[A-Za-z]:[\\/]|[\\/])/;
+
+function listWords(el) {
+  return el.value.split(/[\s,]+/).map((w) => w.trim()).filter(Boolean);
+}
+
+// Each field that cannot be saved as typed, with what to do about it in plain words.
+function settingsProblems(form) {
+  const problems = [];
+  const add = (el, text) => problems.push({ el, text });
+  for (const el of $$('input[data-kind="int"]', form)) {
+    const v = el.value.trim();
+    const n = Number(v);
+    if (!el.checkValidity() || v === '' || !Number.isInteger(n) || n < Number(el.min) || n > Number(el.max)) {
+      add(el, `Type a whole number from ${el.min} to ${el.max}.`);
+    }
+  }
+  for (const el of $$('input[data-kind="root"]', form)) {
+    const v = el.value.trim();
+    if (v && !FULL_PATH.test(v)) add(el, 'Type the full path of a folder, such as /home/ada/project or C:\\Users\\ada\\project. Or leave it empty.');
+  }
+  const remote = [
+    ['s-hosts', HOST_NAME, 'is not a host name. Use a name such as pleni.example.ts.net.'],
+    ['s-users', LOGIN, 'is not a Tailscale login. A login looks like ada@example.com.'],
+  ];
+  for (const [id, pattern, what] of remote) {
+    const el = $(`#${id}`, form);
+    if (!el) continue;
+    const words = listWords(el);
+    const bad = words.find((w) => !pattern.test(w));
+    if (bad) add(el, `"${bad.length > 60 ? `${bad.slice(0, 59)}…` : bad}" ${what}`);
+    else if (new Set(words.map((w) => w.toLowerCase())).size > MAX_REMOTE) add(el, `List up to ${MAX_REMOTE}. There are ${words.length} now.`);
+  }
+  // In page order, so focus goes to the first bad field on the page.
+  return problems.sort((a, b) => (a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+}
+
+function fieldLabel(el) {
+  const label = el.id ? $(`label[for="${el.id}"]`) : null;
+  return label ? label.textContent.trim() : '';
+}
+
+function showFieldError(el, text) {
+  const id = `${el.id}-error`;
+  el.setAttribute('aria-invalid', 'true');
+  const described = (el.getAttribute('aria-describedby') || '').split(' ').filter((x) => x && x !== id);
+  el.setAttribute('aria-describedby', [id, ...described].join(' '));
+  const note = document.createElement('p');
+  note.className = 'field-error';
+  note.id = id;
+  note.textContent = text;
+  el.insertAdjacentElement('afterend', note);
+}
+
+function clearFieldError(el) {
+  if (!el || el.getAttribute('aria-invalid') !== 'true') return;
+  const id = `${el.id}-error`;
+  el.removeAttribute('aria-invalid');
+  const rest = (el.getAttribute('aria-describedby') || '').split(' ').filter((x) => x && x !== id);
+  if (rest.length) el.setAttribute('aria-describedby', rest.join(' '));
+  else el.removeAttribute('aria-describedby');
+  const note = document.getElementById(id);
+  if (note) note.remove();
+}
+
+// Marks every bad field, moves focus to the first one, and says so. Returns true when all is well.
+function checkSettingsForm() {
+  const form = $('#settings-form');
+  if (!form) return true;
+  for (const el of $$('[aria-invalid="true"]', form)) clearFieldError(el);
+  const problems = settingsProblems(form);
+  for (const { el, text } of problems) showFieldError(el, text);
+  if (!problems.length) return true;
+  S.set.msg = {
+    kind: 'err',
+    text: problems.length === 1 ? 'Not saved. Fix the field marked in red.' : `Not saved. Fix the ${problems.length} fields marked in red.`,
+  };
+  updateSettingsMsg();
+  problems[0].el.focus();
+  return false;
+}
+
+// The fields whose saved value is not what was sent, because Pleni had to change it.
+function changedOnSave(sent, saved) {
+  const show = (v, path) => {
+    if (Array.isArray(v)) return v.length ? v.join(', ') : 'empty';
+    if (v === null || v === undefined || v === '') return path.endsWith('.root') ? 'automatic' : 'not set';
+    return String(v);
+  };
+  const out = [];
+  for (const el of $$('#settings-form [data-path]')) {
+    if (el.type === 'radio' || el.type === 'checkbox') continue;
+    const path = el.dataset.path;
+    const before = getPath(sent, path, null);
+    const after = getPath(saved, path, null);
+    const sameText = typeof before === 'string' && typeof after === 'string' && before.trim() === after;
+    if (!sameText && !same(before, after)) out.push(`${fieldLabel(el) || path} is now ${show(after, path)}`);
+  }
+  return out;
+}
+
+async function saveSettings() {
+  const st = S.set;
+  if (!st || !st.draft) return;
+  if (!checkSettingsForm()) return;
+  st.msg = { kind: '', text: 'Saving…' };
+  updateSettingsMsg();
+  try {
+    const sent = clone(st.draft);
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json', 'X-Pleni': 'settings' },
+      body: JSON.stringify(sent),
+    });
+    const body = await readJson(res);
+    if (!res.ok) throw answerError(res, body);
+    const saved = body && body.settings && typeof body.settings === 'object' ? body.settings : sent;
+    const changed = changedOnSave(sent, saved);
+    const portChanged = saved.port !== st.info.settings.port;
+    const done = portChanged ? 'Saved. Pleni uses the new port the next time it starts.' : 'Saved. The page uses the new settings now.';
+    st.msg = changed.length
+      ? { kind: 'dirty', text: `${done} Pleni had to change what you typed: ${changed.join('; ')}.` }
+      : { kind: 'ok', text: done };
+    S.etag = null;
+    S.roots = null;
+    S.rootsAsked = false;
+    await loadSettings(true);
+    poll();
+  } catch (err) {
+    st.msg = { kind: 'err', text: `Not saved. ${plainError(err)}` };
+    updateSettingsMsg();
+  }
+}
+
+const settingsBox = $('#settings');
+settingsBox.addEventListener('input', (ev) => onSettingsInput(ev.target));
+settingsBox.addEventListener('change', (ev) => onSettingsInput(ev.target));
+settingsBox.addEventListener('keydown', (ev) => {
+  // Enter in the search box searches; it should not save the whole form.
+  if (ev.key === 'Enter' && ev.target.id === 's-people-search') ev.preventDefault();
+});
+settingsBox.addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  saveSettings();
+});
+
+// ---------------------------------------------------------------------------------------------
+// clicks
+// ---------------------------------------------------------------------------------------------
+
+document.addEventListener('click', (ev) => {
+  const el = ev.target.closest('button, a.skip');
+  if (!el) return;
+  if (el.matches('a.skip')) {
+    ev.preventDefault();
+    $('#main').focus();
+    return;
+  }
+  // A drag across the map must not also open the tile it ended on.
+  if (el.closest('#map-canvas') && S.dragUntil > Date.now()) return;
+  if (el.hasAttribute('data-close')) return closeDrawer();
+  if (el.id === 'theme-toggle') return toggleTheme();
+  if (el.dataset.zoom) return zoomButton(el.dataset.zoom);
+  if (el.dataset.mapMode) return setMapMode(el.dataset.mapMode);
+  if (el.dataset.tab) return selectTab(el.dataset.tab, false);
+  if (el.dataset.node) return openDrawer(el.dataset.node, el);
+  if (el.dataset.listFilter) {
+    S.listFilter = el.dataset.listFilter;
+    renderList();
+    return;
+  }
+  if (el.dataset.feedFilter) {
+    S.feedFilter = el.dataset.feedFilter;
+    S.feedLimit = FEED_PAGE;
+    renderActivity();
+    return;
+  }
+  if (el.id === 'feed-older') {
+    S.feedLimit += FEED_PAGE;
+    renderActivity();
+    return;
+  }
+  if (el.id === 's-retry') return loadSettings(true);
+  if (el.id === 's-undo' && S.set && S.set.info) {
+    S.set.draft = clone(S.set.info.settings);
+    S.set.msg = { kind: 'ok', text: 'Your changes were undone.' };
+    renderSettingsForm();
+    return;
+  }
+  if (el.id === 's-defaults' && S.set && S.set.draft) {
+    S.set.draft = clone(DEFAULTS);
+    S.set.msg = { kind: 'dirty', text: 'The defaults are in the form. Choose Save settings to keep them.' };
+    renderSettingsForm();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// start
+// ---------------------------------------------------------------------------------------------
+
+applyTheme();
+setView(viewFromHash() || 'map', false);
+poll();

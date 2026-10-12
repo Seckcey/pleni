@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea
+    url: https://github.com/Seckcey/pleni/discussions
+    about: Ask how something works, or share an idea before it becomes a feature request.
+  - name: Security problem
+    url: https://github.com/Seckcey/pleni/blob/main/SECURITY.md
+    about: Read how to report it privately. Never post security details in public.
+  - name: What Pleni reads and shows
+    url: https://github.com/Seckcey/pleni/blob/main/docs/privacy.md
+    about: The folders Pleni reads, what the page shows, and what Pleni never does.

@@ -1,0 +1,12 @@
+# Dependabot keeps the GitHub Actions pins current. The workflow names each action by the exact
+# commit it runs (a tag can be moved to other code; a commit cannot). Once a week Dependabot opens
+# a pull request for any newer release of an action, for a maintainer to review and merge. Pleni
+# has no npm packages, so there is nothing else to watch.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"

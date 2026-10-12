@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest something Pleni should be able to do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Pleni 0.1 only watches. Sending work and approving actions from the browser are planned
+        next; see "What comes next" in the
+        [README](https://github.com/Seckcey/pleni#what-comes-next). For an open-ended idea, start a
+        [discussion](https://github.com/Seckcey/pleni/discussions) instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to get done
+      description: Describe the job, not the solution. What is hard to see or do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should Pleni do
+      description: What you would like to see, and where on the page you would expect it.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of Pleni
+      options:
+        - The map
+        - The list
+        - Activity
+        - Tasks and the mailbox
+        - The session side panel
+        - Settings
+        - Reading Claude Code sessions
+        - Reading Codex sessions
+        - Opening Pleni from another device
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do instead today
+      description: Any workaround you use now, and why it is not good enough.

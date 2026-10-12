@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<meta name="description" content="Pleni shows your Claude Code and Codex sessions, their helpers and the hand-offs between them, live on this computer.">
+<title>Pleni</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/brand/favicon-on-dark.svg" type="image/svg+xml" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/brand/favicon-on-light.svg" type="image/svg+xml" media="(prefers-color-scheme: light)">
+<link rel="apple-touch-icon" href="/brand/icon-180.png">
+<link rel="stylesheet" href="/styles.css">
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the main content</a>
+
+<header class="appbar">
+  <a class="brand" href="#/">
+    <img class="logo logo-dark" src="/brand/logo-on-dark.webp" alt="" width="75" height="30">
+    <img class="logo logo-light" src="/brand/logo-on-light.webp" alt="" width="75" height="30">
+    <span class="brand-name" aria-hidden="true">Pleni</span>
+    <span class="sr-only">Pleni: go to the map</span>
+  </a>
+  <nav class="views" aria-label="Pleni views">
+    <ul>
+      <li><a href="#/" data-view="map">Map</a></li>
+      <li><a href="#/list" data-view="list">List</a></li>
+      <li><a href="#/activity" data-view="activity">Activity</a></li>
+      <li id="nav-tasks" hidden><a href="#/tasks" data-view="tasks">Tasks</a></li>
+      <li><a href="#/settings" data-view="settings">Settings</a></li>
+    </ul>
+  </nav>
+  <p class="facts" id="facts"><span class="live paused">Starting</span></p>
+  <button type="button" class="icon-btn" id="theme-toggle" aria-label="Use the light theme">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg>
+  </button>
+</header>
+
+<main id="main" tabindex="-1">
+  <div class="notices" id="notices"></div>
+
+  <section class="view" id="view-map" aria-labelledby="map-title">
+    <div class="view-head">
+      <div>
+        <h1 id="map-title" tabindex="-1">Map</h1>
+        <p class="meta" id="map-meta">Reading your sessions…</p>
+      </div>
+      <div class="seg" role="group" aria-label="Who the map shows">
+        <button type="button" data-map-mode="working" aria-pressed="true">Working</button>
+        <button type="button" data-map-mode="all" aria-pressed="false">Everyone</button>
+      </div>
+    </div>
+    <div class="attention" id="map-attention"></div>
+    <div id="map-welcome"></div>
+    <div id="map-body">
+      <ul class="flows" id="flows" aria-label="Hand-offs moving now"></ul>
+      <div class="map">
+        <div class="map-canvas" id="map-canvas" tabindex="0" role="region" aria-roledescription="map" aria-label="Map of your sessions" aria-describedby="map-help">
+          <div class="map-stage" id="map-stage">
+            <svg class="map-wires" id="map-wires" aria-hidden="true" focusable="false"></svg>
+            <div class="map-nodes" id="map-nodes"></div>
+          </div>
+          <div class="map-legend" aria-hidden="true">
+            <span class="lg-x"><span class="ln ln-base"></span>Who started whom</span>
+            <span><span class="ln ln-down"></span>Work going down</span>
+            <span><span class="ln ln-up"></span>Report coming up</span>
+          </div>
+          <div class="map-ctrl" role="group" aria-label="Zoom the map">
+            <button type="button" data-zoom="in" aria-label="Zoom in"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></button>
+            <button type="button" data-zoom="out" aria-label="Zoom out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M5 12h14"/></svg></button>
+            <button type="button" data-zoom="fit" aria-label="Fit the whole map"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+          </div>
+          <div class="map-empty" id="map-empty" hidden></div>
+        </div>
+        <p class="map-foot" id="map-foot"></p>
+      </div>
+      <p class="note" id="map-help">Drag to move the map. To zoom, hold Ctrl and scroll, pinch, or use the buttons. When the map is selected, the arrow keys move it, plus and minus zoom, and 0 fits it. The List view shows the same sessions as a table.</p>
+    </div>
+  </section>
+
+  <section class="view" id="view-list" aria-labelledby="list-title" hidden>
+    <div class="view-head">
+      <div>
+        <h1 id="list-title" tabindex="-1">List</h1>
+        <p class="meta" id="list-meta"></p>
+      </div>
+    </div>
+    <div class="attention" id="list-attention"></div>
+    <div class="chips" id="list-filters" role="group" aria-label="Show sessions that are"></div>
+    <div id="list-body"></div>
+  </section>
+
+  <section class="view" id="view-activity" aria-labelledby="activity-title" hidden>
+    <div class="view-head">
+      <div>
+        <h1 id="activity-title" tabindex="-1">Activity</h1>
+        <p class="meta">Hand-offs between your sessions, newest first.</p>
+      </div>
+    </div>
+    <div class="chips" id="feed-filters" role="group" aria-label="Show"></div>
+    <div id="feed"></div>
+  </section>
+
+  <section class="view" id="view-tasks" aria-labelledby="tasks-title" hidden>
+    <div class="view-head">
+      <div>
+        <h1 id="tasks-title" tabindex="-1">Tasks</h1>
+        <p class="meta" id="tasks-meta"></p>
+      </div>
+    </div>
+    <div id="tasks"></div>
+  </section>
+
+  <section class="view" id="view-settings" aria-labelledby="settings-title" hidden>
+    <div class="view-head">
+      <div>
+        <h1 id="settings-title" tabindex="-1">Settings</h1>
+        <p class="meta">These settings change only what Pleni shows. Pleni never changes your sessions.</p>
+      </div>
+    </div>
+    <div id="settings"><p class="empty">Loading settings…</p></div>
+  </section>
+</main>
+
+<div class="sr-only" id="live-summary" role="status" aria-live="polite" aria-atomic="true"></div>
+
+<div class="layer" id="layer" hidden>
+  <div class="scrim" id="scrim"></div>
+  <div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" tabindex="-1"></div>
+</div>
+</body>
+</html>
