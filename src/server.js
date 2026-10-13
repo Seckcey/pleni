@@ -83,16 +83,42 @@ const MESSAGES = {
   internal: 'Something went wrong inside Pleni.',
 };
 
-// A new random key for one run of Pleni.
+// A new random key.
 export function newKey() {
   return crypto.randomBytes(KEY_BYTES).toString('base64url');
+}
+
+const KEY_RE = /^[A-Za-z0-9_-]{16,}$/;
+
+// The key kept in the "key" file next to the settings, so Pleni's address stays the same after a
+// restart. A missing or damaged file, or `renew`, makes a new key. If the file cannot be written the
+// key still works, but only until Pleni stops: { key, saved: false }.
+export function loadOrCreateKey(file, { renew = false } = {}) {
+  if (!renew) {
+    try {
+      const kept = fs.readFileSync(file, 'utf8').trim();
+      if (KEY_RE.test(kept)) return { key: kept, saved: true };
+    } catch {
+      // Missing or unreadable: make a new one below.
+    }
+  }
+  const key = newKey();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temp, `${key}\n`, { mode: 0o600 });
+    fs.renameSync(temp, file);
+    return { key, saved: true };
+  } catch {
+    return { key, saved: false };
+  }
 }
 
 // getSettings() -> { settings, file, roots }; saveSettings(clean) saves and returns the same shape.
 // Without them, settings are read from and saved to the usual settings file.
 // `key` is the secret every API request needs (see keyAllowed); a new one is made when it is left out.
 export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), key = newKey() }) {
-  if (typeof key !== 'string' || !/^[A-Za-z0-9_-]{16,}$/.test(key)) {
+  if (typeof key !== 'string' || !KEY_RE.test(key)) {
     throw new Error('The server key must be at least 16 letters, digits, "-" or "_".');
   }
   const fallback = getSettings && saveSettings ? null : fileSettings(settingsFile());
@@ -113,7 +139,7 @@ export function createServer({ store, getSettings, saveSettings, publicDir = PUB
   });
 }
 
-export async function start({ port, configFile, demo = false, open = false } = {}) {
+export async function start({ port, configFile, demo = false, open = false, renewKey = false } = {}) {
   const file = configFile ? path.resolve(configFile) : settingsFile();
   const settings = fileSettings(file);
   const first = settings.get();
@@ -121,7 +147,9 @@ export async function start({ port, configFile, demo = false, open = false } = {
   // Loaded here, not at the top, so createServer works without the sources.
   const { createStore } = await import('./store.js');
   const store = createStore({ settings: first.settings, roots: first.roots, demo });
-  const key = newKey();
+  // Demo mode gets a throw-away key, so trying the demo never touches the real one.
+  const kept = demo ? { key: newKey(), saved: false } : loadOrCreateKey(path.join(path.dirname(file), 'key'), { renew: renewKey });
+  const { key } = kept;
   const server = createServer({ store, getSettings: settings.get, saveSettings: settings.save, key });
   try {
     await listen(server, port ?? first.settings.port);
@@ -133,7 +161,7 @@ export async function start({ port, configFile, demo = false, open = false } = {
   let closing = null;
   const close = () => (closing ??= shutdown(server, store));
   if (open) openBrowser(url);
-  return { server, url, key, close };
+  return { server, url, key, keySaved: kept.saved, close };
 }
 
 // The command that opens a web page in the default browser, without a shell.
@@ -240,12 +268,14 @@ function readCookie(header, name) {
 }
 
 // "/?t=<key>": a right key becomes a cookie the page's own scripts cannot read (HttpOnly) and that
-// other sites cannot make the browser send (SameSite=Strict). Either way the browser is sent on to
-// "/", so the key does not stay in the address bar.
+// other sites cannot make the browser send (SameSite=Strict). It lasts a year, so a device signs in
+// once while the key stays the same. Either way the browser is sent on to "/", so the key does not
+// stay in the address bar.
+const COOKIE_SECONDS = 365 * 24 * 60 * 60;
 function takeKey(app, req, res, query) {
   const headers = { Location: '/' };
   if (keyMatches(app, new URLSearchParams(query).get(KEY_PARAM))) {
-    headers['Set-Cookie'] = `${cookieName(req)}=${app.key}; Path=/; HttpOnly; SameSite=Strict`;
+    headers['Set-Cookie'] = `${cookieName(req)}=${app.key}; Path=/; Max-Age=${COOKIE_SECONDS}; HttpOnly; SameSite=Strict`;
   }
   return send(req, res, 303, headers, '');
 }

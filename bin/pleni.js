@@ -10,6 +10,7 @@ const OPTIONS = {
   demo: { type: 'boolean' },
   open: { type: 'boolean' },
   config: { type: 'string' },
+  'new-key': { type: 'boolean' },
   version: { type: 'boolean', short: 'v' },
   help: { type: 'boolean', short: 'h' },
 };
@@ -48,7 +49,7 @@ async function main(argv, env) {
   const { start } = await import('../src/server.js');
   let app;
   try {
-    app = await start({ port: options.port, configFile: options.config, demo: options.demo, open: options.open });
+    app = await start({ port: options.port, configFile: options.config, demo: options.demo, open: options.open, renewKey: options.newKey });
   } catch (err) {
     process.stderr.write(`${startProblem(err, options.port)}\n`);
     return 1;
@@ -56,7 +57,7 @@ async function main(argv, env) {
   if (options.demo) process.stdout.write('Showing made-up demo data.\n');
   process.stdout.write(`Pleni is running at ${app.url}\n` +
     'Open that whole address. The part after "?t=" is a key that keeps other people on this computer out.\n' +
-    'The key changes each time Pleni starts.\nPress Ctrl+C to stop.\n');
+    `${keyNote(app, options)}\nPress Ctrl+C to stop.\n`);
   stopOnSignal(app);
   return undefined;
 }
@@ -74,6 +75,7 @@ function readOptions(argv, env) {
     port: undefined,
     demo: values.demo === true,
     open: values.open === true,
+    newKey: values['new-key'] === true,
     config: values.config?.trim() ? path.resolve(values.config.trim()) : undefined,
     version: values.version === true,
     help: values.help === true,
@@ -94,6 +96,13 @@ function commandName(script = process.argv[1] ?? '') {
   const inside = relative && !relative.startsWith('..') && !path.isAbsolute(relative);
   const shown = inside ? relative.split(path.sep).join('/') : script;
   return `node ${/\s/.test(shown) ? `"${shown}"` : shown}`;
+}
+
+function keyNote(app, options) {
+  if (options.demo) return 'The demo key changes each time the demo starts.';
+  if (!app.keySaved) return 'Pleni could not save its key, so this address changes each time Pleni starts.';
+  if (options.newKey) return 'This is a new key. Each device needs this full address once; the old one no longer works.';
+  return `This address stays the same each time Pleni starts. To change it, start once with ${commandName()} --new-key`;
 }
 
 // 0 is allowed on purpose: it asks for any free port, which tests use.
@@ -148,6 +157,7 @@ Options:
   --demo         Show made-up demo data instead of your own sessions.
   --open         Open Pleni in your web browser.
   --config FILE  Read and save settings in FILE.
+  --new-key      Make a new key, so the old address stops working.
   --version      Show the version number.
   --help         Show this help.
 

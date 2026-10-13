@@ -364,7 +364,8 @@ that changed only its time keeps its ETag and the page's poll gets `304`.
 ```js
 export function newKey()  // -> 43 random base64url characters (32 bytes)
 export function createServer({ store, getSettings, saveSettings, publicDir, version, key })  // -> http.Server
-export async function start({ port, configFile, demo, open })  // -> { server, url, key, close }
+export function loadOrCreateKey(file, { renew })  // -> { key, saved }
+export async function start({ port, configFile, demo, open, renewKey })  // -> { server, url, key, keySaved, close }
 ```
 
 - Bind `127.0.0.1` only.
@@ -373,12 +374,14 @@ export async function start({ port, configFile, demo, open })  // -> { server, u
   in `remote.tailscaleUsers` (both compared lower-case). Otherwise `403`. This also blocks DNS
   rebinding.
 - **Key gate:** the host gate stops web sites, but every account and program on the computer can
-  reach `127.0.0.1` and send any header, Tailscale's included. So `start()` makes a new key with
-  `newKey()` each run (never saved) and `url` is `http://localhost:<port>/?t=<key>`, which the CLI
-  prints and `--open` opens. `createServer` takes the key (letters, digits, `-`, `_`; at least 16;
+  reach `127.0.0.1` and send any header, Tailscale's included. So `start()` reads the key from the
+  `key` file next to the settings file, making it with `newKey()` when it is missing, damaged or
+  `renewKey` is set (`--new-key`); the file is written with mode 0600 through a temp file. If it
+  cannot be written the key lasts only this run. Demo mode always uses a throw-away key. `url` is
+  `http://localhost:<port>/?t=<key>`, which the CLI prints and `--open` opens. `createServer` takes the key (letters, digits, `-`, `_`; at least 16;
   a new one when left out) and keeps only its SHA-256.
   - `GET`/`HEAD /?t=<key>` answers `303` to `/`. When the key is right it also sets
-    `pleni-<local port>=<key>; Path=/; HttpOnly; SameSite=Strict` (one name per port, so two Plenis
+    `pleni-<local port>=<key>; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict` (one name per port, so two Plenis
     do not overwrite each other). A wrong key gets the redirect without a cookie.
   - Every `/api/` route except `/api/health` needs that cookie, compared in constant time (SHA-256
     of both, then `timingSafeEqual`), after the method check. Without it: `401` with a plain

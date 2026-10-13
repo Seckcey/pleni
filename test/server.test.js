@@ -5,7 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { cleanSettings } from '../src/config.js';
-import { browserCommand, createServer, newKey } from '../src/server.js';
+import { browserCommand, createServer, loadOrCreateKey, newKey } from '../src/server.js';
 
 const CSP = "default-src 'none'; script-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; " +
   "img-src 'self' data:; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; " +
@@ -301,7 +301,7 @@ test('opening /?t=<key> turns the key into a cookie and drops it from the addres
     const res = await request(port, { method, path: `/?t=${TEST_KEY}`, headers: { cookie: undefined } });
     assert.equal(res.status, 303, method);
     assert.equal(res.headers.location, '/');
-    assert.deepEqual(res.headers['set-cookie'], [`pleni-${port}=${TEST_KEY}; Path=/; HttpOnly; SameSite=Strict`]);
+    assert.deepEqual(res.headers['set-cookie'], [`pleni-${port}=${TEST_KEY}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`]);
     assert.equal(res.text, '');
     assertBaseHeaders(res, method);
   }
@@ -327,6 +327,31 @@ test('a server is never made without a usable key', () => {
   const keys = new Set([newKey(), newKey(), newKey()]);
   assert.equal(keys.size, 3);
   for (const key of keys) assert.match(key, /^[A-Za-z0-9_-]{43}$/);
+});
+
+test('the kept key survives a restart and --new-key replaces it', (t) => {
+  const dir = tempDir(t, 'pleni-key-');
+  const file = path.join(dir, 'nested', 'key');
+  const first = loadOrCreateKey(file);
+  assert.equal(first.saved, true);
+  assert.match(first.key, /^[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(loadOrCreateKey(file), first);
+  const renewed = loadOrCreateKey(file, { renew: true });
+  assert.notEqual(renewed.key, first.key);
+  assert.equal(loadOrCreateKey(file).key, renewed.key);
+  fs.writeFileSync(file, 'not a key!');
+  const repaired = loadOrCreateKey(file);
+  assert.notEqual(repaired.key, renewed.key);
+  assert.equal(fs.readFileSync(file, 'utf8').trim(), repaired.key);
+});
+
+test('a key that cannot be saved still works for this run', (t) => {
+  const dir = tempDir(t, 'pleni-key-');
+  const blocker = path.join(dir, 'file');
+  fs.writeFileSync(blocker, 'x');
+  const result = loadOrCreateKey(path.join(blocker, 'key'));
+  assert.equal(result.saved, false);
+  assert.match(result.key, /^[A-Za-z0-9_-]{43}$/);
 });
 
 // ---- headers ----

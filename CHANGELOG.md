@@ -10,6 +10,9 @@ The first version. Pleni only watches: it never starts, stops, or sends anything
 
 ### Added
 
+- Pleni keeps its key, so its address stays the same after a restart and each phone or laptop
+  signs in once. `--new-key` makes a new one.
+
 - A live map in your browser: you, your projects, each Claude Code and Codex session, and the
   helpers (sub-agents) each one started. Lines light up when work is handed down or a report
   comes back up.

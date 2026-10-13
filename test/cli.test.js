@@ -154,6 +154,24 @@ test('advice names the command that really started Pleni', (t) => {
 
 // ---- running ----
 
+test('the address stays the same after a restart, and --new-key changes it', RUN, async (t) => {
+  const home = tempDir(t);
+  const first = startCli(t, ['--port', '0'], cliEnv(home));
+  const a = await first.ready;
+  assert.match(first.out.stdout, /stays the same each time Pleni starts/);
+  await stopCli(first);
+  const second = startCli(t, ['--port', '0'], cliEnv(home));
+  const b = await second.ready;
+  assert.equal(b.key, a.key);
+  await stopCli(second);
+  const third = startCli(t, ['--port', '0', '--new-key'], cliEnv(home));
+  const c = await third.ready;
+  assert.notEqual(c.key, a.key);
+  assert.match(third.out.stdout, /This is a new key/);
+  await stopCli(third);
+  assert.equal(fs.readFileSync(path.join(home, 'key'), 'utf8').trim(), c.key);
+});
+
 test('pleni --demo runs, answers, uses PLENI_HOME and stops', RUN, async (t) => {
   const home = tempDir(t);
   // --port wins over PLENI_PORT, so a bad PLENI_PORT is not even read.

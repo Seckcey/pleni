@@ -63,7 +63,8 @@ node bin/pleni.js
 
 Pleni prints its address, such as `http://localhost:8790/?t=...`. Open that whole address in
 your browser. The part after `?t=` is a secret key that keeps other people who use this computer
-out. It changes each time Pleni starts, so open the new address after a restart. Press Ctrl+C in
+out. The key is saved, so the address stays the same after a restart, and each browser only needs
+it once. To change the key, start Pleni once with `--new-key`. Press Ctrl+C in
 the terminal to stop Pleni.
 
 No sessions yet? Try the demo. It shows a made-up team that moves on its own, so you can look
@@ -181,7 +182,8 @@ Pleni opens only on your own computer. To see it on your phone, you can use
    Save.
 5. Open the web address on your phone, with Pleni's key at the end. Take the address Pleni
    printed and put your Tailscale address in place of `http://localhost:8790`, for example
-   `https://my-pc.tail1234.ts.net/?t=<key>`. The key changes each time Pleni starts.
+   `https://my-pc.tail1234.ts.net/?t=<key>`. You only need the key once per device; after that,
+   bookmark the plain address. It keeps working after restarts.
 
 In `settings.json`, the same thing looks like this:
 

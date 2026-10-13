@@ -41,7 +41,8 @@ closely: replace your name, your computer's name, and your folder names with mad
 ## When the page will not open
 
 - Use the whole address Pleni printed when it started, such as `http://localhost:8790/?t=...`.
-  The part after `?t=` is a key that changes each time Pleni starts. Without it the page says
+  The part after `?t=` is a key. It stays the same after restarts unless you start Pleni
+  with `--new-key`. Without it the page says
   "Pleni needs its key".
 - If another program already uses port 8790, start Pleni with `node bin/pleni.js --port 8791`.
 - From another device, the page opens only through `tailscale serve`, and only when its host name

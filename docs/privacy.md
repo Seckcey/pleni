@@ -94,7 +94,9 @@ key:
   key from the address bar.
 - A request without the right key gets `401`. Only `/api/health`, which says just that Pleni is
   running, and the page's own files (which hold no session data) answer without it.
-- The key is not saved anywhere and changes each time Pleni starts. Do not share the address.
+- The key is saved in a file named `key` next to `settings.json`, so the address stays the same
+  after a restart. A browser keeps it as a cookie for a year. Do not share the address. If it
+  leaks, start Pleni once with `--new-key`: the old key stops working.
 - With `--open`, Pleni hands the address to your browser. On a shared Linux computer, other
   accounts may see it in the list of running programs while the browser starts, so there it is
   safer to copy the address from the terminal yourself.

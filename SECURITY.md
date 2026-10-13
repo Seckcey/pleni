@@ -37,8 +37,9 @@ These are Pleni's promises, in plain words. A way around any of them is a vulner
   `403`. A way past this check, including DNS rebinding, is a vulnerability.
 - **Only the person who started it can use it.** Other accounts on the same computer can reach
   `127.0.0.1` too, and can send any header they like. So every `/api/` request except
-  `/api/health` also needs the secret key that Pleni makes each time it starts and prints in its
-  address (`/?t=<key>`). The browser keeps it as an `HttpOnly`, `SameSite=Strict` cookie, and
+  `/api/health` also needs the secret key that Pleni keeps in its settings folder (file `key`, made once,
+  replaced with `--new-key`) and prints in its
+  address (`/?t=<key>`). The browser keeps it as an `HttpOnly`, `SameSite=Strict` cookie for a year, and
   Pleni compares it in constant time. Without it the answer is `401`. A way to read session data
   or change settings without the key, from another account or another program, is a
   vulnerability.
