@@ -81,6 +81,9 @@ const MESSAGES = {
   saveFailed: 'Pleni could not save the settings.',
   reloadFailed: 'The settings were saved, but Pleni could not use them yet.',
   internal: 'Something went wrong inside Pleni.',
+  badMove: 'Pleni could not read that move.',
+  goneMove: 'That session is not on the map any more.',
+  loopMove: 'A session cannot report to one of its own helpers.',
 };
 
 // A new random key.
@@ -185,7 +188,9 @@ async function handle(app, req, res) {
   if (pathname.startsWith('/api/') && !OPEN_API.has(pathname) && !keyAllowed(app, req)) {
     return sendError(req, res, 401, MESSAGES.noKey);
   }
-  if (req.method === 'POST') return postSettings(app, req, res, host);
+  if (req.method === 'POST') {
+    return pathname === '/api/placement' ? postPlacement(app, req, res, host) : postSettings(app, req, res, host);
+  }
   if (pathname.startsWith('/brand/')) return sendBrand(app, req, res, pathname.slice('/brand/'.length));
   if (pathname === '/' && new URLSearchParams(query).has(KEY_PARAM)) return takeKey(app, req, res, query);
   if (PAGE_FILES.has(pathname)) return sendPageFile(app, req, res, PAGE_FILES.get(pathname));
@@ -197,6 +202,7 @@ async function handle(app, req, res) {
 
 function allowedMethods(pathname) {
   if (pathname === '/api/settings') return ['GET', 'HEAD', 'POST'];
+  if (pathname === '/api/placement') return ['POST'];
   if (PAGE_FILES.has(pathname) || API_GET.has(pathname)) return READ_ONLY;
   if (/^\/brand\/[^/]+$/.test(pathname)) return READ_ONLY;
   return null;
@@ -356,30 +362,49 @@ async function settingsPayload(app, state) {
 // without the browser asking first, and that request is refused, so the header plus the Origin
 // check also stops cross-site saves.
 async function postSettings(app, req, res, host) {
-  if (req.headers['x-pleni'] !== 'settings') return sendError(req, res, 403, MESSAGES.notPage);
-  const origin = req.headers.origin;
-  if (origin !== undefined && originHost(origin) !== host.host) return sendError(req, res, 403, MESSAGES.notPage);
-  if (!/^application\/json\s*(;|$)/i.test(req.headers['content-type'] ?? '')) {
-    return sendError(req, res, 415, MESSAGES.notJson);
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  return saveAndReload(app, req, res, cleanSettings(body), (state) => settingsPayload(app, state));
+}
+
+// "Reports to" from the menu or a drag on the map: { key, reportsTo: node key | 'you' | null }.
+// null goes back to automatic. It is saved as the person's choice for that session (people[key]).
+async function postPlacement(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  const key = typeof body.key === 'string' ? body.key : '';
+  const boss = body.reportsTo === null ? null : typeof body.reportsTo === 'string' ? body.reportsTo : undefined;
+  const movable = (k) => isNodeKey(k) && k !== 'you' && !k.startsWith('project:');
+  if (!movable(key) || boss === undefined || (boss !== null && boss !== 'you' && !movable(boss))) {
+    return sendError(req, res, 400, MESSAGES.badMove);
   }
-  if (Number(req.headers['content-length']) > MAX_BODY_BYTES) return sendTooBig(req, res);
-  let raw;
-  try {
-    raw = await readBody(req, MAX_BODY_BYTES);
-  } catch (err) {
-    if (err.code === 'TOO_BIG') return sendTooBig(req, res);
-    throw err;
+  const nodes = new Map((app.store.snapshot()?.nodes ?? []).map((n) => [n.key, n]));
+  const named = boss !== null && boss !== 'you';
+  if (!nodes.has(key) || (named && !nodes.has(boss))) return sendError(req, res, 404, MESSAGES.goneMove);
+  if (named && isUnder(nodes, boss, key)) return sendError(req, res, 400, MESSAGES.loopMove);
+  const next = structuredClone(app.readSettings().settings);
+  const own = { ...(next.people[key] ?? {}) };
+  if (boss === null) delete own.reportsTo;
+  else own.reportsTo = boss;
+  if (Object.keys(own).length) next.people[key] = own;
+  else delete next.people[key];
+  return saveAndReload(app, req, res, cleanSettings(next), () => ({ ok: true }));
+}
+
+// True when `key` is `top` or sits somewhere below it on the map.
+function isUnder(nodes, key, top) {
+  const seen = new Set();
+  for (let at = key; at && !seen.has(at); at = nodes.get(at)?.parent ?? null) {
+    if (at === top) return true;
+    seen.add(at);
   }
-  let body;
-  try {
-    body = JSON.parse(stripBom(raw.toString('utf8')));
-  } catch {
-    return sendError(req, res, 400, MESSAGES.badBody);
-  }
-  if (!isPlainObject(body)) return sendError(req, res, 400, MESSAGES.badBody);
+  return false;
+}
+
+async function saveAndReload(app, req, res, clean, answer) {
   let state;
   try {
-    state = (await app.writeSettings(cleanSettings(body))) ?? app.readSettings();
+    state = (await app.writeSettings(clean)) ?? app.readSettings();
   } catch {
     return sendError(req, res, 500, MESSAGES.saveFailed);
   }
@@ -388,7 +413,33 @@ async function postSettings(app, req, res, host) {
   } catch {
     return sendError(req, res, 500, MESSAGES.reloadFailed);
   }
-  return sendJson(req, res, 200, await settingsPayload(app, state));
+  return sendJson(req, res, 200, await answer(state));
+}
+
+// The checks every change must pass: the X-Pleni header, the same origin, JSON and the size limit.
+// On a failed check it sends the error itself and returns undefined.
+async function readJsonPost(req, res, host) {
+  const fail = (status, message) => void sendError(req, res, status, message);
+  if (req.headers['x-pleni'] !== 'settings') return fail(403, MESSAGES.notPage);
+  const origin = req.headers.origin;
+  if (origin !== undefined && originHost(origin) !== host.host) return fail(403, MESSAGES.notPage);
+  if (!/^application\/json\s*(;|$)/i.test(req.headers['content-type'] ?? '')) return fail(415, MESSAGES.notJson);
+  if (Number(req.headers['content-length']) > MAX_BODY_BYTES) return void sendTooBig(req, res);
+  let raw;
+  try {
+    raw = await readBody(req, MAX_BODY_BYTES);
+  } catch (err) {
+    if (err.code === 'TOO_BIG') return void sendTooBig(req, res);
+    throw err;
+  }
+  let body;
+  try {
+    body = JSON.parse(stripBom(raw.toString('utf8')));
+  } catch {
+    return fail(400, MESSAGES.badBody);
+  }
+  if (!isPlainObject(body)) return fail(400, MESSAGES.badBody);
+  return body;
 }
 
 function originHost(origin) {

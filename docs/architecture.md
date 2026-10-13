@@ -69,7 +69,7 @@ export const DEFAULTS = {
     codex: { enabled: true, root: null },             // null = $CODEX_HOME or ~/.codex
     mailbox: { enabled: false, root: null, planner: null, coordinator: null }, // planner/coordinator: node key or session name
   },
-  people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role } }  max 500 entries
+  people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role, reportsTo?: nodeKey | 'you' } }  max 500
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
@@ -254,13 +254,17 @@ export function createCodexSource({ root, settings, now = Date.now })
   sender id is read outside `<input>`, so message text cannot claim another sender.
 - Coordinator registry (optional): Codex coordinators record the workers they start in
   `<root>/coordinators/registry.sqlite3` (tables `coordinators` and `worker_tasks`, one JSON
-  `record` per row: `threadId`, `coordinatorThreadId`) and the suite superintendent in
-  `<root>/coordinators/superintendent.json` (`threadId`). Pleni opens the database read-only with
-  `node:sqlite` every 30 s and closes it at once. A worker's `parentKey` becomes its coordinator,
+  `record` per row: `threadId`, `coordinatorThreadId`, `projectId`, `state`) and the suite
+  superintendent in `<root>/coordinators/superintendent.json` (`threadId`). Pleni opens the database
+  read-only with `node:sqlite` every 30 s and closes it at once. Each project has one current
+  coordinator (replaced ones are `retired`); a worker's `parentKey` becomes the current coordinator
+  of its `projectId` (the Sergeant of the repo it works in), else the coordinator that started it,
   the coordinator gets a **down** link at the worker's start and the worker an **up** link when its
   latest turn closes. Sessions get `role` `'coordinator'` or `'superintendent'`, which sets their
   rank unless `people[key].role` says otherwise. Without the registry, or without `node:sqlite`,
   threads show as before.
+- Imported threads: threads listed in `<root>/external_agent_session_imports.json` (`records[]`
+  `imported_thread_id`) are copies of another tool's sessions and get `archived: true`.
 - Titles: `<root>/session_index.jsonl` `{ id, thread_name, updated_at }`, last line per id wins.
   Sub-agents are not in the index: use `agent_nickname`.
 - Links: `function_call` `spawn_agent` is a **down** link (label: `task_name` when snippets);
@@ -341,6 +345,19 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
 
 - Tree: `you` (the person, `displayName`) → projects (when `groupBy` is `project`) → top-level
   sessions → sub-agents, recursively. A sub-agent whose parent is not listed hangs under its project.
+- Relay and its workers: when the mailbox has relay files, a `relay` node (kind and platform
+  `relay`, title "Relay" or the person's label, status working/idle/error from running, paused and
+  halted) sits between the planner and the coordinator. The relay's worker runs
+  (`tasks/<id>/workers/W<n>.run.json`) keep no session file, so each becomes a session-like node
+  `mailbox:<task id>/W<n>` (platform `claude`, kind `agent`, status from the run, project from its
+  worktree) under the coordinator; its line lights down when it starts and up when it finishes.
+- Who reports to whom, strongest first: the person's choice (`people[key].reportsTo`, set by the
+  Reports to menu or by dragging a tile), a chain rule, the mailbox (planner → relay →
+  coordinator → its workers), and last the parent the session files give. Every node gets
+  `placement`: `'manual'`, `'rule'` or `'auto'`, and `named` (it has a real name). Hand-off
+  directions follow the map as drawn, so a report to a boss a session was moved under lights that
+  line upward. A message between tiles not joined by a tree line gets a `message` edge of its own
+  while it is active.
 - Chain of command: a `chain` rule whose `match` is in a session's name (its title or the
   person's label for it, ignoring case) puts it under the newest listed session (by `lastAt`) whose
   title contains `reportsTo`, or under the person for `'you'`; its `role` sets the rank. Matching
@@ -356,7 +373,10 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
   file Pleni reads inside a project folder, and `docs/privacy.md` lists it. Settings
   `projects[name].label` renames, `hidden` hides.
 - Listed sessions: active within `recentHours`, not archived, role not `hidden`, reviewers only with
-  `showReviewers`.
+  `showReviewers`. A quiet coordinator or superintendent (a Codex registry role) stays listed while a
+  chain rule names it or a listed session hangs under it in the session files; the Codex source keeps
+  following registered coordinators however old their files are. Chain rules never move a helper a
+  session started itself (`spawned`).
 - Edges: `contains` (person → project → session), `spawn` (parent → sub-agent, from links), and
   `mailbox` (planner → coordinator, from mailbox events, when both nodes are listed; the coordinator
   defaults to `relay.coordinatorKey`). `active` is set when `lastDown`/`lastUp` is within
@@ -426,6 +446,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **POST /api/settings** requires the key cookie, `X-Pleni: settings`, `Content-Type:
   application/json`, a body of at most 64 KB, and an `Origin` (when present) whose host equals the
   request host. The body is cleaned with `cleanSettings`, saved, and the store reloaded.
+- **POST /api/placement** `{ key, reportsTo: nodeKey | 'you' | null }` passes the same checks and
+  saves `people[key].reportsTo` (null removes it). It refuses the person, projects, sessions that
+  are not on the map, and a boss below the session itself (a loop), and answers `{ ok: true }`.
 - `GET /api/settings` returns `{ settings, file, roots, nodes: [{ key, title, platform, kind }] }`.
 - JSON responses use `Content-Type: application/json; charset=utf-8`. Errors are `{ error }` with a
   plain-words message and never include stack traces or file contents.
@@ -440,6 +463,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   pinch, the `+`/`−`/fit buttons, and the keyboard (`+`, `-`, `0`, arrow keys) when the map has focus.
   The view refits only when the content no longer fits and the person has not moved it. A
   Working/Everyone switch (remembered in `localStorage` as `pleni.mapMode`) hides quiet sessions.
+  Dragging a session or relay tile more than 6 px onto another tile (or onto the person) posts
+  `/api/placement`; valid bosses light up, Esc or a drop elsewhere cancels, and a short notice offers
+  Undo. The drawer's **Reports to** menu does the same from the keyboard, with **Automatic** to undo.
 - **Tile:** platform mark (Claude or Codex), title, rank, model label, status dot and words
   ("Needs you", "Working", "Finished", "Idle", "Done", "Error"), the current activity or last text, and how
   long ago.

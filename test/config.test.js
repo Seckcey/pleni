@@ -403,3 +403,21 @@ test('cleanSettings cleans chain rules', () => {
   assert.equal(cleanSettings({ chain: Array.from({ length: 80 }, (_, i) => ({ match: `m${i}`, reportsTo: 'you' })) }).chain.length, 50);
   assert.deepEqual(cleanSettings({ chain: 'nope' }).chain, []);
 });
+
+test('node keys include the relay and mailbox worker runs, and people keep a valid reportsTo', () => {
+  for (const key of ['relay', 'mailbox:T-20261013-02-business/W1', 'mailbox:T-1/W12']) assert.equal(isNodeKey(key), true, key);
+  for (const key of ['relay2', 'mailbox:T-1', 'mailbox:T-1/X1', 'mailbox:/W1', 'mailbox:T 1/W1']) assert.equal(isNodeKey(key), false, key);
+  const k = `claude:${UUID}`;
+  const people = cleanSettings({ people: {
+    [k]: { reportsTo: 'relay' },
+    relay: { reportsTo: `codex:${UUID}`, label: 'Pleni relay' },
+    'mailbox:T-1/W1': { reportsTo: 'you' },
+    [`codex:${UUID}`]: { reportsTo: `codex:${UUID}` },
+    [`codex:${UUID}/a1`]: { reportsTo: 'project:alpha' },
+  } }).people;
+  assert.deepEqual(people[k], { reportsTo: 'relay' });
+  assert.deepEqual(people.relay, { label: 'Pleni relay', reportsTo: `codex:${UUID}` });
+  assert.deepEqual(people['mailbox:T-1/W1'], { reportsTo: 'you' });
+  assert.equal(people[`codex:${UUID}`], undefined, 'not itself');
+  assert.equal(people[`codex:${UUID}/a1`], undefined, 'not a project');
+});

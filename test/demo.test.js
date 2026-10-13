@@ -115,10 +115,10 @@ test('the demo snapshot shows two projects, ranks and a live mailbox line', () =
   for (const status of ['working', 'ready', 'idle', 'done', 'error']) assert.ok(s.counts[status] > 0, status);
   assert.equal(s.nodes.find((n) => n.key === DEMO_KEYS.planner).rank, 'Colonel');
   assert.equal(s.nodes.find((n) => n.key === DEMO_KEYS.coordinator).rank, 'Sergeant');
-  const line = s.edges.find((e) => e.kind === 'mailbox');
-  assert.equal(line.from, DEMO_KEYS.planner);
-  assert.equal(line.to, DEMO_KEYS.coordinator);
-  assert.ok(line.active);
+  // The mailbox runs planner -> relay -> coordinator, and both legs light together.
+  const legs = s.edges.filter((e) => e.kind === 'mailbox');
+  assert.deepEqual(legs.map((e) => [e.from, e.to]), [[DEMO_KEYS.planner, 'relay'], ['relay', DEMO_KEYS.coordinator]]);
+  assert.ok(legs.every((e) => e.active));
   assert.ok(s.edges.some((e) => e.kind === 'spawn' && e.active));
   assert.ok(s.events.some((e) => e.kind === 'spawn'));
   assert.ok(s.events.some((e) => e.kind === 'report'));

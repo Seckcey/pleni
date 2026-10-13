@@ -136,9 +136,9 @@ test('reads tasks, states, titles, attention and workers', (t) => {
   assert.deepEqual(one.attention, ['question', 'review']);
   assert.equal(one.updatedAt, local(2026, 10, 12, 11, 0));
   assert.deepEqual(one.workers, [
-    { id: 'W1', state: 'done', model: 'sonnet', startedAt: Date.UTC(2026, 9, 12, 16, 0), finishedAt: Date.UTC(2026, 9, 12, 16, 20) },
-    { id: 'W2', state: 'running', model: 'haiku', startedAt: 1791900000 * 1000, finishedAt: null },
-    { id: 'W10', state: null, model: null, startedAt: null, finishedAt: null },
+    { id: 'W1', state: 'done', model: 'sonnet', startedAt: Date.UTC(2026, 9, 12, 16, 0), finishedAt: Date.UTC(2026, 9, 12, 16, 20), worktree: null },
+    { id: 'W2', state: 'running', model: 'haiku', startedAt: 1791900000 * 1000, finishedAt: null, worktree: null },
+    { id: 'W10', state: null, model: null, startedAt: null, finishedAt: null, worktree: null },
   ]);
 
   assert.equal(two.title, 'T-2');
@@ -447,7 +447,7 @@ test('odd file contents do not break the poll', (t) => {
     state: null,
     updatedAt: OLD,
     attention: [],
-    workers: [{ id: 'W1', state: null, model: null, startedAt: null, finishedAt: null }],
+    workers: [{ id: 'W1', state: null, model: null, startedAt: null, finishedAt: null, worktree: null }],
   }]);
 });
 
@@ -542,4 +542,24 @@ test('a failed poll does not leave stale results behind', (t) => {
   assert.equal(source.poll().ok, false);
   boom = false;
   assert.deepEqual(source.poll().events.map((e) => e.title), ['Second', 'First']);
+});
+
+test('relay run files with started, finished and models are read', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pleni-mailbox-run-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dir = path.join(root, 'tasks', 'T-20260101-01-demo', 'workers');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(root, 'tasks', 'T-20260101-01-demo', 'status.md'), '**Current state:** IN_PROGRESS\n');
+  fs.writeFileSync(path.join(dir, 'W1.run.json'), '﻿' + JSON.stringify({
+    started: '2026-01-01 09:00:00', finished: '2026-01-01 09:30:00', models: 'claude-opus-5-5[1m]', state: 'finished', worktree: '/home/ada/work/T-1/app',
+  }));
+  fs.writeFileSync(path.join(dir, 'W2.run.json'), JSON.stringify({ started: '2026-01-01 10:00:00', models: ['claude-sonnet-5-5'], state: 'running' }));
+  const box = createMailboxSource({ root, settings: { content: 'snippets' }, now: () => Date.parse('2026-01-01T12:00:00') }).poll();
+  const [w1, w2] = box.tasks[0].workers;
+  assert.equal(w1.model, 'claude-opus-5-5[1m]');
+  assert.equal(w1.startedAt, new Date(2026, 0, 1, 9, 0, 0).getTime());
+  assert.equal(w1.finishedAt, new Date(2026, 0, 1, 9, 30, 0).getTime());
+  assert.equal(w1.worktree, '/home/ada/work/T-1/app');
+  assert.equal(w2.model, 'claude-sonnet-5-5');
+  assert.equal(w2.finishedAt, null);
 });

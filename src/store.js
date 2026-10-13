@@ -98,6 +98,8 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
 
   function detail(key, since) {
     if (!isNodeKey(key) || key === 'you' || key.startsWith('project:')) return null;
+    // The relay and its worker runs keep no session file: there are no events to show.
+    if (key === 'relay' || key.startsWith('mailbox:')) return { events: [], next: null };
     const entry = demo ? sources.demo : sources[key.slice(0, key.indexOf(':'))];
     if (typeof entry?.source?.detail !== 'function') return null;
     let result;

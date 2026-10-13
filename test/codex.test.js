@@ -806,8 +806,8 @@ function writeRegistry(root, { coordinators = [], workers = [], superintendent =
   const db = new DatabaseSync(path.join(dir, 'registry.sqlite3'));
   db.exec('CREATE TABLE coordinators (key TEXT PRIMARY KEY, record TEXT NOT NULL); CREATE TABLE worker_tasks (key TEXT PRIMARY KEY, record TEXT NOT NULL);');
   const add = (table, key, record) => db.prepare(`INSERT INTO ${table} (key, record) VALUES (?, ?)`).run(key, JSON.stringify(record));
-  coordinators.forEach((id, i) => add('coordinators', `c${i}`, { threadId: id, state: 'active' }));
-  workers.forEach(([id, boss], i) => add('worker_tasks', `w${i}`, { threadId: id, coordinatorThreadId: boss, state: 'ready' }));
+  coordinators.forEach((c, i) => add('coordinators', `c${i}`, typeof c === 'string' ? { threadId: c, state: 'active' } : c));
+  workers.forEach(([id, boss, projectId], i) => add('worker_tasks', `w${i}`, { threadId: id, coordinatorThreadId: boss, projectId, state: 'ready' }));
   add('worker_tasks', 'junk', { threadId: 'not an id', coordinatorThreadId: idAt(1) });
   db.prepare("INSERT INTO worker_tasks (key, record) VALUES ('broken', '{ broken')").run();
   db.close();
@@ -844,4 +844,46 @@ test('without a registry, or with a broken one, Codex threads show as before', (
   const s = open(root).session(idAt(1));
   assert.equal(s.parentKey, null);
   assert.equal(s.role, null);
+});
+
+test('a worker hangs under the current coordinator of its project, not the one that started it', (t) => {
+  const root = codexHome(t);
+  for (const n of [1, 2, 3, 4]) rollout(root, idAt(n), { records: [started(T0 - 20 * MINUTE), completed(T0 - 19 * MINUTE)] });
+  writeRegistry(root, {
+    coordinators: [
+      { threadId: idAt(1), state: 'ready', projectId: 'suite', updatedAt: '2026-10-12T10:00:00Z' },
+      { threadId: idAt(2), state: 'retired', projectId: 'app', updatedAt: '2026-10-11T10:00:00Z' },
+      { threadId: idAt(3), state: 'ready', projectId: 'app', updatedAt: '2026-10-12T09:00:00Z' },
+    ],
+    // Started by the suite coordinator (and by a replaced app coordinator), but working on the app.
+    workers: [[idAt(4), idAt(1), 'app']],
+  });
+  const { session } = open(root);
+  assert.equal(session(idAt(4)).parentKey, `codex:${idAt(3)}`);
+  assert.equal(session(idAt(2)).role, null, 'a retired coordinator is not a coordinator any more');
+  assert.equal(session(idAt(3)).role, 'coordinator');
+});
+
+test('threads Codex imported from another tool are left out like archived ones', (t) => {
+  const root = codexHome(t);
+  rollout(root, idAt(1), { records: [started(T0 - 5 * MINUTE)] });
+  rollout(root, idAt(2), { records: [started(T0 - 5 * MINUTE)] });
+  fs.writeFileSync(path.join(root, 'external_agent_session_imports.json'), JSON.stringify({
+    records: [{ imported_thread_id: idAt(2), source_path: '/home/ada/.claude/projects/x.jsonl' }],
+    detected_connector_records: [],
+  }));
+  const { session } = open(root);
+  assert.equal(session(idAt(1)).archived, false);
+  assert.equal(session(idAt(2)).archived, true);
+});
+
+test('registered coordinators are followed however long they have been quiet', (t) => {
+  const root = codexHome(t);
+  rollout(root, idAt(1), { records: [started(T0 - 3 * 24 * 60 * MINUTE), completed(T0 - 3 * 24 * 60 * MINUTE)], mtime: T0 - 3 * 24 * 60 * MINUTE, at: T0 - 3 * 24 * 60 * MINUTE });
+  rollout(root, idAt(2), { records: [started(T0 - 3 * 24 * 60 * MINUTE)], mtime: T0 - 3 * 24 * 60 * MINUTE, at: T0 - 3 * 24 * 60 * MINUTE });
+  writeRegistry(root, { coordinators: [idAt(1)] });
+  const { poll } = open(root);
+  const ids = poll().sessions.map((s) => s.id);
+  assert.ok(ids.includes(idAt(1)), 'the quiet coordinator is kept');
+  assert.equal(ids.includes(idAt(2)), false, 'an ordinary quiet thread is not');
 });

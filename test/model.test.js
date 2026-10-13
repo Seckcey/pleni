@@ -367,7 +367,7 @@ test('nodes carry tier, model label and session fields', () => {
   assert.deepEqual(Object.keys(lead), [
     'key', 'parent', 'platform', 'kind', 'title', 'subtitle', 'rank', 'role', 'tier', 'model', 'modelLabel',
     'effort', 'status', 'startedAt', 'lastAt', 'activity', 'lastText', 'needs', 'project', 'projectLabel', 'entrypoint',
-    'hidden', 'archived',
+    'hidden', 'archived', 'named', 'placement',
   ]);
   assert.deepEqual(Object.keys(node(s, 'you')), Object.keys(lead));
   assert.deepEqual(Object.keys(node(s, 'project:alpha')), Object.keys(lead));
@@ -527,7 +527,15 @@ test('a message between relatives that are not in one line keeps its own directi
     ],
   });
   assert.deepEqual(s.events, [{ at: NOW - 4000, kind: 'message', from: HELPER, to: SIBLING, text: 'Your turn' }]);
-  assert.ok(s.edges.every((e) => e.active === null));
+  // The tree lines stay dark; the message gets a line of its own while it is moving.
+  assert.ok(s.edges.filter((e) => e.kind !== 'message').every((e) => e.active === null));
+  const line = s.edges.find((e) => e.kind === 'message');
+  assert.equal(line.from, HELPER);
+  assert.equal(line.to, SIBLING);
+  assert.equal(line.active, 'down');
+  // Once it is old, the extra line goes away.
+  const later = snap({ now: NOW + 10 * MIN, claude: [session(LEAD), session(HELPER, { parentKey: LEAD, kind: 'agent', links: [{ at: NOW - 4000, dir: 'down', other: SIBLING, label: 'Your turn' }] }), session(SIBLING, { parentKey: LEAD, kind: 'agent', startedAt: NOW - HOUR })] });
+  assert.equal(later.edges.some((e) => e.kind === 'message'), false);
 });
 
 test('a loop of parent links with hand-offs still finishes', () => {
@@ -619,11 +627,15 @@ function mailbox(extra = {}) {
   };
 }
 
-test('mailbox events draw a line from the planner to the coordinator', () => {
+test('mailbox events light the line from the planner through the relay to the coordinator', () => {
   const s = snap({ ...cast(), mailbox: mailbox(), settings: { sources: { mailbox: { enabled: true, planner: PLANNER } } } });
-  const line = s.edges.find((e) => e.kind === 'mailbox');
+  assert.equal(node(s, 'relay').parent, PLANNER);
+  assert.equal(node(s, LEAD).parent, 'relay');
+  const legs = s.edges.filter((e) => e.kind === 'mailbox').map((e) => [e.from, e.to]);
+  assert.deepEqual(legs, [[PLANNER, 'relay'], ['relay', LEAD]]);
+  const line = s.edges.find((e) => e.kind === 'mailbox' && e.to === LEAD);
   assert.deepEqual(line, {
-    from: PLANNER,
+    from: 'relay',
     to: LEAD,
     kind: 'mailbox',
     lastDown: NOW - 10 * MIN,
@@ -639,13 +651,14 @@ test('mailbox events draw a line from the planner to the coordinator', () => {
   assert.equal(s.tasks.length, 3);
 });
 
-test('a set coordinator wins over the relay, and no line is drawn without a planner', () => {
+test('a set coordinator wins over the one the relay names, and without a planner only the relay leg shows', () => {
   const settings = { sources: { mailbox: { enabled: true, planner: PLANNER, coordinator: OTHER } } };
   const s = snap({ ...cast(), mailbox: mailbox(), settings });
-  assert.equal(s.edges.find((e) => e.kind === 'mailbox').to, OTHER);
+  assert.equal(s.edges.find((e) => e.kind === 'mailbox' && e.from === 'relay').to, OTHER);
 
   const none = snap({ ...cast(), mailbox: mailbox() });
-  assert.equal(none.edges.some((e) => e.kind === 'mailbox'), false);
+  assert.deepEqual(none.edges.filter((e) => e.kind === 'mailbox').map((e) => [e.from, e.to]), [['relay', LEAD]]);
+  assert.equal(node(none, 'relay').parent, 'you');
   assert.equal(none.events.filter((e) => e.kind === 'mailbox')[0].from, LEAD);
   assert.equal(none.events.filter((e) => e.kind === 'mailbox')[0].to, null);
 });
@@ -892,10 +905,13 @@ test('chain rules put sessions under the newest boss whose name matches, with th
   assert.equal(edgeTo(s, SGT_A).from, COLONEL);
 });
 
-test('the mailbox coordinator hangs under its planner, found by name, on one line', () => {
+test('the mailbox runs planner -> relay -> coordinator, the planner found by name, one line each', () => {
   const box = mailbox({ relay: { running: true, paused: false, halted: false, coordinatorKey: CLAUDE_SGT } });
   const s = snap({ ...army(), mailbox: box, settings: { groupBy: 'none', chain: CHAIN, sources: { mailbox: { enabled: true, planner: 'Sergeant Claude' } } } });
-  assert.equal(node(s, CLAUDE_SGT).parent, SGT_CLAUDE);
+  assert.equal(node(s, 'relay').parent, SGT_CLAUDE);
+  assert.equal(node(s, 'relay').status, 'working');
+  assert.equal(node(s, CLAUDE_SGT).parent, 'relay');
+  assert.equal(s.edges.filter((e) => e.to === 'relay').length, 1);
   const lines = s.edges.filter((e) => e.to === CLAUDE_SGT);
   assert.equal(lines.length, 1);
   assert.equal(lines[0].kind, 'mailbox');
@@ -916,4 +932,83 @@ test('a rule whose boss is missing, or that would make a loop, does no harm', ()
     for (let i = 0; at && at.key !== 'you' && i < 20; i++) at = node(loop, at.parent);
     assert.equal(at?.key, 'you', n.key);
   }
+});
+
+test('a choice by the person beats rules and the mailbox, and a missing boss falls back', () => {
+  const people = { [SGT_A]: { reportsTo: 'you' }, [WORKER]: { reportsTo: COLONEL } };
+  const s = snap({ ...army(), settings: { groupBy: 'none', chain: CHAIN, people } });
+  assert.equal(node(s, SGT_A).parent, 'you');
+  assert.equal(node(s, SGT_A).placement, 'manual');
+  assert.equal(node(s, WORKER).parent, COLONEL);
+  assert.equal(node(s, SGT_CLAUDE).placement, 'rule');
+  assert.equal(node(s, COLONEL_OLD).placement, 'rule');
+  const gone = snap({ ...army(), settings: { groupBy: 'none', chain: CHAIN, people: { [SGT_A]: { reportsTo: 'codex:eeeeeeee-0000-4000-8000-000000000009' } } } });
+  assert.equal(node(gone, SGT_A).parent, COLONEL, 'an unknown boss leaves the rule in charge');
+  assert.equal(node(gone, SGT_A).placement, 'rule');
+});
+
+test('relay workers hang under the coordinator and light their line when they start and finish', () => {
+  const box = mailbox({ relay: { running: true, paused: false, halted: false, coordinatorKey: CLAUDE_SGT } });
+  box.tasks[0].workers = [
+    { id: 'W1', state: 'finished', model: 'claude-opus-5-5', startedAt: NOW - 20 * MIN, finishedAt: NOW - MIN, worktree: '/home/ada/work/T-1/billing' },
+    { id: 'W2', state: 'running', model: 'claude-sonnet-5-5', startedAt: NOW - 30000, finishedAt: null, worktree: null },
+    { id: 'bad', state: 'running' },
+  ];
+  const s = snap({ ...army(), mailbox: box, settings: { groupBy: 'none', chain: CHAIN, sources: { mailbox: { enabled: true, planner: 'Sergeant Claude' } } } });
+  const w1 = node(s, 'mailbox:T-1/W1');
+  const w2 = node(s, 'mailbox:T-1/W2');
+  assert.equal(w1.parent, CLAUDE_SGT);
+  assert.equal(w1.status, 'done');
+  assert.equal(w1.title, 'W1 · T-1: Split the service');
+  assert.equal(w1.project, 'billing');
+  assert.equal(w2.status, 'working');
+  assert.equal(s.nodes.some((n) => n.key === 'mailbox:T-1/bad'), false);
+  const line = edgeTo(s, 'mailbox:T-1/W2');
+  assert.equal(line.from, CLAUDE_SGT);
+  assert.equal(line.active, 'down');
+  assert.equal(edgeTo(s, 'mailbox:T-1/W1').active, 'up');
+  assert.ok(s.events.some((e) => e.kind === 'spawn' && e.to === 'mailbox:T-1/W2'));
+  assert.ok(s.events.some((e) => e.kind === 'report' && e.from === 'mailbox:T-1/W1'));
+  assert.ok(s.counts.total >= 2);
+});
+
+test('a report from a session moved under a boss lights that line upward', () => {
+  const codex = army().codex.map((x) => (x.key === SGT_A ? { ...x, links: [{ at: NOW - 30000, dir: 'down', other: COLONEL, label: 'Done with the update' }] } : x));
+  const s = snap({ codex, claude: [], settings: { groupBy: 'none', chain: CHAIN } });
+  const line = edgeTo(s, SGT_A);
+  assert.equal(line.from, COLONEL);
+  assert.equal(line.active, 'up');
+  assert.ok(s.events.some((e) => e.kind === 'report' && e.from === SGT_A && e.to === COLONEL));
+});
+
+test('coordinators stay listed when quiet, and rules leave helpers under the session that started them', () => {
+  const old = NOW - 3 * 24 * HOUR;
+  const codex = army().codex.map((x) => (x.key === COLONEL ? { ...x, lastAt: old, startedAt: old, role: 'coordinator' }
+    : x.key === COLONEL_OLD ? { ...x, lastAt: old - HOUR, startedAt: old - HOUR } : x));
+  const helper = session(`${CLAUDE_SGT}/a1b2c3d4e5f60009`, { title: 'Code review helper', parentKey: CLAUDE_SGT, kind: 'agent', spawned: true });
+  const s = snap({ codex, claude: [session(CLAUDE_SGT, { title: 'Claude Code lead' }), helper], settings: { groupBy: 'none', chain: [...CHAIN, { match: 'Code', reportsTo: 'Sergeant Claude', role: null }] } });
+  assert.ok(node(s, COLONEL), 'the quiet Colonel is still on the map');
+  assert.equal(node(s, COLONEL_OLD), undefined, 'a replaced, quiet Colonel thread drops off');
+  assert.equal(node(s, SGT_A).parent, COLONEL);
+  assert.equal(node(s, helper.key).parent, CLAUDE_SGT, 'the rule does not pull a helper out');
+  assert.equal(node(s, CLAUDE_SGT).parent, SGT_CLAUDE, 'the rule still sorts the session');
+  const quietOther = snap({ codex: [session(SGT_A, { title: 'Plain thread', lastAt: old, startedAt: old })], settings: { groupBy: 'none' } });
+  assert.equal(quietOther.nodes.some((n) => n.key === SGT_A), false, 'an ordinary quiet thread still drops off');
+});
+
+test('a quiet coordinator stays only when a rule names it or something listed works for it', () => {
+  const old = NOW - 3 * 24 * HOUR;
+  const QUIET_A = 'codex:dddddddd-0000-4000-8000-0000000000a1';
+  const QUIET_B = 'codex:dddddddd-0000-4000-8000-0000000000b1';
+  const WORKS = 'codex:dddddddd-0000-4000-8000-0000000000b2';
+  const codex = [
+    session(QUIET_A, { title: 'Project Coordinator - Paperclip', role: 'coordinator', lastAt: old, startedAt: old }),
+    session(QUIET_B, { title: 'Project Coordinator - Waypoint', role: 'coordinator', lastAt: old, startedAt: old }),
+    session(WORKS, { title: 'Fix the map', parentKey: QUIET_B, kind: 'agent' }),
+  ];
+  const s = snap({ codex, settings: { groupBy: 'none' } });
+  assert.equal(node(s, QUIET_A), undefined);
+  assert.equal(node(s, WORKS).parent, QUIET_B);
+  const named = snap({ codex, settings: { groupBy: 'none', chain: [{ match: 'Paperclip', reportsTo: 'you', role: null }] } });
+  assert.ok(node(named, QUIET_A));
 });

@@ -2,7 +2,7 @@
 // sub-agents as a tree, the lines between them, and a feed of hand-offs.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { cleanSettings } from './config.js';
+import { cleanSettings, isNodeKey } from './config.js';
 
 export const PULSE_MS = 120000;
 
@@ -34,10 +34,14 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, mail
     settings: s,
     snippets: s.content === 'snippets',
   };
+  const box = isObject(mailbox) ? mailbox : null;
   const all = collectSessions([claude, codex]);
-  const tree = buildTree(all, ctx, isObject(mailbox) ? mailbox : null);
+  const workers = mailboxWorkers(box, ctx);
+  for (const worker of workers) all.set(worker.key, worker);
+  const tree = buildTree(all, ctx, box);
   const links = linkParts(tree, all, ctx);
-  const mail = mailboxParts(isObject(mailbox) ? mailbox : null, tree, ctx);
+  const runs = workerRuns(workers, tree, links.pairs, ctx);
+  const mail = mailboxParts(box, tree, ctx);
   const nodes = tree.order.map((key) => tree.nodes.get(key));
   const sessionNodes = nodes.filter((node) => KINDS.includes(node.kind));
   const tasks = isObject(mailbox) ? cleanTasks(mailbox, ctx) : null;
@@ -50,8 +54,8 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, mail
       mailbox: tasks ? sourceInfo(mailbox, tasks.length) : null,
     },
     nodes,
-    edges: mergeEdges(treeEdges(tree, links.pairs, ctx), mail.edges, ctx),
-    events: sortEvents([...links.events, ...mail.events, ...errorEvents(sessionNodes, ctx)]),
+    edges: mergeEdges([...treeEdges(tree, links.pairs, ctx), ...messageEdges(tree, links.pairs, ctx)], mail.edges, ctx),
+    events: sortEvents([...links.events, ...runs, ...mail.events, ...errorEvents(sessionNodes, ctx)]),
     counts: countStatuses(sessionNodes),
     attention: attentionList(sessionNodes, tasks ?? []),
     tasks,
@@ -236,6 +240,7 @@ function cleanSession(raw) {
     kind: KINDS.includes(raw.kind) ? raw.kind : parentKey ? 'agent' : 'session',
     // A source may know a session's role, such as a Codex coordinator from its registry.
     role: ['superintendent', 'coordinator'].includes(raw.role) ? raw.role : null,
+    spawned: raw.spawned === true,
     title: text(raw.title, MAX_TITLE),
     cwd: typeof raw.cwd === 'string' && raw.cwd.trim() ? raw.cwd.trim() : null,
     branch: text(raw.branch, MAX_TITLE),
@@ -275,6 +280,24 @@ function isListed(session, ctx) {
   return session.kind !== 'reviewer' || settings.showReviewers;
 }
 
+// A coordinator waiting for the person goes quiet, but it is still the boss of those below it. It
+// stays on the map while a chain rule names it or something on the map works for it. Other quiet
+// coordinators drop off like any old session.
+function quietBosses(all, ctx) {
+  const { settings } = ctx;
+  const keep = new Set();
+  const quiet = (s) => !s.archived && (s.role === 'coordinator' || s.role === 'superintendent') && !isListed(s, ctx);
+  for (const session of all.values()) {
+    if (quiet(session) && !session.spawned && chainRule(settings.chain, session, settings)) keep.add(session.key);
+  }
+  for (const session of all.values()) {
+    if (!isListed(session, ctx)) continue;
+    const boss = all.get(session.parentKey ?? '');
+    if (boss && quiet(boss)) keep.add(boss.key);
+  }
+  return keep;
+}
+
 // A sub-agent with no folder of its own belongs to its parent's project.
 function projectFor(session, all, memo, depth = 0) {
   if (memo.has(session.key)) return memo.get(session.key);
@@ -295,25 +318,34 @@ function buildTree(all, ctx, mailbox) {
   const nodes = new Map();
   const homes = new Map();
   const rules = new Map();
+  const keep = quietBosses(all, ctx);
   for (const session of [...all.values()].sort(byKey)) {
-    if (!isListed(session, ctx)) continue;
+    if (!isListed(session, ctx) && !keep.has(session.key)) continue;
     const name = projectFor(session, all, memo);
     const project = entry(settings.projects, name);
     if (project?.hidden === true) continue;
-    const rule = chainRule(settings.chain, session, settings);
+    // Rules sort out sessions; a helper that a session started itself stays under that session.
+    const rule = session.spawned ? null : chainRule(settings.chain, session, settings);
     if (rule) rules.set(session.key, rule);
     nodes.set(session.key, sessionNode(session, name, ctx, rule));
     homes.set(session.key, settings.groupBy === 'project' ? projectKey(name) : 'you');
   }
+  if (mailbox && isObject(mailbox.relay)) {
+    const relay = relayNode(mailbox, settings);
+    nodes.set(RELAY, relay);
+    homes.set(RELAY, 'you');
+    const rule = chainRule(settings.chain, { key: RELAY, title: relay.title }, settings);
+    if (rule) rules.set(RELAY, rule);
+  }
 
   const parentOf = new Map();
   for (const [key, node] of nodes) {
-    const parentKey = all.get(key).parentKey;
+    const parentKey = all.get(key)?.parentKey ?? null;
     parentOf.set(key, parentKey && nodes.has(parentKey) ? parentKey : homes.get(key));
     node.parent = parentOf.get(key);
   }
   ctx.mailboxKeys = mailboxKeys(mailbox, nodes, settings);
-  applyChain(nodes, parentOf, homes, rules, ctx.mailboxKeys);
+  applyChain(nodes, parentOf, homes, rules, ctx.mailboxKeys, settings);
   breakCycles(nodes, parentOf, homes);
 
   nodes.set('you', personNode(settings.displayName, settings.titles));
@@ -367,17 +399,35 @@ function mailboxKeys(mailbox, nodes, settings) {
   return { planner: planner === 'you' ? null : planner, coordinator: coordinator === 'you' ? null : coordinator };
 }
 
-// Who reports to whom: a chain rule first, then the mailbox (its coordinator works for its planner),
-// then what the session files say. A rule whose boss is not on the map changes nothing.
-function applyChain(nodes, parentOf, homes, rules, keys) {
-  for (const key of nodes.keys()) {
-    const rule = rules.get(key);
+// Who reports to whom, strongest first: the person's own choice (People, the Reports to menu or a
+// drag on the map), a chain rule, the mailbox (planner -> relay -> coordinator -> its workers), and
+// last what the session files say. A choice or rule whose boss is not on the map changes nothing.
+function applyChain(nodes, parentOf, homes, rules, keys, settings) {
+  for (const [key, node] of nodes) {
     let boss = null;
-    if (rule) boss = findSession(rule.reportsTo, nodes, key);
-    else if (key === keys.coordinator && keys.planner && keys.planner !== key) boss = keys.planner;
+    let placement = 'auto';
+    const chosen = entry(settings.people, key)?.reportsTo;
+    if (chosen) {
+      boss = findSession(chosen, nodes, key);
+      if (boss) placement = 'manual';
+    }
+    if (!boss && rules.has(key)) {
+      boss = findSession(rules.get(key).reportsTo, nodes, key);
+      if (boss) placement = 'rule';
+    }
+    if (!boss) boss = mailboxBoss(key, nodes, keys);
     if (boss === 'you') parentOf.set(key, homes.get(key));
     else if (boss) parentOf.set(key, boss);
+    node.placement = placement;
   }
+}
+
+function mailboxBoss(key, nodes, keys) {
+  const relay = nodes.has(RELAY) ? RELAY : null;
+  if (key === RELAY) return keys.planner;
+  if (key === keys.coordinator) return relay ?? (keys.planner !== key ? keys.planner : null);
+  if (key.startsWith('mailbox:')) return keys.coordinator ?? relay;
+  return null;
 }
 
 // Malformed parent links could form a loop; the first member of a loop moves to its project.
@@ -461,6 +511,8 @@ function sessionNode(session, project, ctx, rule = null) {
     entrypoint: session.entrypoint,
     hidden: false,
     archived: false,
+    named: Boolean(person?.label || session.title),
+    placement: 'auto',
   };
 }
 
@@ -483,7 +535,102 @@ function groupNode({ key, parent, platform, kind, title, rank, project = null })
     key, parent, platform, kind, title, subtitle: null, rank, role: null, tier: null,
     model: null, modelLabel: null, effort: null, status: null, startedAt: null, lastAt: null,
     activity: null, lastText: null, needs: null, project, projectLabel: project, entrypoint: null, hidden: false, archived: false,
+    named: false, placement: null,
   };
+}
+
+// ---- mailbox relay and its workers ----
+
+const RELAY = 'relay';
+const WORKER_ID = /^W\d{1,4}$/;
+
+// The relay between a mailbox's planner and coordinator, as a tile of its own.
+function relayNode(mailbox, settings) {
+  const relay = mailbox.relay;
+  const node = groupNode({
+    key: RELAY, parent: null, platform: 'relay', kind: 'relay',
+    title: entry(settings.people, RELAY)?.label || 'Relay', rank: 'Relay',
+  });
+  node.subtitle = text(mailbox.name, 80);
+  node.status = relay.halted ? 'error' : relay.running && !relay.paused ? 'working' : 'idle';
+  node.named = true;
+  node.placement = 'auto';
+  return node;
+}
+
+// The relay's worker runs keep no session file (they run without session persistence), so the
+// mailbox's run notes are all there is. Each becomes a session-like node under the coordinator.
+function mailboxWorkers(mailbox, ctx) {
+  const out = [];
+  if (!mailbox || !Array.isArray(mailbox.tasks)) return out;
+  for (const task of mailbox.tasks) {
+    if (!isObject(task) || typeof task.id !== 'string' || !Array.isArray(task.workers)) continue;
+    const about = ctx.snippets ? snippet(task.title, MAX_TITLE) : null;
+    for (const run of task.workers) {
+      if (!isObject(run) || typeof run.id !== 'string' || !WORKER_ID.test(run.id)) continue;
+      const key = `mailbox:${task.id}/${run.id}`;
+      if (!isNodeKey(key)) continue;
+      const startedAt = time(run.startedAt);
+      const finishedAt = time(run.finishedAt);
+      const name = about && about !== task.id ? `${run.id} · ${task.id}: ${about}` : `${run.id} · ${task.id}`;
+      out.push({
+        key, platform: 'claude', parentKey: null, kind: 'agent', role: null,
+        title: text(name, MAX_TITLE),
+        cwd: typeof run.worktree === 'string' && run.worktree.trim() ? run.worktree.trim() : null,
+        branch: null, entrypoint: 'relay worker', model: text(run.model, 120), effort: null,
+        startedAt, lastAt: finishedAt ?? startedAt, status: runStatus(run.state, finishedAt),
+        activity: null, lastText: null, needs: null, links: [], archived: false,
+        run: { startedAt, finishedAt, label: about ? `${task.id}: ${about}` : task.id },
+      });
+    }
+  }
+  return out;
+}
+
+function runStatus(state, finishedAt) {
+  const s = typeof state === 'string' ? state.toLowerCase() : '';
+  if (s.startsWith('fail') || s === 'error') return 'error';
+  if ((s === 'running' || s === 'launching') && finishedAt === null) return 'working';
+  if (finishedAt !== null || ['finished', 'done', 'complete', 'completed'].includes(s)) return 'done';
+  return 'idle';
+}
+
+// A worker run lights the line from whoever it hangs under: work going down when it started, a
+// report coming up when it finished.
+function workerRuns(workers, tree, pairs, ctx) {
+  const events = [];
+  for (const worker of workers) {
+    const node = tree.nodes.get(worker.key);
+    const boss = node ? tree.nodes.get(node.parent) : null;
+    if (!boss || boss.kind === 'person' || boss.kind === 'project') continue;
+    const { startedAt, finishedAt, label } = worker.run;
+    const words = ctx.snippets ? label : null;
+    if (startedAt !== null) {
+      lightPair(pairs, boss.key, worker.key, { dir: 'down', at: startedAt, label: words });
+      events.push({ at: startedAt, kind: 'spawn', from: boss.key, to: worker.key, text: words });
+    }
+    if (finishedAt !== null) {
+      lightPair(pairs, boss.key, worker.key, { dir: 'up', at: finishedAt, label: words });
+      events.push({ at: finishedAt, kind: 'report', from: worker.key, to: boss.key, text: words });
+    }
+  }
+  return events;
+}
+
+// Messages between tiles that are not joined by a tree line (two Sergeants, say) get a line of
+// their own, but only while they are moving, so the map does not fill up with old traffic.
+function messageEdges(tree, pairs, ctx) {
+  const out = [];
+  for (const [id, pair] of pairs) {
+    const [from, to] = id.split('\n');
+    const a = tree.nodes.get(from);
+    const b = tree.nodes.get(to);
+    if (!a || !b || a.kind === 'person' || a.kind === 'project' || b.kind === 'person' || b.kind === 'project') continue;
+    if (b.parent === from || a.parent === to) continue;
+    const line = edge(from, to, 'message', pair, ctx);
+    if (line.active) out.push(line);
+  }
+  return out;
 }
 
 function projectKey(name) {
@@ -493,7 +640,9 @@ function projectKey(name) {
 // ---- links, edges and events ----
 
 function linkParts(tree, all, ctx) {
-  const lineage = ancestry(all);
+  // Directions follow the map as drawn, after chain rules and the person's choices, so a report
+  // from a Sergeant to the Colonel it was moved under lights that line upward.
+  const lineage = ancestry(tree.parentOf);
   const records = new Map();
   for (const key of tree.order) {
     if (!all.has(key)) continue;
@@ -557,15 +706,19 @@ function cleanLink(link, session, lineage, ctx) {
 
 // Each session's known ancestors, nearest first. A parent that is not a known session ends the
 // chain; so do a loop and a very deep chain.
-function ancestry(all) {
+function ancestry(parentOf) {
   const memo = new Map();
+  const up = (key) => {
+    const p = parentOf.get(key) ?? null;
+    return p === 'you' || (typeof p === 'string' && p.startsWith('project:')) ? null : p;
+  };
   return (key) => {
     if (!memo.has(key)) {
       const chain = [];
-      let p = all.get(key)?.parentKey ?? null;
+      let p = up(key);
       while (p && p !== key && !chain.includes(p) && chain.length < 32) {
         chain.push(p);
-        p = all.get(p)?.parentKey ?? null;
+        p = up(p);
       }
       memo.set(key, chain);
     }
@@ -650,6 +803,7 @@ function activeFor(lastDown, lastUp, now) {
 function mailboxParts(mailbox, tree, ctx) {
   if (!mailbox) return { edges: [], events: [] };
   const { planner, coordinator } = ctx.mailboxKeys ?? { planner: null, coordinator: null };
+  const relay = tree.nodes.has(RELAY) ? RELAY : null;
   const stats = { lastDown: null, lastUp: null, downLabel: null, upLabel: null };
   const events = [];
   const raw = Array.isArray(mailbox.events) ? mailbox.events : [];
@@ -662,7 +816,9 @@ function mailboxParts(mailbox, tree, ctx) {
     if (!down && (stats.lastUp === null || at >= stats.lastUp)) Object.assign(stats, { lastUp: at, upLabel: label });
     events.push({ at, kind: 'mailbox', from: down ? planner : coordinator, to: down ? coordinator : planner, text: label });
   }
-  const edges = planner && coordinator && planner !== coordinator ? [edge(planner, coordinator, 'mailbox', stats, ctx)] : [];
+  // With a relay the work runs planner -> relay -> coordinator, and both legs light together.
+  const legs = relay ? [[planner, relay], [relay, coordinator]] : [[planner, coordinator]];
+  const edges = legs.filter(([a, b]) => a && b && a !== b).map(([a, b]) => edge(a, b, 'mailbox', stats, ctx));
   return { edges, events };
 }
 

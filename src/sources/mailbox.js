@@ -191,6 +191,7 @@ function buildTask({ id, docs, workers }, events, hide) {
       model: run?.model ?? null,
       startedAt: run?.startedAt ?? null,
       finishedAt: run?.finishedAt ?? null,
+      worktree: run?.worktree ?? null,
     })),
   };
 }
@@ -388,12 +389,15 @@ function toMillis(value) {
 
 function readRun(file, st) {
   const run = readJsonFile(file) ?? {};
+  // Relays write "started", "finished" and "models"; other spellings are kept for other tools.
+  const models = Array.isArray(run.models) ? run.models.find((m) => typeof m === 'string') : run.models;
   return {
     mtimeMs: st.mtimeMs,
     state: shortText(run.state ?? run.status, 40),
-    model: shortText(run.model, 80),
-    startedAt: toMillis(run.startedAt ?? run.started_at),
-    finishedAt: toMillis(run.finishedAt ?? run.finished_at ?? run.endedAt ?? run.ended_at),
+    model: shortText(run.model ?? models, 80),
+    startedAt: toMillis(run.startedAt ?? run.started_at ?? run.started),
+    finishedAt: toMillis(run.finishedAt ?? run.finished_at ?? run.finished ?? run.endedAt ?? run.ended_at),
+    worktree: typeof run.worktree === 'string' && run.worktree.trim() ? run.worktree.trim().slice(0, 4096) : null,
   };
 }
 

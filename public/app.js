@@ -17,9 +17,13 @@ const STATUS_WORDS = { needs: 'Needs you', working: 'Working', ready: 'Finished'
 const FILTERS = [['all', 'All'], ['needs', 'Needs you'], ['working', 'Working'], ['ready', 'Finished'], ['error', 'Error'], ['idle', 'Idle'], ['done', 'Done']];
 const FEED_FILTERS = [['all', 'Everything'], ['down', 'Work handed out'], ['up', 'Reports back'], ['error', 'Errors']];
 const EFFORT_WORDS = { minimal: 'minimal effort', low: 'low effort', medium: 'medium effort', high: 'high effort', xhigh: 'extra high effort', max: 'max effort' };
-const PLATFORM_WORDS = { claude: 'Claude Code', codex: 'Codex' };
-const KIND_WORDS = { person: 'Person', project: 'Project', session: 'Session', agent: 'Helper agent', reviewer: 'Automatic reviewer' };
-const ENTRY_WORDS = { 'claude-desktop': 'Claude desktop app', 'claude-vscode': 'VS Code', cli: 'Terminal', 'sdk-cli': 'Agent SDK' };
+const PLATFORM_WORDS = { claude: 'Claude Code', codex: 'Codex', relay: 'Mailbox' };
+const KIND_WORDS = { person: 'Person', project: 'Project', session: 'Session', agent: 'Helper agent', reviewer: 'Automatic reviewer', relay: 'Relay' };
+const ENTRY_WORDS = { 'claude-desktop': 'Claude desktop app', 'claude-vscode': 'VS Code', cli: 'Terminal', 'sdk-cli': 'Agent SDK', 'relay worker': 'The mailbox relay' };
+const PLACEMENT_WORDS = { manual: 'You chose this.', rule: 'Set by a chain rule.', auto: 'Chosen automatically.' };
+const MOVE_PX = 6; // how far a pressed tile must travel before it is being moved, not clicked
+const PICK_WAIT_MS = 1000; // arrow keys change the Reports to menu one step at a time
+const MOVED_MS = 8000; // how long "Moved ... under ..." stays
 const ATTN_WORDS = { needs: 'Needs you', error: 'Error', question: 'Question', review: 'Ready for review' };
 const EVENT_KIND_WORDS = { user: 'Prompt', assistant: 'Said', thinking: 'Thinking', tool: 'Tool', result: 'Result', error: 'Error' };
 const ROLE_OPTIONS = [['', 'Automatic'], ['superintendent', 'Superintendent'], ['coordinator', 'Coordinator'], ['lead', 'Lead'], ['worker', 'Worker'], ['hidden', 'Hide it']];
@@ -55,6 +59,7 @@ const ICONS = {
   codex: '<rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="m7.5 10 3 2.5-3 2.5M13 15.5h3.5"/>',
   human: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
   group: '<path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h4l2 2h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/>',
+  relay: '<path d="M4 8h13.5M14 4.5 17.5 8 14 11.5M20 16H6.5M10 12.5 6.5 16l3.5 3.5"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
 };
 
@@ -125,6 +130,12 @@ const num = (v) => (Number.isFinite(v) ? v : 0);
 const isTime = (ms) => Number.isFinite(ms) && ms > 0 && ms < 8.64e15;
 const toTime = (v) => (isTime(v) ? v : v && isTime(v.at) ? v.at : null);
 const isSession = (n) => !!n && (n.kind === 'session' || n.kind === 'agent' || n.kind === 'reviewer');
+// The mailbox relay carries work between a planner and a coordinator. It is a tile, not a session.
+const isRelay = (n) => !!n && n.kind === 'relay';
+// Sessions and the relay can be put under a new boss; the person and project tiles cannot.
+const canMove = (n) => isSession(n) || isRelay(n);
+// A mailbox worker run (mailbox:<task>/W1) keeps no session file of its own.
+const isWorkerKey = (key) => String(key || '').startsWith('mailbox:');
 const svgIcon = (paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
 
 function serverNow() {
@@ -233,9 +244,11 @@ function setHtml(el, html) {
 // A repaint between pressing and releasing would swap out the button under the pointer and the
 // click would be lost, so timed repaints wait until the press ends (at most a few seconds).
 const press = { on: false, at: 0, timer: 0, waiting: false };
+// A tile being carried to a new boss on the map (see mapInput). Repaints wait for as long as it moves.
+const tileMove = { held: false, on: false, lifted: false, done: false, key: null, id: null, x0: 0, y0: 0, cx: 0, cy: 0, gx: 0, gy: 0, parent: null, below: null, over: null, ghost: null };
 
 function pressing() {
-  return press.on && Date.now() - press.at < 5000;
+  return tileMove.on || (press.on && Date.now() - press.at < 5000);
 }
 
 function releasePress(ms) {
@@ -370,6 +383,7 @@ function titleOf(n) {
   if (n.kind === 'project') return n.project || 'Project';
   if (n.kind === 'agent') return 'Helper agent';
   if (n.kind === 'reviewer') return 'Reviewer';
+  if (n.kind === 'relay') return 'Relay';
   return 'Untitled session';
 }
 
@@ -388,7 +402,17 @@ function keyName(key) {
   if (m) return `${PLATFORM_WORDS[m[1].toLowerCase()]} session ${m[2]}`;
   if (k.startsWith('path:')) return `agent ${k.slice(5).split('/').filter(Boolean).pop() || ''}`.trim();
   if (k.startsWith('project:')) return k.slice(8);
+  if (k === 'relay') return 'the mailbox relay';
+  const w = /^mailbox:(.+)\/(W\d+)$/.exec(k);
+  if (w) return `worker ${w[2]} on ${w[1]}`;
   return k || 'a session not shown here';
+}
+
+// Who a tile reports to, for "Moved Ada under ...": "you" for the person, unless they have a name.
+function bossName(key) {
+  if (key !== 'you') return keyName(key);
+  const name = personName();
+  return name === 'You' ? 'you' : name;
 }
 
 function projectLabel(name) {
@@ -400,6 +424,7 @@ function projectLabel(name) {
 function rankLine(n) {
   if (n.kind === 'person') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'Your sessions';
   if (n.kind === 'project') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'Project';
+  if (isRelay(n)) return ['Relay', n.subtitle].filter(Boolean).join(' · ');
   const folder = S.snap && S.snap.nodes && !S.snap.nodes.some((x) => x.kind === 'project') ? n.projectLabel : null;
   return [n.rank, PLATFORM_WORDS[n.platform], folder, n.subtitle].filter(Boolean).join(' · ');
 }
@@ -409,6 +434,7 @@ function modelText(n) {
 }
 
 function statusOf(n) {
+  if (isRelay(n)) return Object.hasOwn(STATUS_WORDS, n.status) ? n.status : '';
   if (!isSession(n)) return '';
   if (n.needs) return 'needs';
   return Object.hasOwn(STATUS_WORDS, n.status) ? n.status : '';
@@ -441,6 +467,7 @@ function doingHtml(d) {
 function markFor(n) {
   let kind = 'codex';
   if (n.platform === 'claude' || n.platform === 'codex') kind = n.platform;
+  else if (n.kind === 'relay' || n.platform === 'relay') kind = 'relay';
   else if (n.kind === 'person' || n.platform === 'human') kind = 'human';
   else if (n.kind === 'project' || n.platform === 'group') kind = 'group';
   return { cls: `mk-${kind}`, svg: svgIcon(ICONS[kind]) };
@@ -467,16 +494,25 @@ function countsLine() {
 // ---------------------------------------------------------------------------------------------
 
 let pollTimer = 0;
-let polling = false;
+let polling = null; // the poll on its way, so a move can wait for it
 
 function schedule(ms = POLL_MS) {
   clearTimeout(pollTimer);
   if (!document.hidden) pollTimer = setTimeout(poll, ms);
 }
 
-async function poll() {
-  if (polling) return;
-  polling = true;
+function poll() {
+  if (!polling) polling = pollOnce();
+  return polling;
+}
+
+// After a change, a poll that is already on its way may bring the old map: wait for it, then ask again.
+async function pollNow() {
+  if (polling) await polling.catch(() => {});
+  await poll();
+}
+
+async function pollOnce() {
   clearTimeout(pollTimer);
   try {
     const headers = S.etag ? { 'If-None-Match': S.etag } : {};
@@ -497,7 +533,7 @@ async function poll() {
     S.conn = err && err.status === 401 ? 'locked' : 'error';
     S.connError = plainError(err);
   } finally {
-    polling = false;
+    polling = null;
     // Scheduled first, so a drawing error can never stop the polling.
     schedule();
     render();
@@ -738,10 +774,12 @@ function workingSet(ix) {
   const now = serverNow();
   const live = (n) =>
     n.needs || n.status === 'working' || n.status === 'ready' || n.status === 'error' || ix.lit.has(n.key) || (isTime(n.lastAt) && now - n.lastAt < QUIET_MS);
+  // A running relay is its normal state, not news: it shows when it halts or carries a hand-off.
+  const relayNews = (n) => isRelay(n) && (n.status === 'error' || ix.lit.has(n.key));
   const visit = (n) => {
     let any = false;
     for (const k of ix.kids.get(n.key) || []) any = visit(k) || any;
-    if (any || n.kind === 'person' || (isSession(n) && live(n))) {
+    if (any || n.kind === 'person' || (isSession(n) && live(n)) || relayNews(n)) {
       keep.add(n.key);
       return true;
     }
@@ -902,6 +940,11 @@ function tileHtml(p, L, ix, i) {
       `<span class="tile-model">${esc(model)}</span>${when || '<span class="tile-ago"></span>'}</span>` +
       (d ? `<span class="tile-text">${doingHtml(d)}</span>` : '');
     label = [title, rank, STATUS_WORDS[status], model].filter(Boolean).join(', ');
+  } else if (isRelay(n)) {
+    const c = ix.counts.get(n.key) || { total: 0 };
+    const words = STATUS_WORDS[status] || 'Unknown';
+    body = `<span class="tile-meta"><span class="pill">${esc(words)}</span>${c.total ? countsHtml(c) : ''}</span>`;
+    label = [title, rank, words, c.total ? countsPlain(c) : ''].filter(Boolean).join(', ');
   } else {
     const c = ix.counts.get(n.key) || { total: 0 };
     body = `<span class="tile-meta">${countsHtml(c)}</span>`;
@@ -993,7 +1036,7 @@ function renderMap() {
   setHtml($('#map-nodes'), tiles.join(''));
   setHtml($('#flows'), flowsHtml(ix));
 
-  const onlyPeople = [...L.pos.values()].every((p) => !isSession(p.n));
+  const onlyPeople = [...L.pos.values()].every((p) => !canMove(p.n));
   const emptyBox = $('#map-empty');
   emptyBox.hidden = !(onlyPeople && S.mapMode === 'working');
   setHtml(
@@ -1109,14 +1152,138 @@ function panBy(dx, dy) {
       g.c = local({ x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 });
     }
   };
+
+  // ---- carrying a session tile to a new boss ----
+  const stagePoint = (cx, cy) => {
+    const p = local({ x: cx, y: cy });
+    return { x: (p.x - S.fv.x) / S.fv.k, y: (p.y - S.fv.y) / S.fv.k };
+  };
+  // A tile can take the carried one when it is the person, a session or the relay, and not the
+  // carried tile itself, one of its own helpers, or the boss it has now.
+  const bossOk = (key) => {
+    const b = S.index && S.index.byKey.get(key);
+    if (!b || key === tileMove.key || key === tileMove.parent || tileMove.below.has(key)) return false;
+    return b.kind === 'person' || canMove(b);
+  };
+  const holdTile = (ev) => {
+    const tile = ev.target.closest('#map-nodes .tile');
+    const n = tile && S.index ? S.index.byKey.get(tile.dataset.node) : null;
+    const held = canMove(n);
+    Object.assign(tileMove, { held, on: false, lifted: false, done: false, key: held ? n.key : null, id: ev.pointerId, x0: ev.clientX, y0: ev.clientY });
+  };
+  // Near an edge, the carried tile scrolls the map, so a tile that is off screen can be reached.
+  const EDGE = 40;
+  let edgeFrame = 0;
+  const liftTile = (ev) => {
+    const ix = S.index;
+    const n = ix && ix.byKey.get(tileMove.key);
+    const p = n && S.layout && S.layout.pos.get(n.key);
+    const tile = p && $(`#map-nodes [data-node="${CSS.escape(n.key)}"]`);
+    if (!tile) {
+      tileMove.done = true;
+      return false;
+    }
+    const at = stagePoint(tileMove.x0, tileMove.y0);
+    Object.assign(tileMove, { on: true, lifted: true, gx: at.x - p.x, gy: at.y - p.y, parent: n.parent, below: belowKeys(ix, n.key), over: null });
+    // The light copy that follows the pointer is only a picture: no ids, no name, no clicks.
+    const ghost = document.createElement('div');
+    ghost.className = `${tile.className} ghost`;
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.innerHTML = tile.innerHTML;
+    for (const el of ghost.querySelectorAll('[id]')) el.removeAttribute('id');
+    $('#map-stage').append(ghost);
+    tileMove.ghost = ghost;
+    for (const t of $$('#map-nodes .tile')) {
+      if (t === tile) t.classList.add('lifted');
+      else if (!bossOk(t.dataset.node)) t.classList.add('no-drop');
+    }
+    cv.classList.add('moving');
+    try {
+      cv.setPointerCapture(ev.pointerId);
+    } catch {
+      // The pointer may already be gone; its pointerup still ends the move.
+    }
+    return true;
+  };
+  // Puts the copy under the pointer and lights the tile below it when that tile can take it.
+  const carryTo = (cx, cy) => {
+    const at = stagePoint(cx, cy);
+    tileMove.ghost.style.left = `${f1(at.x - tileMove.gx)}px`;
+    tileMove.ghost.style.top = `${f1(at.y - tileMove.gy)}px`;
+    const hit = document.elementFromPoint(cx, cy);
+    const tile = hit && hit.closest('#map-nodes .tile');
+    const over = tile && bossOk(tile.dataset.node) ? tile : null;
+    if (over === tileMove.over) return;
+    if (tileMove.over) tileMove.over.classList.remove('drop-ok');
+    if (over) over.classList.add('drop-ok');
+    tileMove.over = over;
+  };
+  const edgePan = () => {
+    edgeFrame = 0;
+    if (!tileMove.on) return;
+    const r = cv.getBoundingClientRect();
+    const { cx, cy } = tileMove;
+    if (cx < r.left || cx > r.right || cy < r.top || cy > r.bottom) return;
+    const push = (d) => (d < EDGE ? Math.ceil(((EDGE - d) / EDGE) * 12) : 0);
+    const dx = push(cx - r.left) - push(r.right - cx);
+    const dy = push(cy - r.top) - push(r.bottom - cy);
+    if (!dx && !dy) return;
+    panBy(dx, dy);
+    carryTo(cx, cy);
+    edgeFrame = requestAnimationFrame(edgePan);
+  };
+  const carryTile = (ev) => {
+    if (ev.pointerId !== tileMove.id || tileMove.done) return;
+    if (!tileMove.on && (Math.hypot(ev.clientX - tileMove.x0, ev.clientY - tileMove.y0) < MOVE_PX || !liftTile(ev))) return;
+    tileMove.cx = ev.clientX;
+    tileMove.cy = ev.clientY;
+    carryTo(ev.clientX, ev.clientY);
+    // With reduced motion the map never scrolls by itself; zoom out to reach far tiles instead.
+    if (!edgeFrame && !motionQuery.matches) edgeFrame = requestAnimationFrame(edgePan);
+  };
+  // Ends a move. Dropped on a tile that can take it, Pleni is asked to move it there; anywhere
+  // else, Esc or a second finger leave the map as it was.
+  const dropTile = (drop) => {
+    if (!tileMove.on) return;
+    const { key, over } = tileMove;
+    Object.assign(tileMove, { on: false, done: true, over: null });
+    cancelAnimationFrame(edgeFrame);
+    edgeFrame = 0;
+    if (tileMove.ghost) tileMove.ghost.remove();
+    tileMove.ghost = null;
+    for (const t of $$('#map-nodes .lifted, #map-nodes .no-drop, #map-nodes .drop-ok')) t.classList.remove('lifted', 'no-drop', 'drop-ok');
+    cv.classList.remove('moving');
+    if (drop && over && over.isConnected) moveNode(key, over.dataset.node, 'drag');
+  };
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape' || !tileMove.on) return;
+    ev.preventDefault();
+    dropTile(false);
+  });
+  window.addEventListener('blur', () => dropTile(false));
+  cv.addEventListener('lostpointercapture', (ev) => {
+    if (ev.target === cv && ev.pointerId === tileMove.id) dropTile(false);
+  });
+
   cv.addEventListener('pointerdown', (ev) => {
     if ((ev.pointerType === 'mouse' && ev.button !== 0) || ev.target.closest('.map-ctrl, .map-empty')) return;
     down.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (down.size === 1) holdTile(ev);
+    else {
+      // A second finger means a pinch: a tile being carried goes back where it was.
+      dropTile(false);
+      tileMove.held = false;
+    }
     if (down.size <= 2) begin();
   });
   cv.addEventListener('pointermove', (ev) => {
     if (!down.has(ev.pointerId) || !g) return;
     down.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    // A press that starts on a session tile (or the relay) carries the tile; it never pans the map.
+    if (tileMove.held && down.size === 1) {
+      carryTile(ev);
+      return;
+    }
     const pts = [...down.values()];
     if (pts.length === 1) {
       const dx = pts[0].x - g.pts[0].x;
@@ -1144,6 +1311,15 @@ function panBy(dx, dy) {
   });
   const end = (ev) => {
     if (!down.delete(ev.pointerId)) return;
+    if (ev.pointerId === tileMove.id && tileMove.held) {
+      dropTile(ev.type === 'pointerup');
+      tileMove.held = false;
+      if (tileMove.lifted) {
+        // The click that follows must not open the tile, and the map may be drawn again at once.
+        S.dragUntil = Date.now() + 300;
+        releasePress(0);
+      }
+    }
     if (g && g.moved) S.dragUntil = Date.now() + 300;
     if (down.size) begin();
     else {
@@ -1473,7 +1649,8 @@ function setInert(on) {
 
 function openDrawer(key, opener) {
   const prev = S.drawer;
-  S.drawer = { key, tab: 'now', events: [], next: null, loaded: false, error: null, busy: false, frame: '', opener: prev ? prev.opener : opener || document.activeElement };
+  if (prev) leaveDrawer();
+  S.drawer = { key, tab: 'now', events: [], next: null, loaded: false, error: null, busy: false, frame: '', pick: null, opener: prev ? prev.opener : opener || document.activeElement };
   $('#layer').hidden = false;
   setInert(true);
   renderDrawerParts();
@@ -1483,11 +1660,13 @@ function openDrawer(key, opener) {
 
 function closeDrawer() {
   if (!S.drawer) return;
+  leaveDrawer();
   const { opener, key } = S.drawer;
   S.drawer = null;
   $('#layer').hidden = true;
   setInert(false);
   $('#drawer').innerHTML = '';
+  paintMoved();
   let back = opener && opener.isConnected && !opener.closest('[hidden]') ? opener : null;
   if (!back) back = $(`.view:not([hidden]) [data-node="${CSS.escape(key)}"]`) || $('#main');
   back.focus();
@@ -1499,9 +1678,18 @@ function focusables(root) {
   );
 }
 
-// The frame (title, tabs, empty panels) is rebuilt only when the kind of drawer changes.
-function drawerFrame(group) {
-  const tabs = group ? [['now', 'Overview'], ['details', 'Details']] : [['now', 'Now'], ['details', 'Details'], ['handoffs', 'Hand-offs']];
+const DRAWER_TABS = {
+  session: [['now', 'Now'], ['details', 'Details'], ['handoffs', 'Hand-offs']],
+  relay: [['now', 'Overview'], ['details', 'Details'], ['handoffs', 'Hand-offs']],
+  group: [['now', 'Overview'], ['details', 'Details']],
+};
+const DRAWER_ABOUT = { session: 'About this session', relay: 'About the relay', group: 'About this group' };
+
+// The frame (title, Reports to menu, tabs, empty panels) is rebuilt only when the kind of drawer
+// changes. The message under the menu is a status region that stays in place, so screen readers
+// hear each new message.
+function drawerFrame(frame) {
+  const tabs = DRAWER_TABS[frame];
   const d = S.drawer;
   if (!tabs.some(([id]) => id === d.tab)) d.tab = 'now';
   return (
@@ -1509,7 +1697,13 @@ function drawerFrame(group) {
     '<div class="dtitles"><h2 id="drawer-title"></h2><p class="dsub" id="drawer-sub"></p></div>' +
     `<button type="button" class="icon-btn" data-close aria-label="Close the details">${svgIcon(ICONS.close)}</button></div>` +
     '<div class="dstatus" id="drawer-status"></div>' +
-    `<div class="tabs" role="tablist" aria-label="${group ? 'About this group' : 'About this session'}">` +
+    (frame === 'group'
+      ? ''
+      : '<div class="dplace" id="drawer-place" hidden><label for="d-boss">Reports to</label>' +
+        '<select class="field" id="d-boss" aria-describedby="d-boss-how d-boss-msg"></select>' +
+        '<p class="help" id="d-boss-how"></p>' +
+        '<p class="dplace-done"><span id="d-boss-msg" role="status"></span><button type="button" class="btn" id="d-boss-undo" data-undo aria-describedby="d-boss-msg" hidden>Undo</button></p></div>') +
+    `<div class="tabs" role="tablist" aria-label="${DRAWER_ABOUT[frame]}">` +
     tabs
       .map(
         ([id, label]) =>
@@ -1538,11 +1732,11 @@ function renderDrawerParts() {
   if (!d) return;
   const n = S.index && S.index.byKey.get(d.key);
   const group = !!n && !isSession(n);
-  const frame = group ? 'group' : 'session';
+  const frame = !group ? 'session' : isRelay(n) ? 'relay' : 'group';
   const drawer = $('#drawer');
   if (d.frame !== frame) {
     const hadFocus = drawer.contains(document.activeElement);
-    drawer.innerHTML = drawerFrame(group);
+    drawer.innerHTML = drawerFrame(frame);
     d.frame = frame;
     if (hadFocus) $('#drawer [data-close]').focus();
   }
@@ -1555,9 +1749,11 @@ function renderDrawerParts() {
   const sub = n ? [rankLine(n), isSession(n) ? modelText(n) : ''].filter(Boolean).join(' · ') : '';
   if ($('#drawer-sub').textContent !== sub) $('#drawer-sub').textContent = sub;
   setHtml($('#drawer-status'), drawerStatusHtml(n));
+  paintPlace(n, d);
   if (group) {
     setHtml($('#dpanel-now'), groupNowHtml(n));
     setHtml($('#dpanel-details'), detailsHtml(n));
+    if (frame === 'relay') setHtml($('#dpanel-handoffs'), handoffsHtml(d.key));
   } else {
     setHtml($('#dpanel-now'), sessionNowHtml(n, d));
     setHtml($('#dpanel-details'), n ? detailsHtml(n) : '<p class="empty">No details: this session is not listed right now.</p>');
@@ -1565,9 +1761,71 @@ function renderDrawerParts() {
   }
 }
 
+// The Reports to menu under the title, for sessions and the relay.
+function paintPlace(n, d) {
+  const box = $('#drawer-place');
+  if (!box) return;
+  box.hidden = !canMove(n);
+  if (box.hidden) return;
+  const select = $('#d-boss');
+  // Not rebuilt while it is in use or a move is on its way: that would close the open list, or
+  // show the old boss for a moment.
+  if (document.activeElement !== select && !d.pick && !placing) setHtml(select, bossOptionsHtml(n));
+  setText($('#d-boss-how'), PLACEMENT_WORDS[n.placement] || PLACEMENT_WORDS.auto);
+  paintMoved();
+}
+
+// Automatic, Me, then every session and the relay that this tile could report to: not the tile
+// itself and nothing below it. Sessions without a real name come last, in a group of their own.
+function bossOptionsHtml(n) {
+  const ix = S.index;
+  const below = belowKeys(ix, n.key);
+  const choice = currentChoice(n);
+  const bosses = ix.nodes.filter((b) => canMove(b) && b.key !== n.key && !below.has(b.key));
+  const count = new Map();
+  for (const b of bosses) count.set(titleOf(b), (count.get(titleOf(b)) || 0) + 1);
+  // A name that does not say which session it is also says where the session runs.
+  const label = (b) => {
+    const title = titleOf(b);
+    if (b.named !== false && count.get(title) === 1) return title;
+    const where = [PLATFORM_WORDS[b.platform], b.project ? projectLabel(b.project) : ''].filter(Boolean).join(', ');
+    return where ? `${title} (${where})` : title;
+  };
+  const opt = (value, text) => `<option value="${esc(value)}"${value === choice ? ' selected' : ''}>${esc(text)}</option>`;
+  const list = (items) => items.sort(byTitle).map((b) => opt(b.key, label(b))).join('');
+  const unnamed = bosses.filter((b) => b.named === false);
+  return (
+    opt('', 'Automatic') +
+    opt('you', 'Me') +
+    list(bosses.filter((b) => b.named !== false)) +
+    (unnamed.length ? `<optgroup label="Sessions without a name">${list(unnamed)}</optgroup>` : '')
+  );
+}
+
+// The person's own choice for a tile, as the menu shows it: '' (Automatic), 'you' or a boss's key.
+function currentChoice(n) {
+  if (!n || n.placement !== 'manual') return '';
+  const boss = S.index && S.index.byKey.get(n.parent);
+  return canMove(boss) ? boss.key : 'you';
+}
+
+// Every key below a tile: its helpers, their helpers, and so on.
+function belowKeys(ix, key) {
+  const out = new Set();
+  const visit = (k) => {
+    for (const c of ix.kids.get(k) || []) {
+      if (out.has(c.key)) continue;
+      out.add(c.key);
+      visit(c.key);
+    }
+  };
+  visit(key);
+  return out;
+}
+
 function drawerStatusHtml(n) {
   if (!n) return '<span>This session is not listed right now. It may have been quiet for longer than the time window in Settings.</span>';
-  if (!isSession(n)) return '';
+  if (!canMove(n)) return '';
   const status = statusOf(n);
   const parts = [`<span class="pill st-${status || 'idle'}">${esc(STATUS_WORDS[status] || 'Unknown')}</span>`];
   if (isTime(n.lastAt)) parts.push(`<span>Last active ${agoHtml(n.lastAt)}</span>`);
@@ -1586,6 +1844,10 @@ function sessionNowHtml(n, d) {
   const out = [];
   const now = n ? doing(n) : null;
   if (now) out.push(`<p class="dnow"><b>${esc(now.label)}:</b> ${doingHtml(now)}</p>`);
+  if (isWorkerKey(d.key)) {
+    out.push('<p class="empty">This worker keeps no session file.</p>');
+    return out.join('');
+  }
   out.push('<h3>Recent events</h3>');
   if (d.error) out.push(`<p class="empty">Could not load recent events. ${esc(d.error)}</p>`);
   else if (!d.loaded) out.push('<p class="empty">Loading recent events…</p>');
@@ -1608,7 +1870,8 @@ function groupNowHtml(n) {
       return `<li><button type="button" data-node="${esc(k.key)}">${markHtml(k, 'small')}<span class="t">${esc(titleOf(k))}</span>${right}</button></li>`;
     })
     .join('');
-  return `<p class="dnow">${esc(cap(countsPlain(c)))}.</p><h3>${n.kind === 'person' ? 'Under you' : 'In this project'}</h3>${list ? `<ul class="kids">${list}</ul>` : '<p class="empty">Nothing listed right now.</p>'}`;
+  const heading = n.kind === 'person' ? 'Under you' : isRelay(n) ? 'Under the relay' : 'In this project';
+  return `<p class="dnow">${esc(cap(countsPlain(c)))}.</p><h3>${heading}</h3>${list ? `<ul class="kids">${list}</ul>` : '<p class="empty">Nothing listed right now.</p>'}`;
 }
 
 function detailsHtml(n) {
@@ -1631,7 +1894,8 @@ function detailsHtml(n) {
     add('Archived', n.archived ? 'Yes' : '');
   }
   add('Key', `<span class="mono">${esc(n.key)}</span>`);
-  return `<table class="facts-t"><tbody>${rows.join('')}</tbody></table><p class="note">Read from the session files on this computer. Pleni never changes them.</p>`;
+  const from = isRelay(n) || isWorkerKey(n.key) ? 'Read from the mailbox folder on this computer. Pleni never changes it.' : 'Read from the session files on this computer. Pleni never changes them.';
+  return `<table class="facts-t"><tbody>${rows.join('')}</tbody></table><p class="note">${from}</p>`;
 }
 
 function handoffsHtml(key) {
@@ -1670,7 +1934,7 @@ async function fetchDrawerEvents() {
   const d = S.drawer;
   if (!d || d.busy) return;
   const n = S.index && S.index.byKey.get(d.key);
-  if (n && !isSession(n)) return;
+  if ((n && !isSession(n)) || isWorkerKey(d.key)) return;
   d.busy = true;
   try {
     // No cursor on the first call: the server then sends the most recent events.
@@ -1778,6 +2042,215 @@ if ('ResizeObserver' in window) new ResizeObserver(measureAppBar).observe($('.ap
 measureAppBar();
 
 $('#scrim').addEventListener('click', closeDrawer);
+
+// ---------------------------------------------------------------------------------------------
+// who reports to whom: the Reports to menu, moves on the map, and Undo
+// ---------------------------------------------------------------------------------------------
+
+const moved = { msg: null, timer: 0 }; // msg: { key, text, bad, undo, where: 'drawer' | 'toast' }
+let placing = 0; // moves on their way to Pleni
+let moveQueue = Promise.resolve();
+let keyedAt = 0;
+
+// Asks Pleni to put a tile under a new boss: a tile's key, 'you', or null for Automatic.
+async function postPlacement(key, reportsTo) {
+  const res = await fetch('/api/placement', {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json', 'X-Pleni': 'settings' },
+    body: JSON.stringify({ key, reportsTo }),
+  });
+  const body = await readJson(res);
+  if (!res.ok) throw answerError(res, body);
+  return body;
+}
+
+// Moves run one at a time, in the order they were made, each after the map has caught up with the
+// one before. `how` is 'menu', 'drag' or 'undo'.
+function moveNode(key, reportsTo, how) {
+  placing++;
+  moveQueue = moveQueue
+    .then(() => doMove(key, reportsTo, how))
+    .catch(() => {})
+    .finally(() => {
+      placing--;
+    });
+  return moveQueue;
+}
+
+async function doMove(key, reportsTo, how) {
+  const before = S.index && S.index.byKey.get(key);
+  if (how === 'menu' && before && currentChoice(before) === (reportsTo || '')) return;
+  const name = before ? titleOf(before) : keyName(key);
+  // Undo puts back the person's own earlier choice, or Automatic when there was none.
+  const undo = how === 'undo' ? null : { key, reportsTo: currentChoice(before) || null };
+  try {
+    await postPlacement(key, reportsTo);
+  } catch (err) {
+    const select = $('#d-boss');
+    if (select && S.drawer && S.drawer.key === key && !S.drawer.pick) select.value = currentChoice(S.index && S.index.byKey.get(key));
+    showMoved({ key, bad: true, text: `Not moved. ${plainError(err)}` });
+    return;
+  }
+  keepPlacement(key, reportsTo);
+  await pollNow().catch(() => {});
+  const after = S.index && S.index.byKey.get(key);
+  const boss = after ? after.parent : reportsTo;
+  const text = boss ? `Moved ${name} ${how === 'undo' ? 'back ' : ''}under ${bossName(boss)}.` : `Moved ${name}.`;
+  showMoved({ key, text, undo });
+}
+
+// While Settings is open it keeps its own copy of the settings. The move goes into that copy too,
+// so saving Settings later does not put the old boss back.
+function keepPlacement(key, reportsTo) {
+  const st = S.set;
+  if (!st || !st.info) return;
+  for (const s of [st.info.settings, st.draft]) {
+    if (!s || typeof s !== 'object') continue;
+    const people = s.people && typeof s.people === 'object' ? s.people : {};
+    const entry = { ...(own(people, key) || {}) };
+    if (reportsTo) entry.reportsTo = reportsTo;
+    else delete entry.reportsTo;
+    putEntry(people, key, Object.keys(entry).length ? entry : null);
+    s.people = people;
+  }
+}
+
+// A pick in the Reports to menu. One made with the mouse moves the tile at once. The arrow keys
+// change a closed menu one step at a time, so a pick made with keys waits a moment, or for Enter.
+function pickBoss(value, wait) {
+  const d = S.drawer;
+  if (!d) return;
+  if (d.pick) clearTimeout(d.pick.timer);
+  d.pick = { key: d.key, value, timer: wait ? setTimeout(sendPick, wait) : 0 };
+  if (!wait) sendPick();
+}
+
+function sendPick() {
+  const d = S.drawer;
+  const pick = d && d.pick;
+  if (!pick) return;
+  clearTimeout(pick.timer);
+  d.pick = null;
+  moveNode(pick.key, pick.value || null, 'menu');
+}
+
+// Before a drawer closes or shows another tile: a pick still waiting is sent, and a message with
+// Undo moves to the page, so it can still be used.
+function leaveDrawer() {
+  sendPick();
+  const m = moved.msg;
+  if (!m || m.where !== 'drawer') return;
+  if (m.undo) m.where = 'toast';
+  else clearMoved();
+}
+
+// Shows what a move did: under the menu when it was made there, else in a small notice at the
+// bottom of the page that the polite live region reads out. It goes after a few seconds, but not
+// while the pointer is on it or its Undo button has focus. An error under the menu stays until the
+// next pick.
+function showMoved(msg) {
+  clearTimeout(moved.timer);
+  const d = S.drawer;
+  const box = $('#drawer-place');
+  const here = !!d && d.key === msg.key && !!box && !box.hidden;
+  moved.msg = { ...msg, where: here ? 'drawer' : 'toast' };
+  paintMoved();
+  if (!here) say(msg.text);
+  if (!(here && msg.bad)) moved.timer = setTimeout(fadeMoved, MOVED_MS);
+}
+
+function fadeMoved() {
+  const active = document.activeElement;
+  if ((active && active.matches('[data-undo]')) || $('#toast').matches(':hover') || $('.dplace-done:hover')) {
+    moved.timer = setTimeout(fadeMoved, 2000);
+    return;
+  }
+  clearMoved();
+}
+
+function clearMoved() {
+  clearTimeout(moved.timer);
+  moved.msg = null;
+  paintMoved();
+}
+
+function paintMoved() {
+  const m = moved.msg;
+  const d = S.drawer;
+  const inDrawer = !!m && m.where === 'drawer' && !!d && d.key === m.key;
+  const inToast = !!m && m.where === 'toast';
+  const select = $('#d-boss');
+  const text = $('#d-boss-msg');
+  if (select && text) {
+    setText(text, inDrawer ? m.text : '');
+    text.classList.toggle('field-error', inDrawer && !!m.bad);
+    if (inDrawer && m.bad) select.setAttribute('aria-invalid', 'true');
+    else select.removeAttribute('aria-invalid');
+    hideUndo($('#d-boss-undo'), !(inDrawer && m.undo), select);
+  }
+  const toast = $('#toast');
+  hideUndo($('[data-undo]', toast), !(inToast && m.undo), S.view === 'map' ? $('#map-canvas') : $('#main'));
+  toast.hidden = !inToast;
+  toast.classList.toggle('bad', inToast && !!m.bad);
+  setText($('.toast-text', toast), inToast ? m.text : '');
+}
+
+// Hides an Undo button. If it had focus, focus goes to `next` instead of being lost.
+function hideUndo(btn, hide, next) {
+  if (!btn) return;
+  if (hide && document.activeElement === btn && next) next.focus({ preventScroll: true });
+  btn.hidden = hide;
+}
+
+function undoMove() {
+  const m = moved.msg;
+  if (!m || !m.undo) return;
+  const { key, reportsTo } = m.undo;
+  m.undo = null; // one Undo for each move
+  paintMoved();
+  moveNode(key, reportsTo, 'undo');
+}
+
+// The polite live region that says the counts also says what a move did. It is emptied first, so
+// the same words twice in a row are still read out.
+function say(text) {
+  const live = $('#live-summary');
+  live.textContent = '';
+  setTimeout(() => {
+    live.textContent = text;
+  }, 60);
+}
+
+// The notice for moves made on the map. index.html has no place for it, so it is made here.
+(function makeToast() {
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.id = 'toast';
+  toast.hidden = true;
+  toast.innerHTML = '<span class="toast-text" id="toast-text"></span><button type="button" class="btn" data-undo aria-describedby="toast-text" hidden>Undo</button>';
+  document.body.append(toast);
+})();
+
+const drawerBox = $('#drawer');
+drawerBox.addEventListener('keydown', (ev) => {
+  if (ev.target.id !== 'd-boss') return;
+  // Enter sends a pick made with the arrow keys at once.
+  if (ev.key === 'Enter') {
+    keyedAt = 0;
+    sendPick();
+  } else {
+    keyedAt = Date.now();
+  }
+});
+drawerBox.addEventListener('change', (ev) => {
+  if (ev.target.id !== 'd-boss') return;
+  releasePress(0);
+  pickBoss(ev.target.value, Date.now() - keyedAt < 300 ? PICK_WAIT_MS : 0);
+});
+drawerBox.addEventListener('focusout', (ev) => {
+  if (ev.target.id === 'd-boss') sendPick();
+});
 
 // ---------------------------------------------------------------------------------------------
 // settings
@@ -2404,6 +2877,7 @@ document.addEventListener('click', (ev) => {
     $('#main').focus();
     return;
   }
+  if (el.hasAttribute('data-undo')) return undoMove();
   // A drag across the map must not also open the tile it ended on.
   if (el.closest('#map-canvas') && S.dragUntil > Date.now()) return;
   if (el.hasAttribute('data-close')) return closeDrawer();

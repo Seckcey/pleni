@@ -10,6 +10,12 @@ The first version. Pleni only watches: it never starts, stops, or sends anything
 
 ### Added
 
+- Say who each session reports to: drag a tile onto another, or use the Reports to menu.
+- The mailbox relay is a tile between the planner and the coordinator, and the relay's worker
+  runs show under the coordinator with live lines.
+- Codex workers hang under the current coordinator of their project; Codex's imported copies of
+  other tools' sessions are left out.
+
 - A chain of command in Settings: rules such as "a session whose name contains Sergeant reports to
   the newest session whose name contains Colonel", with an optional rank. The mailbox coordinator
   hangs under its planner, which can be named instead of picked by key.

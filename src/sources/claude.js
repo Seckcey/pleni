@@ -577,6 +577,7 @@ function toSession(view, desk, t, win, snippets) {
     id: agent ? s.agentId : s.sessionId,
     parentKey: view.parentKey,
     kind: agent ? 'agent' : 'session',
+    spawned: agent, // started by its parent session; chain rules leave it there
     title: view.title,
     titleSource: view.titleSource,
     cwd: s.cwd ?? desk?.cwd ?? null,

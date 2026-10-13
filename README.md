@@ -119,6 +119,9 @@ Titles can be plain (Lead and Agent, plus Superintendent and Coordinator for ses
 those roles), military (General, Sergeant, Private), or company (Owner, Supervisor, Worker). Pick the one you like in Settings. Pleni never re-orders tiles because of
 activity, so things stay where you left them.
 
+**Move anything.** Drag a tile onto another to say who it reports to, or use the **Reports to**
+menu in its side panel. Pick **Automatic** to undo.
+
 **Chain of command.** Pleni draws each helper under the session that started it. Codex workers
 started by a coordinator hang under that coordinator. If your sessions report to each other in
 another way, say so in **Settings → Chain of command**: for example, "a session whose name contains

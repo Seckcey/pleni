@@ -45,6 +45,8 @@ const MAX_REMOTE = 20;
 const MAX_TIER_WORDS = 50;
 const MAX_PATH = 4096;
 const NODE_KEY = /^(claude|codex):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
+// A mailbox worker run: mailbox:<task id>/W<n>. It keeps no session file of its own.
+const MAILBOX_KEY = /^mailbox:[A-Za-z0-9][A-Za-z0-9._-]{0,120}\/W\d{1,4}$/;
 const CONTROL = /\p{Cc}/u;
 const RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 
@@ -75,7 +77,7 @@ export function resolveRoots(settings, env = process.env, platform = process.pla
 
 export function isNodeKey(s) {
   if (typeof s !== 'string') return false;
-  if (s === 'you' || NODE_KEY.test(s)) return true;
+  if (s === 'you' || s === 'relay' || NODE_KEY.test(s) || MAILBOX_KEY.test(s)) return true;
   return s.startsWith('project:') && isProjectName(s.slice('project:'.length));
 }
 
@@ -175,11 +177,14 @@ function cleanSources(raw) {
 }
 
 function cleanPeople(raw) {
-  return cleanMap(raw, MAX_PEOPLE, isNodeKey, (value) => {
+  return cleanMap(raw, MAX_PEOPLE, isNodeKey, (value, key) => {
     const entry = {};
     const label = cleanText(value.label, 80);
     if (label) entry.label = label;
     if (ROLES.includes(value.role)) entry.role = value.role;
+    // Who this session reports to, chosen by the person: a node key or 'you'.
+    const boss = typeof value.reportsTo === 'string' ? value.reportsTo.trim() : '';
+    if (boss && boss !== key && isNodeKey(boss) && !boss.startsWith('project:')) entry.reportsTo = boss;
     return entry;
   });
 }
@@ -202,7 +207,7 @@ function cleanMap(raw, max, isKey, cleanEntry) {
   for (const [key, value] of Object.entries(raw)) {
     if (count >= max) break;
     if (!isKey(key) || !isObject(value)) continue;
-    const entry = cleanEntry(value);
+    const entry = cleanEntry(value, key);
     if (Object.keys(entry).length === 0) continue;
     // defineProperty, so a key such as "__proto__" stays a plain entry.
     Object.defineProperty(out, key, { value: entry, enumerable: true, writable: true, configurable: true });

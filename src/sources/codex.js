@@ -55,13 +55,13 @@ export function createCodexSource({ root, settings, now = Date.now } = {}) {
       if (!root) return fail('No Codex folder is set.');
       if (!isDirectory(root)) return fail('Pleni could not find the Codex folder.');
       const t = now();
-      if (scannedAt === null || t - scannedAt >= SCAN_MS || t < scannedAt) {
-        threads = scan(root, threads, t - windowOf(settings).recentHours * HOUR);
-        scannedAt = t;
-      }
       if (registryAt === null || t - registryAt >= SCAN_MS || t < registryAt) {
         registry = readRegistry(root);
         registryAt = t;
+      }
+      if (scannedAt === null || t - scannedAt >= SCAN_MS || t < scannedAt) {
+        threads = scan(root, threads, t - windowOf(settings).recentHours * HOUR, bossesOf(registry));
+        scannedAt = t;
       }
       readTitles();
       const snippets = settings?.content !== 'none';
@@ -157,6 +157,8 @@ export function createCodexSource({ root, settings, now = Date.now } = {}) {
       id: thread.id,
       parentKey: parentId ? `codex:${parentId}` : null,
       kind: isReviewer(meta, s) ? 'reviewer' : parentId ? 'agent' : 'session',
+      // A sub-agent its parent thread started itself. Chain rules leave those where they are.
+      spawned: Boolean(ownParent),
       role: registry.superintendent === thread.id ? 'superintendent' : registry.coordinators.has(thread.id) ? 'coordinator' : null,
       title: title.text,
       titleSource: title.source,
@@ -174,7 +176,7 @@ export function createCodexSource({ root, settings, now = Date.now } = {}) {
       lastText: snippets ? s.lastText : null,
       needs: needsOf(s),
       links: linksOf(thread, ctx, snippets),
-      archived: thread.archived,
+      archived: thread.archived || registry.imported.has(thread.id),
     };
   }
 
@@ -214,11 +216,20 @@ export function createCodexSource({ root, settings, now = Date.now } = {}) {
 // ---- discovery ----
 
 // Keeps the newest MAX_FILES rollouts modified since `cutoff`; known files keep their read state.
-function scan(root, previous, cutoff) {
+// Coordinators and the superintendent stay on the map however long they have been quiet: a boss
+// waiting for the person is still the boss of everyone below it.
+function bossesOf(registry) {
+  const ids = new Set(registry.coordinators);
+  if (registry.superintendent) ids.add(registry.superintendent);
+  return ids;
+}
+
+function scan(root, previous, cutoff, keep = new Set()) {
   const found = [];
-  collect(path.join(root, 'sessions'), false, 0, cutoff, found);
-  collect(path.join(root, 'archived_sessions'), true, 0, cutoff, found);
-  found.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.file < b.file ? -1 : 1));
+  collect(path.join(root, 'sessions'), false, 0, cutoff, found, keep);
+  collect(path.join(root, 'archived_sessions'), true, 0, cutoff, found, keep);
+  // Kept bosses go first, so the cap on how many files are followed never pushes them out.
+  found.sort((a, b) => Number(keep.has(b.id)) - Number(keep.has(a.id)) || b.mtimeMs - a.mtimeMs || (a.file < b.file ? -1 : 1));
   const seen = new Set();
   const next = new Map();
   for (const entry of found) {
@@ -234,7 +245,7 @@ function scan(root, previous, cutoff) {
 }
 
 // A rollout stays in the day folder it was created in, so every day folder is walked.
-function collect(dir, archived, depth, cutoff, found) {
+function collect(dir, archived, depth, cutoff, found, keep) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -244,7 +255,7 @@ function collect(dir, archived, depth, cutoff, found) {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (depth < 3 && DATE_DIR.test(entry.name)) collect(full, archived, depth + 1, cutoff, found);
+      if (depth < 3 && DATE_DIR.test(entry.name)) collect(full, archived, depth + 1, cutoff, found, keep);
       continue;
     }
     const match = ROLLOUT.exec(entry.name);
@@ -255,7 +266,8 @@ function collect(dir, archived, depth, cutoff, found) {
     } catch {
       continue;
     }
-    if (st.mtimeMs >= cutoff) found.push({ file: full, id: match[1].toLowerCase(), archived, mtimeMs: st.mtimeMs });
+    const id = match[1].toLowerCase();
+    if (st.mtimeMs >= cutoff || keep.has(id)) found.push({ file: full, id, archived, mtimeMs: st.mtimeMs });
   }
 }
 
@@ -599,36 +611,63 @@ function contextOf(list) {
 
 // ---- coordinator registry ----
 
-const EMPTY_REGISTRY = Object.freeze({ workers: new Map(), coordinators: new Set(), superintendent: null });
+const EMPTY_REGISTRY = Object.freeze({ workers: new Map(), coordinators: new Set(), superintendent: null, imported: new Set() });
 
 // Codex coordinators record the workers they start in coordinators/registry.sqlite3 (one JSON record
 // per row), and the suite superintendent in coordinators/superintendent.json. Opened read-only and
 // closed again at once; any problem means "no registry".
 export function readRegistry(root) {
   const dir = path.join(root, 'coordinators');
-  const out = { workers: new Map(), coordinators: new Set(), superintendent: idOf(readJsonFile(path.join(dir, 'superintendent.json'))?.threadId) };
+  const out = {
+    workers: new Map(),
+    coordinators: new Set(),
+    superintendent: idOf(readJsonFile(path.join(dir, 'superintendent.json'))?.threadId),
+    imported: importedThreads(root),
+  };
   const file = path.join(dir, 'registry.sqlite3');
   if (!sqlite || !isFile(file)) return out;
   let db = null;
   try {
     db = new sqlite.DatabaseSync(file, { readOnly: true });
+    // Each project has one current coordinator; replaced ones are marked "retired". A worker hangs
+    // under the current coordinator of its project, which is the Sergeant of the repo it works in,
+    // even when an older coordinator thread started it.
+    const current = new Map(); // project id -> { id, at }
     for (const record of records(db, 'coordinators')) {
       const id = idOf(record.threadId);
-      if (id) out.coordinators.add(id);
+      if (!id || record.state === 'retired') continue;
+      out.coordinators.add(id);
+      const project = typeof record.projectId === 'string' ? record.projectId : null;
+      const at = Date.parse(record.updatedAt ?? record.createdAt ?? '') || 0;
+      if (project && !(current.get(project)?.at > at)) current.set(project, { id, at });
     }
     for (const record of records(db, 'worker_tasks')) {
       const id = idOf(record.threadId);
-      const boss = idOf(record.coordinatorThreadId);
+      const project = typeof record.projectId === 'string' ? current.get(record.projectId)?.id : null;
+      const boss = project ?? idOf(record.coordinatorThreadId);
       if (id && boss && id !== boss) out.workers.set(id, boss);
     }
   } catch {
-    return { ...EMPTY_REGISTRY, superintendent: out.superintendent };
+    return { ...EMPTY_REGISTRY, superintendent: out.superintendent, imported: out.imported };
   } finally {
     try {
       db?.close();
     } catch {
       // Already closed.
     }
+  }
+  return out;
+}
+
+// Threads Codex made by importing another tool's sessions (external_agent_session_imports.json).
+// They copy sessions Pleni already shows from that tool, so they are left out like archived ones.
+function importedThreads(root) {
+  const out = new Set();
+  const raw = readJsonFile(path.join(root, 'external_agent_session_imports.json'));
+  const list = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? Object.values(raw).flat() : [];
+  for (const item of list) {
+    const id = idOf(item?.imported_thread_id);
+    if (id) out.add(id);
   }
   return out;
 }

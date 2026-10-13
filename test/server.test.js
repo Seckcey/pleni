@@ -720,3 +720,62 @@ test('the browser is opened without a shell on every platform', () => {
   assert.deepEqual(browserCommand(url, 'darwin'), ['open', [url]]);
   assert.deepEqual(browserCommand(url, 'linux'), ['xdg-open', [url]]);
 });
+
+// ---- reports to ----
+
+const BOSS_KEY = 'codex:0f8e2c4a-1b3d-4e5f-8a9b-000000000001';
+
+function treeStore() {
+  const store = fakeStore();
+  store.current = {
+    ...store.current,
+    nodes: [
+      { key: 'you', title: 'You', kind: 'person', parent: null },
+      { key: BOSS_KEY, title: 'Colonel', kind: 'session', parent: 'you' },
+      { key: SESSION_KEY, title: 'Build the thing', kind: 'session', parent: BOSS_KEY },
+      { key: AGENT_KEY, title: 'Helper', kind: 'agent', parent: SESSION_KEY },
+    ],
+  };
+  return store;
+}
+
+const move = (port, body, headers = {}) => request(port, {
+  method: 'POST',
+  path: '/api/placement',
+  headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+  body: JSON.stringify(body),
+});
+
+test('placement saves who a session reports to, and null goes back to automatic', async (t) => {
+  const { port, memory, store } = await startServer(t, { store: treeStore(), settings: { people: { [SESSION_KEY]: { label: 'Builder' } } } });
+  let res = await move(port, { key: SESSION_KEY, reportsTo: 'you' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json, { ok: true });
+  assert.deepEqual(memory.state.settings.people[SESSION_KEY], { label: 'Builder', reportsTo: 'you' });
+  assert.equal(store.reloads.length, 1);
+  res = await move(port, { key: AGENT_KEY, reportsTo: BOSS_KEY });
+  assert.equal(res.status, 200);
+  assert.equal(memory.state.settings.people[AGENT_KEY].reportsTo, BOSS_KEY);
+  res = await move(port, { key: AGENT_KEY, reportsTo: null });
+  assert.equal(res.status, 200);
+  assert.equal(memory.state.settings.people[AGENT_KEY], undefined);
+  assert.deepEqual(memory.state.settings.people[SESSION_KEY], { label: 'Builder', reportsTo: 'you' });
+});
+
+test('placement refuses loops, unknown sessions, bad bodies and cross-site requests', async (t) => {
+  const { port, memory } = await startServer(t, { store: treeStore() });
+  assert.equal((await move(port, { key: SESSION_KEY, reportsTo: AGENT_KEY })).status, 400, 'under its own helper');
+  assert.equal((await move(port, { key: SESSION_KEY, reportsTo: SESSION_KEY })).status, 400, 'under itself');
+  assert.equal((await move(port, { key: 'codex:0f8e2c4a-1b3d-4e5f-8a9b-00000000dead', reportsTo: 'you' })).status, 404);
+  assert.equal((await move(port, { key: SESSION_KEY, reportsTo: 'codex:0f8e2c4a-1b3d-4e5f-8a9b-00000000dead' })).status, 404);
+  assert.equal((await move(port, { key: 'you', reportsTo: BOSS_KEY })).status, 400);
+  assert.equal((await move(port, { key: SESSION_KEY, reportsTo: 'project:alpha' })).status, 400);
+  assert.equal((await move(port, { key: SESSION_KEY })).status, 400);
+  assert.equal((await move(port, { key: SESSION_KEY, reportsTo: 'you' }, { 'x-pleni': undefined })).status, 403);
+  assert.equal((await move(port, { key: SESSION_KEY, reportsTo: 'you' }, { origin: 'https://evil.example' })).status, 403);
+  assert.equal((await move(port, { key: SESSION_KEY, reportsTo: 'you' }, { 'content-type': 'text/plain' })).status, 415);
+  assert.equal((await move(port, { key: SESSION_KEY, reportsTo: 'you' }, { cookie: undefined })).status, 401);
+  const get = await request(port, { path: '/api/placement' });
+  assert.equal(get.status, 405);
+  assert.deepEqual(memory.saved, []);
+});
