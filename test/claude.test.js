@@ -938,7 +938,10 @@ test('the desktop app\'s "blocked" summary counts only for the newest reply', (t
   const summary = (uuid) => ({ cliSessionId: SID, title: 'Deploy', postTurnSummary: { status_category: 'blocked', status_detail: 'x', needs_action: 'Add the deploy key', summarizes_uuid: uuid } });
   writeDesktop(env.desktopRoot, SID, summary('u-last'));
   assert.deepEqual(env.get(keyOf(SID)).needs, { kind: 'blocked', text: 'Add the deploy key', at: env.ago(4 * MIN) });
-  writeDesktop(env.desktopRoot, SID, summary('u-older'));
+  const file = writeDesktop(env.desktopRoot, SID, summary('u-older'));
+  // A rewrite in the same millisecond keeps the old time; the reader caches by it.
+  const later = new Date(Date.now() + 5000);
+  fs.utimesSync(file, later, later);
   env.advance(31000); // the desktop listing refreshes every 30 s
   assert.equal(env.get(keyOf(SID)).needs, null);
 });
