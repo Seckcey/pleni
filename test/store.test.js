@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { cleanSettings } from '../src/config.js';
 import { DEMO_KEYS } from '../src/demo.js';
 import { POLL_MS, createStore } from '../src/store.js';
@@ -251,4 +254,40 @@ test('demo detail text is hidden when content is none', () => {
   assert.ok(events.length > 0);
   assert.ok(events.every((e) => e.text === null));
   assert.equal(store.snapshot().nodes.find((n) => n.key === DEMO_KEYS.coordinator).lastText, null);
+});
+
+test('dismissed notices hide until something newer happens, and are kept in the state folder', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pleni-store-dismiss-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let askAt = NOW - 60000;
+  const asking = () => ({
+    poll: () => ({ ok: true, error: null, root: '/home/ada/.claude', sessions: [session(CLAUDE_KEY, { needs: { kind: 'question', text: null, at: askAt } })] }),
+    detail: () => null,
+  });
+  const factories = { claude: asking, codex: () => ({ poll: () => ({ ok: true, error: null, root: '/x', sessions: [] }) }) };
+  let t0 = NOW;
+  const now = () => (t0 += POLL_MS);
+  const store = createStore({ settings: cleanSettings({}), roots: ROOTS, now, factories, stateDir: dir });
+  const id = `${CLAUDE_KEY}|needs`;
+  assert.equal(store.snapshot().attention.some((a) => a.id === id), true);
+  store.dismiss(id, askAt);
+  let snap = store.snapshot();
+  assert.equal(snap.attention.some((a) => a.id === id), false);
+  assert.equal(snap.nodes.find((n) => n.key === CLAUDE_KEY).needs, null);
+  assert.equal(snap.counts.needs, 0);
+  // Kept on disk: a new store sees it too.
+  const again = createStore({ settings: cleanSettings({}), roots: ROOTS, now, factories, stateDir: dir });
+  assert.equal(again.snapshot().attention.some((a) => a.id === id), false);
+  // A newer ask shows again.
+  askAt = NOW + 1000;
+  assert.equal(again.snapshot().attention.some((a) => a.id === id), true);
+  // Undo brings the old one back.
+  askAt = NOW - 60000;
+  store.dismiss(id, null);
+  assert.equal(store.snapshot().attention.some((a) => a.id === id), true);
+  // Without a state folder, dismissals last only for the run.
+  const memoryOnly = createStore({ settings: cleanSettings({}), roots: ROOTS, now, factories });
+  memoryOnly.dismiss(id, askAt);
+  assert.equal(memoryOnly.snapshot().attention.some((a) => a.id === id), false);
+  assert.deepEqual(fs.readdirSync(dir), ['dismissed.json']);
 });

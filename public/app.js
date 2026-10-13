@@ -28,8 +28,11 @@ const ATTN_WORDS = { needs: 'Needs you', error: 'Error', question: 'Question', r
 const EVENT_KIND_WORDS = { user: 'Prompt', assistant: 'Said', thinking: 'Thinking', tool: 'Tool', result: 'Result', error: 'Error' };
 const ROLE_OPTIONS = [['', 'Automatic'], ['superintendent', 'Superintendent'], ['coordinator', 'Coordinator'], ['lead', 'Lead'], ['worker', 'Worker'], ['hidden', 'Hide it']];
 const RANK_OPTIONS = ROLE_OPTIONS.filter(([v]) => v !== 'hidden');
+const TIER_OPTIONS = [['', 'Automatic'], ['senior', 'Specialist (senior)'], ['junior', 'Private (junior)']];
 const MAX_CHAIN = 50; // chain-of-command rules the server keeps
 const MAX_NAME = 80; // longest session-name text in a rule or a mailbox field
+const MAX_TIER_WORD = 40; // longest model word or model name src/config.js keeps (cleanTiers)
+const DISMISSED_TEXT = 'Dismissed. It comes back if something new happens.';
 
 // Mirror of DEFAULTS in src/config.js, used by "Restore defaults". Keep the two in step.
 const DEFAULTS = {
@@ -211,7 +214,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -598,6 +601,7 @@ function render() {
   else if (S.view === 'list') renderList();
   else if (S.view === 'activity') renderActivity();
   else if (S.view === 'tasks') renderTasks();
+  else if (S.view === 'settings') paintModels();
   if (S.drawer) renderDrawerParts();
   announce();
 }
@@ -702,19 +706,32 @@ function announce() {
   }
 }
 
+function attentionItems() {
+  return (S.snap && Array.isArray(S.snap.attention) ? S.snap.attention : []).filter((a) => a && a.key);
+}
+
+// Each notice opens its session (or the Tasks view). Its × sits beside it, not inside it, so
+// dismissing a notice never opens it.
 function attentionHtml() {
-  const list = (S.snap && Array.isArray(S.snap.attention) ? S.snap.attention : []).filter((a) => a && a.key);
+  const list = attentionItems();
   if (!list.length) return '';
   const items = list.slice(0, 6).map((a) => {
     const kind = ATTN_WORDS[a.kind] || cap(a.kind) || 'Needs a look';
-    const inner = `<span class="k">${esc(kind)}</span><span class="v">${esc(a.text || keyName(a.key))}</span>`;
-    const cls = `attn k-${safeClass(a.kind)}`;
-    if (S.index.byKey.has(a.key)) return `<button type="button" class="${cls}" data-node="${esc(a.key)}">${inner}</button>`;
-    if (String(a.key).startsWith('task:')) return `<a class="${cls}" href="#/tasks">${inner}</a>`;
-    return `<span class="${cls}">${inner}</span>`;
+    const text = a.text || keyName(a.key);
+    const inner = `<span class="k">${esc(kind)}</span><span class="v">${esc(text)}</span>`;
+    let main = `<span class="attn-go">${inner}</span>`;
+    if (S.index.byKey.has(a.key)) main = `<button type="button" class="attn-go" data-node="${esc(a.key)}">${inner}</button>`;
+    else if (String(a.key).startsWith('task:')) main = `<a class="attn-go" href="#/tasks">${inner}</a>`;
+    return `<div class="attn k-${safeClass(a.kind)}">${main}${dismissHtml(a, text)}</div>`;
   });
-  if (list.length > 6) items.push(`<span class="attn"><span class="v">and ${list.length - 6} more</span></span>`);
+  if (list.length > 6) items.push(`<div class="attn more"><span class="v">and ${list.length - 6} more</span></div>`);
   return `<h2 class="sr-only">Needs you</h2>${items.join('')}`;
+}
+
+// The × that hides a notice. A notice without an id (from an older Pleni) cannot be dismissed.
+function dismissHtml(a, text) {
+  if (typeof a.id !== 'string' || !a.id) return '';
+  return `<button type="button" class="attn-x" data-dismiss="${esc(a.id)}" data-at="${esc(num(a.at))}" aria-label="${esc(`Dismiss: ${text}`)}">${svgIcon(ICONS.close)}</button>`;
 }
 
 // First run, or nothing recent: say where Pleni looks and how to try the demo.
@@ -1686,8 +1703,8 @@ const DRAWER_TABS = {
 const DRAWER_ABOUT = { session: 'About this session', relay: 'About the relay', group: 'About this group' };
 
 // The frame (title, Reports to menu, tabs, empty panels) is rebuilt only when the kind of drawer
-// changes. The message under the menu is a status region that stays in place, so screen readers
-// hear each new message.
+// changes. The message under the menu, and the one under the tabs that says a "Needs you" was
+// dismissed, are status regions that stay in place, so screen readers hear each new message.
 function drawerFrame(frame) {
   const tabs = DRAWER_TABS[frame];
   const d = S.drawer;
@@ -1711,6 +1728,9 @@ function drawerFrame(frame) {
       )
       .join('') +
     '</div>' +
+    (frame === 'session'
+      ? '<p class="dplace-done dnote" id="d-note"><span id="d-note-msg" role="status"></span><button type="button" class="btn" id="d-note-undo" data-undo aria-describedby="d-note-msg" hidden>Undo</button></p>'
+      : '') +
     tabs.map(([id]) => `<div role="tabpanel" id="dpanel-${id}" aria-labelledby="dtab-${id}" tabindex="0"${id === d.tab ? '' : ' hidden'}></div>`).join('')
   );
 }
@@ -1750,6 +1770,7 @@ function renderDrawerParts() {
   if ($('#drawer-sub').textContent !== sub) $('#drawer-sub').textContent = sub;
   setHtml($('#drawer-status'), drawerStatusHtml(n));
   paintPlace(n, d);
+  paintMoved();
   if (group) {
     setHtml($('#dpanel-now'), groupNowHtml(n));
     setHtml($('#dpanel-details'), detailsHtml(n));
@@ -1772,7 +1793,6 @@ function paintPlace(n, d) {
   // show the old boss for a moment.
   if (document.activeElement !== select && !d.pick && !placing) setHtml(select, bossOptionsHtml(n));
   setText($('#d-boss-how'), PLACEMENT_WORDS[n.placement] || PLACEMENT_WORDS.auto);
-  paintMoved();
 }
 
 // Automatic, Me, then every session and the relay that this tile could report to: not the tile
@@ -1833,6 +1853,14 @@ function drawerStatusHtml(n) {
   return parts.join('');
 }
 
+// The time of a session's ask, as Pleni compares it when the ask is dismissed. An ask without a
+// time of its own goes by the time on its notice, so the notice goes away with it.
+function needsAt(n) {
+  if (Number.isFinite(n.needs.at)) return n.needs.at;
+  const item = attentionItems().find((a) => a.id === `${n.key}|needs`);
+  return item && Number.isFinite(item.at) ? item.at : num(n.lastAt);
+}
+
 function sessionEventHtml(e) {
   const kind = Object.hasOwn(EVENT_KIND_WORDS, e.kind) ? e.kind : 'other';
   const label = (EVENT_KIND_WORDS[kind] || cap(e.kind) || 'Event') + (e.tool ? `: ${e.tool}` : '');
@@ -1843,7 +1871,12 @@ function sessionEventHtml(e) {
 function sessionNowHtml(n, d) {
   const out = [];
   const now = n ? doing(n) : null;
-  if (now) out.push(`<p class="dnow"><b>${esc(now.label)}:</b> ${doingHtml(now)}</p>`);
+  if (now && n.needs) {
+    const dismiss = `<button type="button" class="btn" data-dismiss="${esc(`${n.key}|needs`)}" data-at="${esc(needsAt(n))}" aria-label="${esc(`Dismiss: ${now.text}`)}">Dismiss</button>`;
+    out.push(`<p class="dnow has-x"><span><b>${esc(now.label)}:</b> ${doingHtml(now)}</span>${dismiss}</p>`);
+  } else if (now) {
+    out.push(`<p class="dnow"><b>${esc(now.label)}:</b> ${doingHtml(now)}</p>`);
+  }
   if (isWorkerKey(d.key)) {
     out.push('<p class="empty">This worker keeps no session file.</p>');
     return out.join('');
@@ -2047,22 +2080,30 @@ $('#scrim').addEventListener('click', closeDrawer);
 // who reports to whom: the Reports to menu, moves on the map, and Undo
 // ---------------------------------------------------------------------------------------------
 
-const moved = { msg: null, timer: 0 }; // msg: { key, text, bad, undo, where: 'drawer' | 'toast' }
+// msg: { key, text, bad, undo, spot, where }. `undo` is the function that takes the change back,
+// `spot` is 'note' for a dismissed notice (else the message goes under the Reports to menu), and
+// `where` is 'drawer' or 'toast'.
+const moved = { msg: null, timer: 0 };
 let placing = 0; // moves on their way to Pleni
 let moveQueue = Promise.resolve();
 let keyedAt = 0;
 
-// Asks Pleni to put a tile under a new boss: a tile's key, 'you', or null for Automatic.
-async function postPlacement(key, reportsTo) {
-  const res = await fetch('/api/placement', {
+// Sends a change to Pleni with the header and type that every change needs.
+async function postJson(url, data) {
+  const res = await fetch(url, {
     method: 'POST',
     cache: 'no-store',
     headers: { 'Content-Type': 'application/json', 'X-Pleni': 'settings' },
-    body: JSON.stringify({ key, reportsTo }),
+    body: JSON.stringify(data),
   });
   const body = await readJson(res);
   if (!res.ok) throw answerError(res, body);
   return body;
+}
+
+// Asks Pleni to put a tile under a new boss: a tile's key, 'you', or null for Automatic.
+function postPlacement(key, reportsTo) {
+  return postJson('/api/placement', { key, reportsTo });
 }
 
 // Moves run one at a time, in the order they were made, each after the map has caught up with the
@@ -2083,7 +2124,8 @@ async function doMove(key, reportsTo, how) {
   if (how === 'menu' && before && currentChoice(before) === (reportsTo || '')) return;
   const name = before ? titleOf(before) : keyName(key);
   // Undo puts back the person's own earlier choice, or Automatic when there was none.
-  const undo = how === 'undo' ? null : { key, reportsTo: currentChoice(before) || null };
+  const back = currentChoice(before) || null;
+  const undo = how === 'undo' ? null : () => moveNode(key, back, 'undo');
   try {
     await postPlacement(key, reportsTo);
   } catch (err) {
@@ -2145,14 +2187,14 @@ function leaveDrawer() {
   else clearMoved();
 }
 
-// Shows what a move did: under the menu when it was made there, else in a small notice at the
-// bottom of the page that the polite live region reads out. It goes after a few seconds, but not
-// while the pointer is on it or its Undo button has focus. An error under the menu stays until the
-// next pick.
+// Shows what a move or a dismissal did: in the side panel when it was made there (under the menu,
+// or under the tabs for a dismissal), else in a small notice at the bottom of the page that the
+// polite live region reads out. It goes after a few seconds, but not while the pointer is on it or
+// its Undo button has focus. An error in the side panel stays until the next change.
 function showMoved(msg) {
   clearTimeout(moved.timer);
   const d = S.drawer;
-  const box = $('#drawer-place');
+  const box = $(msg.spot === 'note' ? '#d-note' : '#drawer-place');
   const here = !!d && d.key === msg.key && !!box && !box.hidden;
   moved.msg = { ...msg, where: here ? 'drawer' : 'toast' };
   paintMoved();
@@ -2180,14 +2222,22 @@ function paintMoved() {
   const d = S.drawer;
   const inDrawer = !!m && m.where === 'drawer' && !!d && d.key === m.key;
   const inToast = !!m && m.where === 'toast';
+  const atNote = inDrawer && m.spot === 'note';
+  const atPlace = inDrawer && !atNote;
   const select = $('#d-boss');
   const text = $('#d-boss-msg');
   if (select && text) {
-    setText(text, inDrawer ? m.text : '');
-    text.classList.toggle('field-error', inDrawer && !!m.bad);
-    if (inDrawer && m.bad) select.setAttribute('aria-invalid', 'true');
+    setText(text, atPlace ? m.text : '');
+    text.classList.toggle('field-error', atPlace && !!m.bad);
+    if (atPlace && m.bad) select.setAttribute('aria-invalid', 'true');
     else select.removeAttribute('aria-invalid');
-    hideUndo($('#d-boss-undo'), !(inDrawer && m.undo), select);
+    hideUndo($('#d-boss-undo'), !(atPlace && m.undo), select);
+  }
+  const note = $('#d-note-msg');
+  if (note) {
+    setText(note, atNote ? m.text : '');
+    note.classList.toggle('field-error', atNote && !!m.bad);
+    hideUndo($('#d-note-undo'), !(atNote && m.undo), $('#drawer [role="tab"][aria-selected="true"]'));
   }
   const toast = $('#toast');
   hideUndo($('[data-undo]', toast), !(inToast && m.undo), S.view === 'map' ? $('#map-canvas') : $('#main'));
@@ -2206,14 +2256,14 @@ function hideUndo(btn, hide, next) {
 function undoMove() {
   const m = moved.msg;
   if (!m || !m.undo) return;
-  const { key, reportsTo } = m.undo;
-  m.undo = null; // one Undo for each move
+  const undo = m.undo;
+  m.undo = null; // one Undo for each change
   paintMoved();
-  moveNode(key, reportsTo, 'undo');
+  undo();
 }
 
-// The polite live region that says the counts also says what a move did. It is emptied first, so
-// the same words twice in a row are still read out.
+// The polite live region that says the counts also says what a move or a dismissal did. It is
+// emptied first, so the same words twice in a row are still read out.
 function say(text) {
   const live = $('#live-summary');
   live.textContent = '';
@@ -2222,7 +2272,8 @@ function say(text) {
   }, 60);
 }
 
-// The notice for moves made on the map. index.html has no place for it, so it is made here.
+// The notice for moves made on the map and for dismissed notices. index.html has no place for it,
+// so it is made here.
 (function makeToast() {
   const toast = document.createElement('div');
   toast.className = 'toast';
@@ -2251,6 +2302,59 @@ drawerBox.addEventListener('change', (ev) => {
 drawerBox.addEventListener('focusout', (ev) => {
   if (ev.target.id === 'd-boss') sendPick();
 });
+
+// ---------------------------------------------------------------------------------------------
+// dismissing a notice, and Undo
+// ---------------------------------------------------------------------------------------------
+
+const dismissing = new Set(); // notice ids on their way to Pleni
+
+// Hides a notice (or a session's "Needs you") until something new happens. When the button goes
+// away with it, focus moves to the next notice's ×, else to the view's heading; in the side panel
+// it moves to Undo.
+async function dismissNotice(btn) {
+  const id = btn.dataset.dismiss;
+  if (!id || dismissing.has(id)) return;
+  const key = id.slice(0, id.lastIndexOf('|'));
+  const at = Number(btn.dataset.at);
+  const box = btn.closest('.attention');
+  const all = box ? $$('[data-dismiss]', box) : [];
+  const place = all.indexOf(btn);
+  const after = all.slice(place + 1).map((b) => b.dataset.dismiss);
+  dismissing.add(id);
+  try {
+    await postJson('/api/dismiss', { id, at: Number.isFinite(at) ? at : 0 });
+  } catch (err) {
+    dismissing.delete(id);
+    showMoved({ key, spot: 'note', bad: true, text: `Not dismissed. ${plainError(err)}` });
+    return;
+  }
+  await pollNow().catch(() => {});
+  dismissing.delete(id);
+  showMoved({ key, spot: 'note', text: DISMISSED_TEXT, undo: () => undismiss(key, id) });
+  const active = document.activeElement;
+  if (active && active !== document.body) return;
+  let next = null;
+  if (box) {
+    const shown = $$('[data-dismiss]', box);
+    next = after.map((x) => shown.find((b) => b.dataset.dismiss === x)).find(Boolean) || shown[Math.max(0, place)] || $('h1', box.closest('.view'));
+  } else if (S.drawer) {
+    next = [$('#d-note-undo'), $('#dpanel-now'), $('#drawer [data-close]')].find((el) => el && !el.hidden);
+  }
+  if (next) next.focus();
+}
+
+// Undo for a dismissal: the notice shows again.
+async function undismiss(key, id) {
+  try {
+    await postJson('/api/dismiss', { id, at: null });
+  } catch (err) {
+    showMoved({ key, spot: 'note', bad: true, text: `Not undone. ${plainError(err)}` });
+    return;
+  }
+  await pollNow().catch(() => {});
+  showMoved({ key, spot: 'note', text: 'Undone. It shows again.' });
+}
 
 // ---------------------------------------------------------------------------------------------
 // settings
@@ -2535,6 +2639,106 @@ function projectsHtml() {
   return `<table class="edit"><thead><tr><th scope="col">Project folder</th><th scope="col">Show it as</th><th scope="col">Hide</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
 }
 
+// ---- ranks by model ----
+
+// Every model the sessions on the page use, by its exact name in small letters, with how many
+// sessions use it.
+function pageModels() {
+  const byId = new Map();
+  for (const n of S.index ? S.index.nodes : []) {
+    if (!isSession(n) || typeof n.model !== 'string' || !n.model) continue;
+    const id = n.model.toLowerCase();
+    const m = byId.get(id) || { id, label: n.modelLabel || prettyModel(n.model) || id, count: 0 };
+    m.count++;
+    byId.set(id, m);
+  }
+  return [...byId.values()].sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
+}
+
+// A model name Pleni can keep in a list of words: short enough, with no spaces.
+const keepable = (id) => id.length <= MAX_TIER_WORD && !/[\s\p{Cc}]/u.test(id);
+
+function tierList(tier) {
+  const list = getPath(S.set.draft, `modelTiers.${tier}`, []);
+  return Array.isArray(list) ? list.filter((w) => typeof w === 'string').map((w) => w.toLowerCase()) : [];
+}
+
+// The rank picked for one model: 'senior', 'junior', or '' (Automatic).
+function modelPick(id) {
+  if (tierList('senior').includes(id)) return 'senior';
+  if (tierList('junior').includes(id)) return 'junior';
+  return '';
+}
+
+// What Automatic gives a model, the way modelTier in src/model.js works it out: the first senior
+// word that is a whole word of its name, else the first junior word. Its own name is left out.
+function autoTier(id) {
+  for (const tier of ['senior', 'junior']) {
+    const word = tierList(tier).find((w) => w !== id && hasWord(id, w));
+    if (word) return { tier, word };
+  }
+  return { tier: null, word: null };
+}
+
+// The same whole-word test as hasWord in src/model.js. Keep the two in step.
+function hasWord(name, word) {
+  if (!word) return false;
+  const edge = (ch) => ch === undefined || !/[a-z0-9]/.test(ch);
+  for (let i = name.indexOf(word); i !== -1; i = name.indexOf(word, i + 1)) {
+    if (edge(name[i - 1]) && edge(name[i + word.length])) return true;
+  }
+  return false;
+}
+
+function modelsHtml() {
+  const models = pageModels();
+  if (!models.length) return '<p class="note">No models yet. They show up here once Pleni finds sessions.</p>';
+  const labels = new Map();
+  for (const m of models) labels.set(m.label, (labels.get(m.label) || 0) + 1);
+  const rows = models.map((m, i) => {
+    const hint = `s-model-${i}-auto`;
+    const auto = autoTier(m.id);
+    const autoText = `Automatic: ${auto.tier === 'senior' ? 'Specialist' : 'Private'} (${auto.word ? `matches ${auto.word}` : 'no word matches'})`;
+    // Two models with the same label are told apart by their names.
+    const name = labels.get(m.label) > 1 ? `${m.label} (${m.id})` : m.label;
+    const pick = modelPick(m.id);
+    const opts = TIER_OPTIONS.map(([v, text]) => `<option value="${v}"${v === pick ? ' selected' : ''}>${esc(text)}</option>`).join('');
+    const control = keepable(m.id)
+      ? `<select class="field" data-model="${esc(m.id)}" aria-label="${esc(`Rank for ${name}`)}" aria-describedby="${hint}">${opts}</select>`
+      : '<span class="quiet">This name is too long to pick here. Use the words below.</span>';
+    return (
+      `<tr><td><span class="mname">${esc(m.label)}</span>${m.label === m.id ? '' : `<span class="key">${esc(m.id)}</span>`}</td>` +
+      `<td class="n">${m.count}</td><td>${control}<span class="auto" id="${hint}">${esc(autoText)}</span></td></tr>`
+    );
+  });
+  return `<table class="edit models"><thead><tr><th scope="col">Model</th><th scope="col">Sessions</th><th scope="col">Rank</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+}
+
+// Kept current as sessions come and go, but not while one of its menus is in use: that would close
+// the open list. It catches up once focus moves on.
+function paintModels() {
+  const box = $('#model-rows');
+  if (!box || !S.set || !S.set.draft || box.contains(document.activeElement)) return;
+  setHtml(box, modelsHtml());
+}
+
+// A rank picked for one model: its exact name goes into that list and out of the other, and
+// Automatic takes it out of both. The word fields show the same lists, so they change too.
+function pickModelTier(id, tier) {
+  const d = S.set.draft;
+  if (!d.modelTiers || typeof d.modelTiers !== 'object') d.modelTiers = {};
+  for (const name of ['senior', 'junior']) {
+    const list = (Array.isArray(d.modelTiers[name]) ? d.modelTiers[name] : []).filter((w) => String(w).toLowerCase() !== id);
+    if (name === tier) list.push(id);
+    d.modelTiers[name] = list;
+    const field = $(`#s-${name}`);
+    if (field) {
+      clearFieldError(field);
+      field.value = list.join(', ');
+    }
+  }
+}
+
 function settingsMsgHtml() {
   const st = S.set;
   if (st.msg) return `<span class="saved ${st.msg.kind}">${esc(st.msg.text)}</span>`;
@@ -2573,9 +2777,13 @@ function renderSettingsForm() {
       ${numberRow('s-active', 'Finished, for', 'window.activeMinutes', 1, 240, 'Minutes. A session that finished its turn this recently shows "Finished". Only a real question, plan or block shows "Needs you".')}
       ${numberRow('s-stale', 'Call a turn stuck after', 'window.staleMinutes', 5, 1440, 'Minutes. A turn whose file has not moved for this long counts as idle.')}
     </section>
-    <section class="panel" aria-labelledby="s-h-tiers"><h2 id="s-h-tiers">Model tiers</h2>
-      ${textRow('s-senior', 'Senior models', 'modelTiers.senior', { kind: 'words', help: 'A model whose name has any of these words is senior. Separate the words with commas.' })}
-      ${textRow('s-junior', 'Junior models', 'modelTiers.junior', { kind: 'words', help: 'A model whose name has any of these words is junior.' })}
+    <section class="panel" aria-labelledby="s-h-tiers"><h2 id="s-h-tiers">Ranks by model</h2>
+      <p class="note">Pick the rank for each model. In the Military titles, workers on a senior model are Specialists and the rest are Privates. Leaders keep their own ranks.</p>
+      <div id="model-rows">${modelsHtml()}</div>
+      <h3>Words that set the rank</h3>
+      <p class="note">Most people can skip this. A model on Automatic gets its rank from these words. A rank you pick above always wins over them.</p>
+      ${textRow('s-senior', 'Senior words', 'modelTiers.senior', { kind: 'words', help: 'A model whose name has any of these words is senior. Separate the words with commas.' })}
+      ${textRow('s-junior', 'Junior words', 'modelTiers.junior', { kind: 'words', help: 'A model whose name has any of these words is junior. Senior words are checked first.' })}
     </section>
     <section class="panel" aria-labelledby="s-h-where"><h2 id="s-h-where">Where Pleni looks</h2>
       ${sourceRow('claude', 'Claude Code', 'Read Claude Code sessions', 'Leave the folder empty to use CLAUDE_CONFIG_DIR, or the .claude folder in your home folder.')}
@@ -2656,6 +2864,9 @@ function onSettingsInput(el) {
     if (el.type === 'radio' && !el.checked) return;
     clearFieldError(el);
     setPath(st.draft, el.dataset.path, readValue(el));
+    if (el.dataset.path.startsWith('modelTiers.')) paintModels();
+  } else if (el.dataset.model) {
+    pickModelTier(el.dataset.model, el.value);
   } else if (el.dataset.person) {
     if (!st.draft.people || typeof st.draft.people !== 'object') st.draft.people = {};
     editEntry(st.draft.people, el.dataset.person, el);
@@ -2885,6 +3096,7 @@ document.addEventListener('click', (ev) => {
   if (el.dataset.zoom) return zoomButton(el.dataset.zoom);
   if (el.dataset.mapMode) return setMapMode(el.dataset.mapMode);
   if (el.dataset.tab) return selectTab(el.dataset.tab, false);
+  if (el.dataset.dismiss) return dismissNotice(el);
   if (el.dataset.node) return openDrawer(el.dataset.node, el);
   if (el.dataset.listFilter) {
     S.listFilter = el.dataset.listFilter;

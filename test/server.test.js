@@ -779,3 +779,27 @@ test('placement refuses loops, unknown sessions, bad bodies and cross-site reque
   assert.equal(get.status, 405);
   assert.deepEqual(memory.saved, []);
 });
+
+// ---- dismiss ----
+
+test('dismiss passes a valid notice to the store and refuses bad ones', async (t) => {
+  const store = fakeStore();
+  store.dismissed = [];
+  store.dismiss = (id, at) => store.dismissed.push([id, at]);
+  const { port } = await startServer(t, { store });
+  const post = (body, headers = {}) => request(port, {
+    method: 'POST',
+    path: '/api/dismiss',
+    headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+    body: JSON.stringify(body),
+  });
+  assert.equal((await post({ id: `${SESSION_KEY}|needs`, at: 1234 })).status, 200);
+  assert.equal((await post({ id: 'task:T-1|question', at: null })).status, 200);
+  for (const bad of [{ id: 'x|nope', at: 1 }, { id: '|needs', at: 1 }, { id: 'a b|needs', at: 1 }, { id: `${SESSION_KEY}|needs`, at: -1 }, { id: `${SESSION_KEY}|needs`, at: '1' }, { id: `${SESSION_KEY}|needs` }, { at: 1 }]) {
+    assert.equal((await post(bad)).status, 400, JSON.stringify(bad));
+  }
+  assert.equal((await post({ id: 'task:T-1|review', at: 1 }, { 'x-pleni': undefined })).status, 403);
+  assert.equal((await post({ id: 'task:T-1|review', at: 1 }, { cookie: undefined })).status, 401);
+  assert.equal((await request(port, { path: '/api/dismiss' })).status, 405);
+  assert.deepEqual(store.dismissed, [[`${SESSION_KEY}|needs`, 1234], ['task:T-1|question', null]]);
+});

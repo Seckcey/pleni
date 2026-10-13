@@ -1031,3 +1031,29 @@ test('a whole-name match wins over a longer name that contains it', () => {
   const s = snap({ ...army(), claude: [session(CLAUDE_SGT, { title: 'Sergeant Claude Code', lastAt: NOW })], settings: { groupBy: 'none', chain: [{ match: 'Fix the updater', reportsTo: 'Sergeant Claude', role: null }] } });
   assert.equal(node(s, WORKER).parent, SGT_CLAUDE, '"Sergeant Claude" means "**Sergeant Claude", not "Sergeant Claude Code"');
 });
+
+test('attention items carry an id, and dismissed ones stay hidden until a newer one', () => {
+  const box = mailbox();
+  const base = { claude: [session(LEAD, { title: 'Main lead', needs: { kind: 'question', text: null, at: NOW - 1000 } })], mailbox: box };
+  const s = snap(base);
+  assert.deepEqual(s.attention.map((a) => a.id).sort(), [`${LEAD}|needs`, 'task:T-1|question', 'task:T-2|review']);
+  assert.ok(s.attention.every((a) => Number.isFinite(a.at)));
+  const dismissed = new Map([[`${LEAD}|needs`, NOW - 1000], ['task:T-1|question', NOW]]);
+  const d = buildSnapshot({ now: NOW, settings: cleanSettings({ groupBy: 'project' }), claude: { ok: true, sessions: base.claude }, codex: null, mailbox: box, dismissed });
+  assert.deepEqual(d.attention.map((a) => a.id), ['task:T-2|review']);
+  assert.equal(d.nodes.find((n) => n.key === LEAD).needs, null);
+  assert.equal(d.counts.needs, 0);
+  const newer = buildSnapshot({ now: NOW, settings: cleanSettings({}), claude: { ok: true, sessions: [session(LEAD, { needs: { kind: 'question', text: null, at: NOW - 10 } })] }, dismissed: { [`${LEAD}|needs`]: NOW - 1000 } });
+  assert.equal(newer.attention.length, 1, 'a newer ask comes back');
+});
+
+test('a model picked by its exact name beats the words', () => {
+  const tiers = { senior: ['opus', 'fable', 'astra', 'gpt-6.1-sol'], junior: ['sonnet', 'haiku', 'sol', 'luna', 'gpt-6-astra'] };
+  assert.equal(modelTier('gpt-6.1-sol', tiers), 'senior');
+  assert.equal(modelTier('GPT-6.1-Sol', tiers), 'senior');
+  assert.equal(modelTier('gpt-6-sol', tiers), 'junior');
+  assert.equal(modelTier('gpt-6-astra', tiers), 'junior', 'an exact junior pick beats the senior word astra');
+  assert.equal(modelTier('claude-opus-5-5', tiers), 'senior');
+  const s = snap({ codex: [session(PLANNER, { title: 'Sergeant', model: 'gpt-6.1-sol' }), session(CHILD, { parentKey: PLANNER, kind: 'agent', model: 'gpt-6.1-sol' })], settings: { titles: 'military', modelTiers: tiers } });
+  assert.equal(node(s, CHILD).rank, 'Specialist');
+});

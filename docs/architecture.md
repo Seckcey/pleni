@@ -328,7 +328,7 @@ Snapshot = {
   version: 1, now,
   sources: { claude: SourceInfo, codex: SourceInfo, mailbox: SourceInfo | null },
   nodes: Node[], edges: Edge[], events: Event[], counts: { working, ready, idle, done, error, total },
-  attention: [{ key, kind, text, at }],
+  attention: [{ id: '<key>|<kind>', key, kind, text, at }],  // at is 0 when unknown
   tasks: MailboxState['tasks'] | null,
 }
 SourceInfo = { enabled, ok, error, count }
@@ -390,7 +390,9 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
   "Sergeant", senior-tier agent "Specialist", other agent "Private"; `company` — person "Owner",
   superintendent "Vice President", coordinator "Manager", lead "Supervisor", agent "Worker". Roles come
   from `people[key].role`, else top-level sessions are `lead` and sub-agents `worker`. Tier comes from
-  `modelTiers` word matches on the model name.
+  `modelTiers`: an exact model name in either list wins (so `gpt-6.1-sol` can be senior while the word
+  `sol` is junior), then whole-word matches, senior words first. The Settings page lists the models
+  in use with a rank menu that writes exact names.
 - `modelLabel`: a short readable name (`claude-opus-5-5` → "Opus 5.5", `gpt-6.1-sol` → "GPT-6.1 Sol").
 - Sorting: children by title (locale compare), then key. Never by activity.
 
@@ -449,6 +451,10 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **POST /api/settings** requires the key cookie, `X-Pleni: settings`, `Content-Type:
   application/json`, a body of at most 64 KB, and an `Origin` (when present) whose host equals the
   request host. The body is cleaned with `cleanSettings`, saved, and the store reloaded.
+- **POST /api/dismiss** `{ id: '<key>|<kind>', at: number | null }` passes the same checks. It hides
+  that notice while its `at` is not newer than the given time (a session's `needs` becomes null too),
+  and `at: null` brings it back. Dismissals are kept in `dismissed.json` next to the settings (at most
+  1000), so every device sees the same; the demo keeps them in memory.
 - **POST /api/placement** `{ key, reportsTo: nodeKey | 'you' | null }` passes the same checks and
   saves `people[key].reportsTo` (null removes it). It refuses the person, projects, sessions that
   are not on the map, and a boss below the session itself (a loop), and answers `{ ok: true }`.

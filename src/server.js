@@ -84,6 +84,7 @@ const MESSAGES = {
   badMove: 'Pleni could not read that move.',
   goneMove: 'That session is not on the map any more.',
   loopMove: 'A session cannot report to one of its own helpers.',
+  badDismiss: 'Pleni could not read which notice to dismiss.',
 };
 
 // A new random key.
@@ -149,7 +150,9 @@ export async function start({ port, configFile, demo = false, open = false, rene
   if (first.error) process.stderr.write(`${first.error}\n`);
   // Loaded here, not at the top, so createServer works without the sources.
   const { createStore } = await import('./store.js');
-  const store = createStore({ settings: first.settings, roots: first.roots, demo });
+  // Dismissed notices are kept next to the settings, so every device sees the same; the demo keeps
+  // them only while it runs.
+  const store = createStore({ settings: first.settings, roots: first.roots, demo, stateDir: demo ? null : path.dirname(file) });
   // Demo mode gets a throw-away key, so trying the demo never touches the real one.
   const kept = demo ? { key: newKey(), saved: false } : loadOrCreateKey(path.join(path.dirname(file), 'key'), { renew: renewKey });
   const { key } = kept;
@@ -189,7 +192,9 @@ async function handle(app, req, res) {
     return sendError(req, res, 401, MESSAGES.noKey);
   }
   if (req.method === 'POST') {
-    return pathname === '/api/placement' ? postPlacement(app, req, res, host) : postSettings(app, req, res, host);
+    if (pathname === '/api/placement') return postPlacement(app, req, res, host);
+    if (pathname === '/api/dismiss') return postDismiss(app, req, res, host);
+    return postSettings(app, req, res, host);
   }
   if (pathname.startsWith('/brand/')) return sendBrand(app, req, res, pathname.slice('/brand/'.length));
   if (pathname === '/' && new URLSearchParams(query).has(KEY_PARAM)) return takeKey(app, req, res, query);
@@ -202,7 +207,7 @@ async function handle(app, req, res) {
 
 function allowedMethods(pathname) {
   if (pathname === '/api/settings') return ['GET', 'HEAD', 'POST'];
-  if (pathname === '/api/placement') return ['POST'];
+  if (pathname === '/api/placement' || pathname === '/api/dismiss') return ['POST'];
   if (PAGE_FILES.has(pathname) || API_GET.has(pathname)) return READ_ONLY;
   if (/^\/brand\/[^/]+$/.test(pathname)) return READ_ONLY;
   return null;
@@ -389,6 +394,20 @@ async function postPlacement(app, req, res, host) {
   if (Object.keys(own).length) next.people[key] = own;
   else delete next.people[key];
   return saveAndReload(app, req, res, cleanSettings(next), () => ({ ok: true }));
+}
+
+// Dismiss a "Needs you" notice: { id: '<key>|<kind>', at: <its time> }, or { id, at: null } to
+// bring it back. It stays hidden until something newer happens.
+const NOTICE_ID = /^[^\s|\p{Cc}]{1,250}\|(needs|error|question|review)$/u;
+async function postDismiss(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  const { id, at } = body;
+  const time = at === null || (Number.isFinite(at) && at >= 0 && at <= 8.64e15);
+  if (typeof id !== 'string' || !NOTICE_ID.test(id) || !time) return sendError(req, res, 400, MESSAGES.badDismiss);
+  if (typeof app.store.dismiss !== 'function') return sendError(req, res, 500, MESSAGES.internal);
+  app.store.dismiss(id, at);
+  return sendJson(req, res, 200, { ok: true });
 }
 
 // True when `key` is `top` or sits somewhere below it on the map.

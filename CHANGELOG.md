@@ -10,6 +10,10 @@ The first version. Pleni only watches: it never starts, stops, or sends anything
 
 ### Added
 
+- Dismiss a "Needs you" notice from its banner or the side panel; it comes back when something new
+  happens, and the choice is shared by every device.
+- Settings → Ranks by model: pick Specialist or Private for each model in use.
+
 - Say who each session reports to: drag a tile onto another, or use the Reports to menu.
 - The mailbox relay is a tile between the planner and the coordinator, and the relay's worker
   runs show under the coordinator with live lines.

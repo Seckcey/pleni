@@ -6,7 +6,8 @@ what it never does.
 
 ## The short version
 
-- Pleni **reads** session files. It **writes** only its own settings file.
+- Pleni **reads** session files. It **writes** only in its own folder: its settings, its key, and
+  the list of notices you dismissed.
 - Pleni makes **no network calls**. It has no telemetry, no tracking, no account, and no sign-in.
 - Pleni opens only on your own computer (`127.0.0.1`), unless you set up remote access yourself,
   and only for a browser that has the key Pleni prints when it starts.
@@ -30,7 +31,7 @@ read the start of a file once, to find a session's name and where it started.
 | Codex coordinator list, if present      | `coordinators/registry.sqlite3` (opened read-only) and `coordinators/superintendent.json`, only to learn which coordinator started which worker |
 | A mailbox folder, if you turn one on    | The Markdown files of the queue, the status board, and each task (with any worker run notes), plus the small relay files in `.relay/` |
 | A session's project folder, only when it is inside a `_worktrees` folder on a local drive | Only the small `.git` pointer file (at most 4 KB) of that worktree, to learn the name of the repository it belongs to. Nothing else in your project is read |
-| Pleni's own settings file               | `settings.json` in Pleni's settings folder                                                               |
+| Pleni's own folder                      | `settings.json`, `key`, and `dismissed.json` (which notices you dismissed, and when) in Pleni's settings folder |
 
 From the session files it uses: when each step happened, the working folder, the git branch, the
 model and effort, which tool was used, short parts of the tool's input (see below), the
@@ -69,8 +70,8 @@ a model was "thinking", in either setting. It shows only that the model was thin
 
 - It never writes, moves, or deletes anything in the Claude Code, Codex, Claude desktop app, or
   mailbox folders.
-- It writes nowhere except its own settings file. It saves that file safely: it writes a temporary
-  file in the same folder, then renames it.
+- It writes nowhere except its own folder (`settings.json`, `key`, `dismissed.json`). It saves each
+  file safely: it writes a temporary file in the same folder, then renames it.
 - It never starts, stops, or sends anything to a session.
 - It makes no network calls. It sends no telemetry, usage counts, or crash reports.
 - The page loads nothing from the internet. Its scripts, styles, and pictures all come from Pleni

@@ -386,17 +386,26 @@ main:focus { outline: none; }
 
 .attention { display: flex; flex-wrap: wrap; gap: var(--ui-space-4); }
 .attention:not(:empty) { margin-top: var(--ui-space-5); }
+/* A notice is two controls side by side: the notice itself (.attn-go) and the × that dismisses it. */
 .attn {
-  display: inline-flex; align-items: baseline; gap: var(--ui-space-4); max-width: min(100%, 560px);
-  padding: var(--ui-space-2) var(--ui-space-5); border-radius: var(--ui-radius-lg); text-align: left;
+  display: inline-flex; align-items: center; max-width: min(100%, 560px); border-radius: var(--ui-radius-lg);
   background: var(--ui-warn-soft); border: 1px solid color-mix(in srgb, var(--ui-warn) 40%, transparent); color: var(--ui-text-primary);
 }
-a.attn { text-decoration: none; }
+.attn-go, .attn.more { display: inline-flex; align-items: center; gap: var(--ui-space-4); min-width: 0; padding: var(--ui-space-2) var(--ui-space-5); }
+.attn-go { align-self: stretch; text-align: left; text-decoration: none; color: inherit; background: none; border: 0; border-radius: inherit; }
+.attn-go:has(+ .attn-x) { padding-right: var(--ui-space-2); }
 .attn.k-error { background: var(--ui-error-soft); border-color: color-mix(in srgb, var(--ui-error) 45%, transparent); }
 .attn .k { font-weight: var(--ui-weight-semibold); white-space: nowrap; color: var(--ui-warn-text); }
 .attn.k-error .k { color: var(--ui-error-text); }
 .attn .v { color: var(--ui-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.attn:hover .v { color: var(--ui-text-primary); }
+.attn-go:hover .v { color: var(--ui-text-primary); }
+.attn-x {
+  display: grid; place-items: center; flex: none; width: 32px; height: 32px; margin-right: var(--ui-space-1); padding: 0;
+  background: none; border: 0; border-radius: var(--ui-radius-md); color: var(--ui-text-secondary);
+}
+.attn-x:hover { color: var(--ui-text-primary); background: color-mix(in srgb, var(--ui-warn) 18%, transparent); }
+.attn.k-error .attn-x:hover { background: color-mix(in srgb, var(--ui-error) 18%, transparent); }
+.attn-x svg { width: 16px; height: 16px; }
 
 /* status words, dots and pills */
 .st-working { --pc: var(--ui-ok-text); --pd: var(--ui-ok); }
@@ -666,6 +675,12 @@ table.edit td { padding: var(--ui-space-3) var(--ui-space-4) var(--ui-space-3) 0
 table.edit td .field { min-height: 28px; padding: var(--ui-space-2) var(--ui-space-4); }
 table.edit .who { display: flex; align-items: center; gap: var(--ui-space-4); min-width: 0; }
 table.edit .key { display: block; color: var(--ui-text-muted); font-family: var(--ui-font-mono); font-size: var(--ui-font-xs); overflow-wrap: anywhere; }
+/* Ranks by model, and the smaller heading over the words that set a rank. */
+.settings h3 { margin: var(--ui-space-7) 0 0; font-size: var(--ui-font-md); color: var(--ui-text-secondary); }
+table.models .mname { font-weight: var(--ui-weight-semibold); overflow-wrap: anywhere; }
+table.models td.n { font-variant-numeric: tabular-nums; color: var(--ui-text-secondary); }
+table.models select.field { max-width: 15rem; }
+table.models .auto { display: block; margin-top: var(--ui-space-1); font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
 /* Chain of command: the heading row and each rule share fixed outer columns so they line up. */
 .rules { list-style: none; margin: 0; padding: 0; }
 .rule {
@@ -710,11 +725,16 @@ table.edit .key { display: block; color: var(--ui-text-muted); font-family: var(
 .dstatus { display: flex; flex-wrap: wrap; gap: var(--ui-space-3) var(--ui-space-5); align-items: center; color: var(--ui-text-secondary); font-size: var(--ui-font-md); }
 .dnow { margin: var(--ui-space-5) 0 0; padding: var(--ui-space-4) var(--ui-space-5); background: var(--ui-surface-raised); border-radius: var(--ui-radius-md); overflow-wrap: anywhere; color: var(--ui-text-secondary); }
 .dnow b { color: var(--ui-text-primary); }
+.dnow.has-x { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--ui-space-3) var(--ui-space-5); }
+.dnow.has-x > span { min-width: 0; }
+.dnow .btn { flex: none; min-height: 32px; padding: 0 var(--ui-space-5); }
 .dplace { max-width: 560px; margin-top: var(--ui-space-5); }
 .dplace > label { display: block; margin-bottom: var(--ui-space-2); font-weight: var(--ui-weight-semibold); font-size: var(--ui-font-md); }
 .dplace .help { margin: var(--ui-space-2) 0 0; font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
 .dplace-done { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3) var(--ui-space-5); margin: 0; font-size: var(--ui-font-md); color: var(--ui-text-secondary); }
 .dplace-done:has(#d-boss-msg:not(:empty)) { margin-top: var(--ui-space-3); }
+/* Says a "Needs you" was dismissed. It sits between the tabs and the panel, next to where the ask was. */
+.dnote:has(#d-note-msg:not(:empty)) { margin-bottom: var(--ui-space-3); }
 .dplace-done .btn, .toast .btn { flex: none; padding: var(--ui-space-1) var(--ui-space-5); }
 .tabs { display: flex; gap: var(--ui-space-6); flex-wrap: wrap; margin: var(--ui-space-6) 0 var(--ui-space-5); border-bottom: 1px solid var(--ui-border); }
 .tabs [role="tab"] { background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: var(--ui-space-3) 0; color: var(--ui-text-secondary); }

@@ -27,7 +27,7 @@ const RANKS = {
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 const gitCache = new Map();
 
-export function buildSnapshot({ now, settings, claude = null, codex = null, mailbox = null } = {}) {
+export function buildSnapshot({ now, settings, claude = null, codex = null, mailbox = null, dismissed = null } = {}) {
   const s = cleanSettings(settings);
   const ctx = {
     now: Number.isFinite(now) ? now : Date.now(),
@@ -44,6 +44,11 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, mail
   const mail = mailboxParts(box, tree, ctx);
   const nodes = tree.order.map((key) => tree.nodes.get(key));
   const sessionNodes = nodes.filter((node) => KINDS.includes(node.kind));
+  const hidden = dismissedAt(dismissed);
+  // A dismissed ask stops showing as "Needs you" until a newer one comes.
+  for (const node of sessionNodes) {
+    if (node.needs && hidden(`${node.key}|needs`) >= (node.needs.at ?? 0)) node.needs = null;
+  }
   const tasks = isObject(mailbox) ? cleanTasks(mailbox, ctx) : null;
   return {
     version: 1,
@@ -57,7 +62,7 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, mail
     edges: mergeEdges([...treeEdges(tree, links.pairs, ctx), ...messageEdges(tree, links.pairs, ctx)], mail.edges, ctx),
     events: sortEvents([...links.events, ...runs, ...mail.events, ...errorEvents(sessionNodes, ctx)]),
     counts: countStatuses(sessionNodes),
-    attention: attentionList(sessionNodes, tasks ?? []),
+    attention: attentionList(sessionNodes, tasks ?? []).filter((item) => !(hidden(item.id) >= item.at)),
     tasks,
   };
 }
@@ -186,6 +191,10 @@ function clipLabel(label) {
 export function modelTier(model, tiers) {
   if (typeof model !== 'string' || !model) return null;
   const name = model.toLowerCase();
+  // A model picked by its exact name wins over the words, so "gpt-6.1-sol" can be senior even
+  // while the word "sol" is junior.
+  if (Array.isArray(tiers?.senior) && tiers.senior.includes(name)) return 'senior';
+  if (Array.isArray(tiers?.junior) && tiers.junior.includes(name)) return 'junior';
   if (hasAnyWord(name, tiers?.senior)) return 'senior';
   if (hasAnyWord(name, tiers?.junior)) return 'junior';
   return null;
@@ -897,7 +906,22 @@ function attentionList(sessionNodes, tasks) {
       list.push({ key: `task:${task.id}`, kind: 'review', text: `${name} is ready for review.`, at });
     }
   }
-  return list.sort((a, b) => (b.at ?? -Infinity) - (a.at ?? -Infinity) || cmp(a.key, b.key) || cmp(a.kind, b.kind));
+  // Every item has an id to dismiss it by, and a time (0 when unknown) to tell a newer one apart.
+  for (const item of list) {
+    item.id = `${item.key}|${item.kind}`;
+    item.at = item.at ?? 0;
+  }
+  return list.sort((a, b) => b.at - a.at || cmp(a.key, b.key) || cmp(a.kind, b.kind));
+}
+
+// Reads dismissals given as a Map or a plain object of id -> time.
+function dismissedAt(dismissed) {
+  return (id) => {
+    let at;
+    if (dismissed instanceof Map) at = dismissed.get(id);
+    else if (isObject(dismissed) && Object.hasOwn(dismissed, id)) at = dismissed[id];
+    return Number.isFinite(at) ? at : -Infinity;
+  };
 }
 
 // ---- small helpers ----
