@@ -641,7 +641,7 @@ function renderNotices() {
   const out = [];
   if (S.conn === 'error') out.push(notice(true, 'Cannot reach Pleni.', `${S.connError} The page keeps trying every few seconds.`));
   if (S.conn === 'locked') {
-    out.push(notice(true, 'Pleni needs its key.', 'Open the full address Pleni printed in the terminal when it started. It ends with "?t=" and a long key, which keeps other people on this computer out. The key is new each time Pleni starts.'));
+    out.push(notice(true, 'Pleni needs its key.', 'Open the full address Pleni printed in the terminal when it started. It ends with "?t=" and a long key, which keeps other people on this computer out. The address stays the same until someone makes a new key.'));
   }
   const src = (S.snap && S.snap.sources) || {};
   for (const [name, label] of [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code'], ['mailbox', 'The mailbox']]) {
