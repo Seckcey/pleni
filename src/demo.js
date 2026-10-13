@@ -102,7 +102,8 @@ const CAST = [
     key: LOGIN, kind: 'session', title: 'Login screen polish', cwd: `${FIELD}/.claude/worktrees/login-polish`,
     branch: 'login-polish', entrypoint: 'claude-vscode', model: 'claude-sonnet-5-5', effort: 'medium',
     status: 'ready', start: 45, end: 4, prompt: 'Tidy up the login screen spacing and error text.',
-    last: 'The login screen is done. Want me to open a pull request?',
+    last: 'The login screen is done. Should I open a pull request or keep polishing?',
+    ask: { kind: 'question', text: 'Open a pull request now, or keep polishing?' },
   },
   {
     key: OFFLINE, kind: 'session', title: 'Offline sync spike', cwd: `${HOME}/.codex/worktrees/7f3a/field-app`,
@@ -260,6 +261,7 @@ function session(member, clock, handoffs) {
     status: member.status,
     activity: live ? { tool: tool[0], detail: tool[1], at: clock.beatAt } : null,
     lastText: live ? member.texts[loop % member.texts.length] : member.last,
+    needs: member.ask ? { ...member.ask, at: endOf(member, clock) } : null,
     links,
     archived: false,
   };

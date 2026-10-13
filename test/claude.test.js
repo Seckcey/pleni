@@ -895,3 +895,57 @@ test('detail keeps only the newest 200 events and reads only the end of a big fi
   assert.ok(events.every((e) => e.text.length <= 2000));
   assert.equal(next, fs.statSync(file).size);
 });
+
+// ---- needs you ----
+
+test('an unanswered question or plan needs the person, even after the stale window', (t) => {
+  const env = setup(t);
+  write(sessionPath(env.root), [
+    user(env.ago(50 * MIN), 'Plan the refund work'),
+    assistant(env.ago(49 * MIN), [toolUse('q1', 'AskUserQuestion', { questions: [{ question: 'Which year?' }] })], { stop: 'tool_use' }),
+  ]);
+  assert.deepEqual(env.get(keyOf(SID)).needs, { kind: 'question', text: null, at: env.ago(49 * MIN) });
+  append(sessionPath(env.root), [resultRecord(env.ago(1 * MIN), 'q1', '2026')]);
+  assert.equal(env.get(keyOf(SID)).needs, null);
+  append(sessionPath(env.root), [assistant(env.ago(30000), [toolUse('p1', 'ExitPlanMode', { plan: 'Do it' })], { stop: 'tool_use' })]);
+  assert.equal(env.get(keyOf(SID)).needs.kind, 'plan');
+});
+
+test('a finished reply alone does not need the person', (t) => {
+  const env = setup(t);
+  write(sessionPath(env.root), [user(env.ago(3 * MIN), 'Hi'), assistant(env.ago(2 * MIN), [text('All done. Want anything else?')])]);
+  const s = env.get(keyOf(SID));
+  assert.equal(s.status, 'ready');
+  assert.equal(s.needs, null);
+});
+
+test('a headless session never needs the person', (t) => {
+  const env = setup(t);
+  const headless = (r) => ({ ...r, entrypoint: 'sdk-cli' });
+  write(sessionPath(env.root), [
+    headless(user(env.ago(3 * MIN), 'Relay notice')),
+    headless(assistant(env.ago(2 * MIN), [toolUse('q1', 'AskUserQuestion', { questions: [] })], { stop: 'tool_use' })),
+  ]);
+  assert.equal(env.get(keyOf(SID)).needs, null);
+});
+
+test('the desktop app\'s "blocked" summary counts only for the newest reply', (t) => {
+  const env = setup(t);
+  write(sessionPath(env.root), [
+    user(env.ago(5 * MIN), 'Deploy it'),
+    assistant(env.ago(4 * MIN), [text('I need the deploy key first.')], { uuid: 'u-last' }),
+  ]);
+  const summary = (uuid) => ({ cliSessionId: SID, title: 'Deploy', postTurnSummary: { status_category: 'blocked', status_detail: 'x', needs_action: 'Add the deploy key', summarizes_uuid: uuid } });
+  writeDesktop(env.desktopRoot, SID, summary('u-last'));
+  assert.deepEqual(env.get(keyOf(SID)).needs, { kind: 'blocked', text: 'Add the deploy key', at: env.ago(4 * MIN) });
+  writeDesktop(env.desktopRoot, SID, summary('u-older'));
+  env.advance(31000); // the desktop listing refreshes every 30 s
+  assert.equal(env.get(keyOf(SID)).needs, null);
+});
+
+test('with content none a blocked summary keeps its kind but no text', (t) => {
+  const env = setup(t, { settings: NONE });
+  write(sessionPath(env.root), [user(env.ago(5 * MIN), 'Go'), assistant(env.ago(4 * MIN), [text('Stuck.')], { uuid: 'u1' })]);
+  writeDesktop(env.desktopRoot, SID, { cliSessionId: SID, postTurnSummary: { status_category: 'blocked', needs_action: 'secret', summarizes_uuid: 'u1' } });
+  assert.deepEqual(env.get(keyOf(SID)).needs, { kind: 'blocked', text: null, at: env.ago(4 * MIN) });
+});

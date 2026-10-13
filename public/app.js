@@ -13,14 +13,14 @@ const ZOOM_MIN = 0.3;
 const ZOOM_MAX = 1.6;
 const VIEWS = ['map', 'list', 'activity', 'tasks', 'settings'];
 const VIEW_NAMES = { map: 'Map', list: 'List', activity: 'Activity', tasks: 'Tasks', settings: 'Settings' };
-const STATUS_WORDS = { working: 'Working', ready: 'Waiting for you', idle: 'Idle', done: 'Done', error: 'Error' };
-const FILTERS = [['all', 'All'], ['working', 'Working'], ['ready', 'Waiting for you'], ['error', 'Error'], ['idle', 'Idle'], ['done', 'Done']];
+const STATUS_WORDS = { needs: 'Needs you', working: 'Working', ready: 'Finished', idle: 'Idle', done: 'Done', error: 'Error' };
+const FILTERS = [['all', 'All'], ['needs', 'Needs you'], ['working', 'Working'], ['ready', 'Finished'], ['error', 'Error'], ['idle', 'Idle'], ['done', 'Done']];
 const FEED_FILTERS = [['all', 'Everything'], ['down', 'Work handed out'], ['up', 'Reports back'], ['error', 'Errors']];
 const EFFORT_WORDS = { minimal: 'minimal effort', low: 'low effort', medium: 'medium effort', high: 'high effort', xhigh: 'extra high effort', max: 'max effort' };
 const PLATFORM_WORDS = { claude: 'Claude Code', codex: 'Codex' };
 const KIND_WORDS = { person: 'Person', project: 'Project', session: 'Session', agent: 'Helper agent', reviewer: 'Automatic reviewer' };
 const ENTRY_WORDS = { 'claude-desktop': 'Claude desktop app', 'claude-vscode': 'VS Code', cli: 'Terminal', 'sdk-cli': 'Agent SDK' };
-const ATTN_WORDS = { ready: 'Waiting for you', error: 'Error', question: 'Question', review: 'Ready for review' };
+const ATTN_WORDS = { needs: 'Needs you', error: 'Error', question: 'Question', review: 'Ready for review' };
 const EVENT_KIND_WORDS = { user: 'Prompt', assistant: 'Said', thinking: 'Thinking', tool: 'Tool', result: 'Result', error: 'Error' };
 const ROLE_OPTIONS = [['', 'Automatic'], ['superintendent', 'Superintendent'], ['coordinator', 'Coordinator'], ['lead', 'Lead'], ['worker', 'Worker'], ['hidden', 'Hide it']];
 
@@ -31,7 +31,7 @@ const DEFAULTS = {
   displayName: 'You',
   titles: 'plain',
   content: 'snippets',
-  groupBy: 'project',
+  groupBy: 'none',
   window: { activeMinutes: 10, recentHours: 24, staleMinutes: 30 },
   showReviewers: false,
   modelTiers: { senior: ['opus', 'fable', 'astra'], junior: ['sonnet', 'haiku', 'sol', 'luna', 'mini'] },
@@ -332,13 +332,14 @@ function indexSnapshot(snap) {
   for (const e of edges) if (e.active) lit.add(e.from).add(e.to);
   const counts = new Map();
   const tally = (n) => {
-    const c = { working: 0, ready: 0, error: 0, idle: 0, done: 0, total: 0 };
+    const c = { needs: 0, working: 0, ready: 0, error: 0, idle: 0, done: 0, total: 0 };
     for (const k of kids.get(n.key) || []) {
       const kc = tally(k);
       for (const s of Object.keys(c)) c[s] += kc[s];
       if (isSession(k)) {
         c.total++;
         if (Object.hasOwn(c, k.status) && k.status !== 'total') c[k.status]++;
+        if (k.needs) c.needs++;
       }
     }
     counts.set(n.key, c);
@@ -395,7 +396,8 @@ function projectLabel(name) {
 function rankLine(n) {
   if (n.kind === 'person') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'Your sessions';
   if (n.kind === 'project') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'Project';
-  return [n.rank, PLATFORM_WORDS[n.platform], n.subtitle].filter(Boolean).join(' · ');
+  const folder = S.snap && S.snap.nodes && !S.snap.nodes.some((x) => x.kind === 'project') ? n.projectLabel : null;
+  return [n.rank, PLATFORM_WORDS[n.platform], folder, n.subtitle].filter(Boolean).join(' · ');
 }
 
 function modelText(n) {
@@ -403,11 +405,21 @@ function modelText(n) {
 }
 
 function statusOf(n) {
-  return isSession(n) && Object.hasOwn(STATUS_WORDS, n.status) ? n.status : '';
+  if (!isSession(n)) return '';
+  if (n.needs) return 'needs';
+  return Object.hasOwn(STATUS_WORDS, n.status) ? n.status : '';
 }
 
 // What a session is doing now (while working), else what it last said.
+const NEEDS_WORDS = {
+  question: 'Asking you a question',
+  plan: 'Wants you to approve a plan',
+  blocked: 'Blocked until you act',
+  input: 'Asking for your input',
+};
+
 function doing(n) {
+  if (n.needs) return { label: 'Needs you', tool: null, text: n.needs.text || NEEDS_WORDS[n.needs.kind] || 'Waiting for you' };
   const a = n.activity;
   const act = a && (a.tool || a.detail) ? a : null;
   if (act && n.status === 'working') return { label: 'Now', tool: act.tool, text: act.detail };
@@ -441,7 +453,7 @@ function hasSessions() {
 
 function countsLine() {
   const c = (S.snap && S.snap.counts) || {};
-  const parts = [plural(c.total || 0, 'session', 'sessions'), `${c.working || 0} working`, `${c.ready || 0} waiting for you`];
+  const parts = [plural(c.total || 0, 'session', 'sessions'), `${c.working || 0} working`, needYou(c.needs)];
   if (c.error) parts.push(plural(c.error, 'error', 'errors'));
   return parts.join(' · ');
 }
@@ -540,8 +552,8 @@ function render() {
   renderFacts();
   renderNotices();
   $('#nav-tasks').hidden = !(S.snap && Array.isArray(S.snap.tasks));
-  const ready = (S.snap && S.snap.counts && S.snap.counts.ready) || 0;
-  document.title = `${ready ? `(${ready}) ` : ''}${VIEW_NAMES[S.view]} · Pleni`;
+  const asking = (S.snap && S.snap.counts && S.snap.counts.needs) || 0;
+  document.title = `${asking ? `(${asking}) ` : ''}${VIEW_NAMES[S.view]} · Pleni`;
   if (S.view === 'map') renderMap();
   else if (S.view === 'list') renderList();
   else if (S.view === 'activity') renderActivity();
@@ -560,7 +572,7 @@ function renderFacts() {
   const parts = [`<span class="live ${live[0]}">${live[1]}</span>`];
   if (S.snap) {
     parts.push(`<span class="f-working"><b>${num(c.working)}</b> working</span>`);
-    parts.push(`<span class="f-ready"><b>${num(c.ready)}</b> waiting for you</span>`);
+    parts.push(`<span class="f-needs"><b>${num(c.needs)}</b> ${num(c.needs) === 1 ? 'needs' : 'need'} you</span>`);
     if (num(c.error)) parts.push(`<span class="f-error"><b>${c.error}</b> ${c.error === 1 ? 'error' : 'errors'}</span>`);
     parts.push(`<span class="f-idle"><b>${num(c.idle)}</b> idle</span>`);
   }
@@ -618,7 +630,7 @@ lightQuery.addEventListener('change', applyTheme);
 
 // The polite live region says the counts out loud, only when they change and at most every 15 s.
 function summaryText(c) {
-  const parts = [`${c.working || 0} working`, `${c.ready || 0} waiting for you`];
+  const parts = [`${c.working || 0} working`, needYou(c.needs)];
   if (c.error) parts.push(`${c.error} with an error`);
   return `${parts.join(', ')}.`;
 }
@@ -721,7 +733,7 @@ function workingSet(ix) {
   const keep = new Set();
   const now = serverNow();
   const live = (n) =>
-    n.status === 'working' || n.status === 'ready' || n.status === 'error' || ix.lit.has(n.key) || (isTime(n.lastAt) && now - n.lastAt < QUIET_MS);
+    n.needs || n.status === 'working' || n.status === 'ready' || n.status === 'error' || ix.lit.has(n.key) || (isTime(n.lastAt) && now - n.lastAt < QUIET_MS);
   const visit = (n) => {
     let any = false;
     for (const k of ix.kids.get(n.key) || []) any = visit(k) || any;
@@ -839,10 +851,15 @@ function flowWires(out, active, down, up) {
   return moving;
 }
 
+function needYou(n) {
+  const count = n || 0;
+  return `${count} ${count === 1 ? 'needs' : 'need'} you`;
+}
+
 function countsHtml(c) {
   const parts = [];
   if (c.working) parts.push(`<span class="c-working">${c.working} working</span>`);
-  if (c.ready) parts.push(`<span class="c-ready">${c.ready} waiting for you</span>`);
+  if (c.needs) parts.push(`<span class="c-needs">${needYou(c.needs)}</span>`);
   if (c.error) parts.push(`<span class="c-error">${plural(c.error, 'error', 'errors')}</span>`);
   if (!parts.length) parts.push(`<span>${c.total ? `${plural(c.total, 'session', 'sessions')}, all quiet` : 'No sessions'}</span>`);
   return `<span class="tile-counts">${parts.join('')}</span>`;
@@ -851,7 +868,7 @@ function countsHtml(c) {
 function countsPlain(c) {
   const parts = [];
   if (c.working) parts.push(`${c.working} working`);
-  if (c.ready) parts.push(`${c.ready} waiting for you`);
+  if (c.needs) parts.push(needYou(c.needs));
   if (c.error) parts.push(plural(c.error, 'error', 'errors'));
   return parts.join(', ') || (c.total ? `${plural(c.total, 'session', 'sessions')}, all quiet` : 'no sessions');
 }
@@ -1256,7 +1273,7 @@ function renderList() {
   }
   const rows = sessionRows(ix);
   const tally = { all: rows.length };
-  for (const r of rows) tally[r.n.status] = (tally[r.n.status] || 0) + 1;
+  for (const r of rows) tally[statusOf(r.n)] = (tally[statusOf(r.n)] || 0) + 1;
   setHtml(
     $('#list-filters'),
     FILTERS.map(
@@ -1265,7 +1282,7 @@ function renderList() {
     ).join(''),
   );
   const filtered = S.listFilter !== 'all';
-  const shown = filtered ? rows.filter((r) => r.n.status === S.listFilter) : rows;
+  const shown = filtered ? rows.filter((r) => statusOf(r.n) === S.listFilter) : rows;
   if (!shown.length) {
     setHtml($('#list-body'), '<p class="empty">No sessions match this filter right now.</p>');
     return;
@@ -1972,7 +1989,7 @@ function renderSettingsForm() {
     <section class="panel" aria-labelledby="s-h-you"><h2 id="s-h-you">You and the map</h2>
       ${textRow('s-name', 'Your name', 'displayName', { help: 'Shown on the top tile of the map.', max: 40 })}
       ${selectRow('s-titles', 'Rank words', 'titles', [['plain', 'Plain: Lead and Agent (plus Superintendent and Coordinator for those roles)'], ['military', 'Military: General, Colonel, Sergeant, Specialist, Private'], ['company', 'Company: Owner, Vice President, Manager, Supervisor, Worker']], 'The words used for ranks on the tiles.')}
-      ${selectRow('s-group', 'Group sessions', 'groupBy', [['project', 'By project'], ['none', 'Not at all']], 'With projects, the map has a tile for each project folder.')}
+      ${selectRow('s-group', 'Group sessions', 'groupBy', [['none', 'Not at all'], ['project', 'By project folder']], 'By project folder puts a folder tile between you and its sessions. Without it, each tile names its folder.')}
       ${checkRow('s-reviewers', 'Reviewers', 'showReviewers', 'Show the automatic reviewers that Codex starts', '')}
       <div class="srow"><label for="s-theme">Theme</label><div><select class="field" id="s-theme" data-local="theme" aria-describedby="s-theme-help">
         <option value="system"${theme === 'system' ? ' selected' : ''}>Match this computer</option>
@@ -1986,7 +2003,7 @@ function renderSettingsForm() {
         <label><input type="radio" name="s-content" id="s-content-none" data-path="content" data-kind="text" value="none"${getPath(st.draft, 'content', '') === 'none' ? ' checked' : ''}>Only tool names and states</label>
       </div><p class="help" id="s-content-help">Snippets stay on this computer either way.</p></div>
       ${numberRow('s-recent', 'Show sessions from the last', 'window.recentHours', 1, 720, 'Hours. Older sessions are left off the page.')}
-      ${numberRow('s-active', 'Waiting for you, for', 'window.activeMinutes', 1, 240, 'Minutes. A session that finished its turn this recently shows "Waiting for you".')}
+      ${numberRow('s-active', 'Finished, for', 'window.activeMinutes', 1, 240, 'Minutes. A session that finished its turn this recently shows "Finished". Only a real question, plan or block shows "Needs you".')}
       ${numberRow('s-stale', 'Call a turn stuck after', 'window.staleMinutes', 5, 1440, 'Minutes. A turn whose file has not moved for this long counts as idle.')}
     </section>
     <section class="panel" aria-labelledby="s-h-tiers"><h2 id="s-h-tiers">Model tiers</h2>

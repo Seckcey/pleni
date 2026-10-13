@@ -106,13 +106,14 @@ Click any tile to see more about that session, with its recent steps. Press Esc 
 
 Each tile says what the session is doing:
 
-| Words           | What it means                                     |
-| --------------- | ------------------------------------------------- |
-| Working         | It is in the middle of a turn right now           |
-| Waiting for you | It finished a turn a little while ago             |
-| Idle            | Nothing has happened for a while                  |
-| Done            | A helper that finished its job                    |
-| Error           | Its last turn ended with an error                 |
+| Words     | What it means                                                         |
+| --------- | --------------------------------------------------------------------- |
+| Needs you | It asked you a question, wants a plan approved, or says it is blocked |
+| Working   | It is in the middle of a turn right now                               |
+| Finished  | It finished a turn a little while ago and is not asking for anything  |
+| Idle      | Nothing has happened for a while                                      |
+| Done      | A helper that finished its job                                        |
+| Error     | Its last turn ended with an error                                     |
 
 Titles can be plain (Lead and Agent, plus Superintendent and Coordinator for sessions you give
 those roles), military (General, Sergeant, Private), or company (Owner, Supervisor, Worker). Pick the one you like in Settings. Pleni never re-orders tiles because of

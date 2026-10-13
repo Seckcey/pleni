@@ -59,7 +59,7 @@ export const DEFAULTS = {
   displayName: 'You',                 // the person at the top of the map, max 40 chars
   titles: 'plain',                    // 'plain' | 'military' | 'company'
   content: 'snippets',                // 'snippets' | 'none'
-  groupBy: 'project',                 // 'project' | 'none'
+  groupBy: 'none',                    // 'none' | 'project' (a folder tile between you and its sessions)
   window: { activeMinutes: 10, recentHours: 24, staleMinutes: 30 },
   showReviewers: false,               // Codex automatic-review sub-agents
   modelTiers: { senior: ['opus', 'fable', 'astra'], junior: ['sonnet', 'haiku', 'sol', 'luna', 'mini'] },
@@ -150,6 +150,7 @@ Session = {
   startedAt: number | null,
   lastAt: number | null,    // newest timestamp seen in a conversation record
   status: 'working' | 'ready' | 'idle' | 'done' | 'error',
+  needs: null | { kind: 'question' | 'plan' | 'blocked' | 'input', text: string | null, at: number },
   activity: { tool: string | null, detail: string | null, at: number } | null,
   lastText: string | null,  // last assistant text, whitespace collapsed, ≤280 chars; null when content = 'none'
   links: Link[],            // hand-offs this session took part in, newest last, max 50
@@ -159,7 +160,7 @@ Link = { at: number, dir: 'down' | 'up', other: string /* node key, or 'path:<ag
 ```
 
 Status meanings: **working** = a turn is running and the file moved within `staleMinutes`; **ready** =
-the last turn finished within `activeMinutes` (waiting for you); **idle** = nothing recent, or a turn
+the last turn finished within `activeMinutes` (shown as "Finished"; it is not a request); **idle** = nothing recent, or a turn
 that looks open but went stale; **done** = a sub-agent that finished; **error** = the last turn ended
 in an error.
 
@@ -416,7 +417,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   The view refits only when the content no longer fits and the person has not moved it. A
   Working/Everyone switch (remembered in `localStorage` as `pleni.mapMode`) hides quiet sessions.
 - **Tile:** platform mark (Claude or Codex), title, rank, model label, status dot and words
-  ("Working", "Waiting for you", "Idle", "Done", "Error"), the current activity or last text, and how
+  ("Needs you", "Working", "Finished", "Idle", "Done", "Error"), the current activity or last text, and how
   long ago.
 - **List:** a table of sessions grouped by project with status filters; it is also the accessible
   alternative to the map.

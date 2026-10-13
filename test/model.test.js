@@ -52,7 +52,7 @@ function session(key, extra = {}) {
 function snap({ settings = {}, claude = [], codex = [], mailbox = null, now = NOW } = {}) {
   return buildSnapshot({
     now,
-    settings: cleanSettings(settings),
+    settings: cleanSettings({ groupBy: 'project', ...settings }),
     claude: { ok: true, error: null, root: '/home/ada/.claude', sessions: claude },
     codex: { ok: true, error: null, root: '/home/ada/.codex', sessions: codex },
     mailbox,
@@ -366,7 +366,8 @@ test('nodes carry tier, model label and session fields', () => {
   assert.equal(node(s, 'you').tier, null);
   assert.deepEqual(Object.keys(lead), [
     'key', 'parent', 'platform', 'kind', 'title', 'subtitle', 'rank', 'role', 'tier', 'model', 'modelLabel',
-    'effort', 'status', 'startedAt', 'lastAt', 'activity', 'lastText', 'project', 'entrypoint', 'hidden', 'archived',
+    'effort', 'status', 'startedAt', 'lastAt', 'activity', 'lastText', 'needs', 'project', 'projectLabel', 'entrypoint',
+    'hidden', 'archived',
   ]);
   assert.deepEqual(Object.keys(node(s, 'you')), Object.keys(lead));
   assert.deepEqual(Object.keys(node(s, 'project:alpha')), Object.keys(lead));
@@ -651,21 +652,34 @@ test('a set coordinator wins over the relay, and no line is drawn without a plan
 
 test('counts add up the listed sessions by status', () => {
   const s = snap({ ...cast() });
-  assert.deepEqual(s.counts, { working: 2, ready: 2, idle: 0, done: 1, error: 1, total: 6 });
+  assert.deepEqual(s.counts, { working: 2, ready: 2, idle: 0, done: 1, error: 1, needs: 0, total: 6 });
 });
 
-test('attention lists waiting sessions, errors and mailbox tasks, newest first', () => {
+test('attention lists real asks, errors and mailbox tasks, newest first', () => {
   const s = snap({ ...cast(), mailbox: mailbox() });
+  // A session that only finished a reply ("ready") is not waiting for anyone.
   assert.deepEqual(s.attention.map((a) => [a.key, a.kind]), [
     [OTHER, 'error'],
-    [PLANNER, 'ready'],
     ['task:T-1', 'question'],
     ['task:T-2', 'review'],
   ]);
-  assert.equal(s.attention[1].text, 'Q4 plan is waiting for you.');
   assert.equal(s.attention[0].text, 'Map tile cache stopped with an error.');
-  // A sub-agent that is ready waits for its parent, not for you.
-  assert.equal(s.attention.some((a) => a.key === NESTED), false);
+});
+
+test('a session that asks, wants a plan approved, is blocked or wants input needs you', () => {
+  const kinds = [['question', 'is asking you a question.'], ['plan', 'wants you to approve a plan.'],
+    ['blocked', 'is blocked until you act.'], ['input', 'is asking for your input.']];
+  for (const [kind, words] of kinds) {
+    const s = snap({ claude: [session(LEAD, { title: 'Main lead', needs: { kind, text: 'Pick a **plan**', at: NOW - 1000 } })] });
+    assert.deepEqual(node(s, LEAD).needs, { kind, text: 'Pick a plan', at: NOW - 1000 });
+    assert.equal(s.counts.needs, 1);
+    assert.deepEqual(s.attention.map((a) => [a.key, a.kind, a.text]), [[LEAD, 'needs', `Main lead ${words}`]]);
+  }
+  const hidden = snap({ claude: [session(LEAD, { needs: { kind: 'question', text: 'secret', at: NOW } })], settings: { content: 'none' } });
+  assert.equal(node(hidden, LEAD).needs.text, null);
+  const junk = snap({ claude: [session(LEAD, { needs: { kind: 'nope' } })] });
+  assert.equal(node(junk, LEAD).needs, null);
+  assert.equal(junk.attention.length, 0);
 });
 
 test('events are newest first, include errors and stop at 200', () => {
@@ -772,7 +786,6 @@ test('activity, hand-off, mailbox and attention text are plain words too', () =>
   assert.ok(s.events.some((e) => e.kind === 'mailbox' && e.text === 'T-1: Q1 Which tax year?'));
   assert.ok(s.events.some((e) => e.kind === 'error' && e.text === 'Failed See the log'));
   const texts = s.attention.map((a) => a.text);
-  assert.ok(texts.includes('Main lead is waiting for you.'), texts.join(' | '));
   assert.ok(texts.includes('Split the service has a question that is holding up work.'), texts.join(' | '));
 });
 
@@ -819,7 +832,7 @@ test('source info reports what each source said', () => {
   assert.equal(s.version, 1);
   assert.equal(s.now, NOW);
   assert.deepEqual(s.nodes.map((n) => n.key), ['you']);
-  assert.deepEqual(s.counts, { working: 0, ready: 0, idle: 0, done: 0, error: 0, total: 0 });
+  assert.deepEqual(s.counts, { working: 0, ready: 0, idle: 0, done: 0, error: 0, needs: 0, total: 0 });
 });
 
 test('buildSnapshot copes with missing settings and sources', () => {

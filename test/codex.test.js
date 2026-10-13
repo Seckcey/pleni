@@ -656,3 +656,26 @@ test('a rollout whose head line is still being written waits for it', (t) => {
   assert.equal(s.id, MAIN);
   assert.equal(s.status, 'working');
 });
+
+// ---- needs you ----
+
+test('a turn waiting on request_user_input needs the person until it is answered', (t) => {
+  const root = codexHome(t);
+  const file = rollout(root, idAt(1), {
+    records: [started(T0 - 50 * MINUTE), call(T0 - 49 * MINUTE, 'request_user_input', { questions: [] }, 'c1')],
+  });
+  const { session } = open(root);
+  assert.deepEqual(session(idAt(1)).needs, { kind: 'input', at: T0 - 49 * MINUTE });
+  append(file, output(T0 - MINUTE, 'c1', 'answered'), completed(T0 - 30000));
+  assert.equal(session(idAt(1)).needs, null);
+});
+
+test('the async input request and a finished reply do not need the person', (t) => {
+  const root = codexHome(t);
+  rollout(root, idAt(1), { records: [started(T0 - 3 * MINUTE), call(T0 - 2 * MINUTE, 'request_user_input_async', {}, 'c1')] });
+  rollout(root, idAt(2), { records: [started(T0 - 3 * MINUTE), say(T0 - 2 * MINUTE, 'Done. Anything else?'), completed(T0 - 2 * MINUTE)] });
+  const { session } = open(root);
+  assert.equal(session(idAt(1)).needs, null);
+  assert.equal(session(idAt(2)).status, 'ready');
+  assert.equal(session(idAt(2)).needs, null);
+});

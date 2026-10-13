@@ -188,8 +188,7 @@ export function createClaudeSource({ root, desktopRoot = null, settings = DEFAUL
   function refreshDesktop() {
     try {
       const seen = new Set();
-      if (isText(desktopRoot)) {
-        const base = path.join(desktopRoot, 'claude-code-sessions');
+      for (const base of desktopBases(desktopRoot)) {
         for (const a of readDir(base)) {
           if (!a.isDirectory()) continue;
           for (const b of readDir(path.join(base, a.name))) {
@@ -295,6 +294,7 @@ function freshParse() {
     stop: null,
     synthError: false,
     assistantAt: null,
+    assistantUuid: null,
     text: null,
     textAt: null,
     open: new Map(),     // tool_use id -> { name, detail, at }, still waiting for its result
@@ -410,6 +410,7 @@ function applyAssistant(s, r, at) {
   if (isText(msg.stop_reason)) s.stop = msg.stop_reason;
   s.lastKind = 'assistant';
   if (at !== null) s.assistantAt = at;
+  if (isText(r.uuid)) s.assistantUuid = r.uuid;
   s.synthError = msg.model === SYNTHETIC && r.isApiErrorMessage === true;
   if (isText(msg.model) && msg.model !== SYNTHETIC) s.model = msg.model;
   for (const block of blocks(msg.content)) {
@@ -588,6 +589,7 @@ function toSession(view, desk, t, win, snippets) {
     status: statusOf(s, t, win, view.done),
     activity: activityOf(s, snippets),
     lastText: snippets ? s.text : null,
+    needs: agent ? null : needsOf(s, desk, snippets),
     links: view.links.sort((a, b) => a.at - b.at).slice(-MAX_LINKS),
     archived: desk?.isArchived === true,
   };
@@ -625,6 +627,22 @@ function statusOf(s, t, win, done) {
   if (s.synthError) return 'error';
   if (endedTurn(s) && s.assistantAt !== null && t - s.assistantAt <= win.activeMs) return 'ready';
   return 'idle';
+}
+
+// What the person must do before this session can go on, or null. A headless session (started by
+// a script or relay, not a person) is never waiting for the person. A question or a plan waits
+// until it is answered, however long that takes.
+const ASK_TOOLS = { AskUserQuestion: 'question', ExitPlanMode: 'plan' };
+function needsOf(s, desk, snippets) {
+  if (s.entrypoint === 'sdk-cli' || desk?.isArchived === true) return null;
+  let asking = null;
+  for (const value of s.open.values()) if (ASK_TOOLS[value.name]) asking = value;
+  if (asking) return { kind: ASK_TOOLS[asking.name], text: null, at: asking.at ?? s.lastAt };
+  const blocked = desk?.needs;
+  if (blocked && endedTurn(s) && blocked.uuid === s.assistantUuid) {
+    return { kind: 'blocked', text: snippets && blocked.text ? clip(collapse(blocked.text), 280) : null, at: s.assistantAt ?? s.lastAt };
+  }
+  return null;
 }
 
 function endedTurn(s) {
@@ -733,9 +751,42 @@ function addEvents(r, names, snippets, out) {
 
 // ---- small helpers ----
 
+// The Claude desktop app from the Microsoft Store keeps its files in its package folder, which only
+// the app itself sees as %APPDATA%\Claude. Other programs, Pleni included, must look there directly.
+function desktopBases(desktopRoot) {
+  if (!isText(desktopRoot)) return [];
+  const base = path.join(desktopRoot, 'claude-code-sessions');
+  if (process.platform !== 'win32' || isDir(base)) return [base];
+  const local = process.env.LOCALAPPDATA;
+  if (!isText(local)) return [base];
+  const packages = path.join(local, 'Packages');
+  const found = readDir(packages)
+    .filter((d) => d.isDirectory() && /^Claude_[a-z0-9]+$/i.test(d.name))
+    .map((d) => path.join(packages, d.name, 'LocalCache', 'Roaming', 'Claude', 'claude-code-sessions'))
+    .filter(isDir);
+  return found.length ? found : [base];
+}
+
+function isDir(dir) {
+  try {
+    return fs.statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+// Claude's own end-of-turn summary says "blocked" when the session needs the person. It counts only
+// while it still describes the newest reply.
+function desktopNeeds(raw) {
+  const sum = isObject(raw.postTurnSummary) ? raw.postTurnSummary : null;
+  if (!sum || sum.status_category !== 'blocked' || !isText(sum.summarizes_uuid)) return null;
+  return { uuid: sum.summarizes_uuid, text: textOrNull(sum.needs_action) };
+}
+
 function pickDesktop(raw) {
   if (!raw || !isText(raw.cliSessionId) || !SESSION_ID.test(raw.cliSessionId)) return null;
   return {
+    needs: desktopNeeds(raw),
     cliSessionId: raw.cliSessionId,
     title: textOrNull(raw.title),
     titleSource: textOrNull(raw.titleSource),

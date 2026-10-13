@@ -109,7 +109,7 @@ test('working sessions move while the others keep still', () => {
 });
 
 test('the demo snapshot shows two projects, ranks and a live mailbox line', () => {
-  const s = demoSnapshot(NOW, { titles: 'military' });
+  const s = demoSnapshot(NOW, { titles: 'military', groupBy: 'project' });
   const projects = s.nodes.filter((n) => n.kind === 'project').map((n) => n.title);
   assert.deepEqual(projects, ['billing-service', 'field-app']);
   for (const status of ['working', 'ready', 'idle', 'done', 'error']) assert.ok(s.counts[status] > 0, status);
@@ -124,7 +124,7 @@ test('the demo snapshot shows two projects, ranks and a live mailbox line', () =
   assert.ok(s.events.some((e) => e.kind === 'report'));
   assert.ok(s.events.some((e) => e.kind === 'message'));
   assert.ok(s.events.some((e) => e.kind === 'error'));
-  assert.deepEqual(new Set(s.attention.map((a) => a.kind)), new Set(['ready', 'error', 'question', 'review']));
+  assert.deepEqual(new Set(s.attention.map((a) => a.kind)), new Set(['needs', 'error', 'question', 'review']));
   // The automatic reviewer only shows when asked for.
   assert.equal(s.nodes.some((n) => n.kind === 'reviewer'), false);
   assert.ok(demoSnapshot(NOW, { showReviewers: true }).nodes.some((n) => n.kind === 'reviewer'));

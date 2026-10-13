@@ -111,6 +111,7 @@ export function createCodexSource({ root, settings, now = Date.now } = {}) {
         ? { tool: call.tool, detail: snippets ? call.detail : null, at: call.at ?? s.lastAt ?? t }
         : null,
       lastText: snippets ? s.lastText : null,
+      needs: needsOf(s),
       links: linksOf(thread, ctx, snippets),
       archived: thread.archived,
     };
@@ -548,6 +549,16 @@ function statusOf(s, doneAt, t, w) {
   if (finished) return 'done';
   if (s.closedAt !== null && t - s.closedAt <= w.activeMinutes * MINUTE) return 'ready';
   return 'idle';
+}
+
+// A turn held open by an unanswered request for the person's input. The async form returns at once,
+// so only the waiting form counts. It stays until answered, however long that takes.
+function needsOf(s) {
+  if (!s.turnOpen) return null;
+  for (const call of s.pending.values()) {
+    if (call.tool === 'request_user_input') return { kind: 'input', at: call.at ?? s.lastAt };
+  }
+  return null;
 }
 
 function isReviewer(meta, s) {

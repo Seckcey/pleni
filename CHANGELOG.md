@@ -10,6 +10,12 @@ The first version. Pleni only watches: it never starts, stops, or sends anything
 
 ### Added
 
+- "Needs you" now means a real ask: a Claude question or plan waiting for your answer, a Claude
+  desktop session that its own summary marks as blocked, or a Codex request for your input. A
+  session that simply finished a reply shows "Finished". Background (headless) sessions never ask.
+- The map draws lines straight from you to your sessions; each tile names its folder. Folder
+  tiles are still available in Settings ("Group sessions: By project folder").
+
 - Pleni keeps its key, so its address stays the same after a restart and each phone or laptop
   signs in once. `--new-key` makes a new one.
 

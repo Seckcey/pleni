@@ -11,7 +11,7 @@ export const DEFAULTS = deepFreeze({
   displayName: 'You',
   titles: 'plain',
   content: 'snippets',
-  groupBy: 'project',
+  groupBy: 'none',
   window: { activeMinutes: 10, recentHours: 24, staleMinutes: 30 },
   showReviewers: false,
   modelTiers: { senior: ['opus', 'fable', 'astra'], junior: ['sonnet', 'haiku', 'sol', 'luna', 'mini'] },

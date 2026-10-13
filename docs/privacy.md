@@ -47,7 +47,7 @@ Always:
 
 - Your name (the one you type in Settings; "You" until you change it).
 - Session names, project folder names, git branches, models, and effort.
-- Each session's state (Working, Waiting for you, Idle, Done, Error), the name of the tool it is
+- Each session's state (Needs you, Working, Finished, Idle, Done, Error), the name of the tool it is
   using, and when it last did something.
 - Who started whom, and when work was handed down or reported back up.
 - In the Tasks view: mailbox task ids and states.

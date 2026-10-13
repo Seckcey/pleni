@@ -345,7 +345,7 @@ h1, h2, h3 { line-height: var(--ui-leading-tight); }
 .facts .live.paused::before { background: var(--ui-offline); }
 .facts .live.bad::before { background: var(--ui-error); }
 .facts .f-working b { color: var(--ui-ok-text); }
-.facts .f-ready b { color: var(--ui-warn-text); }
+.facts .f-needs b { color: var(--ui-warn-text); }
 .facts .f-error b { color: var(--ui-error-text); }
 
 /* ---------- page and shared pieces ---------- */
@@ -400,7 +400,8 @@ a.attn { text-decoration: none; }
 
 /* status words, dots and pills */
 .st-working { --pc: var(--ui-ok-text); --pd: var(--ui-ok); }
-.st-ready { --pc: var(--ui-warn-text); --pd: var(--ui-warn); }
+.st-needs { --pc: var(--ui-warn-text); --pd: var(--ui-warn); }
+.st-ready { --pc: var(--ui-accent-strong); --pd: var(--ui-accent); }
 .st-idle { --pc: var(--ui-offline-text); --pd: var(--ui-offline); }
 .st-done { --pc: var(--ui-accent-strong); --pd: var(--ui-accent); }
 .st-error { --pc: var(--ui-error-text); --pd: var(--ui-error); }
@@ -472,7 +473,7 @@ a.attn { text-decoration: none; }
 .tile:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 3px; }
 .tile .mark { grid-row: 1 / 3; }
 .tile.st-working { border-color: color-mix(in srgb, var(--ui-ok) 45%, var(--ui-map-node-border)); }
-.tile.st-ready { border-color: color-mix(in srgb, var(--ui-warn) 55%, var(--ui-map-node-border)); }
+.tile.st-needs { border-color: color-mix(in srgb, var(--ui-warn) 55%, var(--ui-map-node-border)); }
 .tile.st-error { border-color: color-mix(in srgb, var(--ui-error) 55%, var(--ui-map-node-border)); }
 .tile.k-person { background: color-mix(in srgb, var(--ui-accent) 12%, var(--ui-map-node)); border-color: var(--ui-accent); }
 .tile.k-project { background: color-mix(in srgb, var(--ui-surface-raised) 60%, var(--ui-map-node)); }
@@ -489,7 +490,7 @@ a.attn { text-decoration: none; }
 .tile-text b { color: var(--ui-text-primary); font-weight: var(--ui-weight-semibold); }
 .tile-counts { display: flex; flex-wrap: wrap; gap: 0 var(--ui-space-4); font-size: var(--ui-font-sm); color: var(--ui-text-secondary); }
 .tile-counts .c-working { color: var(--ui-ok-text); }
-.tile-counts .c-ready { color: var(--ui-warn-text); }
+.tile-counts .c-needs { color: var(--ui-warn-text); }
 .tile-counts .c-error { color: var(--ui-error-text); }
 .tile-quiet {
   position: absolute; right: 10px; top: -10px; padding: 0 var(--ui-space-4);

@@ -245,9 +245,16 @@ function cleanSession(raw) {
     status: STATUSES.includes(raw.status) ? raw.status : 'idle',
     activity: cleanActivity(raw.activity),
     lastText: snippet(raw.lastText, MAX_TEXT),
+    needs: cleanNeeds(raw.needs),
     links: Array.isArray(raw.links) ? raw.links : [],
     archived: raw.archived === true,
   };
+}
+
+const NEEDS = ['question', 'plan', 'blocked', 'input'];
+function cleanNeeds(raw) {
+  if (!isObject(raw) || !NEEDS.includes(raw.kind)) return null;
+  return { kind: raw.kind, text: snippet(raw.text, MAX_TEXT), at: time(raw.at) };
 }
 
 function cleanActivity(raw) {
@@ -392,7 +399,9 @@ function sessionNode(session, project, ctx) {
     lastAt: session.lastAt,
     activity,
     lastText: snippets ? session.lastText : null,
+    needs: session.needs && { ...session.needs, text: snippets ? session.needs.text : null },
     project,
+    projectLabel: entry(settings.projects, project)?.label || project,
     entrypoint: session.entrypoint,
     hidden: false,
     archived: false,
@@ -417,7 +426,7 @@ function groupNode({ key, parent, platform, kind, title, rank, project = null })
   return {
     key, parent, platform, kind, title, subtitle: null, rank, role: null, tier: null,
     model: null, modelLabel: null, effort: null, status: null, startedAt: null, lastAt: null,
-    activity: null, lastText: null, project, entrypoint: null, hidden: false, archived: false,
+    activity: null, lastText: null, needs: null, project, projectLabel: project, entrypoint: null, hidden: false, archived: false,
   };
 }
 
@@ -605,10 +614,20 @@ function sortEvents(events) {
 // ---- counts and attention ----
 
 function countStatuses(sessionNodes) {
-  const counts = { working: 0, ready: 0, idle: 0, done: 0, error: 0, total: sessionNodes.length };
-  for (const node of sessionNodes) counts[node.status]++;
+  const counts = { working: 0, ready: 0, idle: 0, done: 0, error: 0, needs: 0, total: sessionNodes.length };
+  for (const node of sessionNodes) {
+    counts[node.status]++;
+    if (node.needs) counts.needs++;
+  }
   return counts;
 }
+
+const NEEDS_TEXT = {
+  question: 'is asking you a question.',
+  plan: 'wants you to approve a plan.',
+  blocked: 'is blocked until you act.',
+  input: 'is asking for your input.',
+};
 
 function attentionList(sessionNodes, tasks) {
   const list = [];
@@ -616,8 +635,10 @@ function attentionList(sessionNodes, tasks) {
     const name = snippet(node.title, MAX_TITLE) || node.title;
     if (node.status === 'error') {
       list.push({ key: node.key, kind: 'error', text: `${name} stopped with an error.`, at: node.lastAt });
-    } else if (node.status === 'ready' && node.kind === 'session') {
-      list.push({ key: node.key, kind: 'ready', text: `${name} is waiting for you.`, at: node.lastAt });
+    }
+    // Only a real ask counts. A session that just finished a reply is not waiting for anyone.
+    if (node.needs) {
+      list.push({ key: node.key, kind: 'needs', text: `${name} ${NEEDS_TEXT[node.needs.kind]}`, at: node.needs.at ?? node.lastAt });
     }
   }
   for (const task of tasks) {
