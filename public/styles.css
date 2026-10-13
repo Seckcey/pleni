@@ -651,6 +651,19 @@ table.edit td { padding: var(--ui-space-3) var(--ui-space-4) var(--ui-space-3) 0
 table.edit td .field { min-height: 28px; padding: var(--ui-space-2) var(--ui-space-4); }
 table.edit .who { display: flex; align-items: center; gap: var(--ui-space-4); min-width: 0; }
 table.edit .key { display: block; color: var(--ui-text-muted); font-family: var(--ui-font-mono); font-size: var(--ui-font-xs); overflow-wrap: anywhere; }
+/* Chain of command: the heading row and each rule share fixed outer columns so they line up. */
+.rules { list-style: none; margin: 0; padding: 0; }
+.rule {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 11rem) 6.5rem;
+  gap: var(--ui-space-3) var(--ui-space-4); align-items: start; padding: var(--ui-space-3) 0; border-top: 1px solid var(--ui-border);
+}
+.rule-head { margin-top: var(--ui-space-4); border-top: 0; color: var(--ui-text-muted); font-size: var(--ui-font-md); font-weight: var(--ui-weight-medium); }
+.rule .field { min-height: 28px; padding: var(--ui-space-2) var(--ui-space-4); }
+.rule .btn { justify-self: start; padding: var(--ui-space-2) var(--ui-space-5); }
+.rf { min-width: 0; }
+/* On wide screens the heading row names the columns, so each field's own label is for screen readers only. */
+.rf > label { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.chain-add { margin-top: var(--ui-space-5); }
 .btnrow {
   position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-5);
   padding: var(--ui-space-5) 0; background: var(--ui-bg); border-top: 1px solid var(--ui-border);
@@ -738,6 +751,13 @@ ul.kids .t { font-weight: var(--ui-weight-semibold); overflow: hidden; text-over
   .welcome img { width: var(--ui-pip-md); height: var(--ui-pip-md); }
   .srow { grid-template-columns: minmax(0, 1fr); }
   .srow .help { grid-column: 1; }
+  .rule-head { display: none; }
+  .rule { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .rule .btn { align-self: end; }
+  .rf > label {
+    position: static; width: auto; height: auto; margin: 0 0 var(--ui-space-2); overflow: visible; clip: auto; white-space: normal;
+    display: block; font-size: var(--ui-font-sm); color: var(--ui-text-muted);
+  }
   .ev { grid-template-columns: 64px 18px minmax(0, 1fr); }
   .drawer { padding: 0 var(--ui-space-6) 32px; }
   ol.dev li { grid-template-columns: minmax(0, 1fr); }

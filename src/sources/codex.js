@@ -14,6 +14,7 @@ const HOUR = 60 * MINUTE;
 const SCAN_MS = 30 * 1000;
 const MAX_FILES = 300;
 const MAX_LINKS = 50;
+const MAX_RECEIVED = 200;
 const MAX_EVENTS = 200;
 const TAIL_BYTES = 4 * MiB;
 const CATCH_UP_BYTES = 16 * MiB; // more unread bytes than this: start again near the end
@@ -32,6 +33,12 @@ const PATCH_FILE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/m;
 const CALLS = new Set(['function_call', 'custom_tool_call']);
 const OUTPUTS = new Set(['function_call_output', 'custom_tool_call_output']);
 const MESSAGE_TOOLS = new Set(['send_message', 'followup_task']);
+// A message from another thread arrives as the output of this call, wrapped in a delegation block.
+const RECEIVED_TOOL = 'send_message_to_thread';
+const DELEGATION_OPEN = '<codex_delegation>';
+const DELEGATION_CLOSE = '</codex_delegation>';
+const DELEGATION_INPUT = /<input>([\s\S]*)<\/input>/;
+const DELEGATION_SOURCE = /<source_thread_id>([^<]*)<\/source_thread_id>/;
 const WINDOW = { activeMinutes: 10, recentHours: 24, staleMinutes: 30 };
 
 export function createCodexSource({ root, settings, now = Date.now } = {}) {
@@ -57,7 +64,8 @@ export function createCodexSource({ root, settings, now = Date.now } = {}) {
         registryAt = t;
       }
       readTitles();
-      for (const thread of threads.values()) refresh(thread);
+      const snippets = settings?.content !== 'none';
+      for (const thread of threads.values()) refresh(thread, snippets);
       return { ok: true, error: null, root, sessions: sessionsAt(t) };
     } catch {
       return fail('Pleni could not read the Codex sessions.');
@@ -91,6 +99,7 @@ export function createCodexSource({ root, settings, now = Date.now } = {}) {
       if (!out.has(session.key)) out.set(session.key, session);
     }
     linkWorkers(out, ctx);
+    linkMessages(out, ctx);
     return [...out.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   }
 
@@ -110,6 +119,25 @@ export function createCodexSource({ root, settings, now = Date.now } = {}) {
       if (closedAt !== null && !thread.state.turnOpen) {
         session.links.push({ at: closedAt, dir: 'up', other: session.parentKey, label: null });
       }
+    }
+  }
+
+  // A message one thread sends another is recorded only in the recipient's file, but the line
+  // belongs to the sender. Senders that are not listed get nothing.
+  function linkMessages(out, ctx) {
+    const snippets = settings?.content !== 'none';
+    const touched = new Set();
+    for (const session of out.values()) {
+      const thread = ctx.byId.get(session.id);
+      for (const message of thread?.state.received ?? []) {
+        const sender = out.get(`codex:${message.from}`);
+        if (!sender || sender === session) continue;
+        sender.links.push({ at: message.at, dir: 'down', other: session.key, label: snippets ? message.label : null });
+        touched.add(sender);
+      }
+    }
+    for (const sender of touched) {
+      sender.links.sort((a, b) => a.at - b.at).splice(0, Math.max(0, sender.links.length - MAX_LINKS));
     }
   }
 
@@ -266,12 +294,13 @@ function newState() {
     spawns: new Map(), // call_id -> link, until the spawn output names the agent path
     paths: new Map(), // agent path -> thread id, from SubAgentActivity items
     completed: new Map(), // child thread id -> time its completion was recorded here
+    received: [], // { at, from, label } for messages other threads sent here, oldest first
   };
 }
 
 // ---- reading ----
 
-function refresh(thread) {
+function refresh(thread, snippets) {
   try {
     const st = fs.statSync(thread.file);
     if (st.size === thread.size && st.mtimeMs === thread.mtimeMs) return;
@@ -287,7 +316,7 @@ function refresh(thread) {
       thread.started = true;
       thread.partial = out.size > TAIL_BYTES;
     }
-    for (const rec of out.records) apply(thread, rec);
+    for (const rec of out.records) apply(thread, rec, snippets);
     if (fresh && thread.partial && !thread.state.model) guessModel(thread);
     thread.size = st.size;
     thread.mtimeMs = st.mtimeMs;
@@ -310,6 +339,7 @@ function restart(thread) {
     links: old.links,
     paths: old.paths,
     completed: old.completed,
+    received: old.received,
   };
   thread.tail = new JsonlTail(thread.file, { maxInitialBytes: TAIL_BYTES });
   thread.started = false;
@@ -373,7 +403,7 @@ function guessModel(thread) {
   thread.state.effort = str(last.payload.effort);
 }
 
-function apply(thread, rec) {
+function apply(thread, rec, snippets) {
   if (isInherited(thread.meta, rec)) return;
   const s = thread.state;
   const payload = isObject(rec.payload) ? rec.payload : {};
@@ -388,7 +418,7 @@ function apply(thread, rec) {
       return;
     case 'response_item':
       touch(s, at);
-      onItem(thread, payload, at);
+      onItem(thread, payload, at, snippets);
       return;
     case 'event_msg':
       touch(s, at);
@@ -433,13 +463,15 @@ function closeTurn(s, turnId, at, error) {
   s.pending.clear();
 }
 
-function onItem(thread, p, at) {
+function onItem(thread, p, at, snippets) {
   const s = thread.state;
   // Reading began mid-file and no turn boundary has been seen yet: we are inside a turn.
   if (thread.partial && !s.sawTurn && !s.turnOpen && (CALLS.has(p.type) || p.type === 'message')) s.turnOpen = true;
   if (CALLS.has(p.type)) onCall(thread, p, at);
-  else if (OUTPUTS.has(p.type)) onOutput(s, p);
-  else if (p.type === 'message' && p.role === 'assistant') {
+  else if (OUTPUTS.has(p.type)) {
+    onOutput(s, p);
+    if (p.type === 'function_call_output' && p.name === RECEIVED_TOOL) onReceived(thread, p, at, snippets);
+  } else if (p.type === 'message' && p.role === 'assistant') {
     const text = flat(messageText(p.content), 280);
     if (text) s.lastText = text;
   }
@@ -476,6 +508,31 @@ function onOutput(s, p) {
   const result = parseObject(outputText(p.output));
   const spawned = str(result?.task_name) ?? str(result?.agent_path);
   if (spawned?.startsWith('/')) link.path = spawned;
+}
+
+// Another thread's message to this one. Only the sender and a short label are kept, never the text.
+function onReceived(thread, p, at, snippets) {
+  if (at === null) return;
+  const message = delegationOf(outputText(p.output), snippets);
+  if (!message || message.from === thread.id) return;
+  const s = thread.state;
+  s.received.push({ at, from: message.from, label: message.label });
+  if (s.received.length > MAX_RECEIVED) s.received.shift();
+}
+
+// <codex_delegation><source_thread_id>UUID</source_thread_id><input>TEXT</input></codex_delegation>,
+// possibly with whitespace and other tags around it. The sender id is looked for outside <input>,
+// so a message cannot claim to come from someone else.
+function delegationOf(text, snippets) {
+  const start = text.indexOf(DELEGATION_OPEN);
+  const end = text.lastIndexOf(DELEGATION_CLOSE);
+  if (start === -1 || end < start) return null;
+  const block = text.slice(start + DELEGATION_OPEN.length, end);
+  const input = DELEGATION_INPUT.exec(block);
+  const rest = input ? block.slice(0, input.index) + block.slice(input.index + input[0].length) : block;
+  const from = idOf(DELEGATION_SOURCE.exec(rest)?.[1]);
+  if (!from || !UUID.test(from)) return null;
+  return { from, label: snippets && input ? firstLine(input[1], 140) : null };
 }
 
 function onSubAgent(s, item, at) {

@@ -66,6 +66,7 @@ test('cleanSettings keeps good values', () => {
     },
     people: { you: { label: 'Ada' }, [`claude:${UUID}`]: { label: 'Builder', role: 'coordinator' } },
     projects: { pleni: { label: 'Pleni', hidden: false } },
+    chain: [{ match: 'Sergeant', reportsTo: 'Colonel', role: 'coordinator' }, { match: 'Colonel', reportsTo: 'you', role: null }],
     remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] },
   };
   assert.deepEqual(cleanSettings(raw), raw);
@@ -213,7 +214,8 @@ test('cleanSettings validates node keys, roles and entry limits', () => {
   assert.equal('project:pleni' in settings.people, false);
   assert.equal('project:other' in settings.people, false);
   assert.equal(Object.keys(settings.people).length, 500);
-  assert.equal(settings.sources.mailbox.planner, null);
+  // A text that is not a key is a session name to look for.
+  assert.equal(settings.sources.mailbox.planner, 'someone');
   assert.equal(settings.sources.mailbox.coordinator, `claude:${UUID}`);
 });
 
@@ -381,4 +383,23 @@ test('loadSettings gives defaults and an error for a broken file', (t) => {
   const folder = loadSettings(dir);
   assert.deepEqual(folder.settings, DEFAULTS);
   assert.equal(typeof folder.error, 'string');
+});
+
+test('cleanSettings cleans chain rules', () => {
+  const rules = [
+    { match: '  Sergeant  ', reportsTo: ' Colonel ', role: 'coordinator' },
+    { match: 'Colonel', reportsTo: 'me', role: 'hidden' },
+    { match: 'Lead', reportsTo: '', role: 'boss' },
+    { match: '', reportsTo: 'x' },
+    'junk',
+    { match: 'x'.repeat(200), reportsTo: 'y'.repeat(200) },
+  ];
+  assert.deepEqual(cleanSettings({ chain: rules }).chain, [
+    { match: 'Sergeant', reportsTo: 'Colonel', role: 'coordinator' },
+    { match: 'Colonel', reportsTo: 'you', role: null },
+    { match: 'Lead', reportsTo: 'you', role: null },
+    { match: 'x'.repeat(80), reportsTo: 'y'.repeat(80), role: null },
+  ]);
+  assert.equal(cleanSettings({ chain: Array.from({ length: 80 }, (_, i) => ({ match: `m${i}`, reportsTo: 'you' })) }).chain.length, 50);
+  assert.deepEqual(cleanSettings({ chain: 'nope' }).chain, []);
 });

@@ -10,6 +10,11 @@ The first version. Pleni only watches: it never starts, stops, or sends anything
 
 ### Added
 
+- A chain of command in Settings: rules such as "a session whose name contains Sergeant reports to
+  the newest session whose name contains Colonel", with an optional rank. The mailbox coordinator
+  hangs under its planner, which can be named instead of picked by key.
+- Live lines for messages Codex threads send each other (send_message_to_thread).
+
 - Codex workers started by a coordinator now hang under that coordinator, read from Codex's
   coordinator registry, with lines when work goes down and when the worker reports back.
 

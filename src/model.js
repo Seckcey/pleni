@@ -35,7 +35,7 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, mail
     snippets: s.content === 'snippets',
   };
   const all = collectSessions([claude, codex]);
-  const tree = buildTree(all, ctx);
+  const tree = buildTree(all, ctx, isObject(mailbox) ? mailbox : null);
   const links = linkParts(tree, all, ctx);
   const mail = mailboxParts(isObject(mailbox) ? mailbox : null, tree, ctx);
   const nodes = tree.order.map((key) => tree.nodes.get(key));
@@ -50,7 +50,7 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, mail
       mailbox: tasks ? sourceInfo(mailbox, tasks.length) : null,
     },
     nodes,
-    edges: [...treeEdges(tree, links.pairs, ctx), ...mail.edges],
+    edges: mergeEdges(treeEdges(tree, links.pairs, ctx), mail.edges, ctx),
     events: sortEvents([...links.events, ...mail.events, ...errorEvents(sessionNodes, ctx)]),
     counts: countStatuses(sessionNodes),
     attention: attentionList(sessionNodes, tasks ?? []),
@@ -289,17 +289,20 @@ function projectFor(session, all, memo, depth = 0) {
 
 // ---- tree ----
 
-function buildTree(all, ctx) {
+function buildTree(all, ctx, mailbox) {
   const { settings } = ctx;
   const memo = new Map();
   const nodes = new Map();
   const homes = new Map();
+  const rules = new Map();
   for (const session of [...all.values()].sort(byKey)) {
     if (!isListed(session, ctx)) continue;
     const name = projectFor(session, all, memo);
     const project = entry(settings.projects, name);
     if (project?.hidden === true) continue;
-    nodes.set(session.key, sessionNode(session, name, ctx));
+    const rule = chainRule(settings.chain, session, settings);
+    if (rule) rules.set(session.key, rule);
+    nodes.set(session.key, sessionNode(session, name, ctx, rule));
     homes.set(session.key, settings.groupBy === 'project' ? projectKey(name) : 'you');
   }
 
@@ -309,6 +312,8 @@ function buildTree(all, ctx) {
     parentOf.set(key, parentKey && nodes.has(parentKey) ? parentKey : homes.get(key));
     node.parent = parentOf.get(key);
   }
+  ctx.mailboxKeys = mailboxKeys(mailbox, nodes, settings);
+  applyChain(nodes, parentOf, homes, rules, ctx.mailboxKeys);
   breakCycles(nodes, parentOf, homes);
 
   nodes.set('you', personNode(settings.displayName, settings.titles));
@@ -324,6 +329,55 @@ function buildTree(all, ctx) {
   const order = treeOrder(nodes, parentOf);
   rollUp(nodes, order);
   return { nodes, parentOf, order };
+}
+
+// ---- chain of command ----
+
+// The first rule whose `match` is in the session's name (its own title or the name the person gave
+// it), ignoring case.
+function chainRule(chain, session, settings) {
+  if (!Array.isArray(chain) || chain.length === 0) return null;
+  const names = [session.title, entry(settings.people, session.key)?.label].filter(Boolean).map((n) => n.toLowerCase());
+  return chain.find((rule) => names.some((name) => name.includes(rule.match.toLowerCase()))) ?? null;
+}
+
+// A key that is listed, 'you', or the newest listed session whose name contains the text. Newest by
+// last activity, so a rule follows a role when a new session takes it over.
+function findSession(ref, nodes, self = null) {
+  if (typeof ref !== 'string' || !ref) return null;
+  if (ref === 'you') return 'you';
+  if (nodes.has(ref)) return ref === self ? null : ref;
+  const needle = ref.toLowerCase();
+  let best = null;
+  for (const [key, node] of nodes) {
+    if (key === self || !String(node.title || '').toLowerCase().includes(needle)) continue;
+    const at = node.lastAt ?? -Infinity;
+    const bestAt = best ? nodes.get(best).lastAt ?? -Infinity : -Infinity;
+    if (!best || at > bestAt || (at === bestAt && key < best)) best = key;
+  }
+  return best;
+}
+
+function mailboxKeys(mailbox, nodes, settings) {
+  if (!mailbox) return { planner: null, coordinator: null };
+  const config = settings.sources.mailbox;
+  const relayKey = isObject(mailbox.relay) && typeof mailbox.relay.coordinatorKey === 'string' ? mailbox.relay.coordinatorKey : null;
+  const planner = findSession(config.planner, nodes);
+  const coordinator = findSession(config.coordinator || relayKey, nodes);
+  return { planner: planner === 'you' ? null : planner, coordinator: coordinator === 'you' ? null : coordinator };
+}
+
+// Who reports to whom: a chain rule first, then the mailbox (its coordinator works for its planner),
+// then what the session files say. A rule whose boss is not on the map changes nothing.
+function applyChain(nodes, parentOf, homes, rules, keys) {
+  for (const key of nodes.keys()) {
+    const rule = rules.get(key);
+    let boss = null;
+    if (rule) boss = findSession(rule.reportsTo, nodes, key);
+    else if (key === keys.coordinator && keys.planner && keys.planner !== key) boss = keys.planner;
+    if (boss === 'you') parentOf.set(key, homes.get(key));
+    else if (boss) parentOf.set(key, boss);
+  }
 }
 
 // Malformed parent links could form a loop; the first member of a loop moves to its project.
@@ -377,10 +431,10 @@ function rollUp(nodes, order) {
   }
 }
 
-function sessionNode(session, project, ctx) {
+function sessionNode(session, project, ctx, rule = null) {
   const { settings, snippets } = ctx;
   const person = entry(settings.people, session.key);
-  const role = person?.role || session.role || (session.kind === 'session' ? 'lead' : 'worker');
+  const role = person?.role || rule?.role || session.role || (session.kind === 'session' ? 'lead' : 'worker');
   const tier = modelTier(session.model, settings.modelTiers);
   const activity = session.activity && { ...session.activity, detail: snippets ? session.activity.detail : null };
   return {
@@ -550,6 +604,27 @@ function treeEdges(tree, pairs, ctx) {
   return edges;
 }
 
+// When the mailbox coordinator hangs under its planner, the tree line and the mailbox line are the
+// same line: keep one, lit by whichever moved last.
+function mergeEdges(treeList, mailList, ctx) {
+  const out = [...treeList];
+  for (const mail of mailList) {
+    const same = out.find((e) => e.from === mail.from && e.to === mail.to);
+    if (!same) {
+      out.push(mail);
+      continue;
+    }
+    const newer = (a, b) => (a === null ? b : b === null ? a : Math.max(a, b));
+    if (mail.lastDown !== null && (same.lastDown === null || mail.lastDown >= same.lastDown)) same.downLabel = mail.downLabel;
+    if (mail.lastUp !== null && (same.lastUp === null || mail.lastUp >= same.lastUp)) same.upLabel = mail.upLabel;
+    same.lastDown = newer(same.lastDown, mail.lastDown);
+    same.lastUp = newer(same.lastUp, mail.lastUp);
+    same.kind = 'mailbox';
+    same.active = activeFor(same.lastDown, same.lastUp, ctx.now);
+  }
+  return out;
+}
+
 function edge(from, to, kind, stats, ctx) {
   const lastDown = stats?.lastDown ?? null;
   const lastUp = stats?.lastUp ?? null;
@@ -574,10 +649,7 @@ function activeFor(lastDown, lastUp, now) {
 
 function mailboxParts(mailbox, tree, ctx) {
   if (!mailbox) return { edges: [], events: [] };
-  const config = ctx.settings.sources.mailbox;
-  const relayKey = isObject(mailbox.relay) && typeof mailbox.relay.coordinatorKey === 'string' ? mailbox.relay.coordinatorKey : null;
-  const planner = listed(tree, config.planner);
-  const coordinator = listed(tree, config.coordinator || relayKey);
+  const { planner, coordinator } = ctx.mailboxKeys ?? { planner: null, coordinator: null };
   const stats = { lastDown: null, lastUp: null, downLabel: null, upLabel: null };
   const events = [];
   const raw = Array.isArray(mailbox.events) ? mailbox.events : [];

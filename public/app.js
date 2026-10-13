@@ -23,6 +23,9 @@ const ENTRY_WORDS = { 'claude-desktop': 'Claude desktop app', 'claude-vscode': '
 const ATTN_WORDS = { needs: 'Needs you', error: 'Error', question: 'Question', review: 'Ready for review' };
 const EVENT_KIND_WORDS = { user: 'Prompt', assistant: 'Said', thinking: 'Thinking', tool: 'Tool', result: 'Result', error: 'Error' };
 const ROLE_OPTIONS = [['', 'Automatic'], ['superintendent', 'Superintendent'], ['coordinator', 'Coordinator'], ['lead', 'Lead'], ['worker', 'Worker'], ['hidden', 'Hide it']];
+const RANK_OPTIONS = ROLE_OPTIONS.filter(([v]) => v !== 'hidden');
+const MAX_CHAIN = 50; // chain-of-command rules the server keeps
+const MAX_NAME = 80; // longest session-name text in a rule or a mailbox field
 
 // Mirror of DEFAULTS in src/config.js, used by "Restore defaults". Keep the two in step.
 const DEFAULTS = {
@@ -43,6 +46,7 @@ const DEFAULTS = {
   },
   people: {},
   projects: {},
+  chain: [],
   remote: { hosts: [], tailscaleUsers: [] },
 };
 
@@ -1874,14 +1878,25 @@ function checkRow(id, label, path, text, help) {
   );
 }
 
-function sessionOptions(current) {
-  const nodes = (S.set.info.nodes || []).filter((n) => n && (n.platform === 'claude' || n.platform === 'codex'));
-  const opts = ['<option value="">Not set</option>'];
-  if (current && !nodes.some((n) => n.key === current)) opts.push(`<option value="${esc(current)}" selected>A saved session that is not listed now</option>`);
-  for (const n of nodes) {
-    opts.push(`<option value="${esc(n.key)}"${n.key === current ? ' selected' : ''}>${esc(`${n.title || keyName(n.key)} (${PLATFORM_WORDS[n.platform]})`)}</option>`);
+// Session names offered while typing in the mailbox and chain-of-command fields. Long names are
+// cut to the first MAX_NAME letters, which still match because Pleni looks for the text inside a name.
+function sessionNamesHtml() {
+  const names = new Map();
+  for (const n of S.set.info.nodes || []) {
+    if (!n || (n.platform !== 'claude' && n.platform !== 'codex')) continue;
+    const title = Array.from(String(n.title || '').trim()).slice(0, MAX_NAME).join('').trim();
+    if (title && !names.has(title)) names.set(title, PLATFORM_WORDS[n.platform]);
   }
-  return opts.join('');
+  const opts = [...names].sort((a, b) => a[0].localeCompare(b[0])).map(([title, platform]) => `<option value="${esc(title)}">${esc(platform)}</option>`);
+  return `<datalist id="s-session-names">${opts.join('')}</datalist>`;
+}
+
+function sessionNameRow(id, label, path, help) {
+  const value = getPath(S.set.draft, path, null);
+  return (
+    `<div class="srow"><label for="${id}">${esc(label)}</label><div><input class="field" id="${id}" type="text" data-path="${path}" data-kind="key" list="s-session-names"` +
+    ` value="${esc(value || '')}" placeholder="Part of the session's name" autocomplete="off" spellcheck="false"${desc(id, help)}></div>${helpHtml(id, help)}</div>`
+  );
 }
 
 function sourceRow(name, label, text, help) {
@@ -1911,11 +1926,90 @@ function mailboxRows() {
     `<label class="sr-only" for="${id}-root">Mailbox folder</label>` +
     `<input class="field" id="${id}-root" type="text" data-path="sources.mailbox.root" data-kind="root" value="${esc(root || '')}" placeholder="The full path of the mailbox folder" autocomplete="off" spellcheck="false"${desc(id, help)}>` +
     `</div>${helpHtml(id, help)}</div>` +
-    `<div class="srow"><label for="s-planner">Planner</label><div><select class="field" id="s-planner" data-path="sources.mailbox.planner" data-kind="key" aria-describedby="s-planner-help">${sessionOptions(getPath(d, 'sources.mailbox.planner', null))}</select></div>` +
-    '<p class="help" id="s-planner-help">The session that hands out the tasks.</p></div>' +
-    `<div class="srow"><label for="s-coordinator">Coordinator</label><div><select class="field" id="s-coordinator" data-path="sources.mailbox.coordinator" data-kind="key" aria-describedby="s-coordinator-help">${sessionOptions(getPath(d, 'sources.mailbox.coordinator', null))}</select></div>` +
-    '<p class="help" id="s-coordinator-help">The session that reports back. If you leave it unset, Pleni uses the one the mailbox names, if any.</p></div>'
+    sessionNameRow('s-planner', 'Planner', 'sources.mailbox.planner', 'The session that hands out the tasks. Type part of its name, or pick one from the list. Pleni uses the newest session whose name has that text.') +
+    sessionNameRow('s-coordinator', 'Coordinator', 'sources.mailbox.coordinator', 'The session that reports back. Type part of its name. If you leave it empty, Pleni uses the one the mailbox names, if any.')
   );
+}
+
+function chainRules(create) {
+  const d = S.set.draft;
+  if (!Array.isArray(d.chain)) {
+    if (!create) return [];
+    d.chain = [];
+  }
+  return d.chain;
+}
+
+function chainHtml() {
+  const rules = chainRules(false);
+  if (!rules.length) return '<p class="note">No rules yet. Pleni works out who reports to whom by itself.</p>';
+  const items = rules.map((rule, i) => {
+    const r = rule && typeof rule === 'object' ? rule : {};
+    const id = `s-chain-${i}`;
+    const n = `<span class="sr-only"> (rule ${i + 1})</span>`;
+    const to = !r.reportsTo || r.reportsTo === 'you' ? '' : r.reportsTo;
+    const rank = RANK_OPTIONS.map(([v, text]) => `<option value="${v}"${(r.role || '') === v ? ' selected' : ''}>${esc(text)}</option>`).join('');
+    return (
+      '<li class="rule">' +
+      `<div class="rf"><label for="${id}-match">When the name contains${n}</label><input class="field" id="${id}-match" type="text" data-chain="${i}" data-field="match" value="${esc(r.match || '')}" maxlength="${MAX_NAME}" list="s-session-names" autocomplete="off" spellcheck="false"></div>` +
+      `<div class="rf"><label for="${id}-to">it reports to${n}</label><input class="field" id="${id}-to" type="text" data-chain="${i}" data-field="reportsTo" value="${esc(to)}" maxlength="${MAX_NAME}" placeholder="me" list="s-session-names" autocomplete="off" spellcheck="false"></div>` +
+      `<div class="rf"><label for="${id}-role">Rank${n}</label><select class="field" id="${id}-role" data-chain="${i}" data-field="role">${rank}</select></div>` +
+      `<button type="button" class="btn" id="${id}-remove" data-chain-remove="${i}" aria-label="Remove rule ${i + 1}">Remove</button>` +
+      '</li>'
+    );
+  });
+  // The heading row is for the eye only; each field has its own label, which shows on small screens.
+  return (
+    '<div class="rule rule-head" aria-hidden="true"><span>When the name contains</span><span>it reports to</span><span>Rank</span><span></span></div>' +
+    `<ol class="rules" role="list">${items.join('')}</ol>`
+  );
+}
+
+function paintChain() {
+  const box = $('#chain-rows');
+  if (!box) return;
+  painted.delete(box);
+  setHtml(box, chainHtml());
+}
+
+function addChainRule() {
+  const st = S.set;
+  if (!st || !st.draft) return;
+  const rules = chainRules(true);
+  if (rules.length >= MAX_CHAIN) {
+    st.msg = { kind: 'err', text: `You can have up to ${MAX_CHAIN} rules. Remove one to add another.` };
+    updateSettingsMsg();
+    return;
+  }
+  rules.push({ match: '', reportsTo: 'you', role: null });
+  st.msg = null;
+  paintChain();
+  updateSettingsMsg();
+  const first = $(`#s-chain-${rules.length - 1}-match`);
+  if (first) first.focus();
+}
+
+function removeChainRule(i) {
+  const st = S.set;
+  if (!st || !st.draft) return;
+  const rules = chainRules(false);
+  if (!Number.isInteger(i) || i < 0 || i >= rules.length) return;
+  rules.splice(i, 1);
+  st.msg = null;
+  paintChain();
+  updateSettingsMsg();
+  const next = $(`#s-chain-${i}-match`) || $('#s-chain-add');
+  if (next) next.focus();
+}
+
+// One field of one rule. An empty "it reports to", or "me", means the person at the top of the map.
+function editRule(i, el) {
+  const rule = chainRules(false)[i];
+  if (!rule || typeof rule !== 'object') return;
+  const v = el.value.trim();
+  if (el.dataset.field === 'match') rule.match = v;
+  else if (el.dataset.field === 'reportsTo') rule.reportsTo = !v || /^(me|you)$/i.test(v) ? 'you' : v;
+  else if (el.dataset.field === 'role') rule.role = el.value || null;
 }
 
 function peopleHtml() {
@@ -2021,6 +2115,12 @@ function renderSettingsForm() {
       <p class="help" id="s-people-search-help">Give a session a shorter name, set its role, or hide it.</p></div>
       <div id="people-rows">${peopleHtml()}</div>
     </section>
+    <section class="panel" aria-labelledby="s-h-chain"><h2 id="s-h-chain">Chain of command</h2>
+      <p class="note">Say who reports to whom. Pleni matches session names, so a rule keeps working when a session is replaced by a new one.</p>
+      <p class="note">Pleni checks the rules from the top down and uses the first one that fits. A session goes under the newest active session whose name has the "it reports to" text. Leave that empty, or type me, to put it right under you. Pick Automatic under Rank to let Pleni choose the rank.</p>
+      <div id="chain-rows">${chainHtml()}</div>
+      <div class="chain-add"><button type="button" class="btn" id="s-chain-add">Add a rule</button></div>
+    </section>
     <section class="panel" aria-labelledby="s-h-projects"><h2 id="s-h-projects">Projects</h2>
       <div id="project-rows">${projectsHtml()}</div>
     </section>
@@ -2036,6 +2136,7 @@ function renderSettingsForm() {
       <button type="button" class="btn" id="s-defaults">Restore defaults</button>
       <span id="s-msg" role="status">${settingsMsgHtml()}</span>
     </div>
+    ${sessionNamesHtml()}
   </form>`;
   // Always repaint: typing changes the fields without changing the last painted markup, so after
   // "Undo changes" the markup can match while the fields still show the undone edits.
@@ -2088,6 +2189,9 @@ function onSettingsInput(el) {
   } else if (el.dataset.project) {
     if (!st.draft.projects || typeof st.draft.projects !== 'object') st.draft.projects = {};
     editEntry(st.draft.projects, el.dataset.project, el);
+  } else if (el.dataset.chain) {
+    clearFieldError(el);
+    editRule(Number(el.dataset.chain), el);
   } else {
     return;
   }
@@ -2121,6 +2225,8 @@ const MAX_REMOTE = 20;
 // A full folder path on Windows (C:\ or \\server) or on macOS and Linux (/). The server makes the
 // final check for its own system.
 const FULL_PATH = /^(?:[A-Za-z]:[\\/]|[\\/])/;
+// A session key, as isNodeKey in src/config.js checks it.
+const NODE_KEY = /^(claude|codex):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
 
 function listWords(el) {
   return el.value.split(/[\s,]+/).map((w) => w.trim()).filter(Boolean);
@@ -2140,6 +2246,20 @@ function settingsProblems(form) {
   for (const el of $$('input[data-kind="root"]', form)) {
     const v = el.value.trim();
     if (v && !FULL_PATH.test(v)) add(el, 'Type the full path of a folder, such as /home/ada/project or C:\\Users\\ada\\project. Or leave it empty.');
+  }
+  // A mailbox field holds part of a session name, or a session key saved by an older Pleni.
+  for (const el of $$('input[data-kind="key"]', form)) {
+    const v = el.value.trim();
+    if (v && !NODE_KEY.test(v) && Array.from(v).length > MAX_NAME) add(el, `Type ${MAX_NAME} letters or fewer, or pick a session from the list.`);
+  }
+  $$('input[data-chain][data-field="match"]', form).forEach((el, i) => {
+    const v = el.value.trim();
+    if (!v) add(el, 'Type part of a session name, or remove this rule.');
+    else if (Array.from(v).length > MAX_NAME) add(el, `Type ${MAX_NAME} letters or fewer.`);
+    else if (i >= MAX_CHAIN) add(el, `Pleni keeps up to ${MAX_CHAIN} rules. Remove this one or one above it.`);
+  });
+  for (const el of $$('input[data-chain][data-field="reportsTo"]', form)) {
+    if (Array.from(el.value.trim()).length > MAX_NAME) add(el, `Type ${MAX_NAME} letters or fewer.`);
   }
   const remote = [
     ['s-hosts', HOST_NAME, 'is not a host name. Use a name such as pleni.example.ts.net.'],
@@ -2217,6 +2337,11 @@ function changedOnSave(sent, saved) {
     const after = getPath(saved, path, null);
     const sameText = typeof before === 'string' && typeof after === 'string' && before.trim() === after;
     if (!sameText && !same(before, after)) out.push(`${fieldLabel(el) || path} is now ${show(after, path)}`);
+  }
+  const sentChain = Array.isArray(sent.chain) ? sent.chain : [];
+  const savedChain = Array.isArray(saved.chain) ? saved.chain : [];
+  if (!same(sentChain, savedChain)) {
+    out.push(sentChain.length === savedChain.length ? 'Some chain of command rules were changed' : `Chain of command now has ${plural(savedChain.length, 'rule', 'rules')}`);
   }
   return out;
 }
@@ -2304,6 +2429,8 @@ document.addEventListener('click', (ev) => {
     return;
   }
   if (el.id === 's-retry') return loadSettings(true);
+  if (el.id === 's-chain-add') return addChainRule();
+  if (el.dataset.chainRemove) return removeChainRule(Number(el.dataset.chainRemove));
   if (el.id === 's-undo' && S.set && S.set.info) {
     S.set.draft = clone(S.set.info.settings);
     S.set.msg = { kind: 'ok', text: 'Your changes were undone.' };

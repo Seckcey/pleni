@@ -74,6 +74,11 @@ const call = (ms, name, args, callId, ord) =>
 const exec = (ms, input, callId) =>
   rec('response_item', ms, { type: 'custom_tool_call', name: 'exec', input, call_id: callId, status: 'completed' });
 const output = (ms, callId, text, type = 'function_call_output') => rec('response_item', ms, { type, call_id: callId, output: text });
+// A message another thread sent: recorded in the recipient's file as the output of send_message_to_thread.
+const delegation = (from, text) =>
+  `<codex_delegation>\n  <source_thread_id>${from}</source_thread_id>\n  <input>${text}</input>\n</codex_delegation>`;
+const received = (ms, out, ord, extra = {}) =>
+  rec('response_item', ms, { type: 'function_call_output', name: 'send_message_to_thread', namespace: 'codex_app', output: out, ...extra }, ord);
 const subAgent = (ms, kind, threadId, agentPath) =>
   rec('event_msg', ms, {
     type: 'item_completed',
@@ -567,6 +572,117 @@ test('links keep the newest 50', (t) => {
   assert.equal(links.length, 50);
   assert.equal(links[0].other, 'path:/root/w10');
   assert.equal(links[49].other, 'path:/root/w59');
+});
+
+// ---- messages between threads ----
+
+test('a message between threads is a down link on the sender', (t) => {
+  const root = codexHome(t);
+  rollout(root, MAIN);
+  const long = 'w'.repeat(300);
+  const file = rollout(root, OTHER, {
+    records: [
+      started(T0 - 5 * MINUTE),
+      received(T0 - 4 * MINUTE, `Note from a peer:\n${delegation(MAIN.toUpperCase(), '\n\n   Please   review\tthe PR  \nThe rest of the message.')}\n<other_tag/>`),
+      received(T0 - 3 * MINUTE, [{ type: 'input_text', text: delegation(MAIN, `${long}\nsecond line`) }]),
+    ],
+  });
+  const { session } = open(root);
+  assert.deepEqual(session(MAIN).links, [
+    { at: T0 - 4 * MINUTE, dir: 'down', other: `codex:${OTHER}`, label: 'Please review the PR' },
+    { at: T0 - 3 * MINUTE, dir: 'down', other: `codex:${OTHER}`, label: `${'w'.repeat(139)}…` },
+  ]);
+  assert.deepEqual(session(OTHER).links, []);
+
+  // Messages that arrive later are picked up on the next poll.
+  append(file, received(T0 - 2 * MINUTE, delegation(MAIN, 'One more thing')));
+  const links = session(MAIN).links;
+  assert.equal(links.length, 3);
+  assert.deepEqual(links[2], { at: T0 - 2 * MINUTE, dir: 'down', other: `codex:${OTHER}`, label: 'One more thing' });
+});
+
+test('content "none" leaves message links without labels', (t) => {
+  const root = codexHome(t);
+  rollout(root, MAIN);
+  rollout(root, OTHER, { records: [received(T0 - 2 * MINUTE, delegation(MAIN, 'secret plans'))] });
+  const { session } = open(root, { content: 'none' });
+  assert.deepEqual(session(MAIN).links, [{ at: T0 - 2 * MINUTE, dir: 'down', other: `codex:${OTHER}`, label: null }]);
+});
+
+test('a message from a thread that is not listed adds nothing', (t) => {
+  const root = codexHome(t);
+  rollout(root, OTHER, { records: [received(T0 - 2 * MINUTE, delegation(STRANGER, 'hello'))] });
+  const { poll } = open(root);
+  const { sessions } = poll();
+  assert.deepEqual(sessions.map((s) => s.id), [OTHER]);
+  assert.deepEqual(sessions[0].links, []);
+});
+
+test('malformed or self-sent messages add nothing', (t) => {
+  const root = codexHome(t);
+  rollout(root, MAIN);
+  rollout(root, OTHER, {
+    records: [
+      received(T0 - 9 * MINUTE, '<codex_delegation><input>no sender</input></codex_delegation>'),
+      received(T0 - 8 * MINUTE, delegation('not a thread id', 'bad id')),
+      received(T0 - 8 * MINUTE, delegation('0199a000', 'short id')),
+      received(T0 - 7 * MINUTE, delegation(OTHER, 'talking to myself')),
+      received(T0 - 6 * MINUTE, `<source_thread_id>${MAIN}</source_thread_id><input>no block</input>`),
+      received(T0 - 6 * MINUTE, `<codex_delegation><source_thread_id>${MAIN}</source_thread_id><input>unclosed</input>`),
+      // A sender id written inside the message text does not count.
+      received(T0 - 5 * MINUTE, `<codex_delegation><input>see <source_thread_id>${MAIN}</source_thread_id></input></codex_delegation>`),
+      received(T0 - 4 * MINUTE, { text: delegation(MAIN, 'not a string or parts') }),
+      received(T0 - 3 * MINUTE, delegation(MAIN, 'wrong tool'), undefined, { name: 'exec' }),
+      received(T0 - 3 * MINUTE, delegation(MAIN, 'wrong type'), undefined, { type: 'custom_tool_call_output' }),
+      { timestamp: 'never', type: 'response_item', payload: { type: 'function_call_output', name: 'send_message_to_thread', output: delegation(MAIN, 'no time') } },
+    ],
+  });
+  const { session } = open(root);
+  assert.deepEqual(session(MAIN).links, []);
+  assert.deepEqual(session(OTHER).links, []);
+});
+
+test('message links keep the newest 50, mixed with the sender\'s own links', (t) => {
+  const root = codexHome(t);
+  rollout(root, MAIN, { records: [call(T0 - 10 * MINUTE, 'spawn_agent', { task_name: 'scout' }, 's1')] });
+  const toFirst = [];
+  const toSecond = [];
+  for (let n = 0; n < 60; n++) (n % 2 ? toSecond : toFirst).push(received(T0 - (60 - n) * 1000, delegation(MAIN, `note ${n}`)));
+  rollout(root, idAt(1), { records: toFirst });
+  rollout(root, idAt(2), { records: toSecond });
+  const links = open(root).session(MAIN).links;
+  assert.equal(links.length, 50);
+  assert.deepEqual(links.map((link) => link.label), Array.from({ length: 50 }, (_, i) => `note ${i + 10}`));
+  assert.equal(links[0].other, `codex:${idAt(1)}`);
+  assert.equal(links[1].other, `codex:${idAt(2)}`);
+  assert.equal(links[49].at, T0 - 1000);
+});
+
+test('messages in a sub-agent\'s inherited history are ignored', (t) => {
+  const root = codexHome(t);
+  rollout(root, OTHER);
+  rollout(root, CHILD, {
+    meta: childMeta(),
+    records: [
+      received(T0 - 20 * MINUTE, delegation(OTHER, 'old news'), 3),
+      started(T0 - 3 * MINUTE, 'c1', 5),
+      received(T0 - 2 * MINUTE, delegation(OTHER, 'fresh news'), 6),
+    ],
+  });
+  assert.deepEqual(open(root).session(OTHER).links, [{ at: T0 - 2 * MINUTE, dir: 'down', other: `codex:${CHILD}`, label: 'fresh news' }]);
+});
+
+test('received messages survive reading a fast-growing file again from near its end', (t) => {
+  const root = codexHome(t);
+  rollout(root, MAIN);
+  const file = rollout(root, OTHER, { records: [started(T0 - 20 * MINUTE), received(T0 - 19 * MINUTE, delegation(MAIN, 'before the pause'))] });
+  const { session } = open(root);
+  assert.equal(session(MAIN).links.length, 1);
+
+  append(file, received(T0 - 18 * MINUTE, delegation(MAIN, 'lost in the gap')));
+  for (let n = 0; n < 20; n++) append(file, output(T0 - 10 * MINUTE, `f${n}`, 'y'.repeat(MiB)));
+  append(file, received(T0 - MINUTE, delegation(MAIN, 'after the pause')));
+  assert.deepEqual(session(MAIN).links.map((link) => link.label), ['before the pause', 'after the pause']);
 });
 
 // ---- detail ----

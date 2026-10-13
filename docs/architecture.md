@@ -67,10 +67,11 @@ export const DEFAULTS = {
     claude: { enabled: true, root: null },            // null = $CLAUDE_CONFIG_DIR or ~/.claude
     claudeDesktop: { enabled: true, root: null },     // null = platform default (see below)
     codex: { enabled: true, root: null },             // null = $CODEX_HOME or ~/.codex
-    mailbox: { enabled: false, root: null, planner: null, coordinator: null },
+    mailbox: { enabled: false, root: null, planner: null, coordinator: null }, // planner/coordinator: node key or session name
   },
   people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role } }  max 500 entries
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
+  chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
 }
 // Role = 'superintendent' | 'coordinator' | 'lead' | 'worker' | 'hidden'
@@ -245,6 +246,12 @@ export function createCodexSource({ root, settings, now = Date.now })
 - Activity: a `response_item` `function_call` or `custom_tool_call` with no output for its `call_id`
   yet (the shell tool is `exec`). `lastText`: `task_complete.last_agent_message`, else the last
   assistant `message` text.
+- Messages between threads: when thread S sends thread X a message, X's rollout gets a
+  `response_item` `function_call_output` named `send_message_to_thread` whose output holds
+  `<codex_delegation><source_thread_id>S</source_thread_id><input>…</input></codex_delegation>`.
+  Each one becomes a **down** link on S toward X (the model turns a link toward an ancestor into a
+  report up), labelled with the first line of the message (≤140 chars, only with snippets). The
+  sender id is read outside `<input>`, so message text cannot claim another sender.
 - Coordinator registry (optional): Codex coordinators record the workers they start in
   `<root>/coordinators/registry.sqlite3` (tables `coordinators` and `worker_tasks`, one JSON
   `record` per row: `threadId`, `coordinatorThreadId`) and the suite superintendent in
@@ -334,6 +341,14 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
 
 - Tree: `you` (the person, `displayName`) → projects (when `groupBy` is `project`) → top-level
   sessions → sub-agents, recursively. A sub-agent whose parent is not listed hangs under its project.
+- Chain of command: a `chain` rule whose `match` is in a session's name (its title or the
+  person's label for it, ignoring case) puts it under the newest listed session (by `lastAt`) whose
+  title contains `reportsTo`, or under the person for `'you'`; its `role` sets the rank. Matching
+  by name means a rule follows a role when a new thread takes it over. Without a rule, the mailbox
+  coordinator hangs under the mailbox planner (both may be given by key or by name), and otherwise
+  the parent the session files give is kept. A rule whose boss is not listed changes nothing, and
+  loops are broken. When the coordinator hangs under its planner, the tree line and the mailbox
+  line are one `mailbox` edge.
 - Project name: the last segment of `cwd`, except inside a worktrees folder (`/_worktrees/`,
   `/.codex/worktrees/<id>/`, `/.claude/worktrees/`) where it is the repository folder name. For
   `/_worktrees/<name>`, Pleni reads that worktree's `.git` pointer file (only on a local drive, only

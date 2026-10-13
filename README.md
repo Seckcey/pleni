@@ -119,6 +119,12 @@ Titles can be plain (Lead and Agent, plus Superintendent and Coordinator for ses
 those roles), military (General, Sergeant, Private), or company (Owner, Supervisor, Worker). Pick the one you like in Settings. Pleni never re-orders tiles because of
 activity, so things stay where you left them.
 
+**Chain of command.** Pleni draws each helper under the session that started it. Codex workers
+started by a coordinator hang under that coordinator. If your sessions report to each other in
+another way, say so in **Settings → Chain of command**: for example, "a session whose name contains
+*Sergeant* reports to the newest session whose name contains *Colonel*". Rules match names, so they
+keep working when a session is replaced by a new one.
+
 ## Where it looks
 
 Pleni finds the usual folders on its own. You can change any of them in Settings.
@@ -217,9 +223,9 @@ both. Both are made by 8 West Ventures, LLC.
 
 ## What comes next
 
-Version 0.1 only watches. The next step is to let you send work to a session and approve what it
-asks for, right from the browser. That needs its own design and safety checks first, so it will
-come in a later version. `npx pleni` will work once Pleni is on npm.
+Version 0.1 only watches. The next step is to let you answer questions, approve plans and send
+messages to a session right from the browser. The design is in
+[docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md). `npx pleni` will work once Pleni is on npm.
 
 These are plans, not promises. Ideas are welcome in
 [Discussions](https://github.com/Seckcey/pleni/discussions).

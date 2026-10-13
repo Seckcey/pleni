@@ -851,3 +851,69 @@ test('a role a source knows sets the rank unless the person chose one', () => {
   const chosen = snap({ claude: [session(LEAD, { role: 'coordinator' })], settings: { people: { [LEAD]: { role: 'superintendent' } } } });
   assert.equal(node(chosen, LEAD).role, 'superintendent');
 });
+
+// ---- chain of command ----
+
+const COLONEL_OLD = 'codex:dddddddd-0000-4000-8000-000000000001';
+const COLONEL = 'codex:dddddddd-0000-4000-8000-000000000002';
+const SGT_A = 'codex:dddddddd-0000-4000-8000-000000000003';
+const SGT_CLAUDE = 'codex:dddddddd-0000-4000-8000-000000000004';
+const CLAUDE_SGT = 'claude:dddddddd-0000-4000-8000-000000000005';
+const WORKER = 'codex:dddddddd-0000-4000-8000-000000000006';
+const CHAIN = [
+  { match: 'Colonel', reportsTo: 'you', role: 'superintendent' },
+  { match: 'Sergeant', reportsTo: 'Colonel', role: 'coordinator' },
+];
+
+function army(extra = {}) {
+  return {
+    codex: [
+      session(COLONEL_OLD, { title: '***Colonel - Suite', lastAt: NOW - 5 * HOUR }),
+      session(COLONEL, { title: '***Colonel - Suite', lastAt: NOW - MIN }),
+      session(SGT_A, { title: '**Sergeant Milepost' }),
+      session(SGT_CLAUDE, { title: '**Sergeant Claude', parentKey: COLONEL, kind: 'agent' }),
+      session(WORKER, { title: 'Fix the updater', parentKey: SGT_A, kind: 'agent' }),
+    ],
+    claude: [session(CLAUDE_SGT, { title: null, entrypoint: 'sdk-cli' })],
+    ...extra,
+  };
+}
+
+test('chain rules put sessions under the newest boss whose name matches, with the rule rank', () => {
+  const s = snap({ ...army(), settings: { titles: 'military', groupBy: 'none', chain: CHAIN } });
+  assert.equal(node(s, COLONEL).parent, 'you');
+  assert.equal(node(s, COLONEL_OLD).parent, 'you');
+  assert.equal(node(s, SGT_A).parent, COLONEL, 'the newest Colonel, not the replaced one');
+  assert.equal(node(s, SGT_CLAUDE).parent, COLONEL);
+  assert.equal(node(s, WORKER).parent, SGT_A, 'no rule: the source parent stays');
+  assert.equal(node(s, COLONEL).rank, 'Colonel');
+  assert.equal(node(s, SGT_A).rank, 'Sergeant');
+  assert.equal(node(s, SGT_CLAUDE).rank, 'Sergeant');
+  assert.equal(edgeTo(s, SGT_A).from, COLONEL);
+});
+
+test('the mailbox coordinator hangs under its planner, found by name, on one line', () => {
+  const box = mailbox({ relay: { running: true, paused: false, halted: false, coordinatorKey: CLAUDE_SGT } });
+  const s = snap({ ...army(), mailbox: box, settings: { groupBy: 'none', chain: CHAIN, sources: { mailbox: { enabled: true, planner: 'Sergeant Claude' } } } });
+  assert.equal(node(s, CLAUDE_SGT).parent, SGT_CLAUDE);
+  const lines = s.edges.filter((e) => e.to === CLAUDE_SGT);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].kind, 'mailbox');
+  assert.equal(lines[0].lastUp, NOW - 2 * MIN);
+  assert.equal(lines[0].active, 'up');
+});
+
+test('a rule whose boss is missing, or that would make a loop, does no harm', () => {
+  const lonely = snap({ ...army(), settings: { groupBy: 'none', chain: [{ match: 'Sergeant', reportsTo: 'Nobody here', role: null }] } });
+  assert.equal(node(lonely, SGT_A).parent, 'you');
+  assert.equal(node(lonely, SGT_CLAUDE).parent, COLONEL, 'keeps its source parent');
+  const loop = snap({ ...army(), settings: { groupBy: 'none', chain: [{ match: 'Colonel', reportsTo: 'Sergeant Milepost' }, { match: 'Sergeant Milepost', reportsTo: 'Colonel' }] } });
+  const keys = loop.nodes.map((n) => n.key);
+  for (const k of [COLONEL, SGT_A]) assert.ok(keys.includes(k));
+  // Every node still reaches the person.
+  for (const n of loop.nodes) {
+    let at = n;
+    for (let i = 0; at && at.key !== 'you' && i < 20; i++) at = node(loop, at.parent);
+    assert.equal(at?.key, 'you', n.key);
+  }
+});

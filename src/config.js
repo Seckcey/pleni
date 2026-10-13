@@ -23,6 +23,7 @@ export const DEFAULTS = deepFreeze({
   },
   people: {},
   projects: {},
+  chain: [], // [{ match, reportsTo, role }] who reports to whom, by session name; first match wins
   remote: { hosts: [], tailscaleUsers: [] },
 });
 
@@ -37,6 +38,8 @@ const RANGES = {
   staleMinutes: [5, 1440],
 };
 const MAX_PEOPLE = 500;
+const MAX_CHAIN = 50;
+const MAX_NAME = 80;
 const MAX_PROJECTS = 200;
 const MAX_REMOTE = 20;
 const MAX_TIER_WORDS = 50;
@@ -91,6 +94,7 @@ export function cleanSettings(raw) {
     sources: cleanSources(r.sources),
     people: cleanPeople(r.people),
     projects: cleanProjects(r.projects),
+    chain: cleanChain(r.chain),
     remote: cleanRemote(r.remote),
   };
 }
@@ -164,8 +168,8 @@ function cleanSources(raw) {
   out.mailbox = {
     enabled: cleanBool(m.enabled, DEFAULTS.sources.mailbox.enabled),
     root: cleanRoot(m.root),
-    planner: cleanKey(m.planner),
-    coordinator: cleanKey(m.coordinator),
+    planner: cleanKeyOrName(m.planner),
+    coordinator: cleanKeyOrName(m.coordinator),
   };
   return out;
 }
@@ -245,10 +249,30 @@ function oneOf(value, allowed, fallback) {
   return allowed.includes(value) ? value : fallback;
 }
 
-function cleanKey(value) {
+// A rule: a session whose name contains `match` reports to the newest session whose name contains
+// `reportsTo`, or to the person when it is 'you'. `role` (optional) sets its rank.
+function cleanChain(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const rule of raw) {
+    if (out.length >= MAX_CHAIN) break;
+    if (!isObject(rule)) continue;
+    const match = cleanText(rule.match, MAX_NAME);
+    if (!match) continue;
+    const to = cleanText(rule.reportsTo, MAX_NAME);
+    const reportsTo = !to || /^(you|me)$/i.test(to) ? 'you' : to;
+    const role = ROLES.includes(rule.role) && rule.role !== 'hidden' ? rule.role : null;
+    out.push({ match, reportsTo, role });
+  }
+  return out;
+}
+
+// A node key, or a session name to look for (the newest session whose name contains it).
+function cleanKeyOrName(value) {
   if (typeof value !== 'string') return null;
   const key = value.trim();
-  return isNodeKey(key) ? key : null;
+  if (isNodeKey(key)) return key;
+  return cleanText(key, MAX_NAME) || null;
 }
 
 function cleanRoot(value) {
