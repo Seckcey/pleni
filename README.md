@@ -29,7 +29,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/pleni-map.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/assets/pleni-map-light.png">
-    <img src="docs/assets/pleni-map.png" alt="The Pleni map in demo mode: you on the left, two projects, and the Claude Code and Codex sessions in each. Glowing lines show work being handed to helpers and reports coming back." width="1000">
+    <img src="docs/assets/pleni-map.png" alt="The Pleni map in demo mode: you on the left, then Claude Code, Codex, Grok and Kimi Code sessions and the helpers they started. Glowing lines show work being handed to helpers and reports coming back." width="1000">
   </picture>
 </p>
 
@@ -224,8 +224,8 @@ lists, and the browser has Pleni's key. Please keep these points in mind:
 You hire roles, give the team a goal, and Plenipo starts the workers, checks their permissions,
 and keeps a record of what they did.
 
-Pleni is a separate, simpler edition. It does not run any workers. It watches the Claude Code and
-Codex sessions you already run yourself, on Windows, macOS, or Linux. You can use either one, or
+Pleni is a separate, simpler edition. It does not run any workers. It watches the Claude Code,
+Codex, Grok and Kimi Code sessions you already run yourself, on Windows, macOS, or Linux. You can use either one, or
 both. Both are made by 8 West Ventures, LLC.
 
 ## What comes next
