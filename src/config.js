@@ -19,6 +19,8 @@ export const DEFAULTS = deepFreeze({
     claude: { enabled: true, root: null },
     claudeDesktop: { enabled: true, root: null },
     codex: { enabled: true, root: null },
+    grok: { enabled: true, root: null },
+    kimi: { enabled: true, root: null },
     mailbox: { enabled: false, root: null, planner: null, coordinator: null },
   },
   people: {},
@@ -44,7 +46,7 @@ const MAX_PROJECTS = 200;
 const MAX_REMOTE = 20;
 const MAX_TIER_WORDS = 50;
 const MAX_PATH = 4096;
-const NODE_KEY = /^(claude|codex):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
+const NODE_KEY = /^(claude|codex|grok|kimi):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
 // A mailbox worker run: mailbox:<task id>/W<n>. It keeps no session file of its own.
 const MAILBOX_KEY = /^mailbox:[A-Za-z0-9][A-Za-z0-9._-]{0,120}\/W\d{1,4}$/;
 const CONTROL = /\p{Cc}/u;
@@ -71,6 +73,8 @@ export function resolveRoots(settings, env = process.env, platform = process.pla
     claude: pick('claude', envPath(env, 'CLAUDE_CONFIG_DIR', p) || p.join(home, '.claude')),
     claudeDesktop: pick('claudeDesktop', desktopRoot(env, platform, home, p)),
     codex: pick('codex', envPath(env, 'CODEX_HOME', p) || p.join(home, '.codex')),
+    grok: pick('grok', envPath(env, 'GROK_HOME', p) || p.join(home, '.grok')),
+    kimi: pick('kimi', envPath(env, 'KIMI_CODE_HOME', p) || p.join(home, '.kimi-code')),
     mailbox: pick('mailbox', null),
   };
 }
@@ -162,7 +166,7 @@ function cleanTiers(raw) {
 function cleanSources(raw) {
   const s = isObject(raw) ? raw : {};
   const out = {};
-  for (const name of ['claude', 'claudeDesktop', 'codex']) {
+  for (const name of ['claude', 'claudeDesktop', 'codex', 'grok', 'kimi']) {
     const src = isObject(s[name]) ? s[name] : {};
     out[name] = { enabled: cleanBool(src.enabled, DEFAULTS.sources[name].enabled), root: cleanRoot(src.root) };
   }

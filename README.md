@@ -8,7 +8,7 @@
 <h1 align="center">Pleni — Plenipo Browser</h1>
 
 <p align="center">
-  See your Claude Code and Codex sessions work together, live in your browser.
+  See your Claude Code, Codex, Grok and Kimi Code sessions work together, live in your browser.
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 When you use Claude Code or Codex, each session can start helpers of its own (sub-agents) and
 hand work to them. With a few of these running at once, it gets hard to tell who is doing what.
 
-Pleni shows you. It reads the files that Claude Code and Codex already write on your computer,
+Pleni shows you. It reads the files that Claude Code, Codex, Grok and Kimi Code already write on your computer,
 works out who started whom, and draws it as a live map in your browser. Lines light up when work
 is handed down and when a report comes back up.
 
@@ -137,6 +137,8 @@ Pleni finds the usual folders on its own. You can change any of them in Settings
 | Claude Code sessions and helpers    | `~/.claude` (on Windows, `C:\Users\<you>\.claude`)                                                                 | `CLAUDE_CONFIG_DIR` |
 | Session names from the Claude app   | Windows: `%APPDATA%\Claude` · macOS: `~/Library/Application Support/Claude` · Linux: `~/.config/Claude`            | Settings            |
 | Codex sessions and helpers          | `~/.codex` (on Windows, `C:\Users\<you>\.codex`)                                                                   | `CODEX_HOME`        |
+| Grok sessions                       | `~/.grok` (on Windows, `C:\Users\<you>\.grok`)                                                                     | `GROK_HOME`         |
+| Kimi Code sessions and helpers      | `~/.kimi-code` (on Windows, `C:\Users\<you>\.kimi-code`)                                                           | `KIMI_CODE_HOME`    |
 | A coordination mailbox (optional)   | Off until you choose a folder                                                                                      | Settings            |
 
 Pleni shows sessions that were active in the last 24 hours. You can change that in Settings.
@@ -155,6 +157,8 @@ Pleni keeps its own settings in one file, `settings.json`:
 | `PLENI_HOME`                 | The folder for Pleni's own settings file   |
 | `CLAUDE_CONFIG_DIR`          | Where Claude Code keeps its files          |
 | `CODEX_HOME`                 | Where Codex keeps its files                |
+| `GROK_HOME`                  | Where Grok keeps its files                 |
+| `KIMI_CODE_HOME`             | Where Kimi Code keeps its files            |
 
 **The mailbox** is for people who have two AI sessions work through a shared folder of
 Markdown files: one hands out tasks, the other reports back. If you do not use one, leave it off.

@@ -1,8 +1,8 @@
 # Pleni — notes for AI coding agents
 
-Pleni (Plenipo Browser) shows Claude Code and Codex sessions live in a browser. It is a public
-repository. [`docs/architecture.md`](docs/architecture.md) is the spec: read it before you change
-code, and follow its names, shapes, and file paths.
+Pleni (Plenipo Browser) shows Claude Code, Codex, Grok and Kimi Code sessions live in a browser.
+It is a public repository. [`docs/architecture.md`](docs/architecture.md) is the spec: read it
+before you change code, and follow its names, shapes, and file paths.
 
 - **Plain words.** Everything a person reads (the page, error messages, docs, pull request
   summaries) uses short sentences and everyday words, at a 5th-grade reading level. If you must

@@ -16,8 +16,11 @@ const VIEW_NAMES = { map: 'Map', list: 'List', activity: 'Activity', tasks: 'Tas
 const STATUS_WORDS = { needs: 'Needs you', working: 'Working', ready: 'Finished', idle: 'Idle', done: 'Done', error: 'Error' };
 const FILTERS = [['all', 'All'], ['needs', 'Needs you'], ['working', 'Working'], ['ready', 'Finished'], ['error', 'Error'], ['idle', 'Idle'], ['done', 'Done']];
 const FEED_FILTERS = [['all', 'Everything'], ['down', 'Work handed out'], ['up', 'Reports back'], ['error', 'Errors']];
-const EFFORT_WORDS = { minimal: 'minimal effort', low: 'low effort', medium: 'medium effort', high: 'high effort', xhigh: 'extra high effort', max: 'max effort' };
-const PLATFORM_WORDS = { claude: 'Claude Code', codex: 'Codex', relay: 'Mailbox' };
+// Kimi Code models that can only turn thinking on or off record "on" or "off" as their effort.
+const EFFORT_WORDS = { minimal: 'minimal effort', low: 'low effort', medium: 'medium effort', high: 'high effort', xhigh: 'extra high effort', max: 'max effort', on: 'thinking on', off: 'thinking off' };
+const PLATFORM_WORDS = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', relay: 'Mailbox' };
+// The tools whose sessions Pleni reads. Each one has a word above and a mark in ICONS.
+const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
 const KIND_WORDS = { person: 'Person', project: 'Project', session: 'Session', agent: 'Helper agent', reviewer: 'Automatic reviewer', relay: 'Relay' };
 const ENTRY_WORDS = { 'claude-desktop': 'Claude desktop app', 'claude-vscode': 'VS Code', cli: 'Terminal', 'sdk-cli': 'Agent SDK', 'relay worker': 'The mailbox relay' };
 const PLACEMENT_WORDS = { manual: 'You chose this.', rule: 'Set by a chain rule.', auto: 'Chosen automatically.' };
@@ -49,6 +52,8 @@ const DEFAULTS = {
     claude: { enabled: true, root: null },
     claudeDesktop: { enabled: true, root: null },
     codex: { enabled: true, root: null },
+    grok: { enabled: true, root: null },
+    kimi: { enabled: true, root: null },
     mailbox: { enabled: false, root: null, planner: null, coordinator: null },
   },
   people: {},
@@ -60,6 +65,9 @@ const DEFAULTS = {
 const ICONS = {
   claude: '<path d="M12 3.5v17M4.6 7.75l14.8 8.5M4.6 16.25l14.8-8.5"/>',
   codex: '<rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="m7.5 10 3 2.5-3 2.5M13 15.5h3.5"/>',
+  // Grok and Kimi Code get plain letters, G and K, not their makers' logos.
+  grok: '<path d="M17.75 7.2A7.5 7.5 0 1 0 19.5 12H13"/>',
+  kimi: '<path d="M7 4.5v15M17 4.5 7 12.5l10 7"/>',
   human: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
   group: '<path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h4l2 2h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/>',
   relay: '<path d="M4 8h13.5M14 4.5 17.5 8 14 11.5M20 16H6.5M10 12.5 6.5 16l3.5 3.5"/>',
@@ -401,7 +409,7 @@ function keyName(key) {
   if (n) return titleOf(n);
   const k = String(key || '');
   if (k === 'you') return personName();
-  const m = /^(claude|codex):([0-9a-f]{8})/i.exec(k);
+  const m = /^(claude|codex|grok|kimi):([0-9a-f]{8})/i.exec(k);
   if (m) return `${PLATFORM_WORDS[m[1].toLowerCase()]} session ${m[2]}`;
   if (k.startsWith('path:')) return `agent ${k.slice(5).split('/').filter(Boolean).pop() || ''}`.trim();
   if (k.startsWith('project:')) return k.slice(8);
@@ -449,6 +457,7 @@ const NEEDS_WORDS = {
   plan: 'Wants you to approve a plan',
   blocked: 'Blocked until you act',
   input: 'Asking for your input',
+  permission: 'Asking for permission to use a tool',
 };
 
 function doing(n) {
@@ -469,7 +478,7 @@ function doingHtml(d) {
 
 function markFor(n) {
   let kind = 'codex';
-  if (n.platform === 'claude' || n.platform === 'codex') kind = n.platform;
+  if (TOOLS.includes(n.platform)) kind = n.platform;
   else if (n.kind === 'relay' || n.platform === 'relay') kind = 'relay';
   else if (n.kind === 'person' || n.platform === 'human') kind = 'human';
   else if (n.kind === 'project' || n.platform === 'group') kind = 'group';
@@ -635,7 +644,7 @@ function renderNotices() {
     out.push(notice(true, 'Pleni needs its key.', 'Open the full address Pleni printed in the terminal when it started. It ends with "?t=" and a long key, which keeps other people on this computer out. The key is new each time Pleni starts.'));
   }
   const src = (S.snap && S.snap.sources) || {};
-  for (const [name, label] of [['claude', 'Claude Code'], ['codex', 'Codex'], ['mailbox', 'The mailbox']]) {
+  for (const [name, label] of [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code'], ['mailbox', 'The mailbox']]) {
     const s = src[name];
     if (s && s.enabled && s.ok === false) out.push(notice(false, `${label} could not be read.`, s.error || 'Pleni will try again.'));
   }
@@ -764,15 +773,17 @@ function welcomeHtml() {
     <img src="/brand/pip-welcome.webp" alt="" width="168" height="168">
     <div>
       <h2>No sessions to show yet</h2>
-      <p>Pleni shows the Claude Code and Codex sessions on this computer that were active in the last ${esc(plural(hours, 'hour', 'hours'))}, the helpers they start, and the work they hand to each other. It only reads their files. It never changes them, and nothing leaves this computer.</p>
+      <p>Pleni shows the Claude Code, Codex, Grok and Kimi Code sessions on this computer that were active in the last ${esc(plural(hours, 'hour', 'hours'))}, the helpers they start, and the work they hand to each other. It only reads their files. It never changes them, and nothing leaves this computer.</p>
       <h3>Where Pleni looks</h3>
       <ul>
         <li><b>Claude Code:</b> ${where(join(roots.claude, 'projects'), '~/.claude/projects')}, or the folder in <code>CLAUDE_CONFIG_DIR</code>.${state(src.claude)}</li>
         <li><b>Claude desktop app:</b> ${where(roots.claudeDesktop, 'its own settings folder')}, for better session names.</li>
         <li><b>Codex:</b> ${where(join(roots.codex, 'sessions'), '~/.codex/sessions')}, or the folder in <code>CODEX_HOME</code>.${state(src.codex)}</li>
+        <li><b>Grok:</b> ${where(join(roots.grok, 'sessions'), '~/.grok/sessions')}, or the folder in <code>GROK_HOME</code>.${state(src.grok)}</li>
+        <li><b>Kimi Code:</b> ${where(join(roots.kimi, 'sessions'), '~/.kimi-code/sessions')}, or the folder in <code>KIMI_CODE_HOME</code>.${state(src.kimi)}</li>
         ${mailbox}
       </ul>
-      <p>Start a Claude Code or Codex session and it shows up here within a few seconds.</p>
+      <p>Start a Claude Code, Codex, Grok or Kimi Code session and it shows up here within a few seconds.</p>
       <h3>Just want to look around?</h3>
       <p>In the Pleni folder, run <code>node bin/pleni.js --demo</code> in a terminal and open the address it prints. The demo uses made-up sessions, so it needs nothing from you.</p>
       <p><a href="#/settings">Change where Pleni looks</a></p>
@@ -2460,7 +2471,7 @@ function checkRow(id, label, path, text, help) {
 function sessionNamesHtml() {
   const names = new Map();
   for (const n of S.set.info.nodes || []) {
-    if (!n || (n.platform !== 'claude' && n.platform !== 'codex')) continue;
+    if (!n || !TOOLS.includes(n.platform)) continue;
     const title = Array.from(String(n.title || '').trim()).slice(0, MAX_NAME).join('').trim();
     if (title && !names.has(title)) names.set(title, PLATFORM_WORDS[n.platform]);
   }
@@ -2479,7 +2490,8 @@ function sessionNameRow(id, label, path, help) {
 function sourceRow(name, label, text, help) {
   const id = `s-src-${name}`;
   const roots = S.set.info.roots || {};
-  const on = getPath(S.set.draft, `sources.${name}.enabled`, false) === true;
+  // A Pleni server older than this page may not send a source yet; it shows its default then.
+  const on = getPath(S.set.draft, `sources.${name}.enabled`, getPath(DEFAULTS, `sources.${name}.enabled`, false)) === true;
   const root = getPath(S.set.draft, `sources.${name}.root`, null);
   const auto = roots[name] ? `Automatic: ${roots[name]}` : 'Automatic';
   return (
@@ -2774,7 +2786,7 @@ function renderSettingsForm() {
         <label><input type="radio" name="s-content" id="s-content-none" data-path="content" data-kind="text" value="none"${getPath(st.draft, 'content', '') === 'none' ? ' checked' : ''}>Only tool names and states</label>
       </div><p class="help" id="s-content-help">Snippets stay on this computer either way.</p></div>
       ${numberRow('s-recent', 'Show sessions from the last', 'window.recentHours', 1, 720, 'Hours. Older sessions are left off the page.')}
-      ${numberRow('s-active', 'Finished, for', 'window.activeMinutes', 1, 240, 'Minutes. A session that finished its turn this recently shows "Finished". Only a real question, plan or block shows "Needs you".')}
+      ${numberRow('s-active', 'Finished, for', 'window.activeMinutes', 1, 240, 'Minutes. A session that finished its turn this recently shows "Finished". Only a real question, plan, block or permission request shows "Needs you".')}
       ${numberRow('s-stale', 'Call a turn stuck after', 'window.staleMinutes', 5, 1440, 'Minutes. A turn whose file has not moved for this long counts as idle.')}
     </section>
     <section class="panel" aria-labelledby="s-h-tiers"><h2 id="s-h-tiers">Ranks by model</h2>
@@ -2789,6 +2801,8 @@ function renderSettingsForm() {
       ${sourceRow('claude', 'Claude Code', 'Read Claude Code sessions', 'Leave the folder empty to use CLAUDE_CONFIG_DIR, or the .claude folder in your home folder.')}
       ${sourceRow('claudeDesktop', 'Claude desktop app', 'Read session names from the Claude desktop app', 'Gives desktop sessions the names you see in the app.')}
       ${sourceRow('codex', 'Codex', 'Read Codex threads', 'Leave the folder empty to use CODEX_HOME, or the .codex folder in your home folder.')}
+      ${sourceRow('grok', 'Grok', 'Read Grok sessions', "Pleni reads Grok's session logs in this folder.")}
+      ${sourceRow('kimi', 'Kimi Code', 'Read Kimi Code sessions', "Pleni reads Kimi Code's session logs in this folder.")}
       ${mailboxRows()}
     </section>
     <section class="panel" aria-labelledby="s-h-people"><h2 id="s-h-people">Names and roles</h2>
@@ -2910,7 +2924,7 @@ const MAX_REMOTE = 20;
 // final check for its own system.
 const FULL_PATH = /^(?:[A-Za-z]:[\\/]|[\\/])/;
 // A session key, as isNodeKey in src/config.js checks it.
-const NODE_KEY = /^(claude|codex):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
+const NODE_KEY = /^(claude|codex|grok|kimi):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
 
 function listWords(el) {
   return el.value.split(/[\s,]+/).map((w) => w.trim()).filter(Boolean);

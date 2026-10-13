@@ -34,6 +34,8 @@ src/config.js           settings: defaults, validation, load/save, folder discov
 src/jsonl.js            safe incremental JSONL reading (tail, head scan, BOM)
 src/sources/claude.js   Claude Code sessions and sub-agents
 src/sources/codex.js    Codex threads and sub-agents
+src/sources/grok.js     Grok sessions
+src/sources/kimi.js     Kimi Code sessions and sub-agents
 src/sources/mailbox.js  optional coordination mailbox (task folders of Markdown files)
 src/model.js            builds the snapshot the page draws (nodes, edges, events)
 src/store.js            owns the sources, polls them, caches the snapshot
@@ -67,6 +69,8 @@ export const DEFAULTS = {
     claude: { enabled: true, root: null },            // null = $CLAUDE_CONFIG_DIR or ~/.claude
     claudeDesktop: { enabled: true, root: null },     // null = platform default (see below)
     codex: { enabled: true, root: null },             // null = $CODEX_HOME or ~/.codex
+    grok: { enabled: true, root: null },              // null = $GROK_HOME or ~/.grok
+    kimi: { enabled: true, root: null },              // null = $KIMI_CODE_HOME or ~/.kimi-code
     mailbox: { enabled: false, root: null, planner: null, coordinator: null }, // planner/coordinator: node key or session name
   },
   people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role, reportsTo?: nodeKey | 'you' } }  max 500
@@ -273,6 +277,21 @@ export function createCodexSource({ root, settings, now = Date.now })
   child. Use `other: 'codex:<threadId>'` when the thread id is known, else `path:<agent_path>`.
 - Paths: strip a leading `\\?\`; compare paths case-insensitively on Windows.
 
+### Grok (`src/sources/grok.js`) and Kimi Code (`src/sources/kimi.js`)
+
+The same contract as the Codex reader (`createGrokSource` / `createKimiSource`, `poll()` and
+`detail()`), with keys `grok:<session id>` and `kimi:<session id>[/<agent id>]`.
+
+- **Grok** keeps one folder per session in `<root>/sessions/<url-encoded working folder>/<id>/`:
+  `summary.json` (id, working folder, generated title, model, effort, last active time),
+  `events.jsonl` (turns, phases, tools started and completed, permission requested and resolved),
+  `chat_history.jsonl` and `updates.jsonl`. An unresolved permission request is a `needs` of kind
+  `'permission'`.
+- **Kimi Code** keeps `<root>/sessions/wd_<folder>_<hash>/session_<id>/state.json` (title, working
+  folder, times, and the session's agents: `main` plus sub-agents `agent-0`, `agent-1`, …) and an
+  event log per agent, `agents/<agent id>/wire.jsonl` (prompts, turns, messages, model requests,
+  usage, permission and plan mode). Sub-agents hang under the main agent with `spawned: true`.
+
 ### Mailbox (`src/sources/mailbox.js`)
 
 An optional folder that two agents use to coordinate through Markdown files: a **planner** assigns
@@ -475,7 +494,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   Dragging a session or relay tile more than 6 px onto another tile (or onto the person) posts
   `/api/placement`; valid bosses light up, Esc or a drop elsewhere cancels, and a short notice offers
   Undo. The drawer's **Reports to** menu does the same from the keyboard, with **Automatic** to undo.
-- **Tile:** platform mark (Claude or Codex), title, rank, model label, status dot and words
+- **Tile:** platform mark (Claude Code, Codex, Grok or Kimi Code), title, rank, model label, status dot and words
   ("Needs you", "Working", "Finished", "Idle", "Done", "Error"), the current activity or last text, and how
   long ago.
 - **List:** a table of sessions grouped by project with status filters; it is also the accessible

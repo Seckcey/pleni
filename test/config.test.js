@@ -62,6 +62,8 @@ test('cleanSettings keeps good values', () => {
       claude: { enabled: false, root },
       claudeDesktop: { enabled: true, root: null },
       codex: { enabled: true, root: null },
+      grok: { enabled: true, root: null },
+      kimi: { enabled: true, root: null },
       mailbox: { enabled: true, root, planner: `codex:${UUID}`, coordinator: `claude:${UUID}` },
     },
     people: { you: { label: 'Ada' }, [`claude:${UUID}`]: { label: 'Builder', role: 'coordinator' } },
@@ -117,7 +119,7 @@ test('cleanSettings drops unknown keys', () => {
   assert.deepEqual(Object.keys(settings), Object.keys(DEFAULTS));
   assert.deepEqual(Object.keys(settings.window), ['activeMinutes', 'recentHours', 'staleMinutes']);
   assert.deepEqual(Object.keys(settings.modelTiers), ['senior', 'junior']);
-  assert.deepEqual(Object.keys(settings.sources), ['claude', 'claudeDesktop', 'codex', 'mailbox']);
+  assert.deepEqual(Object.keys(settings.sources), ['claude', 'claudeDesktop', 'codex', 'grok', 'kimi', 'mailbox']);
   assert.deepEqual(settings.sources.claude, { enabled: true, root: null });
   assert.deepEqual(settings.remote, { hosts: [], tailscaleUsers: [] });
   assert.deepEqual(settings.people, { you: { label: 'Ada' } });
@@ -276,18 +278,24 @@ test('resolveRoots uses platform defaults', () => {
     claude: '/home/ada/.claude',
     claudeDesktop: '/home/ada/.config/Claude',
     codex: '/home/ada/.codex',
+    grok: '/home/ada/.grok',
+    kimi: '/home/ada/.kimi-code',
     mailbox: null,
   });
   assert.deepEqual(resolveRoots(DEFAULTS, {}, 'darwin', '/Users/ada'), {
     claude: '/Users/ada/.claude',
     claudeDesktop: '/Users/ada/Library/Application Support/Claude',
     codex: '/Users/ada/.codex',
+    grok: '/Users/ada/.grok',
+    kimi: '/Users/ada/.kimi-code',
     mailbox: null,
   });
   assert.deepEqual(resolveRoots(DEFAULTS, { APPDATA: 'C:\\Users\\ada\\AppData\\Roaming' }, 'win32', 'C:\\Users\\ada'), {
     claude: 'C:\\Users\\ada\\.claude',
     claudeDesktop: 'C:\\Users\\ada\\AppData\\Roaming\\Claude',
     codex: 'C:\\Users\\ada\\.codex',
+    grok: 'C:\\Users\\ada\\.grok',
+    kimi: 'C:\\Users\\ada\\.kimi-code',
     mailbox: null,
   });
   assert.equal(resolveRoots(DEFAULTS, {}, 'win32', 'C:\\Users\\ada').claudeDesktop, 'C:\\Users\\ada\\AppData\\Roaming\\Claude');
@@ -322,6 +330,8 @@ test('resolveRoots prefers roots from settings', () => {
     claude: '/data/claude',
     claudeDesktop: '/data/desktop',
     codex: '/opt/codex',
+    grok: '/home/ada/.grok',
+    kimi: '/home/ada/.kimi-code',
     mailbox: '/data/mailbox',
   });
   assert.deepEqual(resolveRoots(null, {}, 'linux', '/home/ada').mailbox, null);
@@ -420,4 +430,22 @@ test('node keys include the relay and mailbox worker runs, and people keep a val
   assert.deepEqual(people['mailbox:T-1/W1'], { reportsTo: 'you' });
   assert.equal(people[`codex:${UUID}`], undefined, 'not itself');
   assert.equal(people[`codex:${UUID}/a1`], undefined, 'not a project');
+});
+
+test('Grok and Kimi Code have their own folders, environment variables and node keys', () => {
+  const home = path.resolve(os.tmpdir(), 'home-ada');
+  const roots = resolveRoots(cleanSettings({}), {}, process.platform, home);
+  assert.equal(roots.grok, path.join(home, '.grok'));
+  assert.equal(roots.kimi, path.join(home, '.kimi-code'));
+  const grokHome = path.resolve(os.tmpdir(), 'grok-home');
+  const kimiHome = path.resolve(os.tmpdir(), 'kimi-home');
+  const fromEnv = resolveRoots(cleanSettings({}), { GROK_HOME: grokHome, KIMI_CODE_HOME: kimiHome }, process.platform, home);
+  assert.equal(fromEnv.grok, grokHome);
+  assert.equal(fromEnv.kimi, kimiHome);
+  const off = cleanSettings({ sources: { grok: { enabled: false }, kimi: { enabled: false, root: 'not absolute' } } });
+  assert.deepEqual(off.sources.grok, { enabled: false, root: null });
+  assert.deepEqual(off.sources.kimi, { enabled: false, root: null });
+  assert.deepEqual(cleanSettings({}).sources.grok, { enabled: true, root: null });
+  for (const key of [`grok:${UUID}`, `kimi:${UUID}`, `kimi:${UUID}/agent-0`]) assert.equal(isNodeKey(key), true, key);
+  assert.equal(isNodeKey(`gemini:${UUID}`), false);
 });

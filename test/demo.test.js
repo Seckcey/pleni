@@ -16,7 +16,7 @@ function clock(start = NOW) {
 }
 
 function allSessions(state) {
-  return [...state.claude.sessions, ...state.codex.sessions];
+  return ['claude', 'codex', 'grok', 'kimi'].flatMap((name) => state[name].sessions);
 }
 
 function demoSnapshot(now, settings = {}) {
@@ -34,8 +34,9 @@ test('the same time always gives the same demo data', () => {
 
 test('the demo returns the source shapes the store expects', () => {
   const state = createDemoSource({ now: () => NOW }).poll();
-  for (const name of ['claude', 'codex']) {
+  for (const name of ['claude', 'codex', 'grok', 'kimi']) {
     assert.equal(state[name].ok, true);
+    assert.ok(state[name].sessions.length > 0, name);
     assert.equal(state[name].error, null);
     assert.ok(state[name].sessions.every((s) => s.platform === name && s.key.startsWith(`${name}:`)));
   }

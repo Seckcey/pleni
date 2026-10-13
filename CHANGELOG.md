@@ -10,6 +10,10 @@ The first version. Pleni only watches: it never starts, stops, or sends anything
 
 ### Added
 
+- Grok and Kimi Code sessions show on the map, read from their own session logs, alongside Claude
+  Code and Codex. A permission request still waiting after two seconds shows as "Needs you", so
+  requests that a rule answers at once never do. The demo has a Grok and a Kimi Code session too.
+
 - Dismiss a "Needs you" notice from its banner or the side panel; it comes back when something new
   happens, and the choice is shared by every device.
 - Settings → Ranks by model: pick Specialist or Private for each model in use.

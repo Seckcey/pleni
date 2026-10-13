@@ -27,6 +27,10 @@ const LEDGER = `${COORDINATOR}/ac4e6f8091a2b3c4`;
 const LOGIN = 'claude:9e8d7c6b-5a49-4382-a1b0-c9d8e7f6a5b4';
 const OFFLINE = 'codex:019a3e10-2f77-7c54-b15a-9e5162738495';
 const TILES = 'claude:3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f';
+const RATES = 'grok:01a13b20-5c6d-7e8f-9a0b-1c2d3e4f5a6b';
+const ROUNDING = 'kimi:7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
+const ROOTS = { claude: '.claude', codex: '.codex', grok: '.grok', kimi: '.kimi-code' };
 
 export const DEMO_KEYS = Object.freeze({ planner: PLANNER, coordinator: COORDINATOR });
 
@@ -112,6 +116,23 @@ const CAST = [
     last: 'The sync test server did not start in time.',
   },
   {
+    key: RATES, kind: 'session', title: 'Sales tax research', cwd: BILLING, branch: 'main', entrypoint: null,
+    model: 'grok-4.7', effort: 'high', status: 'ready', start: 35, end: 3,
+    prompt: 'Find the sales tax changes coming next year in our three states.',
+    last: 'Two of the three states change their rates next year. My notes are in docs/tax-rates.md.',
+  },
+  {
+    key: ROUNDING, kind: 'session', title: 'Currency rounding check', cwd: FIELD, branch: 'main', entrypoint: null,
+    model: 'k3', effort: 'max', status: 'working', start: 20,
+    prompt: 'Check that every price is rounded the same way.',
+    tools: [
+      ['Grep', 'Math.round', 'Found 14 matches in 6 files.'],
+      ['ReadFile', 'currency.ts', 'Read 210 lines.'],
+      ['Bash', 'Run the money tests', '52 passed, 0 failed.'],
+    ],
+    texts: ['Two screens round prices down instead of to the nearest cent.', 'The cart and the receipt now round the same way.'],
+  },
+  {
     key: TILES, kind: 'session', title: 'Map tile cache', cwd: FIELD, branch: 'main', entrypoint: 'cli',
     model: 'claude-opus-5-5', effort: 'low', status: 'idle', start: 140, end: 95,
     prompt: 'Check the map tile cache sizes.', last: 'Cache sizes look fine. Nothing else to do here.',
@@ -167,11 +188,8 @@ export function createDemoSource({ now = Date.now } = {}) {
       const clock = clockAt(now());
       const { handoffs, mail } = history(clock);
       const sessions = CAST.map((member) => session(member, clock, handoffs));
-      return {
-        claude: { ok: true, error: null, root: `${HOME}/.claude`, sessions: sessions.filter((s) => s.platform === 'claude') },
-        codex: { ok: true, error: null, root: `${HOME}/.codex`, sessions: sessions.filter((s) => s.platform === 'codex') },
-        mailbox: mailbox(clock, mail),
-      };
+      const read = (name) => ({ ok: true, error: null, root: `${HOME}/${ROOTS[name]}`, sessions: sessions.filter((s) => s.platform === name) });
+      return { ...Object.fromEntries(TOOLS.map((name) => [name, read(name)])), mailbox: mailbox(clock, mail) };
     },
     detail(key, since) {
       const member = BY_KEY.get(key);
@@ -244,7 +262,7 @@ function session(member, clock, handoffs) {
     .slice(-MAX_LINKS)
     .map((h) => ({ at: h.at, dir: h.dir, other: h.child, label: h.label }));
   return {
-    platform: member.key.startsWith('codex:') ? 'codex' : 'claude',
+    platform: member.key.slice(0, member.key.indexOf(':')),
     key: member.key,
     id: member.key.slice(member.key.lastIndexOf(member.key.includes('/') ? '/' : ':') + 1),
     parentKey: member.parent ?? null,

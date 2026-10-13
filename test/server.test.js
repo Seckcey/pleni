@@ -680,7 +680,7 @@ test('POST /api/settings saves into PLENI_HOME and reloads the store', async (t)
 
   assert.equal(store.reloads.length, 1);
   assert.deepEqual(store.reloads[0].settings, saved);
-  assert.deepEqual(Object.keys(store.reloads[0].roots).sort(), ['claude', 'claudeDesktop', 'codex', 'mailbox']);
+  assert.deepEqual(Object.keys(store.reloads[0].roots).sort(), ['claude', 'claudeDesktop', 'codex', 'grok', 'kimi', 'mailbox']);
 
   const again = await request(port, { path: '/api/settings' });
   assert.equal(again.json.settings.displayName, 'Ada');

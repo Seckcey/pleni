@@ -163,6 +163,11 @@ test('modelLabel makes short readable names', () => {
     ['gpt-4o', 'GPT-4o'],
     ['codex-auto-review', 'Codex Auto Review'],
     ['o3', 'o3'],
+    ['grok-4.7', 'Grok 4.7'],
+    ['k3', 'Kimi K3'],
+    ['kimi-code/k3', 'Kimi K3'],
+    ['kimi-k2-turbo-preview', 'Kimi K2 Turbo Preview'],
+    ['kimi-for-coding-highspeed', 'Kimi For Coding Highspeed'],
   ];
   for (const [model, label] of cases) assert.equal(modelLabel(model), label, model);
   for (const model of [null, undefined, '', '<synthetic>', 7]) assert.equal(modelLabel(model), null);

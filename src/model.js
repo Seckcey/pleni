@@ -27,7 +27,7 @@ const RANKS = {
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 const gitCache = new Map();
 
-export function buildSnapshot({ now, settings, claude = null, codex = null, mailbox = null, dismissed = null } = {}) {
+export function buildSnapshot({ now, settings, claude = null, codex = null, grok = null, kimi = null, mailbox = null, dismissed = null } = {}) {
   const s = cleanSettings(settings);
   const ctx = {
     now: Number.isFinite(now) ? now : Date.now(),
@@ -35,7 +35,7 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, mail
     snippets: s.content === 'snippets',
   };
   const box = isObject(mailbox) ? mailbox : null;
-  const all = collectSessions([claude, codex]);
+  const all = collectSessions([claude, codex, grok, kimi]);
   const workers = mailboxWorkers(box, ctx);
   for (const worker of workers) all.set(worker.key, worker);
   const tree = buildTree(all, ctx, box);
@@ -56,6 +56,8 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, mail
     sources: {
       claude: sourceInfo(claude, sessionsOf(claude).length),
       codex: sourceInfo(codex, sessionsOf(codex).length),
+      grok: sourceInfo(grok, sessionsOf(grok).length),
+      kimi: sourceInfo(kimi, sessionsOf(kimi).length),
       mailbox: tasks ? sourceInfo(mailbox, tasks.length) : null,
     },
     nodes,
@@ -165,6 +167,9 @@ export function modelLabel(model) {
   if (match) return clipLabel(`${capital(match[3])} ${version(match[1], match[2])}`);
   match = /^gpt-(\d[a-z0-9.]*)((?:-[a-z0-9.]+)*)$/.exec(m);
   if (match) return clipLabel([`GPT-${match[1]}`, ...words(match[2])].join(' '));
+  // Kimi Code names its models k2, k3 and so on, sometimes with "kimi-" in front.
+  match = /^(?:kimi-)?k(\d[a-z0-9.]*)((?:-[a-z0-9.]+)*)$/.exec(m);
+  if (match) return clipLabel([`Kimi K${match[1]}`, ...words(match[2])].join(' '));
   return clipLabel(words(m).join(' ')) || null;
 }
 
@@ -240,7 +245,7 @@ function collectSessions(results) {
 }
 
 function cleanSession(raw) {
-  if (!isObject(raw) || typeof raw.key !== 'string' || !/^(claude|codex):./.test(raw.key)) return null;
+  if (!isObject(raw) || typeof raw.key !== 'string' || !/^(claude|codex|grok|kimi):./.test(raw.key)) return null;
   const parentKey = typeof raw.parentKey === 'string' && raw.parentKey && raw.parentKey !== raw.key ? raw.parentKey : null;
   return {
     key: raw.key,
@@ -267,7 +272,7 @@ function cleanSession(raw) {
   };
 }
 
-const NEEDS = ['question', 'plan', 'blocked', 'input'];
+const NEEDS = ['question', 'plan', 'blocked', 'input', 'permission'];
 function cleanNeeds(raw) {
   if (!isObject(raw) || !NEEDS.includes(raw.kind)) return null;
   return { kind: raw.kind, text: snippet(raw.text, MAX_TEXT), at: time(raw.at) };
@@ -881,6 +886,7 @@ const NEEDS_TEXT = {
   plan: 'wants you to approve a plan.',
   blocked: 'is blocked until you act.',
   input: 'is asking for your input.',
+  permission: 'is asking for permission to use a tool.',
 };
 
 function attentionList(sessionNodes, tasks) {

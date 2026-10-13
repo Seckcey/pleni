@@ -8,6 +8,8 @@ import { createDemoSource, demoSettings } from './demo.js';
 import { buildSnapshot, snapshotTag } from './model.js';
 import { createClaudeSource } from './sources/claude.js';
 import { createCodexSource } from './sources/codex.js';
+import { createGrokSource } from './sources/grok.js';
+import { createKimiSource } from './sources/kimi.js';
 import { createMailboxSource } from './sources/mailbox.js';
 
 export const POLL_MS = 2000;
@@ -15,10 +17,14 @@ export const POLL_MS = 2000;
 const FACTORIES = {
   claude: createClaudeSource,
   codex: createCodexSource,
+  grok: createGrokSource,
+  kimi: createKimiSource,
   mailbox: createMailboxSource,
   demo: createDemoSource,
 };
-const NAMES = { claude: 'Claude Code', codex: 'Codex', mailbox: 'the mailbox', demo: 'the demo' };
+const NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', mailbox: 'the mailbox', demo: 'the demo' };
+// The tools whose sessions Pleni reads; each has a source with the same poll()/detail() shape.
+const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
 // Settings that only change how the snapshot is drawn. Changing them keeps the
 // sources, so they do not have to read every session file again.
 const VIEW_ONLY = new Set(['displayName', 'titles', 'groupBy', 'modelTiers', 'people', 'projects', 'chain', 'remote', 'port']);
@@ -54,6 +60,8 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
     return {
       claude: config.claude.enabled ? start('claude', { root: r.claude, desktopRoot, settings: current, now }, r.claude) : null,
       codex: config.codex.enabled ? start('codex', { root: r.codex, settings: current, now }, r.codex) : null,
+      grok: config.grok.enabled ? start('grok', { root: r.grok, settings: current, now }, r.grok) : null,
+      kimi: config.kimi.enabled ? start('kimi', { root: r.kimi, settings: current, now }, r.kimi) : null,
       mailbox: config.mailbox.enabled ? start('mailbox', { root: r.mailbox, settings: current, now }, r.mailbox) : null,
     };
   }
@@ -85,13 +93,13 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
   }
 
   function pollAll() {
-    if (!demo) return { claude: poll(sources.claude), codex: poll(sources.codex), mailbox: poll(sources.mailbox) };
+    if (!demo) return { ...Object.fromEntries(TOOLS.map((name) => [name, poll(sources[name])])), mailbox: poll(sources.mailbox) };
     const result = sources.demo ? poll(sources.demo) : null;
     if (result && result.ok !== false) {
-      return { claude: result.claude ?? null, codex: result.codex ?? null, mailbox: result.mailbox ?? null };
+      return { ...Object.fromEntries(TOOLS.map((name) => [name, result[name] ?? null])), mailbox: result.mailbox ?? null };
     }
     const error = result?.error || 'Pleni could not build the demo just now.';
-    return { claude: failed('claude', null, error), codex: failed('codex', null, error), mailbox: failed('mailbox', null, error) };
+    return { ...Object.fromEntries(TOOLS.map((name) => [name, failed(name, null, error)])), mailbox: failed('mailbox', null, error) };
   }
 
   function snapshot() {
