@@ -27,6 +27,7 @@ read the start of a file once, to find a session's name and where it started.
 | Claude Code folder (usually `~/.claude`) | Session files in `projects/`, and the helper (sub-agent) files and notes stored next to them              |
 | Claude desktop app folder                | Only these fields of each session's notes file: session id, title, title source, model, effort, folder, archived, last activity time |
 | Codex folder (usually `~/.codex`)        | Session files in `sessions/` and `archived_sessions/`, and the list of session names in `session_index.jsonl` |
+| Codex coordinator list, if present      | `coordinators/registry.sqlite3` (opened read-only) and `coordinators/superintendent.json`, only to learn which coordinator started which worker |
 | A mailbox folder, if you turn one on    | The Markdown files of the queue, the status board, and each task (with any worker run notes), plus the small relay files in `.relay/` |
 | A session's project folder, only when it is inside a `_worktrees` folder on a local drive | Only the small `.git` pointer file (at most 4 KB) of that worktree, to learn the name of the repository it belongs to. Nothing else in your project is read |
 | Pleni's own settings file               | `settings.json` in Pleni's settings folder                                                               |

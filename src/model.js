@@ -234,6 +234,8 @@ function cleanSession(raw) {
     platform: raw.key.slice(0, raw.key.indexOf(':')),
     parentKey,
     kind: KINDS.includes(raw.kind) ? raw.kind : parentKey ? 'agent' : 'session',
+    // A source may know a session's role, such as a Codex coordinator from its registry.
+    role: ['superintendent', 'coordinator'].includes(raw.role) ? raw.role : null,
     title: text(raw.title, MAX_TITLE),
     cwd: typeof raw.cwd === 'string' && raw.cwd.trim() ? raw.cwd.trim() : null,
     branch: text(raw.branch, MAX_TITLE),
@@ -378,7 +380,7 @@ function rollUp(nodes, order) {
 function sessionNode(session, project, ctx) {
   const { settings, snippets } = ctx;
   const person = entry(settings.people, session.key);
-  const role = person?.role || (session.kind === 'session' ? 'lead' : 'worker');
+  const role = person?.role || session.role || (session.kind === 'session' ? 'lead' : 'worker');
   const tier = modelTier(session.model, settings.modelTiers);
   const activity = session.activity && { ...session.activity, detail: snippets ? session.activity.detail : null };
   return {

@@ -2,7 +2,11 @@
 // Read-only: files are tailed incrementally and nothing is ever written.
 import fs from 'node:fs';
 import path from 'node:path';
-import { JsonlTail, readHeadLine, scanHead } from '../jsonl.js';
+import { JsonlTail, readHeadLine, readJsonFile, scanHead } from '../jsonl.js';
+
+// node:sqlite reads the coordinator registry. It is missing on some Node.js builds; then workers
+// simply show without their coordinator.
+const sqlite = await import('node:sqlite').catch(() => null);
 
 const MiB = 1024 * 1024;
 const MINUTE = 60 * 1000;
@@ -35,6 +39,8 @@ export function createCodexSource({ root, settings, now = Date.now } = {}) {
   let scannedAt = null;
   let index = null;
   const titles = new Map(); // thread id -> name from session_index.jsonl
+  let registry = EMPTY_REGISTRY;
+  let registryAt = null;
 
   function poll() {
     const fail = (error) => ({ ok: false, error, root: root ?? null, sessions: [] });
@@ -45,6 +51,10 @@ export function createCodexSource({ root, settings, now = Date.now } = {}) {
       if (scannedAt === null || t - scannedAt >= SCAN_MS || t < scannedAt) {
         threads = scan(root, threads, t - windowOf(settings).recentHours * HOUR);
         scannedAt = t;
+      }
+      if (registryAt === null || t - registryAt >= SCAN_MS || t < registryAt) {
+        registry = readRegistry(root);
+        registryAt = t;
       }
       readTitles();
       for (const thread of threads.values()) refresh(thread);
@@ -80,14 +90,36 @@ export function createCodexSource({ root, settings, now = Date.now } = {}) {
       const session = toSession(thread, ctx, t);
       if (!out.has(session.key)) out.set(session.key, session);
     }
+    linkWorkers(out, ctx);
     return [...out.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  }
+
+  // A coordinator's worker is a thread of its own with no parent in its file; the registry says
+  // who started it. Its start is work going down; the end of its latest turn is a report coming up.
+  function linkWorkers(out, ctx) {
+    for (const session of out.values()) {
+      const boss = registry.workers.get(session.id);
+      if (!boss || session.parentKey !== `codex:${boss}`) continue;
+      const parent = out.get(session.parentKey);
+      const thread = ctx.byId.get(session.id);
+      if (parent && session.startedAt !== null) {
+        parent.links.push({ at: session.startedAt, dir: 'down', other: session.key, label: session.title });
+        parent.links.sort((a, b) => a.at - b.at).splice(0, Math.max(0, parent.links.length - MAX_LINKS));
+      }
+      const closedAt = thread?.state.closedAt ?? null;
+      if (closedAt !== null && !thread.state.turnOpen) {
+        session.links.push({ at: closedAt, dir: 'up', other: session.parentKey, label: null });
+      }
+    }
   }
 
   function toSession(thread, ctx, t) {
     const { meta, state: s } = thread;
     const snippets = settings?.content !== 'none';
-    const parentId = parentIdOf(meta);
-    const status = statusOf(s, parentId ? ctx.done.get(thread.id) : undefined, t, windowOf(settings));
+    const ownParent = parentIdOf(meta);
+    const boss = registry.workers.get(thread.id);
+    const parentId = ownParent ?? (boss && boss !== thread.id ? boss : null);
+    const status = statusOf(s, ownParent ? ctx.done.get(thread.id) : undefined, t, windowOf(settings));
     const title = titleOf(thread);
     const startedAt = time(meta.timestamp) ?? s.firstAt;
     const call = [...s.pending.values()].pop();
@@ -97,6 +129,7 @@ export function createCodexSource({ root, settings, now = Date.now } = {}) {
       id: thread.id,
       parentKey: parentId ? `codex:${parentId}` : null,
       kind: isReviewer(meta, s) ? 'reviewer' : parentId ? 'agent' : 'session',
+      role: registry.superintendent === thread.id ? 'superintendent' : registry.coordinators.has(thread.id) ? 'coordinator' : null,
       title: title.text,
       titleSource: title.source,
       cwd: normalizePath(str(meta.cwd) ?? s.cwd),
@@ -504,7 +537,64 @@ function contextOf(list) {
       if (!(done.get(id) >= at)) done.set(id, at);
     }
   }
-  return { trees, ids, done };
+  return { trees, ids, done, byId };
+}
+
+// ---- coordinator registry ----
+
+const EMPTY_REGISTRY = Object.freeze({ workers: new Map(), coordinators: new Set(), superintendent: null });
+
+// Codex coordinators record the workers they start in coordinators/registry.sqlite3 (one JSON record
+// per row), and the suite superintendent in coordinators/superintendent.json. Opened read-only and
+// closed again at once; any problem means "no registry".
+export function readRegistry(root) {
+  const dir = path.join(root, 'coordinators');
+  const out = { workers: new Map(), coordinators: new Set(), superintendent: idOf(readJsonFile(path.join(dir, 'superintendent.json'))?.threadId) };
+  const file = path.join(dir, 'registry.sqlite3');
+  if (!sqlite || !isFile(file)) return out;
+  let db = null;
+  try {
+    db = new sqlite.DatabaseSync(file, { readOnly: true });
+    for (const record of records(db, 'coordinators')) {
+      const id = idOf(record.threadId);
+      if (id) out.coordinators.add(id);
+    }
+    for (const record of records(db, 'worker_tasks')) {
+      const id = idOf(record.threadId);
+      const boss = idOf(record.coordinatorThreadId);
+      if (id && boss && id !== boss) out.workers.set(id, boss);
+    }
+  } catch {
+    return { ...EMPTY_REGISTRY, superintendent: out.superintendent };
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // Already closed.
+    }
+  }
+  return out;
+}
+
+function records(db, table) {
+  const out = [];
+  for (const row of db.prepare(`SELECT record FROM ${table}`).all()) {
+    try {
+      const record = JSON.parse(String(row.record));
+      if (record && typeof record === 'object') out.push(record);
+    } catch {
+      // A damaged row is skipped.
+    }
+  }
+  return out;
+}
+
+function isFile(file) {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
 
 // Agent paths such as "/root/scout" are only unique inside one tree of threads.

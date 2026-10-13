@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import v8 from 'node:v8';
 import vm from 'node:vm';
 import { cleanSettings } from '../src/config.js';
@@ -678,4 +679,53 @@ test('the async input request and a finished reply do not need the person', (t) 
   assert.equal(session(idAt(1)).needs, null);
   assert.equal(session(idAt(2)).status, 'ready');
   assert.equal(session(idAt(2)).needs, null);
+});
+
+// ---- coordinator registry ----
+
+function writeRegistry(root, { coordinators = [], workers = [], superintendent = null }) {
+  const dir = path.join(root, 'coordinators');
+  fs.mkdirSync(dir, { recursive: true });
+  if (superintendent) fs.writeFileSync(path.join(dir, 'superintendent.json'), JSON.stringify({ threadId: superintendent }));
+  const db = new DatabaseSync(path.join(dir, 'registry.sqlite3'));
+  db.exec('CREATE TABLE coordinators (key TEXT PRIMARY KEY, record TEXT NOT NULL); CREATE TABLE worker_tasks (key TEXT PRIMARY KEY, record TEXT NOT NULL);');
+  const add = (table, key, record) => db.prepare(`INSERT INTO ${table} (key, record) VALUES (?, ?)`).run(key, JSON.stringify(record));
+  coordinators.forEach((id, i) => add('coordinators', `c${i}`, { threadId: id, state: 'active' }));
+  workers.forEach(([id, boss], i) => add('worker_tasks', `w${i}`, { threadId: id, coordinatorThreadId: boss, state: 'ready' }));
+  add('worker_tasks', 'junk', { threadId: 'not an id', coordinatorThreadId: idAt(1) });
+  db.prepare("INSERT INTO worker_tasks (key, record) VALUES ('broken', '{ broken')").run();
+  db.close();
+}
+
+test('registry workers hang under their coordinator with roles and hand-off lines', (t) => {
+  const root = codexHome(t);
+  rollout(root, idAt(1), { records: [started(T0 - 40 * MINUTE), completed(T0 - 39 * MINUTE)] });
+  rollout(root, idAt(2), { records: [started(T0 - 30 * MINUTE), say(T0 - 29 * MINUTE, 'Working on it')] });
+  rollout(root, idAt(3), { at: T0 - 20 * MINUTE, records: [started(T0 - 20 * MINUTE), completed(T0 - 10 * MINUTE)] });
+  rollout(root, idAt(4), { records: [started(T0 - 5 * MINUTE)] });
+  writeRegistry(root, { superintendent: idAt(4), coordinators: [idAt(1)], workers: [[idAt(2), idAt(1)], [idAt(3), idAt(1)]] });
+  const { session } = open(root);
+  const boss = session(idAt(1));
+  assert.equal(boss.role, 'coordinator');
+  assert.equal(session(idAt(4)).role, 'superintendent');
+  for (const id of [idAt(2), idAt(3)]) {
+    assert.equal(session(id).parentKey, `codex:${idAt(1)}`);
+    assert.equal(session(id).kind, 'agent');
+  }
+  const downs = boss.links.filter((l) => l.dir === 'down').map((l) => [l.other, l.at]);
+  assert.deepEqual(downs, [[`codex:${idAt(2)}`, T0 - 30 * MINUTE], [`codex:${idAt(3)}`, T0 - 20 * MINUTE]]);
+  // Only the worker whose turn finished reports back.
+  assert.deepEqual(session(idAt(3)).links.filter((l) => l.dir === 'up').map((l) => [l.other, l.at]), [[`codex:${idAt(1)}`, T0 - 10 * MINUTE]]);
+  assert.equal(session(idAt(2)).links.some((l) => l.dir === 'up'), false);
+});
+
+test('without a registry, or with a broken one, Codex threads show as before', (t) => {
+  const root = codexHome(t);
+  rollout(root, idAt(1), { records: [started(T0 - 5 * MINUTE)] });
+  assert.equal(open(root).session(idAt(1)).parentKey, null);
+  fs.mkdirSync(path.join(root, 'coordinators'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'coordinators', 'registry.sqlite3'), 'not a database');
+  const s = open(root).session(idAt(1));
+  assert.equal(s.parentKey, null);
+  assert.equal(s.role, null);
 });

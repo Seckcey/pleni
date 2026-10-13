@@ -245,6 +245,15 @@ export function createCodexSource({ root, settings, now = Date.now })
 - Activity: a `response_item` `function_call` or `custom_tool_call` with no output for its `call_id`
   yet (the shell tool is `exec`). `lastText`: `task_complete.last_agent_message`, else the last
   assistant `message` text.
+- Coordinator registry (optional): Codex coordinators record the workers they start in
+  `<root>/coordinators/registry.sqlite3` (tables `coordinators` and `worker_tasks`, one JSON
+  `record` per row: `threadId`, `coordinatorThreadId`) and the suite superintendent in
+  `<root>/coordinators/superintendent.json` (`threadId`). Pleni opens the database read-only with
+  `node:sqlite` every 30 s and closes it at once. A worker's `parentKey` becomes its coordinator,
+  the coordinator gets a **down** link at the worker's start and the worker an **up** link when its
+  latest turn closes. Sessions get `role` `'coordinator'` or `'superintendent'`, which sets their
+  rank unless `people[key].role` says otherwise. Without the registry, or without `node:sqlite`,
+  threads show as before.
 - Titles: `<root>/session_index.jsonl` `{ id, thread_name, updated_at }`, last line per id wins.
   Sub-agents are not in the index: use `agent_nickname`.
 - Links: `function_call` `spawn_agent` is a **down** link (label: `task_name` when snippets);

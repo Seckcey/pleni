@@ -842,3 +842,12 @@ test('buildSnapshot copes with missing settings and sources', () => {
   assert.deepEqual(s.events, []);
   assert.deepEqual(s.attention, []);
 });
+
+test('a role a source knows sets the rank unless the person chose one', () => {
+  const s = snap({ claude: [session(LEAD, { role: 'coordinator' }), session(OTHER, { role: 'boss' })], settings: { titles: 'military' } });
+  assert.equal(node(s, LEAD).role, 'coordinator');
+  assert.equal(node(s, LEAD).rank, 'Sergeant');
+  assert.equal(node(s, OTHER).role, 'lead');
+  const chosen = snap({ claude: [session(LEAD, { role: 'coordinator' })], settings: { people: { [LEAD]: { role: 'superintendent' } } } });
+  assert.equal(node(chosen, LEAD).role, 'superintendent');
+});

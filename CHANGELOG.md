@@ -10,6 +10,9 @@ The first version. Pleni only watches: it never starts, stops, or sends anything
 
 ### Added
 
+- Codex workers started by a coordinator now hang under that coordinator, read from Codex's
+  coordinator registry, with lines when work goes down and when the worker reports back.
+
 - "Needs you" now means a real ask: a Claude question or plan waiting for your answer, a Claude
   desktop session that its own summary marks as blocked, or a Codex request for your input. A
   session that simply finished a reply shows "Finished". Background (headless) sessions never ask.
