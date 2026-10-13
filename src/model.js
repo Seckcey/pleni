@@ -375,33 +375,48 @@ function chainRule(chain, session, settings) {
 
 // A key that is listed, 'you', or the newest listed session whose name contains the text. Newest by
 // last activity, so a rule follows a role when a new session takes it over.
+// A whole-name match ("Sergeant Claude" for "**Sergeant Claude", ignoring the marks around a name)
+// beats a name that only contains the text ("Sergeant Claude Code"); then the newest wins.
 function findSession(ref, nodes, self = null) {
   if (typeof ref !== 'string' || !ref) return null;
   if (ref === 'you') return 'you';
   if (nodes.has(ref)) return ref === self ? null : ref;
   const needle = ref.toLowerCase();
+  const whole = bareName(needle);
   let best = null;
+  let bestScore = null;
   for (const [key, node] of nodes) {
-    if (key === self || !String(node.title || '').toLowerCase().includes(needle)) continue;
-    const at = node.lastAt ?? -Infinity;
-    const bestAt = best ? nodes.get(best).lastAt ?? -Infinity : -Infinity;
-    if (!best || at > bestAt || (at === bestAt && key < best)) best = key;
+    const title = String(node.title || '').toLowerCase();
+    if (key === self || !title.includes(needle)) continue;
+    const score = [bareName(title) === whole ? 1 : 0, node.lastAt ?? -Infinity];
+    const better = !best || score[0] > bestScore[0] || (score[0] === bestScore[0] && (score[1] > bestScore[1] || (score[1] === bestScore[1] && key < best)));
+    if (better) {
+      best = key;
+      bestScore = score;
+    }
   }
   return best;
+}
+
+function bareName(text) {
+  return text.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
 }
 
 function mailboxKeys(mailbox, nodes, settings) {
   if (!mailbox) return { planner: null, coordinator: null };
   const config = settings.sources.mailbox;
   const relayKey = isObject(mailbox.relay) && typeof mailbox.relay.coordinatorKey === 'string' ? mailbox.relay.coordinatorKey : null;
-  const planner = findSession(config.planner, nodes);
-  const coordinator = findSession(config.coordinator || relayKey, nodes);
-  return { planner: planner === 'you' ? null : planner, coordinator: coordinator === 'you' ? null : coordinator };
+  const found = findSession(config.coordinator || relayKey, nodes);
+  const coordinator = found === 'you' ? null : found;
+  // The planner is never the coordinator itself, even when one name contains the other.
+  const planner = findSession(config.planner, nodes, coordinator);
+  return { planner: planner === 'you' ? null : planner, coordinator };
 }
 
 // Who reports to whom, strongest first: the person's own choice (People, the Reports to menu or a
-// drag on the map), a chain rule, the mailbox (planner -> relay -> coordinator -> its workers), and
-// last what the session files say. A choice or rule whose boss is not on the map changes nothing.
+// drag on the map), the mailbox (planner -> relay -> coordinator -> its workers, which are fixed
+// links like a helper under the session that started it), a chain rule, and last what the session
+// files say. A choice or rule whose boss is not on the map changes nothing.
 function applyChain(nodes, parentOf, homes, rules, keys, settings) {
   for (const [key, node] of nodes) {
     let boss = null;
@@ -411,11 +426,11 @@ function applyChain(nodes, parentOf, homes, rules, keys, settings) {
       boss = findSession(chosen, nodes, key);
       if (boss) placement = 'manual';
     }
+    if (!boss) boss = mailboxBoss(key, nodes, keys);
     if (!boss && rules.has(key)) {
       boss = findSession(rules.get(key).reportsTo, nodes, key);
       if (boss) placement = 'rule';
     }
-    if (!boss) boss = mailboxBoss(key, nodes, keys);
     if (boss === 'you') parentOf.set(key, homes.get(key));
     else if (boss) parentOf.set(key, boss);
     node.placement = placement;

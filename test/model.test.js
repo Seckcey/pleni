@@ -1012,3 +1012,22 @@ test('a quiet coordinator stays only when a rule names it or something listed wo
   const named = snap({ codex, settings: { groupBy: 'none', chain: [{ match: 'Paperclip', reportsTo: 'you', role: null }] } });
   assert.ok(node(named, QUIET_A));
 });
+
+test('a rule does not pull the relay coordinator or its workers off the relay', () => {
+  const box = mailbox({ relay: { running: true, paused: false, halted: false, coordinatorKey: CLAUDE_SGT } });
+  box.tasks[0].workers = [{ id: 'W1', state: 'running', model: null, startedAt: NOW - MIN, finishedAt: null, worktree: null }];
+  const people = { [CLAUDE_SGT]: { label: 'Sergeant Claude Code' }, relay: { label: 'Pleni relay' } };
+  const s = snap({ ...army(), mailbox: box, settings: { groupBy: 'none', titles: 'military', chain: CHAIN, people, sources: { mailbox: { enabled: true, planner: 'Sergeant Claude' } } } });
+  assert.equal(node(s, CLAUDE_SGT).parent, 'relay');
+  assert.equal(node(s, CLAUDE_SGT).rank, 'Sergeant', 'the rule still gives its rank');
+  assert.equal(node(s, 'relay').title, 'Pleni relay');
+  assert.equal(node(s, 'mailbox:T-1/W1').parent, CLAUDE_SGT);
+  // The person can still move it.
+  const moved = snap({ ...army(), mailbox: box, settings: { groupBy: 'none', chain: CHAIN, people: { [CLAUDE_SGT]: { reportsTo: COLONEL } }, sources: { mailbox: { enabled: true, planner: 'Sergeant Claude' } } } });
+  assert.equal(node(moved, CLAUDE_SGT).parent, COLONEL);
+});
+
+test('a whole-name match wins over a longer name that contains it', () => {
+  const s = snap({ ...army(), claude: [session(CLAUDE_SGT, { title: 'Sergeant Claude Code', lastAt: NOW })], settings: { groupBy: 'none', chain: [{ match: 'Fix the updater', reportsTo: 'Sergeant Claude', role: null }] } });
+  assert.equal(node(s, WORKER).parent, SGT_CLAUDE, '"Sergeant Claude" means "**Sergeant Claude", not "Sergeant Claude Code"');
+});
