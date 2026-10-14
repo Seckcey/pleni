@@ -184,12 +184,13 @@ export async function confirmProcesses(found, processStarts) {
 // When each of these processes started, in milliseconds: Map<pid, ms | null>. Node.js cannot ask
 // Windows itself, so a hidden PowerShell does, with only whole numbers put into its command. A
 // process that is gone is missing from the map; one whose start time Windows will not tell (a
-// system process) maps to null.
+// system process) maps to null. PowerShell ends with code 1 when any number has no process, so
+// the command ends with "exit 0": a missing process is a missing line, not a failed question.
 export function windowsProcessStarts(pids, { systemRoot = process.env.SystemRoot, execFile = nodeExecFile } = {}) {
   const ids = [...new Set(pids)].filter((pid) => Number.isSafeInteger(pid) && pid > 0);
   if (!ids.length) return Promise.resolve(new Map());
   const windows = plainWindowsDir(systemRoot);
-  const script = `Get-Process -Id ${ids.join(',')} -ErrorAction SilentlyContinue | ForEach-Object { try { '{0} {1}' -f $_.Id, ([DateTimeOffset]$_.StartTime).ToUnixTimeMilliseconds() } catch { '{0} -' -f $_.Id } }`;
+  const script = `Get-Process -Id ${ids.join(',')} -ErrorAction SilentlyContinue | ForEach-Object { try { '{0} {1}' -f $_.Id, ([DateTimeOffset]$_.StartTime).ToUnixTimeMilliseconds() } catch { '{0} -' -f $_.Id } }; exit 0`;
   const file = `${windows}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
   const options = { cwd: windows, timeout: START_QUERY_MS, windowsHide: true, maxBuffer: 64 * 1024 };
   return new Promise((resolve, reject) => {

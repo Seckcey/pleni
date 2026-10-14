@@ -280,6 +280,7 @@ test('windowsProcessStarts asks a hidden PowerShell, with only whole numbers in 
   assert.equal(call.file, POWERSHELL);
   assert.deepEqual(call.args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command']);
   assert.match(call.args[3], /^Get-Process -Id 4242,77 -ErrorAction SilentlyContinue /);
+  assert.match(call.args[3], /; exit 0$/, 'a process that is gone must not fail the whole question');
   assert.equal(call.options.windowsHide, true);
   assert.equal(call.options.cwd, 'C:\\Windows');
   assert.ok(call.options.timeout > 0);
