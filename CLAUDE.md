@@ -16,6 +16,14 @@ before you change code, and follow its names, shapes, and file paths.
   `codex resume` for the person to type into, and a hidden PowerShell that only asks when a
   process started.
   Sending work and approvals need their own design first.
+- **The relay is separate.** The `relay/` folder holds the mailbox relay: a Windows PowerShell
+  program that writes into a mailbox and starts Claude Code sessions. It is not part of Pleni.
+  Pleni never runs it, and it is not in the npm package. Read `relay/README.md` before you change
+  it. Keep its scripts ASCII-only and working in Windows PowerShell 5.1, and run
+  `relay/bin/bridge-relay-check.ps1` on Windows after a change. Never add a file named `CLAUDE.md`
+  or `AGENTS.md` inside `relay/`: agents working on Pleni would read it as their own orders. The
+  coordinator's orders live in `relay/COORDINATOR.md` instead. Never commit a real mailbox, its
+  `.relay` folder, or its `relay-settings.json` or `cost-limits.json`.
 - **Private by default.** No network calls, no telemetry, nothing loaded from the internet. Show
   session text only when `content` is `snippets`, and never show thinking text.
 - **Public repo privacy.** Never put personal names, e-mail addresses, user names, computer names,

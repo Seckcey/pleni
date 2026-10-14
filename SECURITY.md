@@ -64,6 +64,14 @@ These are Pleni's promises, in plain words. A way around any of them is a vulner
   headings reach the page. Model "thinking" text never reaches the page in any setting.
 - **Errors give nothing away.** Error replies never hold stack traces or file contents.
 
+### The relay
+
+The mailbox relay in `relay/` is a separate Windows program. Pleni never runs it; you start it
+yourself. Its safety rules are in [relay/README.md](relay/README.md#safety). A way to make it wake
+a session other than the one you enrolled, or to start a worker outside its worktrees folder, is a
+vulnerability. Its lists of allowed and refused commands match the text of a command, so they are
+a guard, not a sealed box. A way around them is still worth reporting.
+
 ## Out of scope
 
 - What the AI tools write in their own files. Pleni only shows it.

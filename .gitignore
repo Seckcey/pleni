@@ -21,3 +21,8 @@ settings.local.json
 Thumbs.db
 ehthumbs.db
 [Dd]esktop.ini
+
+# The mailbox relay's settings and state belong to one computer: never commit them
+relay-settings.json
+cost-limits.json
+.relay/

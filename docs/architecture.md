@@ -51,6 +51,7 @@ public/app.js           the page logic (ES module, vanilla JS)
 public/styles.css       Plenipo design tokens and page styles
 public/brand/           logos, favicons, mascot
 test/                   node:test suites; fixtures are generated into temp folders
+relay/                  the mailbox relay: a separate Windows PowerShell program (relay/README.md); Pleni never runs it
 ```
 
 ## Settings (`src/config.js`)
@@ -316,6 +317,9 @@ work and a **coordinator** reports back.
 <root>/.relay/coordinator.json        optional: { session_id } of the coordinator's Claude session
 <root>/.relay/state.json, relay.lock, PAUSE, STOP   optional relay state
 ```
+
+The relay that writes `.relay/` and starts the worker runs is the separate program in `relay/`
+(`relay/README.md`; the mailbox rules are in `relay/PROTOCOL.md`). Pleni only reads what it writes.
 
 ```js
 export function createMailboxSource({ root, settings, now = Date.now })

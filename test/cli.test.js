@@ -337,6 +337,24 @@ test('check gives the right line for several matches in one file', (t) => {
   assert.match(result.stdout, /Found 3 problem\(s\)/);
 });
 
+test('check finds a relay script that is not plain ASCII, and only there', (t) => {
+  const root = tempDir(t, 'pleni-check-');
+  const dash = '—';
+  writeFiles(root, {
+    'relay/bin/good.ps1': 'Write-Host "ok"\n',
+    'relay/bin/bad.ps1': `# one\n# two\nWrite-Host "a ${dash} b"\n`,
+    'relay/README.md': `Markdown may use a dash ${dash} like this.\n`,
+    'scripts/other.ps1': `# outside the relay ${dash}\n`,
+  });
+  const result = runCheck(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /relay\/bin\/bad\.ps1:3: a character that is not plain ASCII/);
+  assert.ok(!result.stdout.includes('good.ps1'));
+  assert.ok(!result.stdout.includes('README.md'));
+  assert.ok(!result.stdout.includes('other.ps1'));
+  assert.match(result.stdout, /Found 1 problem\(s\)/);
+});
+
 test('check stays fast on a long run of letters', (t) => {
   const root = tempDir(t, 'pleni-check-');
   // A token-like run with no "@" once made the address search take minutes.

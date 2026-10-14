@@ -1,13 +1,18 @@
-// Repository checks: every script parses, and no text file holds a personal Windows folder path
-// or a real e-mail address. Usage: node scripts/check.js [folder]
+// Repository checks: every script parses, the relay's PowerShell scripts are plain ASCII, and no
+// text file holds a personal Windows folder path or a real e-mail address.
+// Usage: node scripts/check.js [folder]
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(process.argv[2] ?? fileURLToPath(new URL('..', import.meta.url)));
-const CODE_DIRS = ['bin', 'src', 'public', 'scripts', 'test'];
+const CODE_DIRS = ['bin', 'src', 'public', 'scripts', 'test', 'relay'];
 const CODE_EXTENSIONS = new Set(['.js', '.mjs']);
+// Windows PowerShell 5.1 reads a script without a byte order mark as the local code page, so any
+// letter outside ASCII in a relay script would change meaning on some computers.
+const ASCII_DIR = 'relay';
+const ASCII_EXTENSIONS = new Set(['.ps1']);
 const SKIP_DIRS = new Set(['.git', 'node_modules']);
 const MAX_SCAN_BYTES = 5 * 1024 * 1024;
 
@@ -28,6 +33,7 @@ const FILE_ENDINGS = /\.(png|jpe?g|gif|svg|webp|ico|js|mjs|css|json|html?)$/i;
 
 const problems = [];
 const parsed = checkSyntax();
+checkAscii();
 const scanned = scanFiles();
 
 if (problems.length) {
@@ -49,6 +55,18 @@ function checkSyntax() {
     }
   }
   return count;
+}
+
+function checkAscii() {
+  for (const file of walk(path.join(ROOT, ASCII_DIR))) {
+    if (!ASCII_EXTENSIONS.has(path.extname(file))) continue;
+    const bytes = fs.readFileSync(file);
+    const at = bytes.findIndex((byte) => byte > 0x7f);
+    if (at !== -1) {
+      const line = bytes.subarray(0, at).toString('latin1').split('\n').length;
+      problems.push(`${relative(file)}:${line}: a character that is not plain ASCII`);
+    }
+  }
 }
 
 // Prints only where a match is, never the match itself, so the check does not leak it either.
