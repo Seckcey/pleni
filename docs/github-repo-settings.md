@@ -80,9 +80,12 @@ you upload it. Other sites can keep showing an older card for a while.
 - The logo uses `assets/plenipo-horizontal-on-dark.png` and `assets/plenipo-horizontal-on-light.png`
   in a `<picture>` element, so it matches the reader's light or dark theme. Check both on GitHub
   after any change.
-- The map screenshot uses `docs/assets/pleni-map.png` (dark) and `docs/assets/pleni-map-light.png`
-  (light) in a `<picture>` element. When the page changes, retake both from demo mode
-  (`node bin/pleni.js --demo`), check them for anything private, and keep each under 400 KB.
+- The top of the README shows `docs/assets/pleni-demo.gif`, a 20-second tour recorded from demo
+  mode with a blank settings file, so every name in it is made up. Keep it under 4 MB (GitHub and
+  npm both load it). The still pictures `docs/assets/pleni-map.png` (dark) and
+  `docs/assets/pleni-map-light.png` (light) stay for links and posts. When the page changes, retake
+  them from demo mode (`npx pleni --demo`), check them for anything private, and keep each still
+  under 400 KB.
 
 ## Community entry points
 

@@ -27,14 +27,10 @@
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Seckcey/pleni/main/docs/assets/pleni-map.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Seckcey/pleni/main/docs/assets/pleni-map-light.png">
-    <img src="https://raw.githubusercontent.com/Seckcey/pleni/main/docs/assets/pleni-map.png" alt="The Pleni map in demo mode: you on the left, then Claude Code, Codex, Grok and Kimi Code sessions and the helpers they started. Glowing lines show work being handed to helpers and reports coming back." width="1000">
-  </picture>
+  <img src="https://raw.githubusercontent.com/Seckcey/pleni/main/docs/assets/pleni-demo.gif" alt="A 20-second tour of Pleni in demo mode: the live map with glowing hand-off lines between Claude Code, Codex, Grok and Kimi Code sessions, a session's side panel with its recent steps, the list of sessions, the activity feed, and back to the map." width="900">
 </p>
 
-<p align="center"><sub>The map in demo mode (<code>node bin/pleni.js --demo</code>). All the names and work in it are made up.</sub></p>
+<p align="center"><sub>A 20-second tour of the demo (<code>npx pleni --demo</code>). All the names and work in it are made up. <a href="https://raw.githubusercontent.com/Seckcey/pleni/main/docs/assets/pleni-map.png">See a still picture of the map.</a></sub></p>
 
 ## What Pleni is
 
