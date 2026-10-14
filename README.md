@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/plenipo-horizontal-on-dark.png">
-    <img src="assets/plenipo-horizontal-on-light.png" alt="Plenipo logo with Pip, the robot" width="420">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Seckcey/pleni/main/assets/plenipo-horizontal-on-dark.png">
+    <img src="https://raw.githubusercontent.com/Seckcey/pleni/main/assets/plenipo-horizontal-on-light.png" alt="Plenipo logo with Pip, the robot" width="420">
   </picture>
 </p>
 
@@ -27,9 +27,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/pleni-map.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/pleni-map-light.png">
-    <img src="docs/assets/pleni-map.png" alt="The Pleni map in demo mode: you on the left, then Claude Code, Codex, Grok and Kimi Code sessions and the helpers they started. Glowing lines show work being handed to helpers and reports coming back." width="1000">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Seckcey/pleni/main/docs/assets/pleni-map.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Seckcey/pleni/main/docs/assets/pleni-map-light.png">
+    <img src="https://raw.githubusercontent.com/Seckcey/pleni/main/docs/assets/pleni-map.png" alt="The Pleni map in demo mode: you on the left, then Claude Code, Codex, Grok and Kimi Code sessions and the helpers they started. Glowing lines show work being handed to helpers and reports coming back." width="1000">
   </picture>
 </p>
 
@@ -48,17 +48,15 @@ is handed down and when a report comes back up.
   files it reads.
 - **It stays on your computer.** It opens only on your own computer (`127.0.0.1`). It sends
   nothing anywhere. There is no account, no sign-in, and no tracking.
-- **It has zero dependencies.** You need only Node.js. There is nothing to install from npm and
+- **It has zero dependencies.** You need only Node.js. Pleni installs nothing else from npm and has
   nothing to build.
 
 ## Start here
 
-You need [Node.js](https://nodejs.org/) 22.12 or newer, and git.
+You need [Node.js](https://nodejs.org/) 22.12 or newer. Then run:
 
 ```sh
-git clone https://github.com/Seckcey/pleni.git
-cd pleni
-node bin/pleni.js
+npx pleni
 ```
 
 Pleni prints its address, such as `http://localhost:8790/?t=...`. Open that whole address in
@@ -71,10 +69,16 @@ No sessions yet? Try the demo. It shows a made-up team that moves on its own, so
 around without any real data:
 
 ```sh
-node bin/pleni.js --demo
+npx pleni --demo
 ```
 
-`npx pleni` does not work yet. Pleni is not on npm yet; use the steps above.
+Prefer to run it from the source? You need git too:
+
+```sh
+git clone https://github.com/Seckcey/pleni.git
+cd pleni
+node bin/pleni.js
+```
 
 | Option          | What it does                                            |
 | --------------- | ------------------------------------------------------- |
@@ -85,7 +89,7 @@ node bin/pleni.js --demo
 | `--version`     | Show the version number                                 |
 | `--help`        | Show all the options                                    |
 
-`npm start` and `npm run demo` do the same as the two commands above.
+In a copy of the source, `npm start` and `npm run demo` do the same as `npx pleni` and `npx pleni --demo`.
 
 ## What you see
 
@@ -232,7 +236,7 @@ both. Both are made by 8 West Ventures, LLC.
 
 Version 0.1 only watches. The next step is to let you answer questions, approve plans and send
 messages to a session right from the browser. The design is in
-[docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md). `npx pleni` will work once Pleni is on npm.
+[docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md).
 
 These are plans, not promises. Ideas are welcome in
 [Discussions](https://github.com/Seckcey/pleni/discussions).

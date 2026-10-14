@@ -4,9 +4,10 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow
 [Semantic Versioning](https://semver.org/).
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-10-13)
 
-The first version. Pleni only watches: it never starts, stops, or sends anything to a session.
+The first version, on npm as `pleni` (`npx pleni`). Pleni only watches: it never starts, stops, or
+sends anything to a session.
 
 ### Added
 
