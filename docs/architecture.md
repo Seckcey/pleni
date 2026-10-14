@@ -7,8 +7,8 @@ browser as an organization map with the hand-offs between agents drawn as moving
 Version 0.1 only **watches**. It never stops, sends to or changes a session, and it never writes
 into Claude Code's, Codex's or a mailbox's folders. The one thing it may start is a window the
 person asks for: with **Open in PowerShell** turned on (off by default, Windows only), a button
-opens a PowerShell window that runs `claude --resume` for one Claude Code session, and the person
-types there (see `src/open.js` below). Sending work and approving actions come later and will get
+opens a PowerShell window that runs `claude --resume` or `codex resume` for one Claude Code session
+or Codex thread, and the person types there (see `src/open.js` below). Sending work and approving actions come later and will get
 their own design.
 
 ## Ground rules
@@ -43,7 +43,7 @@ src/sources/kimi.js     Kimi Code sessions and sub-agents
 src/sources/mailbox.js  optional coordination mailbox (task folders of Markdown files)
 src/model.js            builds the snapshot the page draws (nodes, edges, events)
 src/store.js            owns the sources, polls them, caches the snapshot
-src/open.js             Open in PowerShell: one Claude Code session in a new window (opt-in, Windows)
+src/open.js             Open in PowerShell: a Claude Code session or Codex thread in a new window (opt-in, Windows)
 src/demo.js             synthetic, moving demo data (no files needed)
 src/server.js           HTTP server, security gate, routes
 public/index.html       the page (no inline script or style)
@@ -427,14 +427,14 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
 ```js
 export function createStore({ settings, roots, demo = false, now = Date.now, stateDir = null, platform = process.platform })
 // -> { snapshot(): Snapshot, detail(key, since), reload(settings, roots), close(), dismiss(id, at),
-//      session(key): { id, cwd, status, entrypoint } | null, demo: boolean }
+//      session(key): { id, cwd, status, entrypoint, kind } | null, demo: boolean }
 ```
 
 Creates the enabled sources (or the demo source), polls at most every 2 s on demand, caches the
 snapshot with its JSON and its ETag, and rebuilds when settings change. `snapshot().actions.openTerminal`
 is `settings.actions.openTerminal` and `platform === 'win32'`. `session(key)` gives what the newest
-poll knows about a top-level Claude Code session (`{ id, cwd, status, entrypoint }`) for Open in
-PowerShell, and `null` for anything else and in the demo. The ETag is
+poll knows about a top-level Claude Code session or a Codex thread (`{ id, cwd, status, entrypoint,
+kind }`) for Open in PowerShell, and `null` for anything else and in the demo. The ETag is
 `snapshotTag(snapshot)` from `src/model.js`: `W/"<sha1 of the JSON with now set to 0>"`. `now`
 changes on every build, and the page needs it only to allow for a clock difference, so a snapshot
 that changed only its time keeps its ETag and the page's poll gets `304`.
@@ -446,24 +446,29 @@ only on Windows for now, and the server allows it only for a request made on the
 Pleni. Pleni starts the window and nothing else: whatever is typed there comes from the person.
 
 ```js
-export async function openSession({ key, settings, root, store, limits, platform, env, home, spawn, now, isAlive })
+export async function openSession({ key, settings, roots, store, limits, platform, env, home, spawn, now, isAlive, isLocked })
 // -> { ok: true } | { ok: false, status, error }   (error is a plain sentence from OPEN_MESSAGES)
-export function openProblem(session, processes)          // -> plain reason it is unsafe, or null
+export function openProblem(session, processes)          // Claude Code: plain reason it is unsafe, or null
+export function codexProblem(session, locked)            // Codex: plain reason it is unsafe, or null
 export function claudeProcesses(root, sessionId, isAlive) // -> [{ kind, status }]
-export function powershellCommand(sessionId, systemRoot)  // -> { file, args }
-export function claudeEnv(env, root, home, platform)      // -> env for the window
+export function codexThreadLocked(root, threadId)        // -> true while another program writes the thread
+export function powershellCommand(tool, id, systemRoot)  // -> { file, args }
+export function toolEnv(tool, env, root, home, platform) // -> env for the window
 export function openLimits()                              // -> { take(key, now): reason | null }
 ```
 
-- Only `claude:<session id>` (a lower-case UUID) can be opened: a helper's key gets "open the session
-  that started it", any other key "only Claude Code sessions". The demo has nothing to open. The
-  session must be on the map, and `store.session(key)` must know its folder.
+- What can be opened: `claude:<session id>` or `codex:<thread id>` (a lower-case UUID). A Codex
+  helper is a thread of its own that Codex can resume by itself, so it opens itself. A Claude Code
+  helper lives inside its session's process: its key gets "open the session that started it". A
+  Codex automatic reviewer is refused, and any other key gets "only Claude Code and Codex
+  sessions". The demo has nothing to open. The session must be on the map, and
+  `store.session(key)` must know its folder.
 - The folder must be an existing absolute directory, and not a network path (`\\server\share`):
   cmd.exe cannot start there and would fall back to the Windows folder.
-- **One writer per conversation.** Two processes writing one transcript mix it up. A session whose
-  newest records come from the Claude desktop app or VS Code (`entrypoint` `claude-desktop` or
-  `claude-vscode`) is refused with "open it there": those apps may hold a session open without a
-  file Pleni can see. Claude Code keeps a small file per running process in
+- **One writer per conversation (Claude Code).** Two processes writing one transcript mix it up. A
+  session whose newest records come from the Claude desktop app or VS Code (`entrypoint`
+  `claude-desktop` or `claude-vscode`) is refused with "open it there": those apps may hold a
+  session open without a file Pleni can see. Claude Code keeps a small file per running process in
   `<root>/sessions/<pid>.json` (`pid`, `sessionId`, `kind`: `'interactive'` or `'background'`,
   `status`; files at most 64 KB, at most 500 read). Pleni reads them only when asked to open, and
   counts a file only while its process is alive (signal 0; `EPERM` counts as alive). A live process
@@ -471,22 +476,30 @@ export function openLimits()                              // -> { take(key, now)
   with no live process (a `claude -p` script, or another app) refuses ("try again when it
   finishes"). A live background session is allowed: `claude --resume` shows that running session
   live (Claude Code 2.1.285 or newer).
+- **One writer per thread (Codex).** Codex itself lets one program write a thread at a time: while
+  it writes, it holds an operating-system lock on `<root>/thread-writer-locks/<thread id>.lock`
+  (no contents), and a second program gets "thread … already has an active writer". Pleni checks
+  first, so the person gets a plain answer instead of an error in a new window: it opens that one
+  file read-only and reads one byte. Windows refuses the read while another program holds the
+  lock (`EBUSY`, `EACCES` or `EPERM`), which refuses ("open in another window"). A missing file
+  counts as free. A thread that is `working` refuses ("try again when it finishes").
 - **Limits** (`openLimits`): one window per session every 10 seconds, and 10 a minute in all. The
   limit is taken after every other check, with no waiting in between, so two quick clicks cannot
   both get through, and a refusal does not use up the next try.
-- **The command.** `cmd.exe /d /s /c "start "Claude Code" "<powershell.exe>" -NoExit -NoLogo -Command
-  "claude --resume '<id>'""`, spawned with `cwd` set to the session's folder, `detached` (so cmd.exe
-  gets no console window; `start` opens PowerShell in a new one), `stdio: 'ignore'`,
+- **The command.** `cmd.exe /d /s /c "start "<title>" "<powershell.exe>" -NoExit -NoLogo -Command
+  "<resume> '<id>'""`, where `<title>` and `<resume>` are `Claude Code` and `claude --resume`, or
+  `Codex` and `codex resume`. It is spawned with `cwd` set to the session's folder, `detached` (so
+  cmd.exe gets no console window; `start` opens PowerShell in a new one), `stdio: 'ignore'`,
   `windowsHide: false` (a hidden start could hide the new window too) and
   `windowsVerbatimArguments`. Both programs are named by their full path under `%SystemRoot%`, used
   only when it is a plain folder such as `C:\Windows` (else `C:\Windows` itself). So a program with
   the same name in the session's folder never runs instead, and nothing in the line can be read as
   a second command: every part is fixed except the id, which is checked. The answer comes when
   cmd.exe has started.
-- **The Claude folder** (`claudeEnv`): `claude` looks in `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
-  When Pleni reads Claude Code from another folder, the window gets `CLAUDE_CONFIG_DIR` set to it;
-  otherwise the environment is passed on unchanged, because naming the usual folder there is not the
-  same as leaving it unset.
+- **The tool's folder** (`toolEnv`): `claude` looks in `$CLAUDE_CONFIG_DIR`, else `~/.claude`, and
+  `codex` in `$CODEX_HOME`, else `~/.codex`. When Pleni reads a tool from another folder, the window
+  gets that variable set to it; otherwise the environment is passed on unchanged, because naming
+  Claude Code's usual folder there is not the same as leaving it unset.
 
 ## Server (`src/server.js`)
 
@@ -572,9 +585,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **Drawer:** clicking a tile opens the session's details and live recent events from
   `/api/session`. Esc closes it; focus is trapped while open and returned afterwards. When
   `snapshot.actions.openTerminal` is true and the page itself was opened on this computer
-  (`localhost`, `127.0.0.1` or `[::1]`), a Claude Code session's Now tab has an **Open in
-  PowerShell** button that posts `/api/open`; a Claude helper's has **Open its session in
-  PowerShell**, which opens the session it works inside. The answer shows in the status line under
+  (`localhost`, `127.0.0.1` or `[::1]`), the Now tab of a Claude Code session, a Codex thread or a
+  Codex helper has an **Open in PowerShell** button that posts `/api/open`; a Claude Code helper's
+  has **Open its session in PowerShell**, which opens the session it works inside. The answer shows in the status line under
   the tabs.
 - **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. The Open sessions
   section turns Open in PowerShell on and says when the computer does not run Windows. Before saving, the page

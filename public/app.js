@@ -1908,12 +1908,15 @@ function sessionNowHtml(n, d) {
   return out.join('');
 }
 
-// The Claude Code session that Open in PowerShell would open for this tile: the session itself, or
-// for a helper (sub-agent) the session it works inside. Null when the button is off or cannot work.
+// What Open in PowerShell would open for this tile: the session itself, or for a Claude Code helper
+// (sub-agent) the session it works inside. A Codex helper is a thread of its own, so it opens
+// itself. Null when the button is off or cannot work.
 function openTarget(n) {
-  if (!n || !LOCAL_PAGE || !(S.snap && S.snap.actions && S.snap.actions.openTerminal)) return null;
-  const m = /^(claude:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(\/|$)/.exec(n.key);
-  if (!m || !isSession(n)) return null;
+  if (!n || !LOCAL_PAGE || !(S.snap && S.snap.actions && S.snap.actions.openTerminal) || !isSession(n)) return null;
+  const id = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+  if (new RegExp(`^codex:${id}$`).test(n.key)) return n.kind === 'reviewer' ? null : { key: n.key, title: titleOf(n), helper: false };
+  const m = new RegExp(`^(claude:${id})(/|$)`).exec(n.key);
+  if (!m) return null;
   const top = m[1] === n.key ? n : S.index && S.index.byKey.get(m[1]);
   return top ? { key: m[1], title: titleOf(top), helper: top !== n } : null;
 }
@@ -2870,7 +2873,7 @@ function renderSettingsForm() {
       <div id="project-rows">${projectsHtml()}</div>
     </section>
     <section class="panel" aria-labelledby="s-h-open"><h2 id="s-h-open">Open sessions</h2>
-      <p class="note">Pleni only looks, unless you turn this on. Then each Claude Code session's side panel gets an Open in PowerShell button. It opens a new PowerShell window in the session's folder and runs <code>claude --resume</code> for it, so you can see the conversation and type to it. Pleni never types into a session itself.</p>
+      <p class="note">Pleni only looks, unless you turn this on. Then each Claude Code and Codex session's side panel gets an Open in PowerShell button. It opens a new PowerShell window in the session's folder and runs <code>claude --resume</code> or <code>codex resume</code> for it, so you can see the conversation and type to it. Pleni never types into a session itself.</p>
       ${checkRow('s-open', 'Open in PowerShell', 'actions.openTerminal', 'Show the Open in PowerShell button', 'It works only on Windows, and only on this computer, not from another device. Pleni will not open a session that is already open in another window.')}
       ${st.info.platform && st.info.platform !== 'win32' ? '<p class="note">This computer does not run Windows, so the button will not show here yet.</p>' : ''}
     </section>

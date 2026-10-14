@@ -12,7 +12,8 @@ before you change code, and follow its names, shapes, and file paths.
 - **Read-only by design.** Pleni writes nowhere except its own settings file. It never stops or
   sends anything to a session, and never writes into Claude Code's, Codex's, or a mailbox's
   folders. The one thing it may start is the opt-in Open in PowerShell window (`src/open.js`,
-  Windows only, this computer only), which runs `claude --resume` for the person to type into.
+  Windows only, this computer only), which runs `claude --resume` or `codex resume` for the person
+  to type into.
   Sending work and approvals need their own design first.
 - **Private by default.** No network calls, no telemetry, nothing loaded from the internet. Show
   session text only when `content` is `snippets`, and never show thinking text.

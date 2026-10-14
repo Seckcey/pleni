@@ -417,8 +417,9 @@ async function postDismiss(app, req, res, host) {
   return sendJson(req, res, 200, { ok: true });
 }
 
-// Open in PowerShell: { key: 'claude:<session id>' }. src/open.js makes the other checks: the
-// setting is on, Pleni runs on Windows, the session is on the map, and no other window has it open.
+// Open in PowerShell: { key: 'claude:<session id>' | 'codex:<thread id>' }. src/open.js makes the
+// other checks: the setting is on, Pleni runs on Windows, the session is on the map, and no other
+// window has it open.
 async function postOpen(app, req, res, host) {
   const body = await readJsonPost(req, res, host);
   if (body === undefined) return undefined;
@@ -427,7 +428,7 @@ async function postOpen(app, req, res, host) {
   const result = await openSession({
     key: body.key,
     settings: state.settings,
-    root: state.roots?.claude ?? null,
+    roots: state.roots ?? {},
     store: app.store,
     limits: app.opens,
     platform: app.platform,

@@ -1,26 +1,31 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { spawn as realSpawn } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
   OPEN_MESSAGES,
-  claudeEnv,
   claudeProcesses,
+  codexProblem,
+  codexThreadLocked,
   openLimits,
   openProblem,
   openSession,
   powershellCommand,
   processAlive,
+  toolEnv,
 } from '../src/open.js';
 
 const ID = '0f8e2c4a-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
 const KEY = `claude:${ID}`;
+const CODEX_KEY = `codex:${ID}`;
 const ON = { actions: { openTerminal: true } };
 const CMD = 'C:\\Windows\\System32\\cmd.exe';
 const POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 const LINE = `"start "Claude Code" "${POWERSHELL}" -NoExit -NoLogo -Command "claude --resume '${ID}'""`;
+const CODEX_LINE = `"start "Codex" "${POWERSHELL}" -NoExit -NoLogo -Command "codex resume '${ID}'""`;
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pleni-open-'));
@@ -36,11 +41,11 @@ function claudeRoot(t, entries = []) {
   return root;
 }
 
-function fakeStore({ cwd, status = 'idle', entrypoint = 'cli', listed = true, demo = false } = {}) {
+function fakeStore({ key = KEY, cwd, status = 'idle', entrypoint = 'cli', kind = 'session', listed = true, demo = false } = {}) {
   return {
     demo,
-    snapshot: () => ({ nodes: listed ? [{ key: 'you' }, { key: KEY }] : [{ key: 'you' }] }),
-    session: (key) => (key === KEY ? { id: ID, cwd, status, entrypoint } : null),
+    snapshot: () => ({ nodes: listed ? [{ key: 'you' }, { key }] : [{ key: 'you' }] }),
+    session: (asked) => (asked === key ? { id: ID, cwd, status, entrypoint, kind } : null),
   };
 }
 
@@ -67,7 +72,7 @@ async function open(t, options = {}) {
   const result = await openSession({
     key: KEY,
     settings: ON,
-    root: options.root ?? claudeRoot(t),
+    roots: { claude: options.root ?? claudeRoot(t), codex: options.codexRoot ?? null },
     store: options.store ?? fakeStore({ cwd: folder, status: options.status }),
     limits: options.limits ?? openLimits(),
     platform: 'win32',
@@ -76,6 +81,7 @@ async function open(t, options = {}) {
     spawn,
     now: options.now ?? 1000,
     isAlive: options.isAlive ?? (() => true),
+    isLocked: options.isLocked ?? (() => false),
     ...options.args,
   });
   return { result, spawn, folder };
@@ -117,12 +123,13 @@ test('it stays off until it is turned on, and works only on Windows', async (t) 
   }
 });
 
-test('only a top-level Claude Code session can be opened', async (t) => {
+test('only a top-level Claude Code session or a Codex thread can be opened', async (t) => {
   const helper = await open(t, { args: { key: `${KEY}/a1b2c3` } });
   assertRefused(helper.result, 400, OPEN_MESSAGES.helper);
-  for (const key of [`codex:${ID}`, 'claude:../../x', `claude:${ID.toUpperCase()}`, `claude:${ID} & calc`, 42, undefined]) {
+  const others = [`grok:${ID}`, `kimi:${ID}`, `codex:${ID}/a1b2`, 'claude:../../x', `claude:${ID.toUpperCase()}`, `claude:${ID} & calc`, `codex:${ID}' ; calc`, 42, undefined];
+  for (const key of others) {
     const { result, spawn } = await open(t, { args: { key } });
-    assertRefused(result, 400, OPEN_MESSAGES.notClaude);
+    assertRefused(result, 400, OPEN_MESSAGES.otherTool);
     assert.equal(spawn.calls.length, 0, String(key));
   }
 });
@@ -249,36 +256,123 @@ test('claudeProcesses reads only live process files for that session', (t) => {
   assert.deepEqual(claudeProcesses(root, '../x', alive), []);
 });
 
-test('powershellCommand checks the id and uses only a plain Windows folder', () => {
-  assert.deepEqual(powershellCommand(ID, 'C:\\Windows'), { file: CMD, args: ['/d', '/s', '/c', LINE] });
-  assert.equal(powershellCommand(ID, 'C:\\Windows\\').file, CMD);
-  assert.equal(powershellCommand(ID, 'D:\\WINNT').file, 'D:\\WINNT\\System32\\cmd.exe');
-  assert.ok(powershellCommand(ID, 'D:\\WINNT').args[3].includes('"D:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"'));
+test('powershellCommand checks the tool and the id, and uses only a plain Windows folder', () => {
+  assert.deepEqual(powershellCommand('claude', ID, 'C:\\Windows'), { file: CMD, args: ['/d', '/s', '/c', LINE] });
+  assert.deepEqual(powershellCommand('codex', ID, 'C:\\Windows'), { file: CMD, args: ['/d', '/s', '/c', CODEX_LINE] });
+  assert.equal(powershellCommand('claude', ID, 'C:\\Windows\\').file, CMD);
+  assert.equal(powershellCommand('claude', ID, 'D:\\WINNT').file, 'D:\\WINNT\\System32\\cmd.exe');
+  assert.ok(powershellCommand('claude', ID, 'D:\\WINNT').args[3].includes('"D:\\WINNT\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"'));
   for (const odd of ['C:\\Win&calc', 'C:\\My Windows', '%COMSPEC%', 'C:\\Windows"', '\\\\server\\share', '', undefined, 7]) {
-    assert.equal(powershellCommand(ID, odd).file, CMD, String(odd));
+    assert.equal(powershellCommand('claude', ID, odd).file, CMD, String(odd));
   }
   for (const bad of [ID.toUpperCase(), `${ID}" & calc & "`, '', undefined]) {
-    assert.throws(() => powershellCommand(bad, 'C:\\Windows'), String(bad));
+    assert.throws(() => powershellCommand('claude', bad, 'C:\\Windows'), String(bad));
+  }
+  for (const tool of ['grok', 'kimi', '__proto__', 'toString', undefined]) {
+    assert.throws(() => powershellCommand(tool, ID, 'C:\\Windows'), String(tool));
   }
 });
 
-test('claudeEnv points the window at the Claude Code folder Pleni reads, and only when it must', () => {
+test('toolEnv points the window at the folder Pleni reads, and only when it must', () => {
   const env = { Path: 'C:\\Windows' };
   const home = 'C:\\Users\\ada';
-  assert.deepEqual(claudeEnv(env, null, home, 'win32'), env);
-  assert.notEqual(claudeEnv(env, null, home, 'win32'), env, 'a copy, never the same object');
-  assert.deepEqual(claudeEnv(env, 'C:\\Users\\ada\\.claude', home, 'win32'), env);
-  assert.deepEqual(claudeEnv(env, 'c:\\users\\ADA\\.claude\\', home, 'win32'), env, 'Windows folder names ignore case');
-  assert.deepEqual(claudeEnv(env, 'D:\\claude-data', home, 'win32'), { ...env, CLAUDE_CONFIG_DIR: 'D:\\claude-data' });
+  assert.deepEqual(toolEnv('claude', env, null, home, 'win32'), env);
+  assert.notEqual(toolEnv('claude', env, null, home, 'win32'), env, 'a copy, never the same object');
+  assert.deepEqual(toolEnv('claude', env, 'C:\\Users\\ada\\.claude', home, 'win32'), env);
+  assert.deepEqual(toolEnv('claude', env, 'c:\\users\\ADA\\.claude\\', home, 'win32'), env, 'Windows folder names ignore case');
+  assert.deepEqual(toolEnv('claude', env, 'D:\\claude-data', home, 'win32'), { ...env, CLAUDE_CONFIG_DIR: 'D:\\claude-data' });
   const own = { ...env, CLAUDE_CONFIG_DIR: 'D:\\claude-data' };
-  assert.deepEqual(claudeEnv(own, 'D:\\claude-data', home, 'win32'), own);
-  assert.deepEqual(claudeEnv(own, 'C:\\Users\\ada\\.claude', home, 'win32'), { ...env, CLAUDE_CONFIG_DIR: 'C:\\Users\\ada\\.claude' });
-  assert.deepEqual(claudeEnv({}, '/home/ada/.claude', '/home/ada', 'linux'), {});
-  assert.deepEqual(claudeEnv({}, '/srv/claude', '/home/ada', 'linux'), { CLAUDE_CONFIG_DIR: '/srv/claude' });
+  assert.deepEqual(toolEnv('claude', own, 'D:\\claude-data', home, 'win32'), own);
+  assert.deepEqual(toolEnv('claude', own, 'C:\\Users\\ada\\.claude', home, 'win32'), { ...env, CLAUDE_CONFIG_DIR: 'C:\\Users\\ada\\.claude' });
+  assert.deepEqual(toolEnv('claude', {}, '/home/ada/.claude', '/home/ada', 'linux'), {});
+  assert.deepEqual(toolEnv('claude', {}, '/srv/claude', '/home/ada', 'linux'), { CLAUDE_CONFIG_DIR: '/srv/claude' });
+  assert.deepEqual(toolEnv('codex', env, 'C:\\Users\\ada\\.codex', home, 'win32'), env);
+  assert.deepEqual(toolEnv('codex', env, 'D:\\codex-data', home, 'win32'), { ...env, CODEX_HOME: 'D:\\codex-data' });
+  assert.deepEqual(toolEnv('codex', { ...env, CODEX_HOME: 'D:\\codex-data' }, 'd:\\CODEX-DATA', home, 'win32'), { ...env, CODEX_HOME: 'D:\\codex-data' });
   assert.deepEqual(env, { Path: 'C:\\Windows' }, 'the given env is never changed');
 });
 
 test('processAlive knows this process', () => {
   assert.equal(processAlive(process.pid), true);
   assert.equal(processAlive(2147483646), false);
+});
+
+// ---- Codex ----
+
+test('a Codex thread opens with codex resume, a Codex helper too', async (t) => {
+  const codexRoot = tempDir(t);
+  for (const kind of ['session', 'agent']) {
+    const folder = tempDir(t);
+    const asked = [];
+    const isLocked = (root, id) => {
+      asked.push([root, id]);
+      return false;
+    };
+    const store = fakeStore({ key: CODEX_KEY, cwd: folder, kind, entrypoint: 'codex_cli_rs' });
+    const { result, spawn } = await open(t, { store, codexRoot, isLocked, args: { key: CODEX_KEY } });
+    assert.deepEqual(result, { ok: true }, kind);
+    assert.deepEqual(asked, [[codexRoot, ID]], 'the lock of this thread, in the Codex folder Pleni reads');
+    const [call] = spawn.calls;
+    assert.equal(call.file, CMD);
+    assert.deepEqual(call.args, ['/d', '/s', '/c', CODEX_LINE]);
+    assert.equal(call.options.cwd, folder);
+    assert.equal(call.options.env.CODEX_HOME, codexRoot, 'the window reads the same Codex folder as Pleni');
+    assert.equal(call.options.env.CLAUDE_CONFIG_DIR, undefined);
+  }
+});
+
+test('a Codex thread that another program has open, or that is working, is refused', async (t) => {
+  const folder = tempDir(t);
+  const locked = await open(t, { store: fakeStore({ key: CODEX_KEY, cwd: folder }), isLocked: () => true, args: { key: CODEX_KEY } });
+  assertRefused(locked.result, 409, OPEN_MESSAGES.elsewhere);
+  const working = await open(t, { store: fakeStore({ key: CODEX_KEY, cwd: folder, status: 'working' }), args: { key: CODEX_KEY } });
+  assertRefused(working.result, 409, OPEN_MESSAGES.busy);
+  const reviewer = await open(t, { store: fakeStore({ key: CODEX_KEY, cwd: folder, kind: 'reviewer' }), args: { key: CODEX_KEY } });
+  assertRefused(reviewer.result, 400, OPEN_MESSAGES.reviewer);
+  assert.equal(locked.spawn.calls.length + working.spawn.calls.length + reviewer.spawn.calls.length, 0);
+  // The app or VS Code may hold a Codex thread too, but Codex's own lock covers that case.
+  const vscode = await open(t, { store: fakeStore({ key: CODEX_KEY, cwd: folder, entrypoint: 'codex_vscode' }), args: { key: CODEX_KEY } });
+  assert.deepEqual(vscode.result, { ok: true });
+});
+
+test('codexProblem refuses a locked thread first, then a working one', () => {
+  assert.equal(codexProblem({ status: 'idle' }, false), null);
+  assert.equal(codexProblem({ status: 'done' }, false), null);
+  assert.equal(codexProblem({ status: 'working' }, false), OPEN_MESSAGES.busy);
+  assert.equal(codexProblem({ status: 'working' }, true), OPEN_MESSAGES.elsewhere);
+  assert.equal(codexProblem({ status: 'idle' }, true), OPEN_MESSAGES.elsewhere);
+});
+
+test('codexThreadLocked finds no lock without a file or without a holder', (t) => {
+  const root = tempDir(t);
+  assert.equal(codexThreadLocked(null, ID), false);
+  assert.equal(codexThreadLocked(root, ID), false, 'no thread-writer-locks folder');
+  fs.mkdirSync(path.join(root, 'thread-writer-locks'));
+  assert.equal(codexThreadLocked(root, ID), false, 'no lock file');
+  fs.writeFileSync(path.join(root, 'thread-writer-locks', `${ID}.lock`), '');
+  assert.equal(codexThreadLocked(root, ID), false, 'a lock file nobody holds');
+  assert.equal(codexThreadLocked(root, '../x'), false);
+  assert.deepEqual(fs.readdirSync(path.join(root, 'thread-writer-locks')), [`${ID}.lock`], 'Pleni writes nothing there');
+});
+
+// On Windows, PowerShell can hold the same kind of lock Codex takes: the whole file, for one writer.
+test('codexThreadLocked sees a lock that another program holds', { skip: process.platform !== 'win32' && 'Windows locks only' }, async (t) => {
+  const root = tempDir(t);
+  fs.mkdirSync(path.join(root, 'thread-writer-locks'));
+  const file = path.join(root, 'thread-writer-locks', `${ID}.lock`);
+  fs.writeFileSync(file, '');
+  const script = `$f = [System.IO.File]::Open('${file}', 'Open', 'ReadWrite', 'ReadWrite'); $f.Lock(0, [long]::MaxValue); 'locked'; Start-Sleep -Seconds 60`;
+  const holder = realSpawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: ['ignore', 'pipe', 'ignore'] });
+  t.after(() => holder.kill());
+  await new Promise((resolve, reject) => {
+    holder.stdout.on('data', (data) => {
+      if (String(data).includes('locked')) resolve();
+    });
+    holder.on('error', reject);
+    holder.on('exit', () => reject(new Error('the program holding the lock stopped early')));
+  });
+  assert.equal(codexThreadLocked(root, ID), true);
+  holder.kill();
+  await once(holder, 'exit');
+  assert.equal(codexThreadLocked(root, ID), false, 'the lock goes with the program');
 });

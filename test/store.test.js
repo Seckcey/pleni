@@ -312,11 +312,12 @@ test('turning Open in PowerShell on keeps the sources and shows at once', () => 
   assert.equal(f.made.length, 2);
 });
 
-test('session() gives the folder and state of a top-level Claude Code session only', () => {
+test('session() gives the folder and state of a top-level Claude Code session or a Codex thread', () => {
   const { store } = makeStore();
-  assert.deepEqual(store.session(CLAUDE_KEY), { id: CLAUDE_KEY.slice('claude:'.length), cwd: '/home/ada/code/alpha', status: 'working', entrypoint: 'cli' });
-  assert.equal(store.session(CODEX_KEY), null);
+  assert.deepEqual(store.session(CLAUDE_KEY), { id: CLAUDE_KEY.slice('claude:'.length), cwd: '/home/ada/code/alpha', status: 'working', entrypoint: 'cli', kind: 'session' });
+  assert.deepEqual(store.session(CODEX_KEY), { id: CODEX_KEY.slice('codex:'.length), cwd: '/home/ada/code/alpha', status: 'working', entrypoint: 'cli', kind: 'session' });
   assert.equal(store.session(`${CLAUDE_KEY}/a1b2c3`), null);
+  assert.equal(store.session('grok:cccccccc-0000-4000-8000-000000000001'), null);
   assert.equal(store.session('claude:aaaaaaaa-0000-4000-8000-00000000ffff'), null);
   assert.equal(store.session(null), null);
   assert.equal(store.demo, false);
