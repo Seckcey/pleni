@@ -2238,7 +2238,8 @@ function showMoved(msg) {
   moved.msg = { ...msg, where: here ? 'drawer' : 'toast' };
   paintMoved();
   if (!here) say(msg.text);
-  if (!(here && msg.bad)) moved.timer = setTimeout(fadeMoved, MOVED_MS);
+  // A bad move stays until the next one; a message with `fadeMs` goes away even when it is bad.
+  if (!(here && msg.bad) || msg.fadeMs) moved.timer = setTimeout(fadeMoved, msg.fadeMs || MOVED_MS);
 }
 
 function fadeMoved() {
@@ -2400,6 +2401,7 @@ async function undismiss(key, id) {
 // ---------------------------------------------------------------------------------------------
 
 const opening = new Set(); // sessions whose window Pleni is opening right now
+const OPEN_ERROR_MS = 20000; // how long "Not opened" stays: long enough to read, short enough not to look stuck
 
 // Asks Pleni to open the session in a new PowerShell window. The answer shows under the tabs of the
 // side panel (or in the notice at the bottom when the panel was closed).
@@ -2414,7 +2416,8 @@ async function openInWindow(btn) {
     await postJson('/api/open', { key });
     showMoved({ key: here, spot: 'note', text: `A PowerShell window is opening for "${title}". Look for it on your taskbar.` });
   } catch (err) {
-    showMoved({ key: here, spot: 'note', bad: true, text: `Not opened. ${plainError(err)}` });
+    // It fades, so the button does not look stuck once the reason has passed.
+    showMoved({ key: here, spot: 'note', bad: true, fadeMs: OPEN_ERROR_MS, text: `Not opened. ${plainError(err)}` });
   } finally {
     opening.delete(key);
   }
