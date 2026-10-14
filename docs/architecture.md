@@ -378,11 +378,13 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
   `mailbox:<task id>/W<n>` (platform `claude`, kind `agent`, status from the run, project from its
   worktree) under the coordinator; its line lights down when it starts and up when it finishes.
 - Who reports to whom, strongest first: the person's choice (`people[key].reportsTo`, set by the
-  Reports to menu or by dragging a tile), the mailbox (planner → relay → coordinator → its
-  workers: fixed links, like a helper under the session that started it), a chain rule, and last
-  the parent the session files give. Names are looked up whole first: "Sergeant Claude" finds
-  "**Sergeant Claude" (marks around a name ignored) before "Sergeant Claude Code"; then the newest
-  wins. The mailbox planner is never the coordinator itself. Every node gets
+  Reports to menu or by dragging a tile), the mailbox (planner → relay → coordinator → its workers:
+  fixed links, like a helper under the session that started it), a chain rule, and last the parent
+  the session files give. The relay carries the coordinator's work to and from the boss the relay
+  reports to, so a coordinator put right under that same boss (a person's choice made before the
+  relay had a tile, say) goes under the relay instead. Names are looked up whole first: "Sergeant
+  Claude" finds "**Sergeant Claude" (marks around a name ignored) before "Sergeant Claude Code";
+  then the newest wins. The mailbox planner is never the coordinator itself. Every node gets
   `placement`: `'manual'`, `'rule'` or `'auto'`, and `named` (it has a real name). Hand-off
   directions follow the map as drawn, so a report to a boss a session was moved under lights that
   line upward. A message between tiles not joined by a tree line gets a `message` edge of its own

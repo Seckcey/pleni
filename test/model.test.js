@@ -1032,6 +1032,28 @@ test('a rule does not pull the relay coordinator or its workers off the relay', 
   assert.equal(node(moved, CLAUDE_SGT).parent, COLONEL);
 });
 
+test('a coordinator put right under its planner stays below the relay, which sits between them', () => {
+  const box = mailbox({ relay: { running: true, paused: false, halted: false, coordinatorKey: CLAUDE_SGT } });
+  box.tasks[0].workers = [{ id: 'W1', state: 'running', model: null, startedAt: NOW - MIN, finishedAt: null, worktree: null }];
+  const mailboxOn = { enabled: true, planner: 'Sergeant Claude' };
+  // Sergeant Claude Code was moved under **Sergeant Claude before the relay had a tile of its own.
+  const people = { [CLAUDE_SGT]: { label: 'Sergeant Claude Code', reportsTo: SGT_CLAUDE }, relay: { label: 'Pleni relay' } };
+  const s = snap({ ...army(), mailbox: box, settings: { groupBy: 'none', chain: CHAIN, people, sources: { mailbox: mailboxOn } } });
+  assert.equal(node(s, 'relay').parent, SGT_CLAUDE);
+  assert.equal(node(s, CLAUDE_SGT).parent, 'relay', 'planner -> relay -> coordinator');
+  assert.equal(node(s, CLAUDE_SGT).placement, 'manual', 'it is still the person\'s choice');
+  assert.equal(node(s, 'mailbox:T-1/W1').parent, CLAUDE_SGT, 'the worker stays under the coordinator');
+  assert.deepEqual(s.edges.filter((e) => e.kind === 'mailbox').map((e) => [e.from, e.to]), [[SGT_CLAUDE, 'relay'], ['relay', CLAUDE_SGT]]);
+  // A relay placed by a rule instead of the planner setting works the same way.
+  const ruled = snap({ ...army(), mailbox: box, settings: { groupBy: 'none', chain: [...CHAIN, { match: 'Pleni relay', reportsTo: 'Sergeant Claude', role: null }], people, sources: { mailbox: { enabled: true } } } });
+  assert.equal(node(ruled, 'relay').parent, SGT_CLAUDE);
+  assert.equal(node(ruled, CLAUDE_SGT).parent, 'relay');
+  // Under the person, with no planner, the choice is kept: there is no boss for the relay to stand in front of.
+  const home = snap({ ...army(), mailbox: box, settings: { groupBy: 'none', people: { [CLAUDE_SGT]: { reportsTo: 'you' } }, sources: { mailbox: { enabled: true } } } });
+  assert.equal(node(home, 'relay').parent, 'you');
+  assert.equal(node(home, CLAUDE_SGT).parent, 'you');
+});
+
 test('a whole-name match wins over a longer name that contains it', () => {
   const s = snap({ ...army(), claude: [session(CLAUDE_SGT, { title: 'Sergeant Claude Code', lastAt: NOW })], settings: { groupBy: 'none', chain: [{ match: 'Fix the updater', reportsTo: 'Sergeant Claude', role: null }] } });
   assert.equal(node(s, WORKER).parent, SGT_CLAUDE, '"Sergeant Claude" means "**Sergeant Claude", not "Sergeant Claude Code"');

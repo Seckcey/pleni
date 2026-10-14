@@ -6,6 +6,11 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ## Unreleased
 
+### Fixed
+
+- A coordinator that was moved under its planner (by dragging it, or with Reports to) now stays
+  below the relay, so the map shows planner → relay → coordinator → its workers.
+
 ### Added
 
 - Open in PowerShell (Windows): a button in a Claude Code or Codex session's side panel opens that

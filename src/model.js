@@ -452,6 +452,17 @@ function applyChain(nodes, parentOf, homes, rules, keys, settings) {
     else if (boss) parentOf.set(key, boss);
     node.placement = placement;
   }
+  throughRelay(nodes, parentOf, homes, keys);
+}
+
+// The relay carries the coordinator's work to and from the boss the relay reports to. So when the
+// coordinator is put right under that same boss (a choice made before the relay had a tile, say),
+// it goes under the relay instead, which sits between them the way the work really runs.
+function throughRelay(nodes, parentOf, homes, keys) {
+  const { coordinator } = keys;
+  const boss = parentOf.get(RELAY);
+  if (!coordinator || !nodes.has(RELAY) || !nodes.has(coordinator) || !boss || boss === coordinator) return;
+  if (boss !== homes.get(RELAY) && parentOf.get(coordinator) === boss) parentOf.set(coordinator, RELAY);
 }
 
 function mailboxBoss(key, nodes, keys) {
