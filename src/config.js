@@ -27,6 +27,7 @@ export const DEFAULTS = deepFreeze({
   projects: {},
   chain: [], // [{ match, reportsTo, role }] who reports to whom, by session name; first match wins
   remote: { hosts: [], tailscaleUsers: [] },
+  actions: { openTerminal: false }, // the Open in PowerShell button (Windows, this computer only)
 });
 
 const TITLES = ['plain', 'military', 'company'];
@@ -102,6 +103,7 @@ export function cleanSettings(raw) {
     projects: cleanProjects(r.projects),
     chain: cleanChain(r.chain),
     remote: cleanRemote(r.remote),
+    actions: cleanActions(r.actions),
   };
 }
 
@@ -226,6 +228,11 @@ function cleanRemote(raw) {
     hosts: cleanList(r.hosts, 253, MAX_REMOTE, []),
     tailscaleUsers: cleanList(r.tailscaleUsers, 254, MAX_REMOTE, []),
   };
+}
+
+function cleanActions(raw) {
+  const a = isObject(raw) ? raw : {};
+  return { openTerminal: cleanBool(a.openTerminal, DEFAULTS.actions.openTerminal) };
 }
 
 // A list of short lower-case words: no spaces, de-duplicated, at most `max` entries.

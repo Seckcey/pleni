@@ -142,7 +142,7 @@ test('the snapshot carries a weak ETag of its JSON without the time', () => {
   assert.equal(snap.etag, `W/"${crypto.createHash('sha1').update(untimed).digest('hex')}"`);
   assert.equal(snap.json, json);
   assert.equal(json.includes('etag'), false);
-  assert.deepEqual(Object.keys(snap), ['version', 'now', 'sources', 'nodes', 'edges', 'events', 'counts', 'attention', 'tasks']);
+  assert.deepEqual(Object.keys(snap), ['version', 'now', 'sources', 'nodes', 'edges', 'events', 'counts', 'attention', 'tasks', 'actions']);
   assert.ok(snap.nodes.some((n) => n.key === CLAUDE_KEY));
   assert.ok(snap.nodes.some((n) => n.key === CODEX_KEY));
 });
@@ -290,4 +290,41 @@ test('dismissed notices hide until something newer happens, and are kept in the 
   memoryOnly.dismiss(id, askAt);
   assert.equal(memoryOnly.snapshot().attention.some((a) => a.id === id), false);
   assert.deepEqual(fs.readdirSync(dir), ['dismissed.json']);
+});
+
+// ---- Open in PowerShell ----
+
+test('the snapshot offers Open in PowerShell only when it is turned on and Pleni runs on Windows', () => {
+  const make = (settings, platform) => createStore({ settings: cleanSettings(settings), roots: ROOTS, now: clock(), factories: fakes().factories, platform });
+  assert.deepEqual(make({}, 'win32').snapshot().actions, { openTerminal: false });
+  assert.deepEqual(make({ actions: { openTerminal: true } }, 'win32').snapshot().actions, { openTerminal: true });
+  assert.deepEqual(make({ actions: { openTerminal: true } }, 'linux').snapshot().actions, { openTerminal: false });
+  assert.deepEqual(make({ actions: { openTerminal: true } }, 'darwin').snapshot().actions, { openTerminal: false });
+});
+
+test('turning Open in PowerShell on keeps the sources and shows at once', () => {
+  const f = fakes();
+  const store = createStore({ settings: cleanSettings({}), roots: ROOTS, now: clock(), factories: f.factories, platform: 'win32' });
+  assert.equal(store.snapshot().actions.openTerminal, false);
+  store.reload(cleanSettings({ actions: { openTerminal: true } }), ROOTS);
+  assert.equal(store.snapshot().actions.openTerminal, true);
+  assert.equal(f.live().length, 2, 'the same sources are kept');
+  assert.equal(f.made.length, 2);
+});
+
+test('session() gives the folder and state of a top-level Claude Code session only', () => {
+  const { store } = makeStore();
+  assert.deepEqual(store.session(CLAUDE_KEY), { id: CLAUDE_KEY.slice('claude:'.length), cwd: '/home/ada/code/alpha', status: 'working', entrypoint: 'cli' });
+  assert.equal(store.session(CODEX_KEY), null);
+  assert.equal(store.session(`${CLAUDE_KEY}/a1b2c3`), null);
+  assert.equal(store.session('claude:aaaaaaaa-0000-4000-8000-00000000ffff'), null);
+  assert.equal(store.session(null), null);
+  assert.equal(store.demo, false);
+});
+
+test('the demo has no real sessions to open', () => {
+  const store = createStore({ settings: cleanSettings({}), roots: ROOTS, now: clock(), demo: true });
+  assert.equal(store.demo, true);
+  for (const key of Object.values(DEMO_KEYS)) assert.equal(store.session(key), null);
+  assert.equal(store.session(CLAUDE_KEY), null);
 });

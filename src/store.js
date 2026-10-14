@@ -27,20 +27,22 @@ const NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi
 const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
 // Settings that only change how the snapshot is drawn. Changing them keeps the
 // sources, so they do not have to read every session file again.
-const VIEW_ONLY = new Set(['displayName', 'titles', 'groupBy', 'modelTiers', 'people', 'projects', 'chain', 'remote', 'port']);
+const VIEW_ONLY = new Set(['displayName', 'titles', 'groupBy', 'modelTiers', 'people', 'projects', 'chain', 'remote', 'port', 'actions']);
 const DISMISSED_FILE = 'dismissed.json';
 const MAX_DISMISSED = 1000;
 
 // `factories` replaces the source constructors (tests use it to inject fake sources).
 // `stateDir` is where dismissed notices are kept (next to the settings); without it they last
-// only while Pleni runs, which is how the demo works.
-export function createStore({ settings, roots, demo = false, now = Date.now, factories = {}, stateDir = null } = {}) {
+// only while Pleni runs, which is how the demo works. `platform` decides whether the Open in
+// PowerShell button can work here (Windows only for now).
+export function createStore({ settings, roots, demo = false, now = Date.now, factories = {}, stateDir = null, platform = process.platform } = {}) {
   const make = { ...FACTORIES, ...factories };
   let current = cleanSettings(settings);
   let currentRoots = { ...roots };
   let sources = {};
   let signature = null;
   let cache = null;
+  let polled = null; // what the sources said for the cached snapshot
   const dismissed = loadDismissed(stateDir);
 
   openSources();
@@ -105,7 +107,9 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
   function snapshot() {
     const t = now();
     if (cache && t >= cache.at && t - cache.at < POLL_MS) return cache.snapshot;
-    const snap = buildSnapshot({ now: t, settings: demo ? demoSettings(current) : current, dismissed, ...pollAll() });
+    polled = pollAll();
+    const actions = { openTerminal: current.actions.openTerminal && platform === 'win32' };
+    const snap = buildSnapshot({ now: t, settings: demo ? demoSettings(current) : current, dismissed, actions, ...polled });
     // Not enumerable, so they never show up in the JSON itself.
     Object.defineProperties(snap, { etag: { value: snapshotTag(snap) }, json: { value: JSON.stringify(snap) } });
     cache = { at: t, snapshot: snap };
@@ -128,11 +132,25 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
     return current.content === 'none' ? withoutText(result) : result;
   }
 
+  // What the newest poll knows about one top-level Claude Code session: { id, cwd, status,
+  // entrypoint }, or null. Open in PowerShell needs its folder, whether a turn is running, and which
+  // program it belongs to. The demo has no real sessions.
+  function session(key) {
+    if (demo || typeof key !== 'string' || !key.startsWith('claude:') || key.includes('/')) return null;
+    if (!polled) snapshot();
+    const list = polled?.claude?.sessions;
+    const found = Array.isArray(list) ? list.find((s) => isObject(s) && s.key === key) : null;
+    if (!found) return null;
+    const text = (value) => (typeof value === 'string' ? value : null);
+    return { id: text(found.id), cwd: text(found.cwd), status: text(found.status), entrypoint: text(found.entrypoint) };
+  }
+
   function reload(nextSettings, nextRoots = currentRoots) {
     current = cleanSettings(nextSettings);
     currentRoots = { ...nextRoots };
     openSources();
     cache = null;
+    polled = null;
   }
 
   // Hides a "Needs you" notice until something newer happens; `at: null` brings it back.
@@ -148,9 +166,10 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
     closeSources();
     signature = null;
     cache = null;
+    polled = null;
   }
 
-  return { snapshot, detail, reload, close, dismiss };
+  return { snapshot, detail, reload, close, dismiss, session, demo };
 }
 
 function loadDismissed(dir) {

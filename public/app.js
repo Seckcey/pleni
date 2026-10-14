@@ -60,6 +60,7 @@ const DEFAULTS = {
   projects: {},
   chain: [],
   remote: { hosts: [], tailscaleUsers: [] },
+  actions: { openTerminal: false },
 };
 
 const ICONS = {
@@ -147,6 +148,9 @@ const isRelay = (n) => !!n && n.kind === 'relay';
 const canMove = (n) => isSession(n) || isRelay(n);
 // A mailbox worker run (mailbox:<task>/W1) keeps no session file of its own.
 const isWorkerKey = (key) => String(key || '').startsWith('mailbox:');
+// Open in PowerShell opens a window on the computer that runs Pleni, so it is offered only on a page
+// opened there, not through a proxy from another device.
+const LOCAL_PAGE = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
 const svgIcon = (paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
 
 function serverNow() {
@@ -222,7 +226,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -1888,6 +1892,7 @@ function sessionNowHtml(n, d) {
   } else if (now) {
     out.push(`<p class="dnow"><b>${esc(now.label)}:</b> ${doingHtml(now)}</p>`);
   }
+  out.push(openHtml(n));
   if (isWorkerKey(d.key)) {
     out.push('<p class="empty">This worker keeps no session file.</p>');
     return out.join('');
@@ -1901,6 +1906,26 @@ function sessionNowHtml(n, d) {
     out.push('<p class="note">Only the kind of each event is shown. Snippets are turned off in Settings, or these events have no text.</p>');
   }
   return out.join('');
+}
+
+// The Claude Code session that Open in PowerShell would open for this tile: the session itself, or
+// for a helper (sub-agent) the session it works inside. Null when the button is off or cannot work.
+function openTarget(n) {
+  if (!n || !LOCAL_PAGE || !(S.snap && S.snap.actions && S.snap.actions.openTerminal)) return null;
+  const m = /^(claude:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(\/|$)/.exec(n.key);
+  if (!m || !isSession(n)) return null;
+  const top = m[1] === n.key ? n : S.index && S.index.byKey.get(m[1]);
+  return top ? { key: m[1], title: titleOf(top), helper: top !== n } : null;
+}
+
+function openHtml(n) {
+  const t = openTarget(n);
+  if (!t) return '';
+  const label = t.helper ? 'Open its session in PowerShell' : 'Open in PowerShell';
+  const help = t.helper
+    ? `This helper works inside "${t.title}". Open that session to watch it and type to it.`
+    : 'Opens a new PowerShell window where you can see this conversation and type to it.';
+  return `<div class="dopen"><button type="button" class="btn" data-open="${esc(t.key)}" data-title="${esc(t.title)}" aria-describedby="d-open-help">${esc(label)}</button><p class="help" id="d-open-help">${esc(help)}</p></div>`;
 }
 
 function groupNowHtml(n) {
@@ -2368,6 +2393,31 @@ async function undismiss(key, id) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Open in PowerShell
+// ---------------------------------------------------------------------------------------------
+
+const opening = new Set(); // sessions whose window Pleni is opening right now
+
+// Asks Pleni to open the session in a new PowerShell window. The answer shows under the tabs of the
+// side panel (or in the notice at the bottom when the panel was closed).
+async function openInWindow(btn) {
+  const key = btn.dataset.open;
+  const here = S.drawer ? S.drawer.key : key;
+  const title = btn.dataset.title || keyName(key);
+  if (!key || opening.has(key)) return;
+  opening.add(key);
+  showMoved({ key: here, spot: 'note', text: 'Opening a PowerShell window…' });
+  try {
+    await postJson('/api/open', { key });
+    showMoved({ key: here, spot: 'note', text: `A PowerShell window is opening for "${title}". Look for it on your taskbar.` });
+  } catch (err) {
+    showMoved({ key: here, spot: 'note', bad: true, text: `Not opened. ${plainError(err)}` });
+  } finally {
+    opening.delete(key);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // settings
 // ---------------------------------------------------------------------------------------------
 
@@ -2819,6 +2869,11 @@ function renderSettingsForm() {
     <section class="panel" aria-labelledby="s-h-projects"><h2 id="s-h-projects">Projects</h2>
       <div id="project-rows">${projectsHtml()}</div>
     </section>
+    <section class="panel" aria-labelledby="s-h-open"><h2 id="s-h-open">Open sessions</h2>
+      <p class="note">Pleni only looks, unless you turn this on. Then each Claude Code session's side panel gets an Open in PowerShell button. It opens a new PowerShell window in the session's folder and runs <code>claude --resume</code> for it, so you can see the conversation and type to it. Pleni never types into a session itself.</p>
+      ${checkRow('s-open', 'Open in PowerShell', 'actions.openTerminal', 'Show the Open in PowerShell button', 'It works only on Windows, and only on this computer, not from another device. Pleni will not open a session that is already open in another window.')}
+      ${st.info.platform && st.info.platform !== 'win32' ? '<p class="note">This computer does not run Windows, so the button will not show here yet.</p>' : ''}
+    </section>
     <section class="panel" aria-labelledby="s-h-remote"><h2 id="s-h-remote">Other devices</h2>
       <p class="note">Pleni only listens on this computer. To open it from another device, put a private proxy such as <code>tailscale serve</code> in front of it, then list the host name and the Tailscale logins that may use it. The other device also needs Pleni's key: open the address Pleni printed when it started, with your Tailscale address in place of the part before <code>/?t=</code>.</p>
       ${textRow('s-hosts', 'Allowed host names', 'remote.hosts', { kind: 'words', placeholder: 'pleni.example.ts.net', help: 'Separate names with commas. Up to 20.' })}
@@ -3111,6 +3166,7 @@ document.addEventListener('click', (ev) => {
   if (el.dataset.mapMode) return setMapMode(el.dataset.mapMode);
   if (el.dataset.tab) return selectTab(el.dataset.tab, false);
   if (el.dataset.dismiss) return dismissNotice(el);
+  if (el.dataset.open) return openInWindow(el);
   if (el.dataset.node) return openDrawer(el.dataset.node, el);
   if (el.dataset.listFilter) {
     S.listFilter = el.dataset.listFilter;
