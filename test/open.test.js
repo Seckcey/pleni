@@ -8,14 +8,17 @@ import path from 'node:path';
 import {
   OPEN_MESSAGES,
   claudeProcesses,
+  confirmProcesses,
   codexProblem,
   codexThreadLocked,
   openLimits,
   openProblem,
   openSession,
+  parseStarts,
   powershellCommand,
   processAlive,
   toolEnv,
+  windowsProcessStarts,
 } from '../src/open.js';
 
 const ID = '0f8e2c4a-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
@@ -82,6 +85,8 @@ async function open(t, options = {}) {
     now: options.now ?? 1000,
     isAlive: options.isAlive ?? (() => true),
     isLocked: options.isLocked ?? (() => false),
+    // Unless a test says otherwise, every live process started long before it wrote its file.
+    processStarts: options.processStarts ?? ((pids) => Promise.resolve(new Map(pids.map((pid) => [pid, 0])))),
     ...options.args,
   });
   return { result, spawn, folder };
@@ -160,18 +165,36 @@ test('a missing or network folder is refused, so a session never works in the wr
 });
 
 test('a session open in another window is refused; a background session opens live', async (t) => {
-  const live = (kind) => claudeRoot(t, [{ pid: 4242, sessionId: ID, kind, status: 'idle' }]);
+  const live = (kind, entrypoint = 'cli') => claudeRoot(t, [{ pid: 4242, sessionId: ID, kind, status: 'idle', entrypoint }]);
   assertRefused((await open(t, { root: live('interactive') })).result, 409, OPEN_MESSAGES.elsewhere);
-  assertRefused((await open(t, { root: live('some-new-kind') })).result, 409, OPEN_MESSAGES.elsewhere);
-  assertRefused((await open(t, { root: live(undefined) })).result, 409, OPEN_MESSAGES.elsewhere);
+  // A script (claude -p) or another app has no window to point at: it is busy instead.
+  assertRefused((await open(t, { root: live('interactive', 'sdk-cli') })).result, 409, OPEN_MESSAGES.busy);
+  assertRefused((await open(t, { root: live('some-new-kind', null) })).result, 409, OPEN_MESSAGES.busy);
+  assertRefused((await open(t, { root: live(null, null) })).result, 409, OPEN_MESSAGES.busy);
   // "claude --resume" shows a running background session live, even in the middle of a turn.
   const background = await open(t, { root: live('background'), status: 'working' });
   assert.deepEqual(background.result, { ok: true });
   // A file left behind by a process that has ended does not count.
   assert.deepEqual((await open(t, { root: live('interactive'), isAlive: () => false })).result, { ok: true });
   // Nor does another session's process.
-  const other = claudeRoot(t, [{ pid: 4242, sessionId: 'aaaaaaaa-0000-4000-8000-000000000001', kind: 'interactive' }]);
+  const other = claudeRoot(t, [{ pid: 4242, sessionId: 'aaaaaaaa-0000-4000-8000-000000000001', kind: 'interactive', entrypoint: 'cli' }]);
   assert.deepEqual((await open(t, { root: other })).result, { ok: true });
+});
+
+test('a file left behind by a closed window does not count once Windows gives its number to another program', async (t) => {
+  const root = claudeRoot(t, [{ pid: 4242, sessionId: ID, kind: 'interactive', status: 'idle', entrypoint: 'cli' }]);
+  const writtenAt = fs.statSync(path.join(root, 'sessions', '4242.json')).mtimeMs;
+  const startedAt = (ms) => () => Promise.resolve(new Map([[4242, ms]]));
+  // The program now using number 4242 started after the file was written, so it did not write it.
+  assert.deepEqual((await open(t, { root, processStarts: startedAt(writtenAt + 60000) })).result, { ok: true });
+  // A system program Windows will not describe is not the Claude Code that wrote the file either.
+  assert.deepEqual((await open(t, { root, processStarts: startedAt(null) })).result, { ok: true });
+  assert.deepEqual((await open(t, { root, processStarts: () => Promise.resolve(new Map()) })).result, { ok: true });
+  // The Claude Code that wrote the file started before it.
+  assertRefused((await open(t, { root, processStarts: startedAt(writtenAt - 60000) })).result, 409, OPEN_MESSAGES.elsewhere);
+  // When Pleni cannot learn the start times, it stays on the safe side.
+  const broken = () => Promise.reject(new Error('secret stack detail'));
+  assertRefused((await open(t, { root, processStarts: broken })).result, 409, OPEN_MESSAGES.elsewhere);
 });
 
 test('a session of the Claude desktop app or VS Code is opened there, not in a second window', async (t) => {
@@ -229,8 +252,54 @@ test('openProblem allows only a background session to be live already', () => {
   assert.equal(openProblem({ status: 'idle', entrypoint: 'claude-desktop' }, []), OPEN_MESSAGES.desktopApp);
   assert.equal(openProblem({ status: 'working' }, []), OPEN_MESSAGES.busy);
   assert.equal(openProblem({ status: 'working' }, [{ kind: 'background' }]), null);
-  assert.equal(openProblem({ status: 'idle' }, [{ kind: 'background' }, { kind: 'interactive' }]), OPEN_MESSAGES.elsewhere);
-  assert.equal(openProblem({ status: 'idle' }, [{ kind: null }]), OPEN_MESSAGES.elsewhere);
+  assert.equal(openProblem({ status: 'idle' }, [{ kind: 'background' }, { kind: 'interactive', entrypoint: 'cli' }]), OPEN_MESSAGES.elsewhere);
+  assert.equal(openProblem({ status: 'idle' }, [{ kind: 'interactive', entrypoint: 'sdk-cli' }]), OPEN_MESSAGES.busy);
+  assert.equal(openProblem({ status: 'idle' }, [{ kind: null }]), OPEN_MESSAGES.busy);
+  assert.equal(openProblem({ status: 'idle' }, [{ kind: 'interactive', entrypoint: 'sdk-cli' }, { kind: 'interactive', entrypoint: 'cli' }]), OPEN_MESSAGES.elsewhere);
+});
+
+test('confirmProcesses keeps only processes that started before they last wrote their file', async () => {
+  const found = [{ pid: 1, writtenAt: 10000 }, { pid: 2, writtenAt: 10000 }, { pid: 3, writtenAt: 10000 }, { pid: 4, writtenAt: 10000 }];
+  const starts = new Map([[1, 5000], [2, 11500], [3, 13000], [4, null]]);
+  assert.deepEqual((await confirmProcesses(found, async () => starts)).map((p) => p.pid), [1, 2], 'a little clock rounding is allowed');
+  assert.deepEqual(await confirmProcesses([], async () => { throw new Error('not asked'); }), []);
+  assert.deepEqual(await confirmProcesses(found, async () => 'junk'), found);
+  assert.deepEqual(await confirmProcesses(found, async () => { throw new Error('no PowerShell'); }), found);
+});
+
+test('windowsProcessStarts asks a hidden PowerShell, with only whole numbers in its command', async () => {
+  const calls = [];
+  const execFile = (file, args, options, done) => {
+    calls.push({ file, args, options });
+    done(null, '4242 1792011600123\r\n77 -\r\n');
+  };
+  const starts = await windowsProcessStarts([4242, 77, 4242, -1, 1.5, 'x'], { systemRoot: 'C:\\Windows', execFile });
+  assert.deepEqual([...starts], [[4242, 1792011600123], [77, null]]);
+  assert.equal(calls.length, 1);
+  const [call] = calls;
+  assert.equal(call.file, POWERSHELL);
+  assert.deepEqual(call.args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command']);
+  assert.match(call.args[3], /^Get-Process -Id 4242,77 -ErrorAction SilentlyContinue /);
+  assert.equal(call.options.windowsHide, true);
+  assert.equal(call.options.cwd, 'C:\\Windows');
+  assert.ok(call.options.timeout > 0);
+  assert.deepEqual([...(await windowsProcessStarts([], { execFile }))], []);
+  assert.equal(calls.length, 1, 'nothing to ask, nothing started');
+  const failing = (file, args, options, done) => done(new Error('secret stack detail'));
+  await assert.rejects(windowsProcessStarts([1], { execFile: failing }));
+});
+
+test('parseStarts reads "<pid> <ms>" and "<pid> -" lines and nothing else', () => {
+  assert.deepEqual([...parseStarts('12 1000\n13 -\r\n\nnoise\n14 12a\n 15 2000 \n')], [[12, 1000], [13, null], [15, 2000]]);
+  assert.deepEqual([...parseStarts('')], []);
+});
+
+test('windowsProcessStarts knows when this process started', { skip: process.platform !== 'win32' && 'Windows only' }, async () => {
+  const starts = await windowsProcessStarts([process.pid, 2147483644]);
+  const startedAt = starts.get(process.pid);
+  assert.ok(Number.isFinite(startedAt), 'a start time for this process');
+  assert.ok(Math.abs(startedAt - (Date.now() - process.uptime() * 1000)) < 10000, 'close to when Node.js started');
+  assert.equal(starts.has(2147483644), false, 'no answer for a process that does not exist');
 });
 
 test('claudeProcesses reads only live process files for that session', (t) => {
@@ -247,10 +316,12 @@ test('claudeProcesses reads only live process files for that session', (t) => {
   fs.writeFileSync(path.join(dir, '108.json'), JSON.stringify({ pid: 108, sessionId: ID, kind: 'interactive', pad: 'x'.repeat(70 * 1024) }));
   fs.mkdirSync(path.join(dir, '109.json'));
   const alive = (pid) => pid !== 104;
-  assert.deepEqual(
-    claudeProcesses(root, ID, alive).sort((a, b) => a.kind.localeCompare(b.kind)),
-    [{ kind: 'background', status: 'idle' }, { kind: 'interactive', status: 'busy' }],
-  );
+  const found = claudeProcesses(root, ID, alive).sort((a, b) => a.pid - b.pid);
+  assert.deepEqual(found.map(({ writtenAt, ...rest }) => rest), [
+    { pid: 101, kind: 'interactive', status: 'busy', entrypoint: null },
+    { pid: 102, kind: 'background', status: 'idle', entrypoint: null },
+  ]);
+  for (const proc of found) assert.equal(proc.writtenAt, fs.statSync(path.join(dir, `${proc.pid}.json`)).mtimeMs);
   assert.deepEqual(claudeProcesses(path.join(root, 'missing'), ID, alive), []);
   assert.deepEqual(claudeProcesses(null, ID, alive), []);
   assert.deepEqual(claudeProcesses(root, '../x', alive), []);
@@ -324,7 +395,7 @@ test('a Codex thread opens with codex resume, a Codex helper too', async (t) => 
 test('a Codex thread that another program has open, or that is working, is refused', async (t) => {
   const folder = tempDir(t);
   const locked = await open(t, { store: fakeStore({ key: CODEX_KEY, cwd: folder }), isLocked: () => true, args: { key: CODEX_KEY } });
-  assertRefused(locked.result, 409, OPEN_MESSAGES.elsewhere);
+  assertRefused(locked.result, 409, OPEN_MESSAGES.codexElsewhere);
   const working = await open(t, { store: fakeStore({ key: CODEX_KEY, cwd: folder, status: 'working' }), args: { key: CODEX_KEY } });
   assertRefused(working.result, 409, OPEN_MESSAGES.busy);
   const reviewer = await open(t, { store: fakeStore({ key: CODEX_KEY, cwd: folder, kind: 'reviewer' }), args: { key: CODEX_KEY } });
@@ -339,8 +410,8 @@ test('codexProblem refuses a locked thread first, then a working one', () => {
   assert.equal(codexProblem({ status: 'idle' }, false), null);
   assert.equal(codexProblem({ status: 'done' }, false), null);
   assert.equal(codexProblem({ status: 'working' }, false), OPEN_MESSAGES.busy);
-  assert.equal(codexProblem({ status: 'working' }, true), OPEN_MESSAGES.elsewhere);
-  assert.equal(codexProblem({ status: 'idle' }, true), OPEN_MESSAGES.elsewhere);
+  assert.equal(codexProblem({ status: 'working' }, true), OPEN_MESSAGES.codexElsewhere);
+  assert.equal(codexProblem({ status: 'idle' }, true), OPEN_MESSAGES.codexElsewhere);
 });
 
 test('codexThreadLocked finds no lock without a file or without a holder', (t) => {

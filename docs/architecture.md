@@ -446,11 +446,13 @@ only on Windows for now, and the server allows it only for a request made on the
 Pleni. Pleni starts the window and nothing else: whatever is typed there comes from the person.
 
 ```js
-export async function openSession({ key, settings, roots, store, limits, platform, env, home, spawn, now, isAlive, isLocked })
+export async function openSession({ key, settings, roots, store, limits, platform, env, home, spawn, now, isAlive, isLocked, processStarts })
 // -> { ok: true } | { ok: false, status, error }   (error is a plain sentence from OPEN_MESSAGES)
 export function openProblem(session, processes)          // Claude Code: plain reason it is unsafe, or null
 export function codexProblem(session, locked)            // Codex: plain reason it is unsafe, or null
-export function claudeProcesses(root, sessionId, isAlive) // -> [{ kind, status }]
+export function claudeProcesses(root, sessionId, isAlive) // -> [{ pid, kind, status, entrypoint, writtenAt }]
+export async function confirmProcesses(found, processStarts) // -> the ones whose process really wrote the file
+export function windowsProcessStarts(pids, { systemRoot, execFile }) // -> Promise<Map<pid, ms | null>>
 export function codexThreadLocked(root, threadId)        // -> true while another program writes the thread
 export function powershellCommand(tool, id, systemRoot)  // -> { file, args }
 export function toolEnv(tool, env, root, home, platform) // -> env for the window
@@ -470,22 +472,31 @@ export function openLimits()                              // -> { take(key, now)
   `claude-desktop` or `claude-vscode`) is refused with "open it there": those apps may hold a
   session open without a file Pleni can see. Claude Code keeps a small file per running process in
   `<root>/sessions/<pid>.json` (`pid`, `sessionId`, `kind`: `'interactive'` or `'background'`,
-  `status`; files at most 64 KB, at most 500 read). Pleni reads them only when asked to open, and
-  counts a file only while its process is alive (signal 0; `EPERM` counts as alive). A live process
-  of any kind but `'background'` refuses ("open in another window"). A session that is `working`
-  with no live process (a `claude -p` script, or another app) refuses ("try again when it
-  finishes"). A live background session is allowed: `claude --resume` shows that running session
-  live (Claude Code 2.1.285 or newer).
+  `status`, `entrypoint`; files at most 64 KB, at most 500 read). Pleni reads them only when asked
+  to open, and counts a file only while its process number is in use (signal 0; `EPERM` counts as
+  in use). A file can outlive its process: a window closed with its X ends Claude Code before it
+  removes the file, and Windows soon gives the number to another program. So `confirmProcesses`
+  then asks when each such process started (`windowsProcessStarts`: one hidden
+  `powershell.exe -NoProfile -NonInteractive` running `Get-Process -Id <numbers>`, with only whole
+  numbers in the command, started in `%SystemRoot%`, 15 s at most), and keeps a file only while
+  its process started no later than the file last changed (2 s allowed for clocks). A process
+  Windows will not describe, or one that is gone, does not count; if the question cannot be asked
+  at all, every file counts. A live process of any kind but `'background'` refuses: "open in
+  another window" when its `entrypoint` is `cli` (a terminal), else "busy in another program". A
+  session that is `working` with no live process (a `claude -p` script, or another app) refuses
+  ("try again when it finishes"). A live background session is allowed: `claude --resume` shows
+  that running session live (Claude Code 2.1.285 or newer).
 - **One writer per thread (Codex).** Codex itself lets one program write a thread at a time: while
   it writes, it holds an operating-system lock on `<root>/thread-writer-locks/<thread id>.lock`
   (no contents), and a second program gets "thread … already has an active writer". Pleni checks
   first, so the person gets a plain answer instead of an error in a new window: it opens that one
   file read-only and reads one byte. Windows refuses the read while another program holds the
-  lock (`EBUSY`, `EACCES` or `EPERM`), which refuses ("open in another window"). A missing file
-  counts as free. A thread that is `working` refuses ("try again when it finishes").
+  lock (`EBUSY`, `EACCES` or `EPERM`), which refuses ("another Codex program has this thread open,
+  most likely the Codex app"). A missing file counts as free. A thread that is `working` refuses
+  ("try again when it finishes").
 - **Limits** (`openLimits`): one window per session every 10 seconds, and 10 a minute in all. The
-  limit is taken after every other check, with no waiting in between, so two quick clicks cannot
-  both get through, and a refusal does not use up the next try.
+  limit is taken after every other check, and `take` checks and records in one step, so two quick
+  clicks cannot both get through, and a refusal does not use up the next try.
 - **The command.** `cmd.exe /d /s /c "start "<title>" "<powershell.exe>" -NoExit -NoLogo -Command
   "<resume> '<id>'""`, where `<title>` and `<resume>` are `Claude Code` and `claude --resume`, or
   `Codex` and `codex resume`. It is spawned with `cwd` set to the session's folder, `detached` (so
@@ -587,8 +598,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `snapshot.actions.openTerminal` is true and the page itself was opened on this computer
   (`localhost`, `127.0.0.1` or `[::1]`), the Now tab of a Claude Code session, a Codex thread or a
   Codex helper has an **Open in PowerShell** button that posts `/api/open`; a Claude Code helper's
-  has **Open its session in PowerShell**, which opens the session it works inside. The answer shows in the status line under
-  the tabs.
+  has **Open its session in PowerShell**, which opens the session it works inside. The answer shows
+  in the status line under the tabs; a refusal fades after 20 seconds, so the button does not look
+  stuck once its reason has passed.
 - **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. The Open sessions
   section turns Open in PowerShell on and says when the computer does not run Windows. Before saving, the page
   checks the form: whole numbers within the server's limits, full folder paths, host names, and

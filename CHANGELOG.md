@@ -13,7 +13,9 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   and type to it. Neither tool needs to be open first. A Claude Code background session opens
   live. It is off until you turn it on in Settings → Open sessions, works only on the computer
   that runs Pleni, and never opens a session that another window already has open. A Claude Code
-  helper's button opens the session it works inside; a Codex helper opens its own thread.
+  helper's button opens the session it works inside; a Codex helper opens its own thread. A
+  window closed with its X does not block the button afterwards, and a thread the Codex app
+  holds says so.
 
 ## 0.1.0 (2026-10-13)
 
