@@ -22,6 +22,7 @@
 <p align="center">
   <a href="https://github.com/Seckcey/pleni/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Seckcey/pleni/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="Source-available: Elastic License 2.0" src="https://img.shields.io/badge/license-Elastic--2.0-2F7BF6"></a>
+  <a href="https://www.npmjs.com/package/pleni"><img alt="pleni on npm" src="https://img.shields.io/npm/v/pleni?color=2F7BF6"></a>
   <a href="https://nodejs.org/"><img alt="Node.js 22.12 or newer" src="https://img.shields.io/badge/node-%3E%3D22.12-2F7BF6"></a>
 </p>
 
