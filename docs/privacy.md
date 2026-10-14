@@ -8,6 +8,8 @@ what it never does.
 
 - Pleni **reads** session files. It **writes** only in its own folder: its settings, its key, and
   the list of notices you dismissed.
+- Pleni **starts** nothing, unless you turn on **Open in PowerShell** and click it. Then it opens one
+  PowerShell window for that session. You do the typing.
 - Pleni makes **no network calls**. It has no telemetry, no tracking, no account, and no sign-in.
 - Pleni opens only on your own computer (`127.0.0.1`), unless you set up remote access yourself,
   and only for a browser that has the key Pleni prints when it starts.
@@ -33,6 +35,7 @@ read the start of a file once, to find a session's name and where it started.
 | Codex coordinator list, if present      | `coordinators/registry.sqlite3` (opened read-only) and `coordinators/superintendent.json`, only to learn which coordinator started which worker |
 | A mailbox folder, if you turn one on    | The Markdown files of the queue, the status board, and each task (with any worker run notes), plus the small relay files in `.relay/` |
 | A session's project folder, only when it is inside a `_worktrees` folder on a local drive | Only the small `.git` pointer file (at most 4 KB) of that worktree, to learn the name of the repository it belongs to. Nothing else in your project is read |
+| Claude Code folder, only when you click Open in PowerShell | The small files in `sessions/` that Claude Code keeps for each running process. Pleni reads only which session each one has open, and whether it runs in the background, to be sure no other window has that session open |
 | Pleni's own folder                      | `settings.json`, `key`, and `dismissed.json` (which notices you dismissed, and when) in Pleni's settings folder |
 
 From the session files it uses: when each step happened, the working folder, the git branch, the
@@ -74,7 +77,12 @@ a model was "thinking", in either setting. It shows only that the model was thin
   mailbox folders.
 - It writes nowhere except its own folder (`settings.json`, `key`, `dismissed.json`). It saves each
   file safely: it writes a temporary file in the same folder, then renames it.
-- It never starts, stops, or sends anything to a session.
+- It never stops a session or sends anything to one.
+- It starts nothing unless you turn on **Open in PowerShell** (Settings → Open sessions, off until
+  you turn it on, Windows only) and click the button on this computer. Then it opens one
+  PowerShell window that runs `claude --resume` for that session. Whatever is typed there comes
+  from you. It does not open a session that is already open in another window, and it refuses the
+  button from another device.
 - It makes no network calls. It sends no telemetry, usage counts, or crash reports.
 - The page loads nothing from the internet. Its scripts, styles, and pictures all come from Pleni
   itself, and the page's security rules block anything else.

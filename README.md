@@ -41,8 +41,10 @@ Pleni shows you. It reads the files that Claude Code, Codex, Grok and Kimi Code 
 works out who started whom, and draws it as a live map in your browser. Lines light up when work
 is handed down and when a report comes back up.
 
-- **It only looks.** Pleni never starts, stops, or types into a session. It never changes the
-  files it reads.
+- **It only looks.** Pleni never stops or types into a session, and it never changes the files it
+  reads. The one exception is a button you can turn on, which opens a session in a PowerShell
+  window for you (see [Open a session in PowerShell](#open-a-session-in-powershell)).
+  Even then, you do the typing.
 - **It stays on your computer.** It opens only on your own computer (`127.0.0.1`). It sends
   nothing anywhere. There is no account, no sign-in, and no tracking.
 - **It has zero dependencies.** You need only Node.js. Pleni installs nothing else from npm and has
@@ -129,6 +131,40 @@ another way, say so in **Settings → Chain of command**: for example, "a sessio
 *Sergeant* reports to the newest session whose name contains *Colonel*". Rules match names, so they
 keep working when a session is replaced by a new one.
 
+## Open a session in PowerShell
+
+On Windows, Pleni can open a Claude Code session in a PowerShell window, so you can watch it and
+type to it. This is off until you turn it on:
+
+1. Open **Settings**. Under **Open sessions**, tick **Show the Open in PowerShell button**, then
+   choose **Save settings**.
+2. Click a Claude Code session on the map. In its side panel, choose **Open in PowerShell**.
+
+A new PowerShell window opens in that session's folder and runs `claude --resume <session id>`.
+You see the whole conversation, and whatever you type goes to that session.
+
+- **A background session opens live.** If the session runs in the background (you started it with
+  `claude --bg`, or from `claude agents`), you watch it work and can type to it. It keeps running
+  when you close the window. This needs Claude Code 2.1.285 or newer.
+- **A stopped session picks up where it left off.**
+- **One window per session.** If the session is open in another window, or busy in a program
+  with no window (such as a script that runs `claude -p`), Pleni says so and opens nothing. Two
+  windows would mix up its messages.
+- **Helpers open their session.** A helper (sub-agent) works inside the session that started it,
+  so its button opens that session.
+- **Desktop and VS Code sessions stay there.** A session that belongs to the Claude desktop app or
+  VS Code is already on your screen there, so Pleni asks you to open it there.
+- **You need the `claude` command.** Claude Code must be installed so that typing `claude` in
+  PowerShell works.
+- **Only on this computer.** The button works only in a browser on the computer that runs Pleni,
+  not from your phone.
+- **It uses your plan.** Each message you send there uses your Claude plan, the same as in any
+  Claude Code window.
+
+Tip: to watch several sessions at once, start them in the background with
+`claude --bg --name "Sergeant" "<task>"`. Then `claude agents` lists them all in one window, and
+Pleni's button opens any one of them live.
+
 ## Where it looks
 
 Pleni finds the usual folders on its own. You can change any of them in Settings.
@@ -167,6 +203,8 @@ Markdown files: one hands out tasks, the other reports back. If you do not use o
 ## Privacy and safety
 
 - Pleni reads files. It writes only its own settings file.
+- It starts nothing unless you turn on **Open in PowerShell** and click it. Then it opens one
+  PowerShell window that runs `claude --resume`. It never types into a session.
 - It makes no network calls and sends no data about you or your work. There is no telemetry.
 - The page shows short bits of session text. If you would rather it did not, turn session text
   off in Settings (the `content` setting, set to `none`). Then you see only names, tools, and
@@ -231,8 +269,8 @@ both. Both are made by 8 West Ventures, LLC.
 
 ## What comes next
 
-Version 0.1 only watches. The next step is to let you answer questions, approve plans and send
-messages to a session right from the browser. The design is in
+Version 0.1 watches, and can open a Claude Code session in PowerShell for you. The next step is
+to let you answer questions, approve plans and send messages to a session right from the browser. The design is in
 [docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md).
 
 These are plans, not promises. Ideas are welcome in

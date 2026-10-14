@@ -70,8 +70,18 @@ test('cleanSettings keeps good values', () => {
     projects: { pleni: { label: 'Pleni', hidden: false } },
     chain: [{ match: 'Sergeant', reportsTo: 'Colonel', role: 'coordinator' }, { match: 'Colonel', reportsTo: 'you', role: null }],
     remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] },
+    actions: { openTerminal: true },
   };
   assert.deepEqual(cleanSettings(raw), raw);
+});
+
+test('Open in PowerShell stays off unless it is turned on with a real true', () => {
+  assert.deepEqual(cleanSettings({}).actions, { openTerminal: false });
+  for (const value of ['true', 1, null, {}, []]) {
+    assert.deepEqual(cleanSettings({ actions: { openTerminal: value } }).actions, { openTerminal: false }, String(value));
+  }
+  assert.deepEqual(cleanSettings({ actions: 'on' }).actions, { openTerminal: false });
+  assert.deepEqual(cleanSettings({ actions: { openTerminal: true, other: true } }).actions, { openTerminal: true });
 });
 
 test('cleanSettings clamps and rounds numbers', () => {

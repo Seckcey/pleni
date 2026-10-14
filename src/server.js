@@ -15,6 +15,7 @@ import {
 } from './config.js';
 import { stripBom } from './jsonl.js';
 import { snapshotTag } from './model.js';
+import { openLimits, openSession } from './open.js';
 
 const BIND_HOST = '127.0.0.1';
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -85,6 +86,7 @@ const MESSAGES = {
   goneMove: 'That session is not on the map any more.',
   loopMove: 'A session cannot report to one of its own helpers.',
   badDismiss: 'Pleni could not read which notice to dismiss.',
+  openRemote: 'A session can be opened in a window only on the computer that runs Pleni, not from another device.',
 };
 
 // A new random key.
@@ -121,7 +123,8 @@ export function loadOrCreateKey(file, { renew = false } = {}) {
 // getSettings() -> { settings, file, roots }; saveSettings(clean) saves and returns the same shape.
 // Without them, settings are read from and saved to the usual settings file.
 // `key` is the secret every API request needs (see keyAllowed); a new one is made when it is left out.
-export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), key = newKey() }) {
+// `platform` and `spawnProcess` are for Open in PowerShell (see src/open.js); tests replace them.
+export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), key = newKey(), platform = process.platform, spawnProcess = null }) {
   if (typeof key !== 'string' || !KEY_RE.test(key)) {
     throw new Error('The server key must be at least 16 letters, digits, "-" or "_".');
   }
@@ -134,6 +137,9 @@ export function createServer({ store, getSettings, saveSettings, publicDir = PUB
     keyHash: hashKey(key),
     readSettings: getSettings ?? fallback.get,
     writeSettings: saveSettings ?? fallback.save,
+    platform,
+    spawnProcess,
+    opens: openLimits(),
   };
   return http.createServer((req, res) => {
     handle(app, req, res).catch(() => {
@@ -194,6 +200,7 @@ async function handle(app, req, res) {
   if (req.method === 'POST') {
     if (pathname === '/api/placement') return postPlacement(app, req, res, host);
     if (pathname === '/api/dismiss') return postDismiss(app, req, res, host);
+    if (pathname === '/api/open') return postOpen(app, req, res, host);
     return postSettings(app, req, res, host);
   }
   if (pathname.startsWith('/brand/')) return sendBrand(app, req, res, pathname.slice('/brand/'.length));
@@ -207,7 +214,7 @@ async function handle(app, req, res) {
 
 function allowedMethods(pathname) {
   if (pathname === '/api/settings') return ['GET', 'HEAD', 'POST'];
-  if (pathname === '/api/placement' || pathname === '/api/dismiss') return ['POST'];
+  if (pathname === '/api/placement' || pathname === '/api/dismiss' || pathname === '/api/open') return ['POST'];
   if (PAGE_FILES.has(pathname) || API_GET.has(pathname)) return READ_ONLY;
   if (/^\/brand\/[^/]+$/.test(pathname)) return READ_ONLY;
   return null;
@@ -360,7 +367,7 @@ async function settingsPayload(app, state) {
   const nodes = Array.isArray(snapshot?.nodes)
     ? snapshot.nodes.map(({ key, title, platform, kind }) => ({ key, title, platform, kind }))
     : [];
-  return { settings: state.settings, file: state.file, roots: state.roots, nodes };
+  return { settings: state.settings, file: state.file, roots: state.roots, nodes, platform: app.platform };
 }
 
 // The key cookie is checked before this. A web page on another site cannot add the X-Pleni header
@@ -408,6 +415,32 @@ async function postDismiss(app, req, res, host) {
   if (typeof app.store.dismiss !== 'function') return sendError(req, res, 500, MESSAGES.internal);
   app.store.dismiss(id, at);
   return sendJson(req, res, 200, { ok: true });
+}
+
+// Open in PowerShell: { key: 'claude:<session id>' }. src/open.js makes the other checks: the
+// setting is on, Pleni runs on Windows, the session is on the map, and no other window has it open.
+async function postOpen(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.openRemote);
+  const state = app.readSettings();
+  const result = await openSession({
+    key: body.key,
+    settings: state.settings,
+    root: state.roots?.claude ?? null,
+    store: app.store,
+    limits: app.opens,
+    platform: app.platform,
+    ...(app.spawnProcess ? { spawn: app.spawnProcess } : {}),
+  });
+  if (result.ok) return sendJson(req, res, 200, { ok: true });
+  return sendError(req, res, result.status, result.error);
+}
+
+// A window opens on this computer, so only the person at it may ask: a request passed on by a proxy
+// such as tailscale serve (from a phone, say) is refused, even with the key.
+function isLocalRequest(host, req) {
+  return LOCAL_HOSTS.has(host.name) && req.headers['tailscale-user-login'] === undefined && req.headers['x-forwarded-for'] === undefined;
 }
 
 // True when `key` is `top` or sits somewhere below it on the map.

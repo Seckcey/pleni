@@ -4,6 +4,16 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- Open in PowerShell (Windows): a button in a Claude Code session's side panel opens that session
+  in a new PowerShell window with `claude --resume`, so you can watch it and type to it. A
+  background session opens live. It is off until you turn it on in Settings → Open sessions,
+  works only on the computer that runs Pleni, and never opens a session that another window
+  already has open. A helper's button opens the session it works inside.
+
 ## 0.1.0 (2026-10-13)
 
 The first version, on npm as `pleni` (`npx pleni`). Pleni only watches: it never starts, stops, or

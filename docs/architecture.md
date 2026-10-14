@@ -4,9 +4,12 @@ Pleni ("Plenipo Browser") is a small local web app. It reads the session files t
 Codex already write on your computer, works out who is working on what, and shows it live in your
 browser as an organization map with the hand-offs between agents drawn as moving lines.
 
-Version 0.1 only **watches**. It never starts, stops, sends to or changes a session, and it never
-writes into Claude Code's, Codex's or a mailbox's folders. Sending work and approving actions come
-later and will get their own design.
+Version 0.1 only **watches**. It never stops, sends to or changes a session, and it never writes
+into Claude Code's, Codex's or a mailbox's folders. The one thing it may start is a window the
+person asks for: with **Open in PowerShell** turned on (off by default, Windows only), a button
+opens a PowerShell window that runs `claude --resume` for one Claude Code session, and the person
+types there (see `src/open.js` below). Sending work and approving actions come later and will get
+their own design.
 
 ## Ground rules
 
@@ -17,7 +20,8 @@ later and will get their own design.
   Tailscale logins you list in settings.
 - **Only the person who started it.** Every account on the computer can reach `127.0.0.1`, so the
   API also needs a random key made at each start and printed in Pleni's address (see Server).
-- **Read-only.** Pleni reads; it does not write anywhere except its own settings file.
+- **Read-only.** Pleni reads; it does not write anywhere except its own settings file. It starts no
+  program except the opt-in Open in PowerShell window, and only when the person clicks for it.
 - **Private by default.** Nothing leaves the computer. No telemetry, no network calls. The page shows
   short snippets of session text only when `content` is `"snippets"` (the default); `"none"` shows
   only tool names and states.
@@ -39,6 +43,7 @@ src/sources/kimi.js     Kimi Code sessions and sub-agents
 src/sources/mailbox.js  optional coordination mailbox (task folders of Markdown files)
 src/model.js            builds the snapshot the page draws (nodes, edges, events)
 src/store.js            owns the sources, polls them, caches the snapshot
+src/open.js             Open in PowerShell: one Claude Code session in a new window (opt-in, Windows)
 src/demo.js             synthetic, moving demo data (no files needed)
 src/server.js           HTTP server, security gate, routes
 public/index.html       the page (no inline script or style)
@@ -77,6 +82,7 @@ export const DEFAULTS = {
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
+  actions: { openTerminal: false },                    // the Open in PowerShell button; true only when set to true
 }
 // Role = 'superintendent' | 'coordinator' | 'lead' | 'worker' | 'hidden'
 ```
@@ -342,13 +348,14 @@ MailboxState = {
 ## Snapshot (`src/model.js`)
 
 ```js
-export function buildSnapshot({ now, settings, claude, codex, mailbox })  // any source may be null
+export function buildSnapshot({ now, settings, claude, codex, mailbox, dismissed, actions })  // any source may be null
 Snapshot = {
   version: 1, now,
   sources: { claude: SourceInfo, codex: SourceInfo, mailbox: SourceInfo | null },
   nodes: Node[], edges: Edge[], events: Event[], counts: { working, ready, idle, done, error, total },
   attention: [{ id: '<key>|<kind>', key, kind, text, at }],  // at is 0 when unknown
   tasks: MailboxState['tasks'] | null,
+  actions: { openTerminal: boolean },  // the page may show Open in PowerShell (setting on, Pleni on Windows)
 }
 SourceInfo = { enabled, ok, error, count }
 Node = {
@@ -418,21 +425,74 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
 ## Store (`src/store.js`)
 
 ```js
-export function createStore({ settings, roots, demo = false, now = Date.now })
-// -> { snapshot(): Snapshot, detail(key, since), reload(settings, roots), close() }
+export function createStore({ settings, roots, demo = false, now = Date.now, stateDir = null, platform = process.platform })
+// -> { snapshot(): Snapshot, detail(key, since), reload(settings, roots), close(), dismiss(id, at),
+//      session(key): { id, cwd, status, entrypoint } | null, demo: boolean }
 ```
 
 Creates the enabled sources (or the demo source), polls at most every 2 s on demand, caches the
-snapshot with its JSON and its ETag, and rebuilds when settings change. The ETag is
+snapshot with its JSON and its ETag, and rebuilds when settings change. `snapshot().actions.openTerminal`
+is `settings.actions.openTerminal` and `platform === 'win32'`. `session(key)` gives what the newest
+poll knows about a top-level Claude Code session (`{ id, cwd, status, entrypoint }`) for Open in
+PowerShell, and `null` for anything else and in the demo. The ETag is
 `snapshotTag(snapshot)` from `src/model.js`: `W/"<sha1 of the JSON with now set to 0>"`. `now`
 changes on every build, and the page needs it only to allow for a clock difference, so a snapshot
 that changed only its time keeps its ETag and the page's poll gets `304`.
+
+## Open in PowerShell (`src/open.js`)
+
+The one action Pleni takes. It is off until the person turns it on (`actions.openTerminal`), works
+only on Windows for now, and the server allows it only for a request made on the computer that runs
+Pleni. Pleni starts the window and nothing else: whatever is typed there comes from the person.
+
+```js
+export async function openSession({ key, settings, root, store, limits, platform, env, home, spawn, now, isAlive })
+// -> { ok: true } | { ok: false, status, error }   (error is a plain sentence from OPEN_MESSAGES)
+export function openProblem(session, processes)          // -> plain reason it is unsafe, or null
+export function claudeProcesses(root, sessionId, isAlive) // -> [{ kind, status }]
+export function powershellCommand(sessionId, systemRoot)  // -> { file, args }
+export function claudeEnv(env, root, home, platform)      // -> env for the window
+export function openLimits()                              // -> { take(key, now): reason | null }
+```
+
+- Only `claude:<session id>` (a lower-case UUID) can be opened: a helper's key gets "open the session
+  that started it", any other key "only Claude Code sessions". The demo has nothing to open. The
+  session must be on the map, and `store.session(key)` must know its folder.
+- The folder must be an existing absolute directory, and not a network path (`\\server\share`):
+  cmd.exe cannot start there and would fall back to the Windows folder.
+- **One writer per conversation.** Two processes writing one transcript mix it up. A session whose
+  newest records come from the Claude desktop app or VS Code (`entrypoint` `claude-desktop` or
+  `claude-vscode`) is refused with "open it there": those apps may hold a session open without a
+  file Pleni can see. Claude Code keeps a small file per running process in
+  `<root>/sessions/<pid>.json` (`pid`, `sessionId`, `kind`: `'interactive'` or `'background'`,
+  `status`; files at most 64 KB, at most 500 read). Pleni reads them only when asked to open, and
+  counts a file only while its process is alive (signal 0; `EPERM` counts as alive). A live process
+  of any kind but `'background'` refuses ("open in another window"). A session that is `working`
+  with no live process (a `claude -p` script, or another app) refuses ("try again when it
+  finishes"). A live background session is allowed: `claude --resume` shows that running session
+  live (Claude Code 2.1.285 or newer).
+- **Limits** (`openLimits`): one window per session every 10 seconds, and 10 a minute in all. The
+  limit is taken after every other check, with no waiting in between, so two quick clicks cannot
+  both get through, and a refusal does not use up the next try.
+- **The command.** `cmd.exe /d /s /c "start "Claude Code" "<powershell.exe>" -NoExit -NoLogo -Command
+  "claude --resume '<id>'""`, spawned with `cwd` set to the session's folder, `detached` (so cmd.exe
+  gets no console window; `start` opens PowerShell in a new one), `stdio: 'ignore'`,
+  `windowsHide: false` (a hidden start could hide the new window too) and
+  `windowsVerbatimArguments`. Both programs are named by their full path under `%SystemRoot%`, used
+  only when it is a plain folder such as `C:\Windows` (else `C:\Windows` itself). So a program with
+  the same name in the session's folder never runs instead, and nothing in the line can be read as
+  a second command: every part is fixed except the id, which is checked. The answer comes when
+  cmd.exe has started.
+- **The Claude folder** (`claudeEnv`): `claude` looks in `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
+  When Pleni reads Claude Code from another folder, the window gets `CLAUDE_CONFIG_DIR` set to it;
+  otherwise the environment is passed on unchanged, because naming the usual folder there is not the
+  same as leaving it unset.
 
 ## Server (`src/server.js`)
 
 ```js
 export function newKey()  // -> 43 random base64url characters (32 bytes)
-export function createServer({ store, getSettings, saveSettings, publicDir, version, key })  // -> http.Server
+export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess })  // -> http.Server
 export function loadOrCreateKey(file, { renew })  // -> { key, saved }
 export async function start({ port, configFile, demo, open, renewKey })  // -> { server, url, key, keySaved, close }
 ```
@@ -463,7 +523,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **Routes:** `GET /` (index.html; `/?t=<key>` redirects, see above), `GET /app.js`, `GET /styles.css`, `GET /brand/<file>` (names
   `[a-z0-9._-]+`, extensions png, svg, ico, webp; resolved inside `public/brand` only),
   `GET /favicon.ico`, `GET /api/health`, `GET /api/snapshot` (weak ETag, `304` on match),
-  `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`.
+  `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`,
+  `POST /api/placement`, `POST /api/dismiss`, `POST /api/open`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
 - `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
   them the same way (`snapshotTag`) for a store that did not.
@@ -477,7 +538,14 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **POST /api/placement** `{ key, reportsTo: nodeKey | 'you' | null }` passes the same checks and
   saves `people[key].reportsTo` (null removes it). It refuses the person, projects, sessions that
   are not on the map, and a boss below the session itself (a loop), and answers `{ ok: true }`.
-- `GET /api/settings` returns `{ settings, file, roots, nodes: [{ key, title, platform, kind }] }`.
+- **POST /api/open** `{ key }` passes the same checks, then refuses (`403`) a request that is not
+  from this computer: a host other than the loopback names, or one carrying `Tailscale-User-Login`
+  or `X-Forwarded-For` (a proxy such as `tailscale serve` passed it on). `openSession` in
+  `src/open.js` makes the rest of the checks and opens the window; it answers `{ ok: true }` or
+  `{ error }` with the status it gives. `platform` and `spawnProcess` (a stand-in for
+  `child_process.spawn`) let tests run this without opening anything.
+- `GET /api/settings` returns `{ settings, file, roots, nodes: [{ key, title, platform, kind }], platform }`,
+  where the last `platform` is the server's `process.platform`.
 - JSON responses use `Content-Type: application/json; charset=utf-8`. Errors are `{ error }` with a
   plain-words message and never include stack traces or file contents.
 
@@ -502,8 +570,14 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **Activity:** the event feed, newest first.
 - **Tasks:** mailbox tasks with state and attention.
 - **Drawer:** clicking a tile opens the session's details and live recent events from
-  `/api/session`. Esc closes it; focus is trapped while open and returned afterwards.
-- **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. Before saving, the page
+  `/api/session`. Esc closes it; focus is trapped while open and returned afterwards. When
+  `snapshot.actions.openTerminal` is true and the page itself was opened on this computer
+  (`localhost`, `127.0.0.1` or `[::1]`), a Claude Code session's Now tab has an **Open in
+  PowerShell** button that posts `/api/open`; a Claude helper's has **Open its session in
+  PowerShell**, which opens the session it works inside. The answer shows in the status line under
+  the tabs.
+- **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. The Open sessions
+  section turns Open in PowerShell on and says when the computer does not run Windows. Before saving, the page
   checks the form: whole numbers within the server's limits, full folder paths, host names, and
   Tailscale logins (`name@domain`), at most 20 of each. A bad field gets `aria-invalid="true"` and
   a plain message tied to it with `aria-describedby`, focus moves to the first one, and nothing is

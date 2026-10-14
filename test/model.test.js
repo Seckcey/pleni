@@ -1062,3 +1062,9 @@ test('a model picked by its exact name beats the words', () => {
   const s = snap({ codex: [session(PLANNER, { title: 'Sergeant', model: 'gpt-6.1-sol' }), session(CHILD, { parentKey: PLANNER, kind: 'agent', model: 'gpt-6.1-sol' })], settings: { titles: 'military', modelTiers: tiers } });
   assert.equal(node(s, CHILD).rank, 'Specialist');
 });
+
+test('the snapshot says whether the page may offer Open in PowerShell', () => {
+  assert.deepEqual(buildSnapshot({ now: NOW, settings: cleanSettings({}) }).actions, { openTerminal: false });
+  assert.deepEqual(buildSnapshot({ now: NOW, settings: cleanSettings({}), actions: { openTerminal: true } }).actions, { openTerminal: true });
+  assert.deepEqual(buildSnapshot({ now: NOW, settings: cleanSettings({}), actions: { openTerminal: 'yes' } }).actions, { openTerminal: false });
+});

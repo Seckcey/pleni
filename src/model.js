@@ -27,7 +27,9 @@ const RANKS = {
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 const gitCache = new Map();
 
-export function buildSnapshot({ now, settings, claude = null, codex = null, grok = null, kimi = null, mailbox = null, dismissed = null } = {}) {
+// `actions` says which actions the page may offer: { openTerminal } is true when the Open in
+// PowerShell button is turned on and can work on this computer.
+export function buildSnapshot({ now, settings, claude = null, codex = null, grok = null, kimi = null, mailbox = null, dismissed = null, actions = null } = {}) {
   const s = cleanSettings(settings);
   const ctx = {
     now: Number.isFinite(now) ? now : Date.now(),
@@ -66,6 +68,7 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
     counts: countStatuses(sessionNodes),
     attention: attentionList(sessionNodes, tasks ?? []).filter((item) => !(hidden(item.id) >= item.at)),
     tasks,
+    actions: { openTerminal: actions?.openTerminal === true },
   };
 }
 

@@ -5,6 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { cleanSettings } from '../src/config.js';
+import { OPEN_MESSAGES } from '../src/open.js';
 import { browserCommand, createServer, loadOrCreateKey, newKey } from '../src/server.js';
 
 const CSP = "default-src 'none'; script-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; " +
@@ -111,6 +112,8 @@ async function startServer(t, options = {}) {
     publicDir,
     version: '9.9.9-test',
     key: TEST_KEY,
+    ...(options.platform ? { platform: options.platform } : {}),
+    ...(options.spawnProcess ? { spawnProcess: options.spawnProcess } : {}),
     ...(options.useFileSettings
       ? {}
       : { getSettings: memory.getSettings, saveSettings: memory.saveSettings.bind(memory) }),
@@ -584,7 +587,8 @@ test('GET /api/settings returns settings, file, roots and a short node list', as
   const { port, memory } = await startServer(t, { settings: { displayName: 'Ada' } });
   const res = await request(port, { path: '/api/settings' });
   assert.equal(res.status, 200);
-  assert.deepEqual(Object.keys(res.json).sort(), ['file', 'nodes', 'roots', 'settings']);
+  assert.deepEqual(Object.keys(res.json).sort(), ['file', 'nodes', 'platform', 'roots', 'settings']);
+  assert.equal(res.json.platform, process.platform);
   assert.equal(res.json.settings.displayName, 'Ada');
   assert.equal(res.json.file, memory.state.file);
   assert.deepEqual(res.json.roots, memory.state.roots);
@@ -802,4 +806,95 @@ test('dismiss passes a valid notice to the store and refuses bad ones', async (t
   assert.equal((await post({ id: 'task:T-1|review', at: 1 }, { cookie: undefined })).status, 401);
   assert.equal((await request(port, { path: '/api/dismiss' })).status, 405);
   assert.deepEqual(store.dismissed, [[`${SESSION_KEY}|needs`, 1234], ['task:T-1|question', null]]);
+});
+
+// ---- Open in PowerShell ----
+
+// A store whose one Claude Code session works in `folder`, and a stand-in for spawn that records
+// each call instead of opening a window.
+function openStore(folder) {
+  const store = fakeStore();
+  store.demo = false;
+  store.session = (key) => (key === SESSION_KEY ? { id: SESSION_KEY.slice('claude:'.length), cwd: folder, status: 'idle' } : null);
+  return store;
+}
+
+function recordSpawns() {
+  const calls = [];
+  const spawn = (file, args, options) => {
+    calls.push({ file, args, options });
+    const child = { handlers: {}, once(name, fn) { this.handlers[name] = fn; }, unref() {} };
+    process.nextTick(() => child.handlers.spawn?.());
+    return child;
+  };
+  spawn.calls = calls;
+  return spawn;
+}
+
+const openReq = (port, body, headers = {}) => request(port, {
+  method: 'POST',
+  path: '/api/open',
+  headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+  body: JSON.stringify(body),
+});
+
+const OPEN_ON = { actions: { openTerminal: true } };
+
+test('open starts PowerShell for a Claude Code session on the map', async (t) => {
+  const folder = tempDir(t);
+  const spawnProcess = recordSpawns();
+  const { port } = await startServer(t, { store: openStore(folder), settings: OPEN_ON, platform: 'win32', spawnProcess });
+  const res = await openReq(port, { key: SESSION_KEY });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json, { ok: true });
+  assert.equal(spawnProcess.calls.length, 1);
+  assert.equal(spawnProcess.calls[0].options.cwd, folder);
+  assert.ok(spawnProcess.calls[0].args.at(-1).includes(`claude --resume '${SESSION_KEY.slice('claude:'.length)}'`));
+  // A second click right away is refused instead of opening a second window.
+  const again = await openReq(port, { key: SESSION_KEY });
+  assertPlainError(again, 429);
+  assert.equal(again.json.error, OPEN_MESSAGES.again);
+  assert.equal(spawnProcess.calls.length, 1);
+});
+
+test('open needs the key and the same checks as every other change', async (t) => {
+  const spawnProcess = recordSpawns();
+  const { port } = await startServer(t, { store: openStore(tempDir(t)), settings: OPEN_ON, platform: 'win32', spawnProcess });
+  assertPlainError(await openReq(port, { key: SESSION_KEY }, { cookie: undefined }), 401);
+  assertPlainError(await openReq(port, { key: SESSION_KEY }, { 'x-pleni': undefined }), 403);
+  assertPlainError(await openReq(port, { key: SESSION_KEY }, { origin: 'https://evil.example' }), 403);
+  assertPlainError(await openReq(port, { key: SESSION_KEY }, { 'content-type': 'text/plain' }), 415);
+  assertPlainError(await request(port, { path: '/api/open' }), 405);
+  assert.equal(spawnProcess.calls.length, 0);
+});
+
+test('open is refused from another device, even one that may see Pleni', async (t) => {
+  const spawnProcess = recordSpawns();
+  const settings = { ...OPEN_ON, remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } };
+  const { port } = await startServer(t, { store: openStore(tempDir(t)), settings, platform: 'win32', spawnProcess });
+  const remote = { host: 'box.example.ts.net', 'tailscale-user-login': 'ada@example.com' };
+  assert.equal((await request(port, { path: '/api/health', headers: remote })).status, 200, 'the device may see Pleni');
+  for (const headers of [remote, { 'tailscale-user-login': 'ada@example.com' }, { 'x-forwarded-for': '100.64.0.7' }]) {
+    const res = await openReq(port, { key: SESSION_KEY }, headers);
+    assertPlainError(res, 403);
+    assert.match(res.json.error, /only on the computer that runs Pleni/);
+  }
+  assert.equal(spawnProcess.calls.length, 0);
+});
+
+test('open is off until it is turned on, and says why in plain words', async (t) => {
+  const spawnProcess = recordSpawns();
+  const { port } = await startServer(t, { store: openStore(tempDir(t)), platform: 'win32', spawnProcess });
+  const res = await openReq(port, { key: SESSION_KEY });
+  assertPlainError(res, 403);
+  assert.equal(res.json.error, OPEN_MESSAGES.off);
+  const linux = await startServer(t, { store: openStore(tempDir(t)), settings: OPEN_ON, platform: 'linux', spawnProcess });
+  const other = await openReq(linux.port, { key: SESSION_KEY });
+  assertPlainError(other, 409);
+  assert.equal(other.json.error, OPEN_MESSAGES.windowsOnly);
+  const helper = await startServer(t, { store: openStore(tempDir(t)), settings: OPEN_ON, platform: 'win32', spawnProcess });
+  const sub = await openReq(helper.port, { key: AGENT_KEY });
+  assertPlainError(sub, 400);
+  assert.equal(sub.json.error, OPEN_MESSAGES.helper);
+  assert.equal(spawnProcess.calls.length, 0);
 });

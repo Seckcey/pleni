@@ -62,8 +62,9 @@ as passing.
    packages, not even for development or tests. There is no build step: the files in `public/`
    are served as they are.
 3. **Read-only by design.** Pleni never writes anywhere except its own settings file, and it never
-   starts, stops, or sends anything to a session. Sending work and approving actions are planned,
-   and they will get their own design first.
+   stops or sends anything to a session. The one thing it may start is the opt-in Open in
+   PowerShell window (`src/open.js`), which the person types into. Sending work and approving
+   actions are planned, and they will get their own design first.
 4. **Private by default.** No network calls, no telemetry, nothing loaded from the internet. Session
    text is shown only as text, and only when the `content` setting allows it.
 5. **This repository is public.** Never commit personal names, e-mail addresses, user names,
