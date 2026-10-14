@@ -54,11 +54,13 @@ async function main(argv, env) {
     process.stderr.write(`${startProblem(err, options.port)}\n`);
     return 1;
   }
+  // Listen for Ctrl+C before printing the address: a program that reads the address may stop
+  // Pleni at once, and that must still be a clean stop.
+  stopOnSignal(app);
   if (options.demo) process.stdout.write('Showing made-up demo data.\n');
   process.stdout.write(`Pleni is running at ${app.url}\n` +
     'Open that whole address. The part after "?t=" is a key that keeps other people on this computer out.\n' +
     `${keyNote(app, options)}\nPress Ctrl+C to stop.\n`);
-  stopOnSignal(app);
   return undefined;
 }
 
