@@ -46,7 +46,7 @@ These are Pleni's promises, in plain words. A way around any of them is a vulner
 - **It only reads.** Pleni writes nowhere except its own settings file, and it never stops or
   sends anything to a session. It starts one thing, and only when asked: with **Open in
   PowerShell** turned on, a click on this computer opens a PowerShell window that runs
-  `claude --resume` for one session. A way to make it write, delete, or run anything else, or to
+  `claude --resume` or `codex resume` for one session. A way to make it write, delete, or run anything else, or to
   open that window without the setting, from another device, or with a command line of your
   choosing, is a vulnerability.
 - **It never phones home.** Pleni makes no network calls and has no telemetry.

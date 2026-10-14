@@ -133,15 +133,18 @@ keep working when a session is replaced by a new one.
 
 ## Open a session in PowerShell
 
-On Windows, Pleni can open a Claude Code session in a PowerShell window, so you can watch it and
-type to it. This is off until you turn it on:
+On Windows, Pleni can open a Claude Code session or a Codex thread in a PowerShell window, so you
+can watch it and type to it. You do not need Claude Code or Codex open first: the window starts
+it. This is off until you turn it on:
 
 1. Open **Settings**. Under **Open sessions**, tick **Show the Open in PowerShell button**, then
    choose **Save settings**.
-2. Click a Claude Code session on the map. In its side panel, choose **Open in PowerShell**.
+2. Click a Claude Code or Codex session on the map. In its side panel, choose **Open in
+   PowerShell**.
 
-A new PowerShell window opens in that session's folder and runs `claude --resume <session id>`.
-You see the whole conversation, and whatever you type goes to that session.
+A new PowerShell window opens in that session's folder and runs `claude --resume <session id>`, or
+`codex resume <thread id>` for Codex. You see the whole conversation, and whatever you type goes to
+that session.
 
 - **A background session opens live.** If the session runs in the background (you started it with
   `claude --bg`, or from `claude agents`), you watch it work and can type to it. It keeps running
@@ -150,12 +153,17 @@ You see the whole conversation, and whatever you type goes to that session.
 - **One window per session.** If the session is open in another window, or busy in a program
   with no window (such as a script that runs `claude -p`), Pleni says so and opens nothing. Two
   windows would mix up its messages.
-- **Helpers open their session.** A helper (sub-agent) works inside the session that started it,
-  so its button opens that session.
+- **Claude Code helpers open their session.** A Claude Code helper (sub-agent) works inside the
+  session that started it, so its button opens that session.
+- **Codex helpers open themselves.** Each Codex helper has a thread of its own, so you can open it
+  and talk to it directly. If another program has the thread open, Pleni says so.
 - **Desktop and VS Code sessions stay there.** A session that belongs to the Claude desktop app or
   VS Code is already on your screen there, so Pleni asks you to open it there.
-- **You need the `claude` command.** Claude Code must be installed so that typing `claude` in
-  PowerShell works.
+- **You need the `claude` or `codex` command.** Typing `claude` (for Claude Code) or `codex` (for
+  Codex) in PowerShell must work.
+- **Close the window when you are done.** While it is open, the session is yours. A script or a
+  coordinator that sends that session work may clash with you, or be turned away, until you close
+  it.
 - **Only on this computer.** The button works only in a browser on the computer that runs Pleni,
   not from your phone.
 - **It uses your plan.** Each message you send there uses your Claude plan, the same as in any
@@ -204,7 +212,7 @@ Markdown files: one hands out tasks, the other reports back. If you do not use o
 
 - Pleni reads files. It writes only its own settings file.
 - It starts nothing unless you turn on **Open in PowerShell** and click it. Then it opens one
-  PowerShell window that runs `claude --resume`. It never types into a session.
+  PowerShell window that runs `claude --resume` or `codex resume`. It never types into a session.
 - It makes no network calls and sends no data about you or your work. There is no telemetry.
 - The page shows short bits of session text. If you would rather it did not, turn session text
   off in Settings (the `content` setting, set to `none`). Then you see only names, tools, and
@@ -269,7 +277,7 @@ both. Both are made by 8 West Ventures, LLC.
 
 ## What comes next
 
-Version 0.1 watches, and can open a Claude Code session in PowerShell for you. The next step is
+Version 0.1 watches, and can open a Claude Code or Codex session in PowerShell for you. The next step is
 to let you answer questions, approve plans and send messages to a session right from the browser. The design is in
 [docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md).
 

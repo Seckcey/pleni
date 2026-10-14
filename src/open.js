@@ -1,20 +1,31 @@
-// "Open in PowerShell": opens one Claude Code session in a new PowerShell window, so the person can
-// watch it and type to it. It is off until the person turns it on (settings.actions.openTerminal),
-// works on Windows only for now, and the server allows it only for a request made on this
-// computer. Pleni starts the window and nothing else; whatever is typed there comes from the person.
+// "Open in PowerShell": opens one Claude Code session or Codex thread in a new PowerShell window, so
+// the person can watch it and type to it. It is off until the person turns it on
+// (settings.actions.openTerminal), works on Windows only for now, and the server allows it only for
+// a request made on this computer. Pleni starts the window and nothing else; whatever is typed
+// there comes from the person.
 import { spawn as nodeSpawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readJsonFile } from './jsonl.js';
 
-const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SESSION_KEY = /^claude:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
-const HELPER_KEY = /^claude:[0-9a-f-]{8,64}\//;
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const SESSION_ID = new RegExp(`^${UUID}$`);
+// What can be opened: a Claude Code session, or any Codex thread. A Codex helper is a thread of its
+// own that Codex can resume by itself; a Claude Code helper lives inside its session's process.
+const OPEN_KEY = new RegExp(`^(claude|codex):(${UUID})$`);
+const CLAUDE_HELPER_KEY = /^claude:[0-9a-f-]{8,64}\//;
+// The command that reopens a session, and where each tool keeps its files unless told otherwise.
+const TOOLS = {
+  claude: { title: 'Claude Code', resume: 'claude --resume', homeVar: 'CLAUDE_CONFIG_DIR', homeDir: '.claude' },
+  codex: { title: 'Codex', resume: 'codex resume', homeVar: 'CODEX_HOME', homeDir: '.codex' },
+};
 // Claude Code keeps one small file per running process: <root>/sessions/<process id>.json.
 const PROCESS_FILE = /^\d{1,10}\.json$/;
 const MAX_PROCESS_FILES = 500;
 const MAX_PROCESS_BYTES = 64 * 1024;
+// How Windows answers a read of a file that another program has locked.
+const LOCKED_CODES = new Set(['EBUSY', 'EACCES', 'EPERM']);
 // A second click must not open a second window while the first one is still starting.
 const AGAIN_MS = 10 * 1000;
 const MINUTE_MS = 60 * 1000;
@@ -26,8 +37,9 @@ const PLAIN_WINDOWS_DIR = /^[A-Za-z]:\\[A-Za-z0-9_.\\-]+$/;
 export const OPEN_MESSAGES = {
   off: 'Opening sessions is turned off. Turn on "Open in PowerShell" in Settings first.',
   windowsOnly: 'Opening a session in a window works only on Windows for now.',
-  notClaude: 'Only Claude Code sessions can be opened in a window for now.',
+  otherTool: 'Only Claude Code and Codex sessions can be opened in a window for now.',
   helper: 'A helper cannot be opened by itself. Open the session that started it.',
+  reviewer: 'An automatic reviewer cannot be opened in a window.',
   demo: 'The demo has no real sessions to open.',
   gone: 'That session is not on the map any more.',
   noFolder: "This session's folder is gone, so Pleni cannot open it there.",
@@ -41,14 +53,14 @@ export const OPEN_MESSAGES = {
   failed: 'Pleni could not open PowerShell.',
 };
 
-// Opens `key` ('claude:<session id>') in a new PowerShell window. Answers { ok: true } once the
-// window is on its way, else { ok: false, status, error } with a plain message. `limits` comes from
-// openLimits() and is kept by the caller from one request to the next. `root` is the Claude Code
-// folder Pleni reads.
+// Opens `key` ('claude:<session id>' or 'codex:<thread id>') in a new PowerShell window. Answers
+// { ok: true } once the window is on its way, else { ok: false, status, error } with a plain
+// message. `limits` comes from openLimits() and is kept by the caller from one request to the next.
+// `roots` holds the Claude Code and Codex folders Pleni reads ({ claude, codex }).
 export async function openSession({
   key,
   settings,
-  root,
+  roots,
   store,
   limits,
   platform = process.platform,
@@ -57,28 +69,34 @@ export async function openSession({
   spawn = nodeSpawn,
   now = Date.now(),
   isAlive = processAlive,
+  isLocked = codexThreadLocked,
 }) {
   if (settings?.actions?.openTerminal !== true) return refuse(403, OPEN_MESSAGES.off);
   if (platform !== 'win32') return refuse(409, OPEN_MESSAGES.windowsOnly);
   const text = typeof key === 'string' ? key : '';
-  const match = SESSION_KEY.exec(text);
-  if (!match) return refuse(400, HELPER_KEY.test(text) ? OPEN_MESSAGES.helper : OPEN_MESSAGES.notClaude);
+  const match = OPEN_KEY.exec(text);
+  if (!match) return refuse(400, CLAUDE_HELPER_KEY.test(text) ? OPEN_MESSAGES.helper : OPEN_MESSAGES.otherTool);
+  const [, tool, id] = match;
   if (store.demo) return refuse(409, OPEN_MESSAGES.demo);
   const listed = (store.snapshot()?.nodes ?? []).some((node) => node?.key === text);
   const session = listed ? store.session?.(text) : null;
   if (!session) return refuse(404, OPEN_MESSAGES.gone);
+  if (session.kind === 'reviewer') return refuse(400, OPEN_MESSAGES.reviewer);
   const folder = folderProblem(session.cwd, platform);
   if (folder) return refuse(409, folder);
-  const problem = openProblem(session, claudeProcesses(root, match[1], isAlive));
+  const root = roots?.[tool] ?? null;
+  const problem = tool === 'claude'
+    ? openProblem(session, claudeProcesses(root, id, isAlive))
+    : codexProblem(session, isLocked(root, id));
   if (problem) return refuse(409, problem);
   // Taken last, with no waiting before it, so two quick clicks cannot both get through.
   const wait = limits.take(text, now);
   if (wait) return refuse(429, wait);
-  const { file, args } = powershellCommand(match[1], env.SystemRoot ?? env.SYSTEMROOT);
+  const { file, args } = powershellCommand(tool, id, env.SystemRoot ?? env.SYSTEMROOT);
   // Detached, cmd.exe gets no console window of its own; "start" gives PowerShell a new one.
   const options = {
     cwd: session.cwd,
-    env: claudeEnv(env, root, home, platform),
+    env: toolEnv(tool, env, root, home, platform),
     detached: true,
     stdio: 'ignore',
     windowsHide: false,
@@ -87,14 +105,23 @@ export async function openSession({
   return (await launch(spawn, file, args, options)) ? { ok: true } : refuse(500, OPEN_MESSAGES.failed);
 }
 
-// Why opening would be unsafe, or null. Two processes writing one conversation mix it up, so the
-// only live process allowed is a background session: "claude --resume" then shows that one live.
-// The desktop app and VS Code may hold their sessions open without a process file Pleni can see.
+// Why opening a Claude Code session would be unsafe, or null. Two processes writing one
+// conversation mix it up, so the only live process allowed is a background session:
+// "claude --resume" then shows that one live. The desktop app and VS Code may hold their sessions
+// open without a process file Pleni can see.
 export function openProblem(session, processes) {
   if (session.entrypoint === 'claude-desktop') return OPEN_MESSAGES.desktopApp;
   if (session.entrypoint === 'claude-vscode') return OPEN_MESSAGES.vscode;
   if (processes.some((proc) => proc.kind !== 'background')) return OPEN_MESSAGES.elsewhere;
   if (!processes.length && session.status === 'working') return OPEN_MESSAGES.busy;
+  return null;
+}
+
+// Why opening a Codex thread would be unsafe, or null. Codex lets one program write a thread at a
+// time and refuses a second, so this only gives a plain answer before a window opens for nothing.
+export function codexProblem(session, locked) {
+  if (locked) return OPEN_MESSAGES.elsewhere;
+  if (session.status === 'working') return OPEN_MESSAGES.busy;
   return null;
 }
 
@@ -120,30 +147,58 @@ export function claudeProcesses(root, sessionId, isAlive = processAlive) {
   return out;
 }
 
+// True when another program is writing this Codex thread. While it writes, Codex holds an operating
+// system lock on <root>/thread-writer-locks/<thread id>.lock, and Windows refuses to let any other
+// program read a locked file. So Pleni tries to read one byte: a refusal means the thread is open
+// somewhere. A missing file means no program has written the thread since Codex last cleaned up.
+// Pleni never writes here. Other systems allow the read, so this finds nothing there.
+export function codexThreadLocked(root, threadId) {
+  if (!root || !SESSION_ID.test(threadId)) return false;
+  const file = path.join(root, 'thread-writer-locks', `${threadId}.lock`);
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+  } catch (err) {
+    return err?.code === 'EBUSY';
+  }
+  try {
+    fs.readSync(fd, Buffer.alloc(1), 0, 1, 0);
+    return false;
+  } catch (err) {
+    return LOCKED_CODES.has(err?.code);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 // cmd.exe's "start" opens PowerShell in a new console window, in the folder cmd.exe was started
-// in. Every part of the line is fixed or checked (the session id is hex digits and dashes), so
-// cmd.exe and PowerShell cannot read any of it as a second command. The id is in single quotes so
-// PowerShell passes it on exactly as written. Both programs are named by their full path: a
-// program with the same name in the session's folder never runs instead.
-export function powershellCommand(sessionId, systemRoot) {
-  if (!SESSION_ID.test(sessionId)) throw new Error('That is not a Claude Code session id.');
+// in. Every part of the line is fixed or checked (the id is hex digits and dashes), so cmd.exe and
+// PowerShell cannot read any of it as a second command. The id is in single quotes so PowerShell
+// passes it on exactly as written. Both programs are named by their full path: a program with the
+// same name in the session's folder never runs instead.
+export function powershellCommand(tool, id, systemRoot) {
+  const how = Object.hasOwn(TOOLS, tool) ? TOOLS[tool] : null;
+  if (!how) throw new Error('Pleni can open only Claude Code and Codex sessions.');
+  if (!SESSION_ID.test(id)) throw new Error('That is not a session id.');
   const windows = typeof systemRoot === 'string' && PLAIN_WINDOWS_DIR.test(systemRoot) ? systemRoot.replace(/\\+$/, '') : 'C:\\Windows';
   const powershell = `${windows}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
-  const line = `start "Claude Code" "${powershell}" -NoExit -NoLogo -Command "claude --resume '${sessionId}'"`;
+  const line = `start "${how.title}" "${powershell}" -NoExit -NoLogo -Command "${how.resume} '${id}'"`;
   return { file: `${windows}\\System32\\cmd.exe`, args: ['/d', '/s', '/c', `"${line}"`] };
 }
 
-// "claude" looks for the session in its own folder: $CLAUDE_CONFIG_DIR, else ~/.claude. When Pleni
-// reads Claude Code from another folder (set in Settings), the window is pointed at that one. The
-// usual folder is left alone: naming it in CLAUDE_CONFIG_DIR is not the same as leaving it unset,
-// because Claude Code then keeps its main settings file in another place.
-export function claudeEnv(env, root, home, platform = process.platform) {
+// "claude" looks for its sessions in $CLAUDE_CONFIG_DIR, else ~/.claude, and "codex" in $CODEX_HOME,
+// else ~/.codex. When Pleni reads a tool from another folder (set in Settings), the window is
+// pointed at that one. The usual folder is left alone: for Claude Code, naming it in
+// CLAUDE_CONFIG_DIR is not the same as leaving it unset, because Claude Code then keeps its main
+// settings file in another place.
+export function toolEnv(tool, env, root, home, platform = process.platform) {
+  const how = TOOLS[tool];
   const p = platform === 'win32' ? path.win32 : path.posix;
-  const set = typeof env.CLAUDE_CONFIG_DIR === 'string' && env.CLAUDE_CONFIG_DIR.trim();
-  const usual = set ? p.resolve(set) : p.join(home, '.claude');
+  const set = typeof env[how.homeVar] === 'string' && env[how.homeVar].trim();
+  const usual = set ? p.resolve(set) : p.join(home, how.homeDir);
   const same = (a, b) => (platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
   if (!root || same(p.resolve(root), usual)) return { ...env };
-  return { ...env, CLAUDE_CONFIG_DIR: root };
+  return { ...env, [how.homeVar]: root };
 }
 
 // One window per session every few seconds, and a few a minute in all, so a double click or a

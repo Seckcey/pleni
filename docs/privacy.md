@@ -36,6 +36,7 @@ read the start of a file once, to find a session's name and where it started.
 | A mailbox folder, if you turn one on    | The Markdown files of the queue, the status board, and each task (with any worker run notes), plus the small relay files in `.relay/` |
 | A session's project folder, only when it is inside a `_worktrees` folder on a local drive | Only the small `.git` pointer file (at most 4 KB) of that worktree, to learn the name of the repository it belongs to. Nothing else in your project is read |
 | Claude Code folder, only when you click Open in PowerShell | The small files in `sessions/` that Claude Code keeps for each running process. Pleni reads only which session each one has open, and whether it runs in the background, to be sure no other window has that session open |
+| Codex folder, only when you click Open in PowerShell | One empty file, `thread-writer-locks/<thread id>.lock`, which Codex locks while a program writes that thread. Pleni tries to read one byte of it, only to learn whether another window has the thread open |
 | Pleni's own folder                      | `settings.json`, `key`, and `dismissed.json` (which notices you dismissed, and when) in Pleni's settings folder |
 
 From the session files it uses: when each step happened, the working folder, the git branch, the
@@ -80,7 +81,7 @@ a model was "thinking", in either setting. It shows only that the model was thin
 - It never stops a session or sends anything to one.
 - It starts nothing unless you turn on **Open in PowerShell** (Settings → Open sessions, off until
   you turn it on, Windows only) and click the button on this computer. Then it opens one
-  PowerShell window that runs `claude --resume` for that session. Whatever is typed there comes
+  PowerShell window that runs `claude --resume` or `codex resume` for that session. Whatever is typed there comes
   from you. It does not open a session that is already open in another window, and it refuses the
   button from another device.
 - It makes no network calls. It sends no telemetry, usage counts, or crash reports.

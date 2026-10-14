@@ -132,17 +132,18 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
     return current.content === 'none' ? withoutText(result) : result;
   }
 
-  // What the newest poll knows about one top-level Claude Code session: { id, cwd, status,
-  // entrypoint }, or null. Open in PowerShell needs its folder, whether a turn is running, and which
-  // program it belongs to. The demo has no real sessions.
+  // What the newest poll knows about one top-level Claude Code session or one Codex thread:
+  // { id, cwd, status, entrypoint, kind }, or null. Open in PowerShell needs its folder, whether a
+  // turn is running, and which program it belongs to. The demo has no real sessions.
   function session(key) {
-    if (demo || typeof key !== 'string' || !key.startsWith('claude:') || key.includes('/')) return null;
+    const tool = typeof key === 'string' ? /^(claude|codex):[^/]+$/.exec(key)?.[1] : null;
+    if (demo || !tool) return null;
     if (!polled) snapshot();
-    const list = polled?.claude?.sessions;
+    const list = polled?.[tool]?.sessions;
     const found = Array.isArray(list) ? list.find((s) => isObject(s) && s.key === key) : null;
     if (!found) return null;
     const text = (value) => (typeof value === 'string' ? value : null);
-    return { id: text(found.id), cwd: text(found.cwd), status: text(found.status), entrypoint: text(found.entrypoint) };
+    return { id: text(found.id), cwd: text(found.cwd), status: text(found.status), entrypoint: text(found.entrypoint), kind: text(found.kind) };
   }
 
   function reload(nextSettings, nextRoots = currentRoots) {

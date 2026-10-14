@@ -882,6 +882,26 @@ test('open is refused from another device, even one that may see Pleni', async (
   assert.equal(spawnProcess.calls.length, 0);
 });
 
+test('open gives a Codex thread the Codex folder Pleni reads', async (t) => {
+  const codexKey = 'codex:0f8e2c4a-1b3d-4e5f-8a9b-0c1d2e3f4a5c';
+  const folder = tempDir(t);
+  const codexRoot = tempDir(t);
+  const store = fakeStore();
+  store.demo = false;
+  store.current = { ...store.current, nodes: [...store.current.nodes, { key: codexKey, title: 'Plan the release', platform: 'codex', kind: 'session' }] };
+  store.session = (key) => (key === codexKey ? { id: codexKey.slice('codex:'.length), cwd: folder, status: 'idle', kind: 'session' } : null);
+  const memory = memorySettings(OPEN_ON);
+  memory.state.roots = { ...memory.state.roots, codex: codexRoot };
+  const spawnProcess = recordSpawns();
+  const { port } = await startServer(t, { store, memory, platform: 'win32', spawnProcess });
+  const res = await openReq(port, { key: codexKey });
+  assert.equal(res.status, 200);
+  assert.equal(spawnProcess.calls.length, 1);
+  assert.equal(spawnProcess.calls[0].options.cwd, folder);
+  assert.equal(spawnProcess.calls[0].options.env.CODEX_HOME, codexRoot);
+  assert.ok(spawnProcess.calls[0].args.at(-1).includes(`codex resume '${codexKey.slice('codex:'.length)}'`));
+});
+
 test('open is off until it is turned on, and says why in plain words', async (t) => {
   const spawnProcess = recordSpawns();
   const { port } = await startServer(t, { store: openStore(tempDir(t)), platform: 'win32', spawnProcess });
