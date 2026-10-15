@@ -192,6 +192,7 @@ function buildTask({ id, docs, workers }, events, hide) {
       startedAt: run?.startedAt ?? null,
       finishedAt: run?.finishedAt ?? null,
       worktree: run?.worktree ?? null,
+      sessionId: run?.sessionId ?? null,
     })),
   };
 }
@@ -398,7 +399,14 @@ function readRun(file, st) {
     startedAt: toMillis(run.startedAt ?? run.started_at ?? run.started),
     finishedAt: toMillis(run.finishedAt ?? run.finished_at ?? run.finished ?? run.endedAt ?? run.ended_at),
     worktree: typeof run.worktree === 'string' && run.worktree.trim() ? run.worktree.trim().slice(0, 4096) : null,
+    sessionId: sessionIdOf(run.session_id ?? run.sessionId),
   };
+}
+
+// The Claude Code session a worker ran in, when its launcher saved one.
+function sessionIdOf(value) {
+  const id = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return SESSION_ID.test(id) ? id : null;
 }
 
 // The cache passes a stat as the second argument; readJsonFile would take it as a size limit.

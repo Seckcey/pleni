@@ -9,7 +9,9 @@
     worktrees folder from bin\relay-settings.json: worktrees_dir, or <projects_dir>\_worktrees\claude.
   - Default: detaches; a hidden runner writes, in tasks\<TASK>\workers\:
       <W>.log       claude JSON result (or error text)
-      <W>.run.json  state / pid / exit code / cost
+      <W>.run.json  state / pid / exit code / cost / session_id
+  - Each run is a saved Claude Code session with a new id (session_id in <W>.run.json), so Pleni can show it
+    and, once the run has ended, open it with claude --resume <session_id> in the worktree.
       runs.md       one ledger line per run
 
 .EXAMPLE
@@ -106,7 +108,8 @@ if (-not $Foreground) {
 # ---------- foreground runner ----------
 $state = @{ task = $TaskId; worker = $Worker; type = $Type; state = 'running'; pid = $PID; worktree = $Worktree
     started = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); finished = $null; exit_code = $null; cost_usd = $null
-    num_turns = $null; budget_usd = $MaxBudgetUsd; effort = $Effort; model = $Model; billing = 'claude-code-subscription' }
+    num_turns = $null; budget_usd = $MaxBudgetUsd; effort = $Effort; model = $Model; billing = 'claude-code-subscription'
+    session_id = [guid]::NewGuid().ToString() }
 Write-RunState $RunFile $state
 
 $report = Join-Path $WorkerDir "$Worker-report.md"
@@ -135,7 +138,7 @@ Write-RunState $RunFile $state
 
 $claudeArgs = @('-p', $prompt, '--output-format', 'json', '--permission-mode', 'acceptEdits',
     '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--tools', 'Read,Edit,Write,Glob,Grep,Bash',
-    '--no-session-persistence', '--add-dir', $WorkerDir, '--add-dir', $env:TEMP, '--allowedTools') + $tools + @('--disallowedTools') + $deny
+    '--session-id', $state.session_id, '--add-dir', $WorkerDir, '--add-dir', $env:TEMP, '--allowedTools') + $tools + @('--disallowedTools') + $deny
 if ($costLimits) { $claudeArgs += @('--max-budget-usd', $MaxBudgetUsd.ToString($Inv)) }
 if ($Model) { $claudeArgs += @('--model', $Model) }
 $claudeArgs += @('--effort', $Effort)   # default xhigh ("Extra High")

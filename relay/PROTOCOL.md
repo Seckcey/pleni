@@ -125,8 +125,11 @@ The coordinator starts each worker with `bin\spawn-worker.ps1`:
 - It may use only the tools on its list. Implementation workers: file tools, `git` and `node`.
   Reviewers: reading, writing their report, and read-only `git`. Always refused: push, merge,
   rebase, reset, checkout, branch, worktree, tag, stash, config, npm, npx and web access.
-- The launcher writes `W<n>.log` (the result), `W<n>.run.json` (state and cost) and `runs.md` (one
-  line per run) in the task's `workers` folder.
+- The launcher writes `W<n>.log` (the result), `W<n>.run.json` (state, cost and `session_id`) and
+  `runs.md` (one line per run) in the task's `workers` folder.
+- Each run is a saved Claude Code session with its own id (`session_id`). Pleni shows it under the
+  coordinator, and once the run has ended, the owner can open it with `claude --resume <session_id>`
+  in its worktree.
 - The usual model is Opus 5.5 with a 1M context, at `xhigh` effort. `-Model` and `-Effort` change
   them for one run.
 - Each run has a dollar cap (`-MaxBudgetUsd`, usually 3) unless `bin\cost-limits.json` turns the

@@ -38,8 +38,9 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
   };
   const box = isObject(mailbox) ? mailbox : null;
   const all = collectSessions([claude, codex, grok, kimi]);
-  const workers = mailboxWorkers(box, ctx);
+  const workers = mailboxWorkers(box, ctx, all);
   for (const worker of workers) all.set(worker.key, worker);
+  ctx.relayWorkers = new Set(workers.map((worker) => worker.key));
   const tree = buildTree(all, ctx, box);
   const links = linkParts(tree, all, ctx);
   const runs = workerRuns(workers, tree, links.pairs, ctx);
@@ -361,7 +362,7 @@ function buildTree(all, ctx, mailbox) {
     parentOf.set(key, parentKey && nodes.has(parentKey) ? parentKey : homes.get(key));
     node.parent = parentOf.get(key);
   }
-  ctx.mailboxKeys = mailboxKeys(mailbox, nodes, settings);
+  ctx.mailboxKeys = { ...mailboxKeys(mailbox, nodes, settings), workers: ctx.relayWorkers ?? new Set() };
   applyChain(nodes, parentOf, homes, rules, ctx.mailboxKeys, settings);
   breakCycles(nodes, parentOf, homes);
 
@@ -469,7 +470,7 @@ function mailboxBoss(key, nodes, keys) {
   const relay = nodes.has(RELAY) ? RELAY : null;
   if (key === RELAY) return keys.planner;
   if (key === keys.coordinator) return relay ?? (keys.planner !== key ? keys.planner : null);
-  if (key.startsWith('mailbox:')) return keys.coordinator ?? relay;
+  if (keys.workers?.has(key)) return keys.coordinator ?? relay;
   return null;
 }
 
@@ -601,9 +602,10 @@ function relayNode(mailbox, settings) {
   return node;
 }
 
-// The relay's worker runs keep no session file (they run without session persistence), so the
-// mailbox's run notes are all there is. Each becomes a session-like node under the coordinator.
-function mailboxWorkers(mailbox, ctx) {
+// Each relay worker run goes under the coordinator. When its run note names a Claude Code session
+// that Pleni can see, that session is the worker's tile, so it can be watched and opened. Older
+// runs kept no session file, so their run note becomes a session-like node instead.
+function mailboxWorkers(mailbox, ctx, all) {
   const out = [];
   if (!mailbox || !Array.isArray(mailbox.tasks)) return out;
   for (const task of mailbox.tasks) {
@@ -616,6 +618,12 @@ function mailboxWorkers(mailbox, ctx) {
       const startedAt = time(run.startedAt);
       const finishedAt = time(run.finishedAt);
       const name = about && about !== task.id ? `${run.id} · ${task.id}: ${about}` : `${run.id} · ${task.id}`;
+      const runInfo = { startedAt, finishedAt, label: about ? `${task.id}: ${about}` : task.id };
+      const own = typeof run.sessionId === 'string' ? all.get(`claude:${run.sessionId}`) : null;
+      if (own && !own.parentKey) {
+        out.push({ ...own, title: text(name, MAX_TITLE), role: null, run: runInfo });
+        continue;
+      }
       out.push({
         key, platform: 'claude', parentKey: null, kind: 'agent', role: null,
         title: text(name, MAX_TITLE),
@@ -623,7 +631,7 @@ function mailboxWorkers(mailbox, ctx) {
         branch: null, entrypoint: 'relay worker', model: text(run.model, 120), effort: null,
         startedAt, lastAt: finishedAt ?? startedAt, status: runStatus(run.state, finishedAt),
         activity: null, lastText: null, needs: null, links: [], archived: false,
-        run: { startedAt, finishedAt, label: about ? `${task.id}: ${about}` : task.id },
+        run: runInfo,
       });
     }
   }
