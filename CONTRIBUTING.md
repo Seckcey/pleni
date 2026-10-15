@@ -50,6 +50,13 @@ npm test                 # every test, with node:test
 node scripts/check.js    # the repository's own checks
 ```
 
+If you change anything in `relay/`, also run the relay's own test on Windows. It takes a few
+minutes and costs nothing. GitHub runs it too, on Windows.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File relay\bin\bridge-relay-check.ps1
+```
+
 If you could not run a check, say so in the pull request. Never describe a check you did not run
 as passing.
 

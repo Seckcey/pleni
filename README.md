@@ -208,6 +208,11 @@ Pleni keeps its own settings in one file, `settings.json`:
 **The mailbox** is for people who have two AI sessions work through a shared folder of
 Markdown files: one hands out tasks, the other reports back. If you do not use one, leave it off.
 
+**The relay** is a separate Windows program in the [`relay`](relay/README.md) folder of this
+repository. It wakes the Claude Code coordinator when the Codex planner writes to the mailbox, and
+the coordinator uses it to start worker sessions. Pleni shows the relay on the map, but never runs
+it. It is not part of the npm package.
+
 ## Privacy and safety
 
 - Pleni reads files. It writes only its own settings file.

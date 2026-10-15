@@ -13,6 +13,12 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- The mailbox relay now lives in this repository, in `relay/`. It is a separate Windows
+  PowerShell program, not part of Pleni or its npm package. It wakes a coordinator's Claude Code
+  session when the Codex planner writes to the mailbox, and starts worker sessions. Its folders
+  and the owner's name now come from a settings file on your computer
+  (`bin\relay-settings.json`), and a worker no longer starts in a folder that steps outside the
+  worktrees folder. GitHub runs the relay's own test on Windows for each pull request.
 - Open in PowerShell (Windows): a button in a Claude Code or Codex session's side panel opens that
   session in a new PowerShell window with `claude --resume` or `codex resume`, so you can watch it
   and type to it. Neither tool needs to be open first. A Claude Code background session opens

@@ -36,3 +36,30 @@ jobs:
       # Pleni has no dependencies, so there is nothing to install.
       - run: node scripts/check.js
       - run: npm test
+
+  relay:
+    # The mailbox relay (relay/) is a Windows PowerShell 5.1 program; its test needs Windows, and
+    # Node.js for the fake Claude it runs instead of the real one.
+    name: Relay test (Windows PowerShell)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Every relay script parses in Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $bad = 0
+          foreach ($f in Get-ChildItem relay\bin\*.ps1) {
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errs)
+            foreach ($e in $errs) { Write-Host ('{0}:{1}: {2}' -f $f.Name, $e.Extent.StartLineNumber, $e.Message); $bad++ }
+          }
+          if ($bad) { exit 1 }
+      - name: The relay's own test
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File relay\bin\bridge-relay-check.ps1
