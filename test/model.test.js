@@ -977,6 +977,27 @@ test('relay workers hang under the coordinator and light their line when they st
   assert.ok(s.counts.total >= 2);
 });
 
+test('a relay worker with a saved session shows as that session, under the coordinator', () => {
+  const OWN = 'claude:dddddddd-0000-4000-8000-0000000000aa';
+  const box = mailbox({ relay: { running: true, paused: false, halted: false, coordinatorKey: CLAUDE_SGT } });
+  box.tasks[0].workers = [
+    { id: 'W1', state: 'running', model: null, startedAt: NOW - MIN, finishedAt: null, worktree: null, sessionId: OWN.slice('claude:'.length) },
+    { id: 'W2', state: 'finished', model: null, startedAt: NOW - HOUR, finishedAt: NOW - 30 * MIN, worktree: null, sessionId: 'dddddddd-0000-4000-8000-0000000000bb' },
+  ];
+  const claude = [
+    session(CLAUDE_SGT, { title: null, entrypoint: 'sdk-cli' }),
+    session(OWN, { title: 'You are Claude worker W1 (implementation).', entrypoint: 'sdk-cli', status: 'working' }),
+  ];
+  const s = snap({ ...army({ claude }), mailbox: box, settings: { groupBy: 'none', chain: CHAIN, sources: { mailbox: { enabled: true, planner: 'Sergeant Claude' } } } });
+  const own = node(s, OWN);
+  assert.equal(own.parent, CLAUDE_SGT);
+  assert.equal(own.title, 'W1 · T-1: Split the service');
+  assert.equal(own.status, 'working');
+  assert.equal(s.nodes.some((n) => n.key === 'mailbox:T-1/W1'), false, 'no second tile for the same worker');
+  assert.equal(edgeTo(s, OWN).active, 'down');
+  assert.equal(node(s, 'mailbox:T-1/W2').parent, CLAUDE_SGT, 'a session Pleni cannot see keeps the run-note tile');
+});
+
 test('a report from a session moved under a boss lights that line upward', () => {
   const codex = army().codex.map((x) => (x.key === SGT_A ? { ...x, links: [{ at: NOW - 30000, dir: 'down', other: COLONEL, label: 'Done with the update' }] } : x));
   const s = snap({ codex, claude: [], settings: { groupBy: 'none', chain: CHAIN } });

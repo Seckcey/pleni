@@ -13,6 +13,10 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- Relay workers you can see and open: the relay's worker launcher now saves each run as a Claude
+  Code session and writes its id (`session_id`) into the run file. Pleni shows that session as the
+  worker's tile under the coordinator, with its live activity, and once the run has ended, Open in
+  PowerShell opens it. Runs from before this change keep their old tile.
 - The mailbox relay now lives in this repository, in `relay/`. It is a separate Windows
   PowerShell program, not part of Pleni or its npm package. It wakes a coordinator's Claude Code
   session when the Codex planner writes to the mailbox, and starts worker sessions. Its folders

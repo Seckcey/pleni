@@ -153,6 +153,9 @@ that session.
 - **One window per session.** If the session is open in another window, or busy in a program
   with no window (such as a script that runs `claude -p`), Pleni says so and opens nothing. Two
   windows would mix up its messages.
+- **Relay workers open too.** A worker that the mailbox relay started shows under its coordinator
+  as its own Claude Code session. While it works, it is busy; once it has finished, its button
+  opens it, so you can ask it what it did or give it more to do.
 - **Claude Code helpers open their session.** A Claude Code helper (sub-agent) works inside the
   session that started it, so its button opens that session.
 - **Codex helpers open themselves.** Each Codex helper has a thread of its own, so you can open it

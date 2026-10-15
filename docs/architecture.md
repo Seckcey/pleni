@@ -313,7 +313,7 @@ work and a **coordinator** reports back.
 <root>/tasks/<taskId>/status.md       coordinator; holds "**Current state:** <STATE>"
 <root>/tasks/<taskId>/questions.md    coordinator; "## Q<n> — <time> — BLOCKING|NON-BLOCKING"
 <root>/tasks/<taskId>/handoff.md      coordinator
-<root>/tasks/<taskId>/workers/W<n>.run.json, W<n>-report.md   optional worker runs
+<root>/tasks/<taskId>/workers/W<n>.run.json, W<n>-report.md   optional worker runs; session_id names the run's Claude session
 <root>/.relay/coordinator.json        optional: { session_id } of the coordinator's Claude session
 <root>/.relay/state.json, relay.lock, PAUSE, STOP   optional relay state
 ```
@@ -326,7 +326,7 @@ export function createMailboxSource({ root, settings, now = Date.now })
 // -> { poll(): MailboxState }
 MailboxState = {
   ok, error, root, name,
-  tasks: [{ id, title, state, updatedAt, attention: ('question' | 'review')[], workers: [{ id, state, model, startedAt, finishedAt }] }],
+  tasks: [{ id, title, state, updatedAt, attention: ('question' | 'review')[], workers: [{ id, state, model, startedAt, finishedAt, worktree, sessionId }] }],
   events: [{ at, dir: 'down' | 'up', taskId, file, title }],   // newest first, max 300
   relay: null | { running, paused, halted, coordinatorKey },     // coordinatorKey = 'claude:<session_id>'
 }
@@ -378,9 +378,12 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
 - Relay and its workers: when the mailbox has relay files, a `relay` node (kind and platform
   `relay`, title "Relay" or the person's label, status working/idle/error from running, paused and
   halted) sits between the planner and the coordinator. The relay's worker runs
-  (`tasks/<id>/workers/W<n>.run.json`) keep no session file, so each becomes a session-like node
-  `mailbox:<task id>/W<n>` (platform `claude`, kind `agent`, status from the run, project from its
-  worktree) under the coordinator; its line lights down when it starts and up when it finishes.
+  (`tasks/<id>/workers/W<n>.run.json`) go under the coordinator; each line lights down when the run
+  starts and up when it finishes. A run whose `session_id` names a top-level Claude Code session that
+  Pleni lists is shown as that session (`claude:<id>`, titled `W<n> · <task>`), so it can be watched
+  and opened like any session. Other runs (older ones kept no session file) become a session-like
+  node `mailbox:<task id>/W<n>` (platform `claude`, kind `agent`, status from the run, project from
+  its worktree).
 - Who reports to whom, strongest first: the person's choice (`people[key].reportsTo`, set by the
   Reports to menu or by dragging a tile), the mailbox (planner → relay → coordinator → its workers:
   fixed links, like a helper under the session that started it), a chain rule, and last the parent
