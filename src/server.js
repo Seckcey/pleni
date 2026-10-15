@@ -86,6 +86,8 @@ const MESSAGES = {
   goneMove: 'That session is not on the map any more.',
   loopMove: 'A session cannot report to one of its own helpers.',
   badDismiss: 'Pleni could not read which notice to dismiss.',
+  badWatch: 'Pleni could not read that. Only a session or the relay can be watched.',
+  goneWatch: 'That tile is not on the map any more.',
   openRemote: 'A session can be opened in a window only on the computer that runs Pleni, not from another device.',
 };
 
@@ -200,6 +202,7 @@ async function handle(app, req, res) {
   if (req.method === 'POST') {
     if (pathname === '/api/placement') return postPlacement(app, req, res, host);
     if (pathname === '/api/dismiss') return postDismiss(app, req, res, host);
+    if (pathname === '/api/watch') return postWatch(app, req, res, host);
     if (pathname === '/api/open') return postOpen(app, req, res, host);
     return postSettings(app, req, res, host);
   }
@@ -214,7 +217,7 @@ async function handle(app, req, res) {
 
 function allowedMethods(pathname) {
   if (pathname === '/api/settings') return ['GET', 'HEAD', 'POST'];
-  if (pathname === '/api/placement' || pathname === '/api/dismiss' || pathname === '/api/open') return ['POST'];
+  if (['/api/placement', '/api/dismiss', '/api/watch', '/api/open'].includes(pathname)) return ['POST'];
   if (PAGE_FILES.has(pathname) || API_GET.has(pathname)) return READ_ONLY;
   if (/^\/brand\/[^/]+$/.test(pathname)) return READ_ONLY;
   return null;
@@ -403,9 +406,29 @@ async function postPlacement(app, req, res, host) {
   return saveAndReload(app, req, res, cleanSettings(next), () => ({ ok: true }));
 }
 
+// "Tell me if this stops working" from a tile's side panel: { key, watch: true | false }. Only a
+// session or the relay can be watched; it is saved with the person's other choices (people[key]).
+async function postWatch(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  const key = typeof body.key === 'string' ? body.key : '';
+  const watchable = key === 'relay' || (isNodeKey(key) && !['you', 'project:', 'mailbox:'].some((start) => key.startsWith(start)));
+  if (!watchable || typeof body.watch !== 'boolean') return sendError(req, res, 400, MESSAGES.badWatch);
+  const node = (app.store.snapshot()?.nodes ?? []).find((n) => n.key === key);
+  if (!node) return sendError(req, res, 404, MESSAGES.goneWatch);
+  if (key !== 'relay' && !['session', 'agent', 'reviewer'].includes(node.kind)) return sendError(req, res, 400, MESSAGES.badWatch);
+  const next = structuredClone(app.readSettings().settings);
+  const own = { ...(next.people[key] ?? {}) };
+  if (body.watch) own.watch = true;
+  else delete own.watch;
+  if (Object.keys(own).length) next.people[key] = own;
+  else delete next.people[key];
+  return saveAndReload(app, req, res, cleanSettings(next), () => ({ ok: true }));
+}
+
 // Dismiss a "Needs you" notice: { id: '<key>|<kind>', at: <its time> }, or { id, at: null } to
 // bring it back. It stays hidden until something newer happens.
-const NOTICE_ID = /^[^\s|\p{Cc}]{1,250}\|(needs|error|question|review)$/u;
+const NOTICE_ID = /^[^\s|\p{Cc}]{1,250}\|(needs|error|question|review|alert|paused|halted|note|stopped)$/u;
 async function postDismiss(app, req, res, host) {
   const body = await readJsonPost(req, res, host);
   if (body === undefined) return undefined;

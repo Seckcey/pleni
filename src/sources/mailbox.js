@@ -14,6 +14,9 @@ const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 const SESSION_ID = /^[0-9a-f-]{8,64}$/;
 const RUN_FILE = /^(W\d{1,6})\.run\.json$/;
 const REPORT_FILE = /^(W\d{1,6})-report\.md$/;
+// Notes for the person, kept at the mailbox root: NEEDS-<NAME>.md (NEEDS-ADA.md, NEEDS-OWNER.md).
+const NOTES_FILE = /^NEEDS-[A-Za-z0-9][A-Za-z0-9_-]{0,60}\.md$/;
+const MAX_NOTE = 300;
 const ROOT_FILES = [['QUEUE.md', 'down'], ['CODEX-QUEUE.md', 'down'], ['STATUS.md', 'up']];
 const TASK_FILES = [
   ['assignment.md', 'down'],
@@ -29,6 +32,8 @@ const ORDER = new Intl.Collator('en', { numeric: true });
 
 // The `s` flag lets a heading or state line hold U+2028 or U+2029 (lines are already split on \n).
 const HEADING = /^ {0,3}(#{1,6})[ \t]+(.+)$/s;
+// A note is a heading or a top-level list item; an item indented two or more spaces belongs to the one above.
+const NOTE_LINE = /^(?: {0,3}#{1,3}| ?[-*+])[ \t]+(.+)$/s;
 const FENCE_OPEN = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/;
 const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 const STATE_LINE = /^\s*(?:[-*+]\s+)?\*\*Current state:?\*\*:?\s*(.*)$/is;
@@ -57,6 +62,7 @@ export function createMailboxSource({ root = null, settings = null, now = Date.n
   // A folder at a drive root has no base name; use the whole path then.
   const name = typeof root === 'string' && root ? path.basename(root) || root : null;
   let listing = null;
+  let noteFiles = [];
   let listingKey = '';
   let listedAt = 0;
   let reads = new Map();
@@ -72,7 +78,7 @@ export function createMailboxSource({ root = null, settings = null, now = Date.n
   }
 
   function failure(error) {
-    return { ok: false, error, root, name, tasks: [], events: [], relay: null };
+    return { ok: false, error, root, name, tasks: [], events: [], notes: [], relay: null };
   }
 
   function scan() {
@@ -84,11 +90,12 @@ export function createMailboxSource({ root = null, settings = null, now = Date.n
     let listChanged = false;
     if (relist) {
       listing = listTasks(root);
+      noteFiles = listNotes(root);
       listedAt = t;
-      const key = JSON.stringify(listing);
+      const key = JSON.stringify([listing, noteFiles]);
       listChanged = key !== listingKey;
       listingKey = key;
-      files.prune(expectedFiles(root, listing));
+      files.prune(expectedFiles(root, listing, noteFiles));
     }
     const rootDocs = ROOT_FILES.map(([file, dir]) => ({ file, dir, doc: files.get(path.join(root, file), readMarkdown) }));
     const next = new Map();
@@ -103,7 +110,12 @@ export function createMailboxSource({ root = null, settings = null, now = Date.n
     if (!built || files.changed || listChanged || built.hide !== hide) {
       built = { ...buildState(rootDocs, [...reads.values()], hide), hide };
     }
-    return { ok: true, error: null, root, name, tasks: built.tasks, events: built.events, relay: readRelay() };
+    const notes = [];
+    for (const file of noteFiles) {
+      const doc = files.get(path.join(root, file), readNotes);
+      if (doc) notes.push({ file, count: doc.count, at: doc.at, text: hide ? null : doc.text });
+    }
+    return { ok: true, error: null, root, name, tasks: built.tasks, events: built.events, notes, relay: readRelay(hide) };
   }
 
   function readTask({ id, workers }) {
@@ -118,17 +130,25 @@ export function createMailboxSource({ root = null, settings = null, now = Date.n
     return { id, docs, workers: runs };
   }
 
-  function readRelay() {
+  function readRelay(hide) {
     const dir = path.join(root, '.relay');
     if (!isDir(dir)) return null;
     const coordinator = relayFiles.get(path.join(dir, 'coordinator.json'), readJson);
     const state = relayFiles.get(path.join(dir, 'state.json'), readJson);
     const lock = relayFiles.get(path.join(dir, 'relay.lock'), readLock);
+    const alerts = relayFiles.get(path.join(dir, 'alerts.md'), readNotes);
+    // The relay writes the reason it halted into state.json ("halt"); it stays until -ClearHalt.
+    const halt = typeof state?.halt === 'string' && state.halt.trim() ? state.halt : null;
     return {
       running: isRunning(lock),
       paused: exists(path.join(dir, 'PAUSE')) || state?.paused === true,
-      halted: exists(path.join(dir, 'STOP')) || state?.halted === true,
+      halted: exists(path.join(dir, 'STOP')) || state?.halted === true || halt !== null,
       coordinatorKey: coordinatorKeyOf(coordinator),
+      // A running relay saves state.json every few seconds, so its time says when it last ran.
+      lastAt: statFile(path.join(dir, 'state.json'))?.mtimeMs ?? null,
+      pausedAt: statFile(path.join(dir, 'PAUSE'))?.mtimeMs ?? null,
+      haltReason: hide ? null : shortText(halt, MAX_NOTE),
+      alerts: alerts ? { count: alerts.count, at: alerts.at, text: hide ? null : alerts.text } : null,
     };
   }
 
@@ -258,6 +278,42 @@ function later(a, b) {
 function readMarkdown(file, st) {
   const text = readText(file, st.size, MAX_TEXT_BYTES);
   return text === null ? undefined : { mtimeMs: st.mtimeMs, ...parseMarkdown(text) };
+}
+
+// A list of time-stamped notes, newest last: the relay's alerts.md ("- 2026-10-12 14:03 - text") or a
+// NEEDS-<NAME>.md ("- 2026-10-12 14:03 — **text**"). Each top-level list item or heading that starts
+// with a time is one note. Keeps how many there are and the newest one.
+function readNotes(file, st) {
+  const text = readText(file, st.size, MAX_TEXT_BYTES);
+  if (text === null) return undefined;
+  let count = 0;
+  let newest = null;
+  let fence = null;
+  for (const raw of text.split('\n')) {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (fence) {
+      if (closesFence(line, fence)) fence = null;
+      continue;
+    }
+    const open = FENCE_OPEN.exec(line);
+    if (open) {
+      fence = open[1];
+      continue;
+    }
+    const m = NOTE_LINE.exec(line);
+    if (!m) continue;
+    const stamp = parseStamp(m[1]);
+    // The time must lead the note ("**2026-10-12 14:03**" is fine); a time later in a line is not a note.
+    if (!stamp || stamp.index > 3) continue;
+    count++;
+    if (newest === null || stamp.at >= newest.at) newest = { at: stamp.at, text: noteText(m[1], stamp) };
+  }
+  return { count, at: newest?.at ?? null, text: newest?.text ?? null };
+}
+
+function noteText(line, stamp) {
+  const rest = trimEdges(line.slice(stamp.index + stamp.length)).replace(/\*\*|__/g, '');
+  return clip(rest, MAX_NOTE) || null;
 }
 
 function parseMarkdown(text) {
@@ -502,8 +558,19 @@ function listWorkers(dir) {
   return [...ids].sort(ORDER.compare);
 }
 
-function expectedFiles(root, listing) {
+function listNotes(root) {
+  let names;
+  try {
+    names = fs.readdirSync(root);
+  } catch {
+    return [];
+  }
+  return names.filter((file) => NOTES_FILE.test(file)).sort(ORDER.compare);
+}
+
+function expectedFiles(root, listing, notes) {
   const keep = new Set(ROOT_FILES.map(([file]) => path.join(root, file)));
+  for (const file of notes) keep.add(path.join(root, file));
   for (const { id, workers } of listing) {
     const dir = path.join(root, 'tasks', id);
     for (const [file] of TASK_FILES) keep.add(path.join(dir, file));

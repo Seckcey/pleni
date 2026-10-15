@@ -33,7 +33,7 @@ read the start of a file once, to find a session's name and where it started.
 | Grok folder (usually `~/.grok`)          | Each session's summary and its event, chat and update logs in `sessions/` |
 | Kimi Code folder (usually `~/.kimi-code`) | Each session's `state.json` and its agents' `wire.jsonl` logs in `sessions/` |
 | Codex coordinator list, if present      | `coordinators/registry.sqlite3` (opened read-only) and `coordinators/superintendent.json`, only to learn which coordinator started which worker |
-| A mailbox folder, if you turn one on    | The Markdown files of the queue, the status board, and each task (with any worker run notes), plus the small relay files in `.relay/` |
+| A mailbox folder, if you turn one on    | The Markdown files of the queue, the status board, and each task (with any worker run notes), the notes for you (`NEEDS-<NAME>.md`), plus the small relay files in `.relay/`, its alerts (`alerts.md`) among them |
 | A session's project folder, only when it is inside a `_worktrees` folder on a local drive | Only the small `.git` pointer file (at most 4 KB) of that worktree, to learn the name of the repository it belongs to. Nothing else in your project is read |
 | Claude Code folder, only when you click Open in PowerShell | The small files in `sessions/` that Claude Code keeps for each running process. Pleni reads only which session each one has open, whether it runs in the background or in a terminal, and its process number, to be sure no other window has that session open. To tell a live Claude Code from a leftover file, it then asks Windows (through a hidden PowerShell) only when the program with that number started |
 | Codex folder, only when you click Open in PowerShell | One empty file, `thread-writer-locks/<thread id>.lock`, which Codex locks while a program writes that thread. Pleni tries to read one byte of it, only to learn whether another window has the thread open |
@@ -68,9 +68,19 @@ Only when the `content` setting is `snippets` (this is the default):
 - The last thing the assistant said, at most 280 characters.
 - In the side panel: up to 200 recent steps, each with at most 2,000 characters of text.
 - Mailbox task titles and the headings of mailbox entries.
+- Under Needs you: the newest note for you from the mailbox, the relay's newest alert, and why the
+  relay halted, each at most 280 characters.
 
 When `content` is `none`, none of the text in that second list is shown. Pleni never shows what
 a model was "thinking", in either setting. It shows only that the model was thinking.
+
+### Pop-ups
+
+Pop-ups are off until you turn them on in **Settings → Alerts**, and then only in that browser. Each
+new Needs you notice then pops up on your screen with the same words the page shows (so with
+`content` set to `none`, no session text). The browser makes the pop-up from the open Pleni page.
+Pleni uses no push service, so nothing about them goes over the internet. Your system may keep
+recent pop-ups in its notification list until you clear them.
 
 ## What Pleni never does
 

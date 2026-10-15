@@ -131,6 +131,36 @@ another way, say so in **Settings → Chain of command**: for example, "a sessio
 *Sergeant* reports to the newest session whose name contains *Colonel*". Rules match names, so they
 keep working when a session is replaced by a new one.
 
+## Needs you and alerts
+
+The **Needs you** strip at the top of the map and the list shows what waits on you:
+
+- a session that asks you a question, wants a plan approved, or says it is blocked;
+- a session that stopped with an error;
+- with a mailbox: a task with a blocking question, a task ready for review, a new note for you in
+  a `NEEDS-<NAME>.md` file, and the relay's alerts. It also says when the relay is paused or
+  halted, and what to do about it;
+- a tile you watch that stopped working (see below).
+
+Click a notice to open its tile. Click its **×** to hide it until something newer happens.
+
+**Tell me if this stops working.** Click a session or the relay, and tick this box in its side
+panel. If the session does no work for 15 minutes, or the relay does not run for 15 minutes, it
+shows under Needs you. Change the time in **Settings → Alerts**. This helps when your agents keep
+each other going and one of them goes quiet.
+
+**Pop-ups.** In **Settings → Alerts**, tick **Pop up an alert in this browser when something new
+needs you**. When the browser asks whether Pleni may show notifications, say yes. Each new notice
+then also pops up, even while the Pleni tab is in the background. Keep the tab open. Use **Send a
+test alert** to try it.
+
+- Pop-ups work in desktop browsers such as Edge, Chrome and Firefox. Most phone browsers cannot
+  show them from a page.
+- The browser allows them only at a `localhost` or `https` address, such as the one
+  `tailscale serve` gives you.
+- The choice is kept in that browser only, so each browser asks for itself.
+- A pop-up can take up to a minute to come while the tab is in the background.
+
 ## Open a session in PowerShell
 
 On Windows, Pleni can open a Claude Code session or a Codex thread in a PowerShell window, so you
@@ -221,6 +251,8 @@ it. It is not part of the npm package.
 - Pleni reads files. It writes only its own settings file.
 - It starts nothing unless you turn on **Open in PowerShell** and click it. Then it opens one
   PowerShell window that runs `claude --resume` or `codex resume`. It never types into a session.
+- Pop-ups are off until you turn them on. Your browser makes them on your own screen; nothing is
+  sent over the internet.
 - It makes no network calls and sends no data about you or your work. There is no telemetry.
 - The page shows short bits of session text. If you would rather it did not, turn session text
   off in Settings (the `content` setting, set to `none`). Then you see only names, tools, and

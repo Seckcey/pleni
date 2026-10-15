@@ -79,11 +79,12 @@ export const DEFAULTS = {
     kimi: { enabled: true, root: null },              // null = $KIMI_CODE_HOME or ~/.kimi-code
     mailbox: { enabled: false, root: null, planner: null, coordinator: null }, // planner/coordinator: node key or session name
   },
-  people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role, reportsTo?: nodeKey | 'you' } }  max 500
+  people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role, reportsTo?: nodeKey | 'you', watch?: true } }  max 500
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
   actions: { openTerminal: false },                    // the Open in PowerShell button; true only when set to true
+  alerts: { stoppedMinutes: 15 },                      // a watched tile counts as stopped after this long without work
 }
 // Role = 'superintendent' | 'coordinator' | 'lead' | 'worker' | 'hidden'
 ```
@@ -93,8 +94,9 @@ Exports:
 - `configDir(env, platform, home)` and `settingsFile(env, platform, home)`.
 - `cleanSettings(raw)` returns a complete, valid settings object: unknown keys dropped, wrong types
   replaced by defaults, strings trimmed and clipped, numbers clamped (`port` 1024–65535,
-  `activeMinutes` 1–240, `recentHours` 1–720, `staleMinutes` 5–1440), arrays de-duplicated, node keys
-  validated with `isNodeKey`, roots must be absolute paths or `null`.
+  `activeMinutes` 1–240, `recentHours` 1–720, `staleMinutes` 5–1440, `stoppedMinutes` 1–1440), arrays
+  de-duplicated, node keys validated with `isNodeKey`, roots must be absolute paths or `null`.
+  `people[key].watch` is kept only when it is exactly `true`.
 - `loadSettings(file)` returns `{ settings, file, error }` and never throws (a missing file gives
   defaults and no error; a broken file gives defaults and an `error` string).
 - `saveSettings(settings, file)` writes `cleanSettings(settings)` atomically (temp file, then rename),
@@ -314,8 +316,10 @@ work and a **coordinator** reports back.
 <root>/tasks/<taskId>/questions.md    coordinator; "## Q<n> — <time> — BLOCKING|NON-BLOCKING"
 <root>/tasks/<taskId>/handoff.md      coordinator
 <root>/tasks/<taskId>/workers/W<n>.run.json, W<n>-report.md   optional worker runs; session_id names the run's Claude session
+<root>/NEEDS-<NAME>.md                optional notes for the person, such as NEEDS-ADA.md
 <root>/.relay/coordinator.json        optional: { session_id } of the coordinator's Claude session
 <root>/.relay/state.json, relay.lock, PAUSE, STOP   optional relay state
+<root>/.relay/alerts.md               optional: the relay's alerts for the person
 ```
 
 The relay that writes `.relay/` and starts the worker runs is the separate program in `relay/`
@@ -328,7 +332,12 @@ MailboxState = {
   ok, error, root, name,
   tasks: [{ id, title, state, updatedAt, attention: ('question' | 'review')[], workers: [{ id, state, model, startedAt, finishedAt, worktree, sessionId }] }],
   events: [{ at, dir: 'down' | 'up', taskId, file, title }],   // newest first, max 300
-  relay: null | { running, paused, halted, coordinatorKey },     // coordinatorKey = 'claude:<session_id>'
+  notes: [{ file, count, at, text }],                            // one entry per NEEDS-<NAME>.md
+  relay: null | {
+    running, paused, halted, coordinatorKey,                     // coordinatorKey = 'claude:<session_id>'
+    lastAt, pausedAt, haltReason,                                // times are null when unknown
+    alerts: null | { count, at, text },                          // from .relay/alerts.md
+  },
 }
 ```
 
@@ -347,7 +356,17 @@ MailboxState = {
 - Attention: a BLOCKING question without a matching answer, or a task in `IN_REVIEW` whose newest
   handoff is newer than its newest review. Finished tasks get none.
 - Task ids must match `/^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/`. Files may start with a UTF-8 BOM.
-- `relay.running` is true when `.relay/relay.lock` names a process that is alive.
+- `relay.running` is true when `.relay/relay.lock` names a process that is alive. `paused` is true
+  with a `PAUSE` file, `halted` with a `STOP` file or a non-empty `halt` text in `state.json` (the
+  relay sets it when it stops sending, such as after repeated failures; `haltReason` is that text, ≤300 chars, only with snippets).
+  `lastAt` is when `state.json` was last written: the relay rewrites it on every pass, even while
+  paused, so it shows the relay is still going. `pausedAt` is when the `PAUSE` file was made.
+- Notes for the person: `NEEDS-<NAME>.md` files at the root (the name is 1–61 letters, digits, `_`
+  or `-`). The relay's `.relay/alerts.md` is read the same way. Each heading (`#` to `###`) or
+  top-level list item (`-`, `*` or `+`, at most one space in) whose text starts with a time stamp
+  (`**` marks before it are fine) is one note; nested items and code blocks are skipped. `count` is
+  the number of notes, `at` the newest note's time, and `text` that note without the stamp and `**`
+  marks (≤300 chars, only with snippets, else `null`).
 
 ## Snapshot (`src/model.js`)
 
@@ -368,6 +387,7 @@ Node = {
   title, subtitle, rank, role, tier: 'senior' | 'junior' | null,
   model, modelLabel, effort, status, startedAt, lastAt, activity, lastText,
   project, entrypoint, hidden, archived,
+  watched,  // true for a session or the relay whose people[key].watch is true
 }
 Edge = { from, to, kind: 'spawn' | 'mailbox' | 'contains', lastDown, lastUp, downLabel, upLabel, active: 'down' | 'up' | 'both' | null }
 Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, to, text }
@@ -430,6 +450,17 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
   in use with a rank menu that writes exact names.
 - `modelLabel`: a short readable name (`claude-opus-5-5` → "Opus 5.5", `gpt-6.1-sol` → "GPT-6.1 Sol").
 - Sorting: children by title (locale compare), then key. Never by activity.
+- Attention ("Needs you"), by `kind`: `needs` (a session asks something), `error` (a session
+  stopped with an error), `question` and `review` (mailbox tasks, keyed `task:<id>`); from the
+  mailbox, `note` (the newest `NEEDS-<NAME>.md` note, on the coordinator's tile, or the person's
+  when the coordinator is not listed), and on the relay tile `alert` (the newest relay alert),
+  `halted` (instead of `alert`, with the reason and what to run) and `paused` (`at` is when it
+  paused). `note` and `alert` count only within `recentHours`. `stopped` is for a watched tile: a
+  session that is not working, not asking and not in error, whose own `lastAt` is at least
+  `alerts.stoppedMinutes` old, or a relay whose `state.json` is that old. A tile's `lastAt` also
+  counts the work of the tiles below it, so the session's own time is used. Mailbox worker runs
+  (`mailbox:` keys) cannot be watched. The snapshot is rebuilt on each poll with the current time,
+  so a `stopped` notice appears without any file changing.
 
 ## Store (`src/store.js`)
 
@@ -557,20 +588,24 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `[a-z0-9._-]+`, extensions png, svg, ico, webp; resolved inside `public/brand` only),
   `GET /favicon.ico`, `GET /api/health`, `GET /api/snapshot` (weak ETag, `304` on match),
   `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`,
-  `POST /api/placement`, `POST /api/dismiss`, `POST /api/open`.
+  `POST /api/placement`, `POST /api/dismiss`, `POST /api/watch`, `POST /api/open`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
 - `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
   them the same way (`snapshotTag`) for a store that did not.
 - **POST /api/settings** requires the key cookie, `X-Pleni: settings`, `Content-Type:
   application/json`, a body of at most 64 KB, and an `Origin` (when present) whose host equals the
   request host. The body is cleaned with `cleanSettings`, saved, and the store reloaded.
-- **POST /api/dismiss** `{ id: '<key>|<kind>', at: number | null }` passes the same checks. It hides
+- **POST /api/dismiss** `{ id: '<key>|<kind>', at: number | null }` passes the same checks; `kind`
+  is one of `needs`, `error`, `question`, `review`, `alert`, `paused`, `halted`, `note`, `stopped`. It hides
   that notice while its `at` is not newer than the given time (a session's `needs` becomes null too),
   and `at: null` brings it back. Dismissals are kept in `dismissed.json` next to the settings (at most
   1000), so every device sees the same; the demo keeps them in memory.
 - **POST /api/placement** `{ key, reportsTo: nodeKey | 'you' | null }` passes the same checks and
   saves `people[key].reportsTo` (null removes it). It refuses the person, projects, sessions that
   are not on the map, and a boss below the session itself (a loop), and answers `{ ok: true }`.
+- **POST /api/watch** `{ key, watch: boolean }` passes the same checks and saves
+  `people[key].watch` (`false` removes it). Only a session on the map or the relay can be watched:
+  other keys get `400`, a tile that is not on the map `404`. It answers `{ ok: true }`.
 - **POST /api/open** `{ key }` passes the same checks, then refuses (`403`) a request that is not
   from this computer: a host other than the loopback names, or one carrying `Tailscale-User-Login`
   or `X-Forwarded-For` (a proxy such as `tailscale serve` passed it on). `openSession` in
@@ -609,9 +644,12 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   Codex helper has an **Open in PowerShell** button that posts `/api/open`; a Claude Code helper's
   has **Open its session in PowerShell**, which opens the session it works inside. The answer shows
   in the status line under the tabs; a refusal fades after 20 seconds, so the button does not look
-  stuck once its reason has passed.
+  stuck once its reason has passed. Sessions and the relay have a **Tell me if this stops working**
+  box that posts `/api/watch`; Settings' own copy of the settings is updated too, so saving Settings
+  later keeps it.
 - **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. The Open sessions
-  section turns Open in PowerShell on and says when the computer does not run Windows. Before saving, the page
+  section turns Open in PowerShell on and says when the computer does not run Windows. The Alerts
+  section sets `alerts.stoppedMinutes` and holds the Pop-ups box. Before saving, the page
   checks the form: whole numbers within the server's limits, full folder paths, host names, and
   Tailscale logins (`name@domain`), at most 20 of each. A bad field gets `aria-invalid="true"` and
   a plain message tied to it with `aria-describedby`, focus moves to the first one, and nothing is
@@ -624,7 +662,15 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   the app bar's height.
 - **Theme:** Plenipo tokens, dark by default, light with `prefers-color-scheme` or the toggle
   (`localStorage` `pleni.theme`). Logos switch between the on-dark and on-light versions.
-- Polling: `/api/snapshot` every 2.5 s with `If-None-Match`, paused while the tab is hidden.
+- **Pop-ups:** off until the person ticks the box in Settings, which is kept in this browser only
+  (`localStorage` `pleni.alerts`) and asks the browser for permission. Browsers allow them only on
+  a secure page, such as `localhost` or `https`; most phone browsers do not show them from a page.
+  When on, each new "Needs you" notice, or one with a newer `at`, becomes a browser notification
+  with the notice's text, at most 3 at once and then one "And N more". The first snapshot after the
+  page opens only notes what is already there. Clicking one opens the tile, or Tasks. A test button
+  sends one.
+- Polling: `/api/snapshot` every 2.5 s with `If-None-Match`, paused while the tab is hidden. With
+  pop-ups on, a hidden tab still asks every 15 s (browsers may slow that to once a minute).
 - Reduced motion: no packets, no dash animation, solid glowing lines instead.
 - No inline scripts. Every text value is inserted with `textContent` or escaped.
 
@@ -635,6 +681,6 @@ export function createDemoSource({ now = Date.now })  // -> { poll(): { claude, 
 ```
 
 A deterministic, time-driven cast: a person, two projects, a Codex planner with two sub-agents, a
-Claude coordinator with three sub-agents (one working, one waiting, one done), and a small mailbox,
-with hand-offs that light up every few seconds. It is used by `node bin/pleni.js --demo`, the screenshots and the
+Claude coordinator with three sub-agents (one working, one waiting, one done), and a small mailbox
+with a note for the person, with hand-offs that light up every few seconds. It is used by `node bin/pleni.js --demo`, the screenshots and the
 tests, so that no real session data is ever needed to show Pleni.
