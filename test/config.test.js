@@ -66,13 +66,30 @@ test('cleanSettings keeps good values', () => {
       kimi: { enabled: true, root: null },
       mailbox: { enabled: true, root, planner: `codex:${UUID}`, coordinator: `claude:${UUID}` },
     },
-    people: { you: { label: 'Ada' }, [`claude:${UUID}`]: { label: 'Builder', role: 'coordinator' } },
+    people: { you: { label: 'Ada' }, [`claude:${UUID}`]: { label: 'Builder', role: 'coordinator', watch: true }, relay: { watch: true } },
     projects: { pleni: { label: 'Pleni', hidden: false } },
     chain: [{ match: 'Sergeant', reportsTo: 'Colonel', role: 'coordinator' }, { match: 'Colonel', reportsTo: 'you', role: null }],
     remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] },
     actions: { openTerminal: true },
+    alerts: { stoppedMinutes: 20 },
   };
   assert.deepEqual(cleanSettings(raw), raw);
+});
+
+test('alerts: the stopped time stays in range, and only a real true watches a tile', () => {
+  assert.deepEqual(cleanSettings({}).alerts, { stoppedMinutes: 15 });
+  const minutes = (value) => cleanSettings({ alerts: { stoppedMinutes: value } }).alerts.stoppedMinutes;
+  assert.equal(minutes(0), 1);
+  assert.equal(minutes(7.6), 8);
+  assert.equal(minutes(5000), 1440);
+  assert.equal(minutes('30'), 15);
+  assert.deepEqual(cleanSettings({ alerts: 'on' }).alerts, { stoppedMinutes: 15 });
+  const people = cleanSettings({ people: {
+    [`claude:${UUID}`]: { watch: 'yes' },
+    relay: { watch: 1 },
+    [`codex:${UUID}`]: { watch: true, label: 'Planner' },
+  } }).people;
+  assert.deepEqual(people, { [`codex:${UUID}`]: { label: 'Planner', watch: true } });
 });
 
 test('Open in PowerShell stays off unless it is turned on with a real true', () => {

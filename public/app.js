@@ -27,7 +27,10 @@ const PLACEMENT_WORDS = { manual: 'You chose this.', rule: 'Set by a chain rule.
 const MOVE_PX = 6; // how far a pressed tile must travel before it is being moved, not clicked
 const PICK_WAIT_MS = 1000; // arrow keys change the Reports to menu one step at a time
 const MOVED_MS = 8000; // how long "Moved ... under ..." stays
-const ATTN_WORDS = { needs: 'Needs you', error: 'Error', question: 'Question', review: 'Ready for review' };
+const ATTN_WORDS = {
+  needs: 'Needs you', error: 'Error', question: 'Question', review: 'Ready for review',
+  alert: 'Relay alert', paused: 'Relay paused', halted: 'Relay halted', note: 'Note for you', stopped: 'Stopped working',
+};
 const EVENT_KIND_WORDS = { user: 'Prompt', assistant: 'Said', thinking: 'Thinking', tool: 'Tool', result: 'Result', error: 'Error' };
 const ROLE_OPTIONS = [['', 'Automatic'], ['superintendent', 'Superintendent'], ['coordinator', 'Coordinator'], ['lead', 'Lead'], ['worker', 'Worker'], ['hidden', 'Hide it']];
 const RANK_OPTIONS = ROLE_OPTIONS.filter(([v]) => v !== 'hidden');
@@ -61,6 +64,7 @@ const DEFAULTS = {
   chain: [],
   remote: { hosts: [], tailscaleUsers: [] },
   actions: { openTerminal: false },
+  alerts: { stoppedMinutes: 15 },
 };
 
 const ICONS = {
@@ -514,7 +518,9 @@ let polling = null; // the poll on its way, so a move can wait for it
 
 function schedule(ms = POLL_MS) {
   clearTimeout(pollTimer);
+  // A hidden tab stops asking, unless it has alerts to pop up; then it asks less often.
   if (!document.hidden) pollTimer = setTimeout(poll, ms);
+  else if (alertsActive()) pollTimer = setTimeout(poll, HIDDEN_POLL_MS);
 }
 
 function poll() {
@@ -539,6 +545,7 @@ async function pollOnce() {
       S.snap = body;
       S.index = indexSnapshot(body);
       S.etag = res.headers.get('ETag');
+      checkAlerts();
       if (isTime(body.now)) S.skew = Date.now() - body.now;
     }
     S.conn = 'live';
@@ -558,12 +565,116 @@ async function pollOnce() {
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
-    clearTimeout(pollTimer);
+    schedule(); // stops asking, or slows down when alerts are on
     renderFacts();
   } else {
     poll();
   }
 });
+
+// ---------------------------------------------------------------------------------------------
+// alerts: a pop-up for each new "Needs you" notice, if this browser allows it
+// ---------------------------------------------------------------------------------------------
+
+const ALERTS_KEY = 'pleni.alerts'; // 'on' when pop-ups are wanted in this browser
+const HIDDEN_POLL_MS = 15000; // how often a hidden tab still asks for news while alerts are on
+const MAX_ALERTED = 500;
+const MAX_POPUPS = 3; // at once; more become one "and N more"
+const alerted = new Map(); // notice id -> the time of the newest version already seen
+let alertsSeeded = false;
+let askingAlerts = null;
+
+// 'granted', 'denied', 'default' (not asked yet), or 'none' when this browser cannot show them.
+function alertSupport() {
+  if (typeof Notification !== 'function' || !window.isSecureContext) return 'none';
+  return Notification.permission;
+}
+
+const alertsWanted = () => readStore(ALERTS_KEY) === 'on';
+const alertsActive = () => alertsWanted() && alertSupport() === 'granted';
+
+// Runs with each new snapshot. The first one only notes what is already there, so opening Pleni
+// does not pop up everything at once. After that a notice that is new, or newer, pops up.
+function checkAlerts() {
+  const fresh = [];
+  for (const a of attentionItems()) {
+    if (typeof a.id !== 'string') continue;
+    const seen = alerted.get(a.id);
+    if (seen === undefined || num(a.at) > seen) fresh.push(a);
+    alerted.delete(a.id); // newest last, so the oldest go first when the list is full
+    alerted.set(a.id, seen === undefined ? num(a.at) : Math.max(seen, num(a.at)));
+  }
+  while (alerted.size > MAX_ALERTED) alerted.delete(alerted.keys().next().value);
+  const first = !alertsSeeded;
+  alertsSeeded = true;
+  if (first || !alertsActive()) return;
+  for (const a of fresh.slice(0, MAX_POPUPS)) popUp(a);
+  if (fresh.length > MAX_POPUPS) popUp({ id: 'pleni|more', key: '', kind: 'needs', text: `And ${fresh.length - MAX_POPUPS} more. Open Pleni to see them.` });
+}
+
+// Shows one pop-up; clicking it opens the tile. Returns false when the browser refuses.
+function popUp(a) {
+  try {
+    const note = new Notification(`${ATTN_WORDS[a.kind] || 'Needs you'} · Pleni`, { body: a.text || keyName(a.key), tag: a.id, icon: '/brand/icon-192.png' });
+    note.onclick = () => {
+      window.focus();
+      note.close();
+      if (S.index && S.index.byKey.has(a.key)) openDrawer(a.key);
+      else if (String(a.key).startsWith('task:')) location.hash = '#/tasks';
+    };
+    return true;
+  } catch {
+    // Most phone browsers allow pop-ups only from an installed app, not from a page.
+    return false;
+  }
+}
+
+async function setAlerts(box) {
+  if (box.checked) {
+    writeStore(ALERTS_KEY, 'on');
+    if (alertSupport() === 'default') {
+      // The click on the box is what lets the browser ask; ask once even if both input and change fire.
+      if (!askingAlerts) askingAlerts = Promise.resolve(Notification.requestPermission()).catch(() => null).finally(() => (askingAlerts = null));
+      await askingAlerts;
+    }
+  } else {
+    writeStore(ALERTS_KEY, null);
+  }
+  paintAlertsRow();
+}
+
+function testAlert() {
+  const shown = popUp({ id: 'pleni|test', key: '', kind: 'needs', text: 'This is a test. Pleni can pop up alerts in this browser.' });
+  if (!shown) setText($('#s-alerts-help'), 'This browser did not show the pop-up. Desktop browsers can show them; most phone browsers cannot.');
+}
+
+function alertsHelp(support, on) {
+  if (support === 'none') return 'This browser cannot show pop-ups from Pleni. Desktop browsers such as Edge, Chrome and Firefox can; most phone browsers cannot.';
+  if (support === 'denied') return "This browser blocks pop-ups from Pleni. Allow notifications for this page in the browser's site settings, then tick the box again.";
+  if (on) return 'On in this browser. Pop-ups come while a Pleni tab is open, even in the background, usually within a minute.';
+  return 'Kept in this browser only. When you tick it, the browser asks whether Pleni may show notifications.';
+}
+
+function alertsRowHtml() {
+  const support = alertSupport();
+  const on = alertsWanted() && support === 'granted';
+  return (
+    `<div class="srow"><span class="lbl" id="s-alerts-lbl">Pop-ups</span><div class="checks"><label><input type="checkbox" id="s-alerts" data-local="alerts" aria-describedby="s-alerts-help"${on ? ' checked' : ''}${support === 'none' ? ' disabled' : ''}>` +
+    `Pop up an alert in this browser when something new needs you</label><button type="button" class="btn" id="s-alerts-test"${on ? '' : ' hidden'}>Send a test alert</button></div>` +
+    `<p class="help" id="s-alerts-help" role="status">${esc(alertsHelp(support, on))}</p></div>`
+  );
+}
+
+function paintAlertsRow() {
+  const box = $('#s-alerts');
+  if (!box) return;
+  const support = alertSupport();
+  const on = alertsWanted() && support === 'granted';
+  box.checked = on;
+  box.disabled = support === 'none';
+  $('#s-alerts-test').hidden = !on;
+  setText($('#s-alerts-help'), alertsHelp(support, on));
+}
 
 // ---------------------------------------------------------------------------------------------
 // shell: routing, facts, notices, theme, live summary
@@ -1734,7 +1845,10 @@ function drawerFrame(frame) {
       : '<div class="dplace" id="drawer-place" hidden><label for="d-boss">Reports to</label>' +
         '<select class="field" id="d-boss" aria-describedby="d-boss-how d-boss-msg"></select>' +
         '<p class="help" id="d-boss-how"></p>' +
-        '<p class="dplace-done"><span id="d-boss-msg" role="status"></span><button type="button" class="btn" id="d-boss-undo" data-undo aria-describedby="d-boss-msg" hidden>Undo</button></p></div>') +
+        '<p class="dplace-done"><span id="d-boss-msg" role="status"></span><button type="button" class="btn" id="d-boss-undo" data-undo aria-describedby="d-boss-msg" hidden>Undo</button></p></div>' +
+        '<div class="dwatch" id="drawer-watch" hidden><label><input type="checkbox" id="d-watch" aria-describedby="d-watch-help d-watch-msg">Tell me if this stops working</label>' +
+        '<p class="help" id="d-watch-help">It goes under Needs you, and pops up if alerts are on, once this has done no work for a while. Settings, under Alerts, says how long.</p>' +
+        '<p class="dwatch-msg" id="d-watch-msg" role="status"></p></div>') +
     `<div class="tabs" role="tablist" aria-label="${DRAWER_ABOUT[frame]}">` +
     tabs
       .map(
@@ -1785,6 +1899,7 @@ function renderDrawerParts() {
   if ($('#drawer-sub').textContent !== sub) $('#drawer-sub').textContent = sub;
   setHtml($('#drawer-status'), drawerStatusHtml(n));
   paintPlace(n, d);
+  paintWatch(n);
   paintMoved();
   if (group) {
     setHtml($('#dpanel-now'), groupNowHtml(n));
@@ -1795,6 +1910,39 @@ function renderDrawerParts() {
     setHtml($('#dpanel-details'), n ? detailsHtml(n) : '<p class="empty">No details: this session is not listed right now.</p>');
     setHtml($('#dpanel-handoffs'), handoffsHtml(d.key));
   }
+}
+
+// "Tell me if this stops working", for sessions and the relay (not a mailbox worker run).
+const canWatch = (n) => isRelay(n) || (isSession(n) && !isWorkerKey(n.key));
+const watching = new Set(); // tile keys whose change is on its way to Pleni
+
+function paintWatch(n) {
+  const box = $('#drawer-watch');
+  if (!box) return;
+  box.hidden = !canWatch(n);
+  if (!box.hidden && !watching.has(n.key)) $('#d-watch').checked = n.watched === true;
+}
+
+async function setWatch(input) {
+  const d = S.drawer;
+  if (!d || watching.has(d.key)) return;
+  const { key } = d;
+  const want = input.checked;
+  watching.add(key);
+  setText($('#d-watch-msg'), '');
+  try {
+    await postJson('/api/watch', { key, watch: want });
+    keepPersonField(key, 'watch', want || undefined); // so saving Settings later keeps it
+    if (S.drawer === d) setText($('#d-watch-msg'), want ? 'Watching. Pleni will tell you if this stops working.' : 'No longer watched.');
+  } catch (err) {
+    if (S.drawer === d) {
+      input.checked = !want;
+      setText($('#d-watch-msg'), `Not changed. ${plainError(err)}`);
+    }
+  } finally {
+    watching.delete(key);
+  }
+  await pollNow();
 }
 
 // The Reports to menu under the title, for sessions and the relay.
@@ -2184,14 +2332,19 @@ async function doMove(key, reportsTo, how) {
 // While Settings is open it keeps its own copy of the settings. The move goes into that copy too,
 // so saving Settings later does not put the old boss back.
 function keepPlacement(key, reportsTo) {
+  keepPersonField(key, 'reportsTo', reportsTo || undefined);
+}
+
+// Puts one field of a tile's entry (people[key]) into Settings' copy; undefined removes it.
+function keepPersonField(key, field, value) {
   const st = S.set;
   if (!st || !st.info) return;
   for (const s of [st.info.settings, st.draft]) {
     if (!s || typeof s !== 'object') continue;
     const people = s.people && typeof s.people === 'object' ? s.people : {};
     const entry = { ...(own(people, key) || {}) };
-    if (reportsTo) entry.reportsTo = reportsTo;
-    else delete entry.reportsTo;
+    if (value !== undefined) entry[field] = value;
+    else delete entry[field];
     putEntry(people, key, Object.keys(entry).length ? entry : null);
     s.people = people;
   }
@@ -2335,6 +2488,7 @@ drawerBox.addEventListener('keydown', (ev) => {
   }
 });
 drawerBox.addEventListener('change', (ev) => {
+  if (ev.target.id === 'd-watch') return void setWatch(ev.target);
   if (ev.target.id !== 'd-boss') return;
   releasePress(0);
   pickBoss(ev.target.value, Date.now() - keyedAt < 300 ? PICK_WAIT_MS : 0);
@@ -2875,6 +3029,11 @@ function renderSettingsForm() {
     <section class="panel" aria-labelledby="s-h-projects"><h2 id="s-h-projects">Projects</h2>
       <div id="project-rows">${projectsHtml()}</div>
     </section>
+    <section class="panel" aria-labelledby="s-h-alerts"><h2 id="s-h-alerts">Alerts</h2>
+      <p class="note">What needs you shows under Needs you on the map and the list: questions, errors, notes for you in the mailbox, the relay's alerts, and tiles you watch that stop working. To watch a tile, open it and tick Tell me if this stops working.</p>
+      ${numberRow('s-stopped', 'Call a watched tile stopped after', 'alerts.stoppedMinutes', 1, 1440, 'Minutes without any work.')}
+      ${alertsRowHtml()}
+    </section>
     <section class="panel" aria-labelledby="s-h-open"><h2 id="s-h-open">Open sessions</h2>
       <p class="note">Pleni only looks, unless you turn this on. Then each Claude Code and Codex session's side panel gets an Open in PowerShell button. It opens a new PowerShell window in the session's folder and runs <code>claude --resume</code> or <code>codex resume</code> for it, so you can see the conversation and type to it. Pleni never types into a session itself.</p>
       ${checkRow('s-open', 'Open in PowerShell', 'actions.openTerminal', 'Show the Open in PowerShell button', 'It works only on Windows, and only on this computer, not from another device. Pleni will not open a session that is already open in another window.')}
@@ -2933,6 +3092,10 @@ function onSettingsInput(el) {
   }
   if (el.dataset.local === 'theme') {
     setTheme(el.value);
+    return;
+  }
+  if (el.dataset.local === 'alerts') {
+    setAlerts(el);
     return;
   }
   if (el.dataset.path) {
@@ -3172,6 +3335,7 @@ document.addEventListener('click', (ev) => {
   if (el.dataset.mapMode) return setMapMode(el.dataset.mapMode);
   if (el.dataset.tab) return selectTab(el.dataset.tab, false);
   if (el.dataset.dismiss) return dismissNotice(el);
+  if (el.id === 's-alerts-test') return testAlert();
   if (el.dataset.open) return openInWindow(el);
   if (el.dataset.node) return openDrawer(el.dataset.node, el);
   if (el.dataset.listFilter) {

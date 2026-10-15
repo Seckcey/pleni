@@ -28,6 +28,7 @@ export const DEFAULTS = deepFreeze({
   chain: [], // [{ match, reportsTo, role }] who reports to whom, by session name; first match wins
   remote: { hosts: [], tailscaleUsers: [] },
   actions: { openTerminal: false }, // the Open in PowerShell button (Windows, this computer only)
+  alerts: { stoppedMinutes: 15 }, // a watched tile counts as stopped after this long without work
 });
 
 const TITLES = ['plain', 'military', 'company'];
@@ -39,6 +40,7 @@ const RANGES = {
   activeMinutes: [1, 240],
   recentHours: [1, 720],
   staleMinutes: [5, 1440],
+  stoppedMinutes: [1, 1440],
 };
 const MAX_PEOPLE = 500;
 const MAX_CHAIN = 50;
@@ -104,6 +106,7 @@ export function cleanSettings(raw) {
     chain: cleanChain(r.chain),
     remote: cleanRemote(r.remote),
     actions: cleanActions(r.actions),
+    alerts: cleanAlerts(r.alerts),
   };
 }
 
@@ -191,6 +194,8 @@ function cleanPeople(raw) {
     // Who this session reports to, chosen by the person: a node key or 'you'.
     const boss = typeof value.reportsTo === 'string' ? value.reportsTo.trim() : '';
     if (boss && boss !== key && isNodeKey(boss) && !boss.startsWith('project:')) entry.reportsTo = boss;
+    // "Tell me if this stops working" in the tile's side panel.
+    if (value.watch === true) entry.watch = true;
     return entry;
   });
 }
@@ -233,6 +238,11 @@ function cleanRemote(raw) {
 function cleanActions(raw) {
   const a = isObject(raw) ? raw : {};
   return { openTerminal: cleanBool(a.openTerminal, DEFAULTS.actions.openTerminal) };
+}
+
+function cleanAlerts(raw) {
+  const a = isObject(raw) ? raw : {};
+  return { stoppedMinutes: cleanInt(a.stoppedMinutes, DEFAULTS.alerts.stoppedMinutes, RANGES.stoppedMinutes) };
 }
 
 // A list of short lower-case words: no spaces, de-duplicated, at most `max` entries.

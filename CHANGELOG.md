@@ -10,8 +10,20 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 - A coordinator that was moved under its planner (by dragging it, or with Reports to) now stays
   below the relay, so the map shows planner → relay → coordinator → its workers.
+- A relay that halted itself (it writes the reason into `state.json`) now shows as halted. Before,
+  Pleni saw a halt only from a `STOP` file.
 
 ### Added
+
+- More under Needs you from the mailbox: a new note for you in a `NEEDS-<NAME>.md` file, the
+  relay's alerts from `.relay/alerts.md`, and a relay that is paused or halted, with what to do
+  about it.
+- Tell me if this stops working: tick it in a session's or the relay's side panel. A watched
+  session that does no work for 15 minutes, or a relay that does not run for 15 minutes, shows
+  under Needs you. Settings → Alerts changes the time.
+- Pop-ups: turn them on in Settings → Alerts, and each new Needs you notice also pops up in that
+  browser, even while the tab is in the background. Off until you turn it on; desktop browsers
+  only.
 
 - Relay workers you can see and open: the relay's worker launcher now saves each run as a Claude
   Code session and writes its id (`session_id`) into the run file. Pleni shows that session as the

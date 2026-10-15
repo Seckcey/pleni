@@ -13,6 +13,7 @@ const MAX_LABEL = 40;
 const MAX_SOURCE = 4000;
 const SPAWN_GRACE_MS = 60000;
 const HOUR_MS = 3600000;
+const MINUTE_MS = 60000;
 const STATUSES = ['working', 'ready', 'idle', 'done', 'error'];
 const KINDS = ['session', 'agent', 'reviewer'];
 const NO_PROJECT = 'Other';
@@ -46,6 +47,7 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
   const runs = workerRuns(workers, tree, links.pairs, ctx);
   const mail = mailboxParts(box, tree, ctx);
   const nodes = tree.order.map((key) => tree.nodes.get(key));
+  markWatched(nodes, ctx);
   const sessionNodes = nodes.filter((node) => KINDS.includes(node.kind));
   const hidden = dismissedAt(dismissed);
   // A dismissed ask stops showing as "Needs you" until a newer one comes.
@@ -67,7 +69,8 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
     edges: mergeEdges([...treeEdges(tree, links.pairs, ctx), ...messageEdges(tree, links.pairs, ctx)], mail.edges, ctx),
     events: sortEvents([...links.events, ...runs, ...mail.events, ...errorEvents(sessionNodes, ctx)]),
     counts: countStatuses(sessionNodes),
-    attention: attentionList(sessionNodes, tasks ?? []).filter((item) => !(hidden(item.id) >= item.at)),
+    attention: attentionList(sessionNodes, tasks ?? [], [...mailboxAttention(box, tree, ctx), ...watchAttention(nodes, all, box, ctx)])
+      .filter((item) => !(hidden(item.id) >= item.at)),
     tasks,
     actions: { openTerminal: actions?.openTerminal === true },
   };
@@ -911,8 +914,8 @@ const NEEDS_TEXT = {
   permission: 'is asking for permission to use a tool.',
 };
 
-function attentionList(sessionNodes, tasks) {
-  const list = [];
+function attentionList(sessionNodes, tasks, extra) {
+  const list = [...extra];
   for (const node of sessionNodes) {
     const name = snippet(node.title, MAX_TITLE) || node.title;
     if (node.status === 'error') {
@@ -940,6 +943,75 @@ function attentionList(sessionNodes, tasks) {
     item.at = item.at ?? 0;
   }
   return list.sort((a, b) => b.at - a.at || cmp(a.key, b.key) || cmp(a.kind, b.kind));
+}
+
+// What the mailbox left for the person: the relay's alerts, a paused or halted relay, and the
+// newest note in a NEEDS-<NAME>.md file. Alerts and notes older than the window do not count.
+function mailboxAttention(mailbox, tree, ctx) {
+  const out = [];
+  if (!mailbox) return out;
+  const since = ctx.now - ctx.settings.window.recentHours * HOUR_MS;
+  const relay = isObject(mailbox.relay) && tree.nodes.has(RELAY) ? mailbox.relay : null;
+  if (relay) {
+    const alertAt = time(relay.alerts?.at);
+    if (relay.halted) {
+      const why = ctx.snippets ? snippet(relay.haltReason, MAX_TEXT) : null;
+      const said = why ? `The relay stopped sending (${why}).` : 'The relay stopped sending. Its alerts.md file says why.';
+      out.push({ key: RELAY, kind: 'halted', text: `${said} Fix the cause, then run bridge-relay.ps1 -ClearHalt.`, at: alertAt });
+    } else if (alertAt !== null && alertAt >= since) {
+      // A halted relay's newest alert is the halt itself, so it is not said twice.
+      const what = ctx.snippets ? snippet(relay.alerts.text, MAX_TEXT) : null;
+      out.push({ key: RELAY, kind: 'alert', text: what ? `The relay wrote an alert: ${what}` : 'The relay wrote an alert for you.', at: alertAt });
+    }
+    if (relay.paused) {
+      out.push({ key: RELAY, kind: 'paused', text: 'The relay is paused, so it sends nothing. To go on, delete the PAUSE file in its .relay folder.', at: time(relay.pausedAt) });
+    }
+  }
+  const notes = Array.isArray(mailbox.notes) ? mailbox.notes.filter((note) => isObject(note) && time(note.at) !== null) : [];
+  const newest = notes.sort((a, b) => b.at - a.at)[0];
+  if (newest && newest.at >= since) {
+    const coordinator = ctx.mailboxKeys?.coordinator;
+    const key = coordinator && tree.nodes.has(coordinator) ? coordinator : 'you';
+    const file = text(newest.file, 80) || 'the mailbox';
+    const what = ctx.snippets ? snippet(newest.text, MAX_TEXT) : null;
+    out.push({ key, kind: 'note', text: what ? `New note for you in ${file}: ${what}` : `There is a new note for you in ${file}.`, at: newest.at });
+  }
+  return out;
+}
+
+// "Tell me if this stops working": a watched session that has done no work for alerts.stoppedMinutes,
+// or a watched relay that has not run for that long. A session that asks something, or stopped with
+// an error, already has its own notice. A tile's lastAt also counts the work of everything below it
+// on the map, so the session's own time is used: a boss whose team still works has still stopped.
+// The relay rewrites state.json every few seconds, even while paused, so an old file means it stopped
+// or is stuck, even if its program is still there.
+function watchAttention(nodes, all, mailbox, ctx) {
+  const out = [];
+  const minutes = ctx.settings.alerts.stoppedMinutes;
+  const limit = minutes * MINUTE_MS;
+  const span = minutes === 1 ? '1 minute' : `${minutes} minutes`;
+  for (const node of nodes) {
+    if (!node.watched) continue;
+    if (node.key === RELAY) {
+      const lastAt = time(mailbox?.relay?.lastAt);
+      if (lastAt === null || ctx.now - lastAt < limit) continue;
+      out.push({ key: RELAY, kind: 'stopped', text: `The relay has not run for ${span} or more, so nothing wakes the coordinator.`, at: lastAt });
+      continue;
+    }
+    const lastAt = time(all.get(node.key)?.lastAt);
+    if (node.status === 'working' || node.status === 'error' || node.needs || lastAt === null || ctx.now - lastAt < limit) continue;
+    const name = snippet(node.title, MAX_TITLE) || node.title;
+    out.push({ key: node.key, kind: 'stopped', text: `${name} has done no work for ${span} or more.`, at: lastAt });
+  }
+  return out;
+}
+
+// Sessions and the relay can be watched; mailbox worker runs and groups cannot.
+function markWatched(nodes, ctx) {
+  for (const node of nodes) {
+    const can = node.key === RELAY || (KINDS.includes(node.kind) && !node.key.startsWith('mailbox:'));
+    node.watched = can && entry(ctx.settings.people, node.key)?.watch === true;
+  }
 }
 
 // Reads dismissals given as a Map or a plain object of id -> time.

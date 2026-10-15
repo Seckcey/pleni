@@ -348,6 +348,10 @@ test('relay: coordinator, pause, stop and a live lock', (t) => {
     paused: true,
     halted: false,
     coordinatorKey: `claude:${SESSION}`,
+    lastAt: null,
+    pausedAt: OLD,
+    haltReason: null,
+    alerts: null,
   });
 
   fs.rmSync(path.join(root, '.relay', 'PAUSE'));
@@ -358,6 +362,10 @@ test('relay: coordinator, pause, stop and a live lock', (t) => {
     paused: false,
     halted: true,
     coordinatorKey: `claude:${SESSION}`,
+    lastAt: null,
+    pausedAt: null,
+    haltReason: null,
+    alerts: null,
   });
 });
 
@@ -369,11 +377,78 @@ test('relay: state.json flags and an empty relay folder', (t) => {
     paused: false,
     halted: false,
     coordinatorKey: null,
+    lastAt: null,
+    pausedAt: null,
+    haltReason: null,
+    alerts: null,
   });
   write(root, '.relay/state.json', JSON.stringify({ paused: true, halted: true }));
   const relay = createMailboxSource({ root }).poll().relay;
   assert.equal(relay.paused, true);
   assert.equal(relay.halted, true);
+});
+
+test('relay: alerts, the halt reason, when it paused and when it last ran', (t) => {
+  const root = tempMailbox(t);
+  const saved = local(2026, 10, 12, 15, 0);
+  write(root, '.relay/state.json', JSON.stringify({ halt: '3 consecutive dispatch failures; last: no login', failures: 3 }), saved);
+  write(root, '.relay/PAUSE', '', local(2026, 10, 12, 15, 5));
+  write(root, '.relay/alerts.md', [
+    '# Relay alerts for Ada (machine-written; newest at bottom)',
+    '',
+    '- 2026-10-12 14:03 - Coordinator turn R1 ended with an error. Not replayed.',
+    '- 2026-10-12 14:30 - Relay halted after 3 consecutive dispatch failures. Run -ClearHalt.',
+    '  - a detail under the alert, not an alert of its own',
+    'Not an alert: 2026-10-12 16:00 is not at the start of a list item.',
+    '',
+  ].join('\n'));
+  const relay = createMailboxSource({ root }).poll().relay;
+  assert.equal(relay.halted, true, 'a halt reason in state.json means halted');
+  assert.equal(relay.haltReason, '3 consecutive dispatch failures; last: no login');
+  assert.equal(relay.paused, true);
+  assert.equal(relay.pausedAt, local(2026, 10, 12, 15, 5));
+  assert.equal(relay.lastAt, saved);
+  assert.deepEqual(relay.alerts, {
+    count: 2,
+    at: local(2026, 10, 12, 14, 30),
+    text: 'Relay halted after 3 consecutive dispatch failures. Run -ClearHalt.',
+  });
+
+  const hidden = createMailboxSource({ root, settings: { content: 'none' } }).poll().relay;
+  assert.equal(hidden.haltReason, null);
+  assert.deepEqual(hidden.alerts, { count: 2, at: local(2026, 10, 12, 14, 30), text: null });
+
+  write(root, '.relay/state.json', JSON.stringify({ halt: '' }), saved);
+  fs.rmSync(path.join(root, '.relay', 'PAUSE'));
+  const cleared = createMailboxSource({ root }).poll().relay;
+  assert.equal(cleared.halted, false, 'an empty halt reason is not a halt');
+  assert.equal(cleared.paused, false);
+  assert.equal(cleared.pausedAt, null);
+});
+
+test('notes for the person: NEEDS-<NAME>.md at the mailbox root', (t) => {
+  const root = tempMailbox(t);
+  write(root, 'NEEDS-ADA.md', [
+    '# NEEDS-ADA (owner: coordinator; newest at bottom)',
+    '- 2026-10-11 09:00 — **Approve the new budget** (details below)',
+    '  continued on a second line',
+    '  - 2026-10-11 09:05 — a sub-item is part of the note above',
+    '```',
+    '- 2026-10-11 23:00 — inside a code block, so not a note',
+    '```',
+    '- see 2026-10-11 22:00 — a time in the middle is not a note',
+    '- 2026-10-11 18:30 — **STOP: sign in to the Claude app again**',
+    '',
+  ].join('\n'));
+  write(root, 'NEEDS-ADA.md.bak-20261009', '- 2026-10-12 08:00 — an old backup');
+  write(root, 'needs-notes.txt', '- 2026-10-12 08:00 — not a NEEDS file');
+  const notes = createMailboxSource({ root }).poll().notes;
+  assert.deepEqual(notes, [{ file: 'NEEDS-ADA.md', count: 2, at: local(2026, 10, 11, 18, 30), text: 'STOP: sign in to the Claude app again' }]);
+  assert.deepEqual(createMailboxSource({ root, settings: { content: 'none' } }).poll().notes, [
+    { file: 'NEEDS-ADA.md', count: 2, at: local(2026, 10, 11, 18, 30), text: null },
+  ]);
+  fs.rmSync(path.join(root, 'NEEDS-ADA.md'));
+  assert.deepEqual(createMailboxSource({ root }).poll().notes, []);
 });
 
 test('relay: a lock is not running when its process is gone or unknown', (t) => {

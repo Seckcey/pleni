@@ -49,13 +49,14 @@ function session(key, extra = {}) {
   };
 }
 
-function snap({ settings = {}, claude = [], codex = [], mailbox = null, now = NOW } = {}) {
+function snap({ settings = {}, claude = [], codex = [], mailbox = null, now = NOW, dismissed = null } = {}) {
   return buildSnapshot({
     now,
     settings: cleanSettings({ groupBy: 'project', ...settings }),
     claude: { ok: true, error: null, root: '/home/ada/.claude', sessions: claude },
     codex: { ok: true, error: null, root: '/home/ada/.codex', sessions: codex },
     mailbox,
+    dismissed,
   });
 }
 
@@ -372,7 +373,7 @@ test('nodes carry tier, model label and session fields', () => {
   assert.deepEqual(Object.keys(lead), [
     'key', 'parent', 'platform', 'kind', 'title', 'subtitle', 'rank', 'role', 'tier', 'model', 'modelLabel',
     'effort', 'status', 'startedAt', 'lastAt', 'activity', 'lastText', 'needs', 'project', 'projectLabel', 'entrypoint',
-    'hidden', 'archived', 'named', 'placement',
+    'hidden', 'archived', 'named', 'placement', 'watched',
   ]);
   assert.deepEqual(Object.keys(node(s, 'you')), Object.keys(lead));
   assert.deepEqual(Object.keys(node(s, 'project:alpha')), Object.keys(lead));
@@ -631,6 +632,106 @@ function mailbox(extra = {}) {
     ...extra,
   };
 }
+
+// A relay as the mailbox source reports it, with nothing to say unless a test adds it.
+function relayState(extra = {}) {
+  return { running: true, paused: false, halted: false, coordinatorKey: LEAD, lastAt: NOW - 5000, pausedAt: null, haltReason: null, alerts: null, ...extra };
+}
+
+test('mailbox notices: a relay alert, a paused relay and a note for the person', () => {
+  const box = mailbox({
+    relay: relayState({ paused: true, pausedAt: NOW - 3 * MIN, alerts: { count: 2, at: NOW - 10 * MIN, text: 'Coordinator turn R1 ended with an error.' } }),
+    notes: [
+      { file: 'NEEDS-ADA.md', count: 3, at: NOW - 20 * MIN, text: '**Approve** the budget' },
+      { file: 'NEEDS-OLD.md', count: 1, at: NOW - 30 * HOUR, text: 'Older than the window' },
+    ],
+  });
+  const settings = { sources: { mailbox: { enabled: true, planner: PLANNER } } };
+  const find = (s, kind) => s.attention.find((a) => a.kind === kind);
+  const s = snap({ ...cast(), mailbox: box, settings });
+  assert.deepEqual(find(s, 'alert'), { key: 'relay', kind: 'alert', text: 'The relay wrote an alert: Coordinator turn R1 ended with an error.', at: NOW - 10 * MIN, id: 'relay|alert' });
+  assert.deepEqual(find(s, 'paused'), {
+    key: 'relay', kind: 'paused', text: 'The relay is paused, so it sends nothing. To go on, delete the PAUSE file in its .relay folder.', at: NOW - 3 * MIN, id: 'relay|paused',
+  });
+  assert.deepEqual(find(s, 'note'), { key: LEAD, kind: 'note', text: 'New note for you in NEEDS-ADA.md: Approve the budget', at: NOW - 20 * MIN, id: `${LEAD}|note` });
+
+  const none = snap({ ...cast(), mailbox: box, settings: { ...settings, content: 'none' } });
+  assert.equal(find(none, 'alert').text, 'The relay wrote an alert for you.');
+  assert.equal(find(none, 'note').text, 'There is a new note for you in NEEDS-ADA.md.');
+
+  const old = mailbox({ relay: relayState({ alerts: { count: 1, at: NOW - 30 * HOUR, text: 'old' } }), notes: [{ file: 'NEEDS-ADA.md', count: 1, at: NOW - 30 * HOUR, text: 'old' }] });
+  const quiet = snap({ ...cast(), mailbox: old, settings });
+  assert.equal(find(quiet, 'alert'), undefined, 'an alert older than the window is not news');
+  assert.equal(find(quiet, 'note'), undefined);
+
+  const dismissed = snap({ ...cast(), mailbox: box, settings, dismissed: { 'relay|alert': NOW - 10 * MIN } });
+  assert.equal(find(dismissed, 'alert'), undefined, 'a dismissed alert stays hidden');
+  const newer = mailbox({ relay: relayState({ alerts: { count: 3, at: NOW - MIN, text: 'A new one.' } }) });
+  assert.ok(find(snap({ ...cast(), mailbox: newer, settings, dismissed: { 'relay|alert': NOW - 10 * MIN } }), 'alert'), 'until a newer alert comes');
+});
+
+test('a note for the person goes to the person when the coordinator is not on the map', () => {
+  const box = mailbox({ relay: null, notes: [{ file: 'NEEDS-ADA.md', count: 1, at: NOW - MIN, text: 'Sign in again' }] });
+  const s = snap({ codex: cast().codex, mailbox: box });
+  assert.equal(s.attention.find((a) => a.kind === 'note').key, 'you');
+});
+
+test('a halted relay says why, once, and how to go on', () => {
+  const box = mailbox({
+    relay: relayState({ halted: true, haltReason: '3 consecutive dispatch failures; last: no login', alerts: { count: 1, at: NOW - MIN, text: 'Relay halted after 3 failures.' } }),
+  });
+  const settings = { sources: { mailbox: { enabled: true, planner: PLANNER } } };
+  const relayItems = (s) => s.attention.filter((a) => a.key === 'relay');
+  assert.deepEqual(relayItems(snap({ ...cast(), mailbox: box, settings })), [{
+    key: 'relay',
+    kind: 'halted',
+    text: 'The relay stopped sending (3 consecutive dispatch failures; last: no login). Fix the cause, then run bridge-relay.ps1 -ClearHalt.',
+    at: NOW - MIN,
+    id: 'relay|halted',
+  }]);
+  const none = relayItems(snap({ ...cast(), mailbox: box, settings: { ...settings, content: 'none' } }));
+  assert.equal(none[0].text, 'The relay stopped sending. Its alerts.md file says why. Fix the cause, then run bridge-relay.ps1 -ClearHalt.');
+});
+
+test('a watched session or relay that stops working shows as stopped', () => {
+  const sessions = cast();
+  sessions.claude[0] = session(LEAD, { title: 'Billing API refactor', status: 'idle', lastAt: NOW - 20 * MIN });
+  sessions.codex[0] = session(PLANNER, { title: 'Q4 plan', status: 'ready', lastAt: NOW - 40 * MIN, needs: { kind: 'question', text: null, at: NOW - 40 * MIN } });
+  const people = { [LEAD]: { watch: true }, [PLANNER]: { watch: true }, [CHILD]: { watch: true }, [OTHER]: { watch: true }, relay: { watch: true } };
+  const box = mailbox({ relay: relayState({ running: false, lastAt: NOW - 40 * MIN }) });
+  const stopped = (s) => s.attention.filter((a) => a.kind === 'stopped');
+  const s = snap({ ...sessions, mailbox: box, settings: { people, sources: { mailbox: { enabled: true, planner: PLANNER } } } });
+  assert.deepEqual(stopped(s), [
+    { key: LEAD, kind: 'stopped', text: 'Billing API refactor has done no work for 15 minutes or more.', at: NOW - 20 * MIN, id: `${LEAD}|stopped` },
+    { key: 'relay', kind: 'stopped', text: 'The relay has not run for 15 minutes or more, so nothing wakes the coordinator.', at: NOW - 40 * MIN, id: 'relay|stopped' },
+  ], 'the working child, the asking planner and the session with an error have their own state');
+  assert.equal(node(s, LEAD).watched, true);
+  assert.equal(node(s, 'relay').watched, true);
+  assert.equal(node(s, HELPER).watched, false);
+  assert.equal(node(s, 'you').watched, false);
+
+  const longer = snap({ ...sessions, mailbox: box, settings: { people, alerts: { stoppedMinutes: 30 }, sources: { mailbox: { enabled: true, planner: PLANNER } } } });
+  assert.deepEqual(stopped(longer).map((a) => a.key), ['relay'], 'twenty minutes is not yet thirty');
+  assert.match(stopped(longer)[0].text, /30 minutes/);
+
+  // The relay writes state.json on every pass, even while paused: a fresh file is not stopped, and an
+  // old one is, even when the program is still there (it is stuck).
+  const paused = mailbox({ relay: relayState({ running: true, paused: true, lastAt: NOW - MIN }) });
+  assert.equal(stopped(snap({ ...sessions, mailbox: paused, settings: { people } })).some((a) => a.key === 'relay'), false, 'a paused relay that still runs is not stopped');
+  const stuck = mailbox({ relay: relayState({ running: true, lastAt: NOW - 40 * MIN }) });
+  assert.equal(stopped(snap({ ...sessions, mailbox: stuck, settings: { people } })).some((a) => a.key === 'relay'), true, 'a stuck relay is stopped');
+
+  const one = snap({ ...sessions, mailbox: box, settings: { people, alerts: { stoppedMinutes: 1 }, sources: { mailbox: { enabled: true, planner: PLANNER } } } });
+  assert.equal(stopped(one)[0].text, 'Billing API refactor has done no work for 1 minute or more.');
+});
+
+test('a relay worker run cannot be watched', () => {
+  const box = mailbox();
+  box.tasks[0].workers = [{ id: 'W1', state: 'finished', model: null, startedAt: NOW - HOUR, finishedAt: NOW - 50 * MIN, worktree: null }];
+  const s = snap({ ...cast(), mailbox: box, settings: { people: { 'mailbox:T-1/W1': { watch: true } } } });
+  assert.equal(node(s, 'mailbox:T-1/W1').watched, false);
+  assert.equal(s.attention.some((a) => a.kind === 'stopped'), false);
+});
 
 test('mailbox events light the line from the planner through the relay to the coordinator', () => {
   const s = snap({ ...cast(), mailbox: mailbox(), settings: { sources: { mailbox: { enabled: true, planner: PLANNER } } } });

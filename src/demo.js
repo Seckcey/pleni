@@ -312,7 +312,12 @@ function mailbox(clock, mail) {
     name: 'billing',
     tasks,
     events,
-    relay: { running: true, paused: false, halted: false, coordinatorKey: COORDINATOR },
+    // A note the coordinator left for the person, in NEEDS-ADA.md at the mailbox root.
+    notes: [{ file: 'NEEDS-ADA.md', count: 1, at: clock.mark - 12 * MIN, text: 'Approve the new tax-rate source before W1 ships the change.' }],
+    relay: {
+      running: true, paused: false, halted: false, coordinatorKey: COORDINATOR,
+      lastAt: clock.beatAt, pausedAt: null, haltReason: null, alerts: null,
+    },
   };
 }
 

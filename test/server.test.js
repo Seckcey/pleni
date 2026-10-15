@@ -784,6 +784,50 @@ test('placement refuses loops, unknown sessions, bad bodies and cross-site reque
   assert.deepEqual(memory.saved, []);
 });
 
+// ---- watch ----
+
+const watch = (port, body, headers = {}) => request(port, {
+  method: 'POST',
+  path: '/api/watch',
+  headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+  body: JSON.stringify(body),
+});
+
+test('watch saves "tell me if this stops working" for a session or the relay, and false undoes it', async (t) => {
+  const store = treeStore();
+  store.current.nodes.push({ key: 'relay', title: 'Relay', kind: 'relay', parent: 'you' });
+  const { port, memory } = await startServer(t, { store, settings: { people: { [SESSION_KEY]: { label: 'Builder' } } } });
+  let res = await watch(port, { key: SESSION_KEY, watch: true });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json, { ok: true });
+  assert.deepEqual(memory.state.settings.people[SESSION_KEY], { label: 'Builder', watch: true });
+  assert.equal((await watch(port, { key: 'relay', watch: true })).status, 200);
+  assert.deepEqual(memory.state.settings.people.relay, { watch: true });
+  assert.equal((await watch(port, { key: SESSION_KEY, watch: false })).status, 200);
+  assert.deepEqual(memory.state.settings.people[SESSION_KEY], { label: 'Builder' });
+  assert.equal((await watch(port, { key: 'relay', watch: false })).status, 200);
+  assert.equal(memory.state.settings.people.relay, undefined, 'an empty choice is removed');
+});
+
+test('watch refuses groups, worker runs, unknown tiles, bad bodies and cross-site requests', async (t) => {
+  const store = treeStore();
+  store.current.nodes.push({ key: 'mailbox:T-1/W1', title: 'W1', kind: 'agent', parent: SESSION_KEY });
+  // A tile with a session's kind of key that is not a session is refused too.
+  store.current.nodes.push({ key: 'claude:0f8e2c4a-1b3d-4e5f-8a9b-00000000cafe', title: 'Odd', kind: 'project', parent: 'you' });
+  const { port, memory } = await startServer(t, { store });
+  for (const key of ['you', 'project:alpha', 'mailbox:T-1/W1', 'nonsense', 'claude:0f8e2c4a-1b3d-4e5f-8a9b-00000000cafe']) {
+    assert.equal((await watch(port, { key, watch: true })).status, 400, key);
+  }
+  assert.equal((await watch(port, { key: SESSION_KEY, watch: 'yes' })).status, 400);
+  assert.equal((await watch(port, { key: SESSION_KEY })).status, 400);
+  assert.equal((await watch(port, { key: 'codex:0f8e2c4a-1b3d-4e5f-8a9b-00000000dead', watch: true })).status, 404);
+  assert.equal((await watch(port, { key: SESSION_KEY, watch: true }, { 'x-pleni': undefined })).status, 403);
+  assert.equal((await watch(port, { key: SESSION_KEY, watch: true }, { origin: 'https://evil.example' })).status, 403);
+  assert.equal((await watch(port, { key: SESSION_KEY, watch: true }, { cookie: undefined })).status, 401);
+  assert.equal((await request(port, { path: '/api/watch' })).status, 405);
+  assert.deepEqual(memory.saved, []);
+});
+
 // ---- dismiss ----
 
 test('dismiss passes a valid notice to the store and refuses bad ones', async (t) => {
@@ -799,13 +843,19 @@ test('dismiss passes a valid notice to the store and refuses bad ones', async (t
   });
   assert.equal((await post({ id: `${SESSION_KEY}|needs`, at: 1234 })).status, 200);
   assert.equal((await post({ id: 'task:T-1|question', at: null })).status, 200);
+  for (const kind of ['alert', 'paused', 'halted', 'note', 'stopped']) {
+    assert.equal((await post({ id: `relay|${kind}`, at: 5 })).status, 200, kind);
+  }
   for (const bad of [{ id: 'x|nope', at: 1 }, { id: '|needs', at: 1 }, { id: 'a b|needs', at: 1 }, { id: `${SESSION_KEY}|needs`, at: -1 }, { id: `${SESSION_KEY}|needs`, at: '1' }, { id: `${SESSION_KEY}|needs` }, { at: 1 }]) {
     assert.equal((await post(bad)).status, 400, JSON.stringify(bad));
   }
   assert.equal((await post({ id: 'task:T-1|review', at: 1 }, { 'x-pleni': undefined })).status, 403);
   assert.equal((await post({ id: 'task:T-1|review', at: 1 }, { cookie: undefined })).status, 401);
   assert.equal((await request(port, { path: '/api/dismiss' })).status, 405);
-  assert.deepEqual(store.dismissed, [[`${SESSION_KEY}|needs`, 1234], ['task:T-1|question', null]]);
+  assert.deepEqual(store.dismissed, [
+    [`${SESSION_KEY}|needs`, 1234], ['task:T-1|question', null],
+    ['relay|alert', 5], ['relay|paused', 5], ['relay|halted', 5], ['relay|note', 5], ['relay|stopped', 5],
+  ]);
 });
 
 // ---- Open in PowerShell ----
