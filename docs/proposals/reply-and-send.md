@@ -1,6 +1,7 @@
 # Proposal: answer and send from Pleni
 
-Status: proposal, not built. Pleni 0.1 only watches.
+Status: proposal. Step 1 of the plan, the relay waking the planner's Codex thread, is built in
+`relay/`. The rest is not built yet, and Pleni itself still only watches.
 
 ## What we want
 
@@ -11,6 +12,8 @@ From the Pleni page, on the computer or a phone:
    Codex request for input or approval.
 2. **Send a message** to a session, as if you typed it there.
 3. **Talk through a mailbox**, for teams that coordinate through one.
+4. **Run the team from Pleni alone:** watch, send, and start agents in command-line windows, with
+   no Codex app running.
 
 ## The short answer
 
@@ -23,6 +26,82 @@ and some of them are still marked experimental.
 | Answer a permission prompt | Yes, through a **hook** | Yes, through the **app server** (to test) |
 | Send a message to an idle session | Yes, `claude -p --resume <id> "..."` | Yes, `codex exec resume <id> "..."`, or the app server's `turn/start` |
 | Send to a session that is busy or open in the app | Not safely: messages can interleave | The app server's `turn/steer` may allow it (to test) |
+
+## Running the team without the Codex app
+
+Today the Codex desktop app does two jobs that a mailbox does not do:
+
+1. **It carries messages between Codex threads.** Codex threads talk through app tools:
+   `send_message_to_thread`, `wait_threads`, `list_threads`, `read_thread`, `create_thread`,
+   `fork_thread` and `handoff_thread`, plus tools for the sidebar and for scheduled tasks. They come
+   from a local connection to the running app. A check on a real setup (Codex CLI 0.162, October
+   2026) found that none of them work once the app is quit. The Codex command line's own helper
+   tools (`spawn_agent` and the like) are a different thing: they start new helpers and cannot
+   reach threads that already exist.
+2. **It wakes threads.** A message sent with `send_message_to_thread` starts the other thread's next
+   turn. A file in the mailbox wakes nobody. A mailbox keeps messages, but it does not start an
+   idle agent, so every reader needs something that starts its turn.
+
+From the Codex command line these still work: the thread and its history (`codex resume <id>`),
+long tasks with `/goal` (marked experimental since Codex CLI 0.128), the repositories, the shell,
+and reading and writing the mailbox.
+
+So running the team from Pleni alone needs these parts:
+
+| Need | How | Step |
+| --- | --- | --- |
+| Wake the planner when the coordinator writes back | The relay wakes one Codex thread with `codex exec resume` | 1 (built) |
+| Send a message to any idle session | Pleni runs `claude -p --resume` or `codex exec resume` | 3 |
+| Start a new agent in a window | A **New agent** button, built on Open in PowerShell | 4 |
+| Codex threads that use app messaging today | Move them to mailboxes, each with something that wakes it | 7 |
+
+### One place per session
+
+A session takes one writer at a time. While it is open in a window, nothing else can safely start
+a turn in it. The relay holds its messages until the window closes, and Pleni's Send button must do
+the same. So the agents that others message, such as a coordinator or a planner, should run without
+a window and be woken. Open their window to look or to talk, then close it.
+
+## Step 1: the relay wakes the planner (built)
+
+The relay already lists what waits for the planner in `.relay/codex-attention.md`: a BLOCKING
+question with no answer, or a handoff in review with no newer review. Now it can also wake one
+Codex thread for those items.
+
+- **Off until the owner turns it on**, once:
+  `bridge-relay.ps1 -EnrollCodex -ThreadId <thread id>`. The relay checks that the thread is in
+  the Codex home folder, reads the thread's working folder from its first line, and saves both in
+  `.relay/codex.json`. `-UnenrollCodex` turns it off. Enrolling wakes nothing: the items that
+  already wait count as known.
+- **What wakes the thread:** each new item on that list wakes it once. One turn at a time, with at
+  most 10 items in a turn.
+- **The command:** `codex exec --json --skip-git-repo-check [extra options] resume <thread id>
+  "<notice>"`, run in the thread's folder. The notice starts with `[bridge-relay C<id>]`, names the
+  items, and tells the planner to write only the planner's own files. The extra options
+  (`codex_exec_args` in `bin/relay-settings.json`) are for the sandbox, such as
+  `--sandbox workspace-write`. Options that turn the sandbox off are refused.
+- **When it waits, so a thread never has two writers:**
+  - another Codex program has the thread open. Codex locks `thread-writer-locks/<id>.lock` while
+    a program writes a thread, and the Codex app keeps the lock for every thread it has opened
+    until it quits fully;
+  - a process has the thread id on its command line, such as a `codex resume` window;
+  - something else wrote the thread's file in the last 90 seconds;
+  - a coordinator turn is still running, so the planner reads finished work;
+  - a Codex wake is still running, the relay is paused, the daily limit is reached (12 a day by
+    default), or it is backing off after errors.
+- **Sign-in:** ChatGPT sign-in only. The relay checks `codex login status` first, and removes
+  `OPENAI_API_KEY` and `CODEX_API_KEY` for the turn. It never uses an API key.
+- **Results:** the relay reads Codex's JSON events. `turn.completed` means success. A different
+  thread id stops Codex wakes (a halt) and writes an alert, and so do three failures in a row.
+  Claude wakes go on either way. `-ClearHalt` clears both.
+- **Records:** `codex_notes` and `codex_dispatches` in `.relay/state.json`, one line per turn in
+  `.relay/dispatches.md`, and alerts in `.relay/alerts.md`, which Pleni shows under Needs you.
+
+While the Codex app runs and has the thread open, nothing changes: the relay waits, and the app
+carries on as before. Quit the app, and the relay wakes the planner itself.
+
+Step 1 does not move other Codex threads off app messaging, wakes only one Codex thread per
+mailbox, and never answers anything for the owner.
 
 ## Claude Code
 
@@ -143,16 +222,19 @@ sessions can run commands on the computer. So:
 
 ## Plan
 
-| Step | What | Size |
-| --- | --- | --- |
-| 1 | Tests on a spare computer: Claude hooks in the desktop app (HTTP hooks, secret header, what the app shows while a hook waits, the `ExitPlanMode` answer format), and the Codex app server questions above | Small |
-| 2 | Claude questions, plans and permission prompts through hooks, with the "Connect" step, the switch per session, and the answer controls | Large |
-| 3 | Send a message to idle Claude sessions, with the safety checks | Medium |
-| 4 | Codex answers and messages through the app server, with `codex exec resume` as the fallback | Large, depends on step 1 |
-| 5 | Actions from the phone: second confirmation | Medium |
-| 6 | Mailbox owner notes, with the relay change | Small, outside Pleni |
+| Step | What | Size | State |
+| --- | --- | --- | --- |
+| 1 | The relay wakes the planner's Codex thread (above) | Medium, outside Pleni | Built |
+| 2 | Tests on a spare computer: Claude hooks in the desktop app (HTTP hooks, secret header, what the app shows while a hook waits, the `ExitPlanMode` answer format), and the Codex app server questions above | Small | |
+| 3 | Send a message to idle sessions, Claude and Codex, with the safety checks | Medium | |
+| 4 | **New agent:** choose Claude Code or Codex, a project folder, a name and a first message; Pleni opens it in a PowerShell window, the same way as Open in PowerShell | Medium | |
+| 5 | Claude questions, plans and permission prompts through hooks, with the "Connect" step, the switch per session, and the answer controls | Large | |
+| 6 | Codex answers and messages through the app server, with `codex exec resume` as the fallback | Large, depends on step 2 | |
+| 7 | Move other Codex threads from app messaging to mailboxes, each with a wake (a relay, or Pleni's Send) | Large, per team | |
+| 8 | Actions from the phone: second confirmation | Medium | |
+| 9 | Mailbox owner notes, with the relay change | Small, outside Pleni | |
 
-Steps 2 and 3 work alone, so Pleni can answer Claude before Codex support is ready.
+Steps 3 and 4 work alone, so Pleni can send and start agents before it can answer questions.
 
 ## Sources
 
@@ -161,3 +243,6 @@ Steps 2 and 3 work alone, so Pleni can answer Claude before Codex support is rea
   <https://code.claude.com/docs/en/>.
 - Codex CLI 0.162 help for `codex exec resume`, `codex app-server` and `codex agents`, and the
   schema from `codex app-server generate-json-schema`.
+- Codex goals: <https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex>.
+- Which tools need the Codex app: a check of the installed Codex app plugin on a real setup,
+  October 2026.

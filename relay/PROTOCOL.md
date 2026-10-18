@@ -139,7 +139,9 @@ The coordinator starts each worker with `bin\spawn-worker.ps1`:
 
 When the relay runs, it wakes the coordinator after the planner writes `CODEX-QUEUE.md`, an
 `assignment.md`, an `answers.md` or a `review.md`, and after a worker run ends. It lists what waits
-for the planner in `.relay/codex-attention.md`, but it cannot wake the planner.
+for the planner in `.relay/codex-attention.md`. If the owner turned on the Codex wake
+(`bin/bridge-relay.ps1 -EnrollCodex`), it also wakes the planner's Codex thread once for each new
+item on that list. A turn the relay starts begins with `[bridge-relay <id>]`.
 
 Without the relay, tell the other side in one line after you write:
 

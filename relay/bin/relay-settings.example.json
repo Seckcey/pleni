@@ -1,5 +1,5 @@
 {
   "projects_dir": "C:\\Users\\ada\\projects",
   "owner_name": "Ada",
-  "note": "Copy this file to relay-settings.json and change the values. projects_dir: the folder with your code repositories. worktrees_dir (optional): where workers work; without it, <projects_dir>\\_worktrees\\claude. owner_name (optional): your name for the relay's notes."
+  "note": "Copy this file to relay-settings.json and change the values. projects_dir: the folder with your code repositories. worktrees_dir (optional): where workers work; without it, <projects_dir>\\_worktrees\\claude. owner_name (optional): your name for the relay's notes. Only for the Codex wake (bridge-relay.ps1 -EnrollCodex): codex_exe (optional) is the full path of the Codex command, and codex_exec_args (optional) is a list of extra codex exec options, one per entry, such as [\"--sandbox\", \"workspace-write\"]."
 }

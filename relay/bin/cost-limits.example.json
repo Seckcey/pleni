@@ -1,5 +1,6 @@
 {
   "enabled": true,
   "relay_max_wakes_per_day": 12,
-  "note": "Copy this file to cost-limits.json to change the limits. enabled=false turns off the dollar caps per run and per day; costs are still written down. relay_max_wakes_per_day=0 means no limit on coordinator turns."
+  "relay_max_codex_wakes_per_day": 12,
+  "note": "Copy this file to cost-limits.json to change the limits. enabled=false turns off the dollar caps per run and per day; costs are still written down. relay_max_wakes_per_day=0 means no limit on coordinator turns. relay_max_codex_wakes_per_day: how many planner turns the Codex wake may start a day (0 means no limit)."
 }

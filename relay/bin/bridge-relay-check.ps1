@@ -10,8 +10,11 @@
   Checks: dry run; return direction; 1 new assignment; 2 answers change; 3 worker end; 4 duplicate writes;
   5 busy turn; 6 restart (+ unknown outcome); 7 CLI error / missing session; 8 coordinator permissions
   (-Enroll -AllowCheck validation, -ShowCoordinatorArgs allowed/denied tools); 9 and 10 wake limits;
-  11 local settings (bin\relay-settings.json: projects_dir, owner_name).
-  It runs only the bridge-relay.ps1 beside it and ..\tests\stub-claude.js; other -RelayScript/-StubCli values are refused.
+  11 local settings (bin\relay-settings.json: projects_dir, owner_name); 12-14 CodexWake with tests\stub-codex.js
+  (off until enrolled, one wake per new item, waits for a held thread / a coordinator turn / a running wake,
+  errors back off and stop only the Codex direction, a different thread id stops it, ChatGPT sign-in only).
+  It runs only the bridge-relay.ps1 beside it, ..\tests\stub-claude.js and ..\tests\stub-codex.js; other
+  -RelayScript/-StubCli values are refused.
   Prints one PASS/FAIL line per check, then a summary. Exit 0 only when every check passes (2 = could not set up).
   No network, no API key, no real claude.exe. It removes its temp folder and stops any process it started
   (only processes whose command line names this run's temp folder). Takes about 2-4 minutes.
@@ -39,12 +42,15 @@ $HereDir = $PSScriptRoot
 if (-not $HereDir) { $HereDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
 $OwnRelay = Join-Path $HereDir 'bridge-relay.ps1'
 $OwnStub = Join-Path (Split-Path -Parent $HereDir) 'tests\stub-claude.js'
+$StubCodex = Join-Path (Split-Path -Parent $HereDir) 'tests\stub-codex.js'
 if (-not $RelayScript) { $RelayScript = $OwnRelay }
 if (-not $StubCli) { $StubCli = $OwnStub }
-foreach ($f in @($RelayScript, $StubCli, $PsExe)) { if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Stop-Setup "not found: $f" } }
+foreach ($f in @($RelayScript, $StubCli, $StubCodex, $PsExe)) { if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Stop-Setup "not found: $f" } }
 if (-not (Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue)) { Stop-Setup 'node.exe not found (the stub CLI needs it)' }
 $RelayScript = (Resolve-Path -LiteralPath $RelayScript).Path
 $StubCli = (Resolve-Path -LiteralPath $StubCli).Path
+$StubCodex = (Resolve-Path -LiteralPath $StubCodex).Path
+$DummyOpenAiKey = 'sk-relay-check-dummy-openai'   # set for every relay run; the Codex stub reports whether it saw it
 # The unattended coordinator may run this harness (bridge-relay.ps1 allows it), so it only ever executes the relay and
 # stub that sit beside it (under bin and tests, which the coordinator cannot edit), never a script named on the command line.
 if ([IO.Path]::GetFullPath($RelayScript) -ne [IO.Path]::GetFullPath($OwnRelay)) { Stop-Setup "-RelayScript must be $OwnRelay (got $RelayScript)" }
@@ -90,11 +96,14 @@ function ConvertTo-Token([string]$A) {
 
 function Get-RelayArgs([hashtable]$Fx, [string]$Mode, [hashtable]$Opt) {
     $o = @{ MailboxRoot = $Fx.mb; ClaudeExe = $StubCli; KeyFile = $KeyPath; ClaudeConfigDir = $Fx.cfg; ProjectsDir = $Base;
+        CodexExe = $StubCodex; CodexHome = $Fx.codex;
         DebounceSeconds = 0; QuietSeconds = 0; PollSeconds = 1; BackoffSeconds = 60 }
     if ($Opt) { foreach ($k in @($Opt.Keys)) { $o[$k] = $Opt[$k] } }
-    # Safety: only synthetic mailboxes under this run's temp folder, only the stub CLI and the dummy key.
+    # Safety: only synthetic mailboxes under this run's temp folder, only the stub CLIs and the dummy key.
     if (-not ([string]$o.MailboxRoot).StartsWith($Base + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "refusing: mailbox outside $Base" }
     if ([string]$o.ClaudeExe -ne $StubCli -or [string]$o.KeyFile -ne $KeyPath) { throw 'refusing: -ClaudeExe/-KeyFile must be the stub and the dummy key' }
+    if ([string]$o.CodexExe -ne $StubCodex) { throw 'refusing: -CodexExe must be the Codex stub' }
+    if (-not ([string]$o.CodexHome).StartsWith($Base + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "refusing: Codex home outside $Base" }
     $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $RelayScript, "-$Mode")
     foreach ($k in @($o.Keys | Sort-Object)) {
         if ($null -eq $o[$k]) { continue }   # an option set to $null is left out
@@ -141,6 +150,7 @@ function Stop-Loop([hashtable]$Fx, [hashtable]$Loop) {
 }
 
 function Set-StubMode([hashtable]$Fx, [string]$Mode) { [IO.File]::WriteAllText((Join-Path $Fx.stub 'mode.txt'), $Mode, $Utf8) }
+function Set-CodexStubMode([hashtable]$Fx, [string]$Mode) { [IO.File]::WriteAllText((Join-Path $Fx.stub 'codex-mode.txt'), $Mode, $Utf8) }
 
 function Get-Calls([hashtable]$Fx, [string]$Phase) {
     $f = Join-Path $Fx.stub 'calls.jsonl'
@@ -154,6 +164,24 @@ function Get-Calls([hashtable]$Fx, [string]$Phase) {
 }
 
 function Get-RunningStubs([hashtable]$Fx) { return @(Get-ChildItem -LiteralPath $Fx.stub -Filter 'running-*' -File -ErrorAction SilentlyContinue).Count }
+
+function Get-CodexCalls([hashtable]$Fx, [string]$Phase) {
+    $f = Join-Path $Fx.stub 'codex-calls.jsonl'
+    if (-not (Test-Path -LiteralPath $f)) { return }
+    foreach ($l in ((Read-Shared $f) -split "`n")) {
+        $l = $l.Trim()
+        if (-not $l) { continue }
+        try { $c = ConvertFrom-Json -InputObject $l } catch { continue }
+        if (-not $Phase -or $c.phase -eq $Phase) { $c }
+    }
+}
+
+function Get-RunningCodexStubs([hashtable]$Fx) { return @(Get-ChildItem -LiteralPath $Fx.stub -Filter 'codex-running-*' -File -ErrorAction SilentlyContinue).Count }
+
+function Get-RolloutNotices([hashtable]$Fx) {
+    if (-not (Test-Path -LiteralPath $Fx.rollout)) { return 0 }
+    return ([regex]::Matches((Read-Shared $Fx.rollout), '\[bridge-relay C\d')).Count
+}
 
 function Get-TranscriptNotices([hashtable]$Fx) {
     if (-not (Test-Path -LiteralPath $Fx.transcript)) { return 0 }
@@ -179,15 +207,27 @@ function Get-Note([hashtable]$Fx, [string]$Key) {
 
 function Test-Pending([hashtable]$Fx, [string]$Key) { return (@(Get-Note $Fx $Key | Where-Object { $_.state -eq 'pending' }).Count -gt 0) }
 
+function Get-CodexNotes([hashtable]$Fx) {
+    $st = Get-RelayState $Fx
+    if (-not $st) { return @() }
+    return @(Get-Values $st.codex_notes | Sort-Object { [int64]$_.detected_utc })
+}
+
+function Get-CodexDispatches([hashtable]$Fx) {
+    $st = Get-RelayState $Fx
+    if (-not $st) { return @() }
+    return @(Get-Values $st.codex_dispatches | Sort-Object { [int64]$_.seq })
+}
+
 function Get-Dispatches([hashtable]$Fx) {
     $st = Get-RelayState $Fx
     if (-not $st) { return @() }
     return @(Get-Values $st.dispatches | Sort-Object { [int64]$_.seq })
 }
 
-function Test-NoOverlap([hashtable]$Fx) {
+function Test-NoOverlap([hashtable]$Fx, [switch]$Codex) {
     # True when no two stub CLI processes were alive at the same time (from their own start/end records).
-    $all = @(Get-Calls $Fx '')
+    if ($Codex) { $all = @(Get-CodexCalls $Fx '') } else { $all = @(Get-Calls $Fx '') }
     $runs = @()
     foreach ($s in @($all | Where-Object { $_.phase -eq 'start' })) {
         $e = @($all | Where-Object { $_.phase -eq 'end' -and $_.pid -eq $s.pid -and [int64]$_.t -ge [int64]$s.t } | Select-Object -First 1)
@@ -239,8 +279,8 @@ function Invoke-Scenario([string]$Name, [scriptblock]$Body) {
 function New-Fixture([string]$Name) {
     $dir = Join-Path $Base $Name
     $fx = @{ name = $Name; dir = $dir; mb = (Join-Path $dir 'mailbox'); cfg = (Join-Path $dir 'claude-config'); stub = (Join-Path $dir 'stub');
-        sid = [guid]::NewGuid().ToString() }
-    foreach ($d in @($fx.mb, $fx.cfg, $fx.stub)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+        sid = [guid]::NewGuid().ToString(); codex = (Join-Path $dir 'codex-home'); planner = (Join-Path $dir 'planner'); tid = [guid]::NewGuid().ToString() }
+    foreach ($d in @($fx.mb, $fx.cfg, $fx.stub, $fx.codex, $fx.planner)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
     Write-Text (Join-Path $fx.mb 'CODEX-QUEUE.md') "# CODEX-QUEUE (synthetic fixture)`r`n`r`n- T-BASE: assigned`r`n"
     Write-Text (Join-Path $fx.mb 'tasks\T-BASE\assignment.md') "# Assignment - T-BASE (synthetic)`r`n`r`n- Goal: fixture only.`r`n"
     Write-Text (Join-Path $fx.mb 'tasks\T-BASE\answers.md') "# Answers - T-BASE`r`n`r`n### A1 (Q1)`r`n**Answer:** yes.`r`n"
@@ -250,6 +290,12 @@ function New-Fixture([string]$Name) {
     $first = @{ type = 'user'; sessionId = $fx.sid; message = @{ role = 'user'; content = 'synthetic coordinator session' } }
     Write-Text $fx.transcript ((ConvertTo-Json -InputObject $first -Compress -Depth 4) + "`n")
     Set-StubMode $fx 'ok'
+    # Fake Codex thread file where the relay (-EnrollCodex) and the Codex stub (resume) look for it.
+    $fx.rollout = Join-Path $fx.codex ('sessions\2026\10\09\rollout-2026-10-09T05-00-00-' + $fx.tid + '.jsonl')
+    $meta = [ordered]@{ timestamp = '2026-10-09T05:00:00Z'; type = 'session_meta';
+        payload = [ordered]@{ id = $fx.tid; timestamp = '2026-10-09T05:00:00Z'; cwd = $fx.planner; originator = 'codex_cli_rs'; instructions = 'synthetic planner thread' } }
+    Write-Text $fx.rollout ((ConvertTo-Json -InputObject $meta -Compress -Depth 4) + "`n")
+    Set-CodexStubMode $fx 'ok'
     return $fx
 }
 
@@ -277,9 +323,16 @@ function Stop-Leftovers {
 
 # ---------- scenarios ----------
 $NewAssignment = "# Assignment - T-NEW (synthetic)`r`n`r`n- Goal: new work.`r`n"
+function Get-Questions([int[]]$Blocking) {
+    $t = "# Questions - T-BASE`r`n"
+    foreach ($q in $Blocking) { $t += "`r`n## Q$q - 2026-10-09 05:0$q - BLOCKING`r`n**Question:** option $q?`r`n" }
+    return $t
+}
 $cleanupOk = $false
+$PreviousOpenAiKey = $env:OPENAI_API_KEY
 try {
     New-Item -ItemType Directory -Path $Base -Force | Out-Null
+    $env:OPENAI_API_KEY = $DummyOpenAiKey   # inherited by every relay run; the relay must not pass it to Codex
     $sec = ConvertTo-SecureString -String $DummyKey -AsPlainText -Force
     [IO.File]::WriteAllText($KeyPath, (ConvertFrom-SecureString -SecureString $sec), $Utf8)
     Write-Host "bridge-relay-check: relay $RelayScript"
@@ -642,10 +695,175 @@ try {
         Check ($rules -match 'Any other command needs the owner\.' -and $rules -match 'NEEDS-OWNER/BLOCKED') 'without owner_name the rules do not fall back to the owner'
         Check (@(Get-Calls $fx '').Count -eq 0) '-ShowCoordinatorArgs called the CLI'
     }
+
+    Invoke-Scenario '12 CodexWake: off until enrolled; enrolling wakes nothing; each new item wakes the thread once' {
+        $fx = New-Fixture 'cx1'
+        Initialize-Fixture $fx
+        $t = Join-Path $fx.mb 'tasks\T-BASE'
+        # An item for the planner before CodexWake is on: listed only.
+        Write-Text "$t\questions.md" (Get-Questions @(2))
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ($r.code -eq 0) "-Once exit code $($r.code)"
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 0) 'Codex was woken although CodexWake was never enrolled'
+        Check ($r.out -match 'CodexWake=NOT_CONFIGURED') 'the relay did not say that CodexWake is off'
+        # Enrolling: the thread's folder comes from its first line; the item that already waits counts as known.
+        $r = Invoke-Relay $fx 'EnrollCodex' @{ ThreadId = $fx.tid }
+        Check ($r.code -eq 0) "-EnrollCodex exit code $($r.code): $(Get-Tail $r.out)"
+        $cf = Join-Path $fx.mb '.relay\codex.json'
+        if (Test-Path -LiteralPath $cf) {
+            $cj = ConvertFrom-Json -InputObject (Read-Shared $cf)
+            Check ($cj.thread_id -eq $fx.tid) "codex.json thread_id is '$($cj.thread_id)'"
+            Check ($cj.cwd -eq $fx.planner) "codex.json cwd is '$($cj.cwd)', want the thread's folder $($fx.planner)"
+        } else { Check $false '-EnrollCodex did not write .relay\codex.json' }
+        $r = Invoke-Relay $fx 'EnrollCodex' @{ ThreadId = 'ffffffff-ffff-4fff-8fff-ffffffffffff' }
+        Check ($r.code -ne 0 -and $r.out -match 'No Codex thread') '-EnrollCodex accepted a thread that does not exist'
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 0) 'enrolling woke Codex for an item that was already waiting'
+        # A new item: the dry run shows the command; -Once wakes the thread exactly once.
+        Write-Text "$t\status.md" "# Status - T-BASE`r`n`r`n**Current state:** IN_REVIEW (handoff written)`r`n"
+        Write-Text "$t\handoff.md" "# Handoff - T-BASE`r`n`r`n- Result: ready for review.`r`n"
+        $r = Invoke-Relay $fx 'DryRun' $null
+        Check ($r.out -match 'would wake Codex thread') 'the dry run did not report the Codex wake'
+        Check ($r.out -match ('exec --json --skip-git-repo-check resume ' + $fx.tid)) 'the dry run did not show the codex exec resume command'
+        Check (@(Get-CodexCalls $fx '').Count -eq 0) 'the dry run called the Codex stub'
+        $r1 = Invoke-Relay $fx 'Once' $null
+        $r2 = Invoke-Relay $fx 'Once' $null
+        Check ($r1.code -eq 0 -and $r2.code -eq 0) "-Once exit codes $($r1.code)/$($r2.code)"
+        $s = @(Get-CodexCalls $fx 'start')
+        Check ($s.Count -eq 1) "expected 1 Codex call, got $($s.Count)"
+        if ($s.Count -ge 1) {
+            $c = $s[0]
+            Check ($c.thread -eq $fx.tid) "woke thread '$($c.thread)' instead of the enrolled one"
+            Check ($c.exec -and $c.json -and $c.skip_git -and -not $c.last -and -not $c.bypass) 'unsafe or missing Codex options (want exec --json --skip-git-repo-check; never --last or a sandbox bypass)'
+            Check ($c.prompt -match 'T-BASE' -and $c.prompt -match 'IN_REVIEW') 'the notice does not name the T-BASE handoff in review'
+            Check ($c.prompt -notmatch 'Q2') 'the notice repeats the item that was already waiting before enrollment'
+            Check ([bool]$c.key_absent) 'the Codex turn inherited an OpenAI or Codex API key'
+            # Only the end of each path is compared: Windows may show the temp folder in its short 8.3 form.
+            Check ([string]$c.cwd -like '*\cx1\planner') "the Codex turn ran in '$($c.cwd)', not in the thread's folder"
+            Check ([string]$c.codex_home -like '*\cx1\codex-home') "CODEX_HOME was '$($c.codex_home)', not the Codex home folder"
+        }
+        Check (@(Get-CodexCalls $fx 'login').Count -ge 1) 'the relay did not check the Codex sign-in first'
+        Check ((Get-RolloutNotices $fx) -eq 1) 'the thread file does not hold exactly one notice'
+        $n = @(Get-CodexNotes $fx | Where-Object { $_.key -like 'T-BASE/handoff@*' })
+        Check ($n.Count -eq 1 -and $n[0].state -eq 'completed') 'the Codex item is not recorded once as completed'
+        $d = @(Get-CodexDispatches $fx)
+        Check ($d.Count -eq 1 -and $d[0].outcome -eq 'success') 'the Codex wake is not recorded once with outcome success'
+        $r = Invoke-Relay $fx 'Status' $null
+        Check ($r.out -match 'CodexWake: ON' -and $r.out -match '1/12 Codex wakes') 'status does not show CodexWake on with 1/12 wakes'
+        $leak = @(Get-ChildItem -LiteralPath $fx.dir -Recurse -File | Select-String -SimpleMatch $DummyOpenAiKey -List)
+        Check ($leak.Count -eq 0) ('the OpenAI key text was written to: ' + (($leak | ForEach-Object { $_.Path }) -join ', '))
+        # Off again: no more wakes, and Claude-owned writes never woke the coordinator.
+        $r = Invoke-Relay $fx 'UnenrollCodex' $null
+        Check ($r.code -eq 0 -and -not (Test-Path -LiteralPath $cf)) '-UnenrollCodex did not remove codex.json'
+        Write-Text "$t\questions.md" (Get-Questions @(2, 3))
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 1) 'Codex was woken after -UnenrollCodex'
+        Check (@(Get-Calls $fx 'start').Count -eq 0) 'Claude-owned writes woke the coordinator'
+    }
+
+    Invoke-Scenario '13 CodexWake waits while another program holds the thread, during a coordinator turn, and during a running wake' {
+        $fx = New-Fixture 'cx2'
+        Initialize-Fixture $fx
+        $r = Invoke-Relay $fx 'EnrollCodex' @{ ThreadId = $fx.tid }
+        if ($r.code -ne 0) { throw "-EnrollCodex failed (exit $($r.code)): $(Get-Tail $r.out)" }
+        $t = Join-Path $fx.mb 'tasks\T-BASE'
+        # Another program holds the thread's writer lock, as the Codex app does for every thread it opened.
+        $lock = Join-Path $fx.codex ('thread-writer-locks\' + $fx.tid + '.lock')
+        Write-Text $lock ''
+        $held = [IO.File]::Open($lock, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try {
+            Write-Text "$t\questions.md" (Get-Questions @(2))
+            $r = Invoke-Relay $fx 'Once' $null
+            Check ($r.out -match 'another Codex program has thread') 'the relay did not report the thread as open in another Codex program'
+            Check (@(Get-CodexCalls $fx 'start').Count -eq 0) 'Codex was woken while another program held the thread'
+        } finally { $held.Dispose() }
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 1) 'Codex was not woken after the other program let go of the thread'
+        # A coordinator turn is running: the planner waits until it ends.
+        Set-StubMode $fx 'sleep:12'
+        Write-Text (Join-Path $fx.mb 'tasks\T-NEW\assignment.md') $NewAssignment
+        $null = Invoke-Relay $fx 'Once' @{ NoWait = $true }
+        Check (Wait-Until { (Get-RunningStubs $fx) -eq 1 } 15) 'the coordinator turn did not start'
+        Write-Text "$t\questions.md" (Get-Questions @(2, 3))
+        $r = Invoke-Relay $fx 'Once' @{ NoWait = $true }
+        if ((Get-RunningStubs $fx) -ne 1) { throw 'timing: the 12 s coordinator turn ended before the check; re-run on a less loaded machine' }
+        Check ($r.out -match 'coordinator turn is still running') 'the Codex wake did not wait for the coordinator turn'
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 1) 'Codex was woken during a coordinator turn'
+        Check (Wait-Until { (Get-RunningStubs $fx) -eq 0 } 40) 'the coordinator turn did not end'
+        Set-StubMode $fx 'ok'
+        # A running wake: the next item waits for it; never a second Codex process.
+        Set-CodexStubMode $fx 'sleep:12'
+        $null = Invoke-Relay $fx 'Once' @{ NoWait = $true }
+        Check (Wait-Until { (Get-RunningCodexStubs $fx) -eq 1 } 15) 'the Codex wake for Q3 did not start'
+        Write-Text "$t\questions.md" (Get-Questions @(2, 3, 4))
+        $r = Invoke-Relay $fx 'Once' @{ NoWait = $true }
+        if ((Get-RunningCodexStubs $fx) -ne 1) { throw 'timing: the 12 s Codex turn ended before the check; re-run on a less loaded machine' }
+        Check ($r.out -match 'Codex wake C\S+ is still running') 'the relay did not report the running Codex wake'
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 2) 'a second Codex process started while a wake was running'
+        Check (Wait-Until { (Get-RunningCodexStubs $fx) -eq 0 } 40) 'the running Codex wake did not end'
+        Set-CodexStubMode $fx 'ok'
+        $null = Invoke-Relay $fx 'Once' $null
+        $null = Invoke-Relay $fx 'Once' $null
+        $s = @(Get-CodexCalls $fx 'start')
+        Check ($s.Count -eq 3) "expected 3 Codex calls in total, got $($s.Count)"
+        if ($s.Count -eq 3) {
+            Check ($s[1].prompt -match 'Q3' -and $s[1].prompt -notmatch 'Q2') 'the second wake was not exactly the Q3 item'
+            Check ($s[2].prompt -match 'Q4' -and $s[2].prompt -notmatch 'Q3') 'the follow-up wake was not exactly the queued Q4 item'
+        }
+        Check (Test-NoOverlap $fx -Codex) 'two Codex processes were alive at the same time'
+    }
+
+    Invoke-Scenario '14 CodexWake errors back off and stop only the Codex direction; ChatGPT sign-in only; a different thread id stops it' {
+        $fx = New-Fixture 'cx3'
+        Initialize-Fixture $fx
+        $r = Invoke-Relay $fx 'EnrollCodex' @{ ThreadId = $fx.tid }
+        if ($r.code -ne 0) { throw "-EnrollCodex failed (exit $($r.code)): $(Get-Tail $r.out)" }
+        $t = Join-Path $fx.mb 'tasks\T-BASE'
+        Set-CodexStubMode $fx 'fail'
+        Write-Text "$t\questions.md" (Get-Questions @(2))
+        $loop = Start-Relay $fx 'Start' @{ BackoffSeconds = 2 }
+        $halted = Wait-Until { $st = Get-RelayState $fx; [bool]($st -and $st.codex_halt) } 60
+        Start-Sleep -Seconds 4   # a tight retry loop would add calls here
+        Check (Stop-Loop $fx $loop) 'the loop did not stop on -Stop'
+        Check $halted 'Codex wakes did not stop after repeated errors'
+        $s = @(Get-CodexCalls $fx 'start')
+        Check ($s.Count -eq 3) "expected exactly 3 Codex attempts (MaxFailures 3), got $($s.Count)"
+        if ($s.Count -ge 3) {
+            $g1 = [int64]$s[1].t - [int64]$s[0].t
+            $g2 = [int64]$s[2].t - [int64]$s[1].t
+            Check ($g1 -ge 900 -and $g2 -ge 2900) "Codex retries not backed off (gaps $g1 ms and $g2 ms; want >= 900 and >= 2900)"
+        }
+        $st = Get-RelayState $fx
+        Check (-not $st.halt) 'a Codex failure stopped the coordinator direction'
+        Check (@(Get-CodexNotes $fx | Where-Object { $_.state -eq 'pending' }).Count -eq 1) 'the undelivered Codex item was not kept pending'
+        Check ((Get-RolloutNotices $fx) -eq 0) 'a failed attempt reached the thread file'
+        Check ((Read-Shared (Join-Path $fx.mb '.relay\alerts.md')) -match 'Codex wakes stopped') 'no alert says that Codex wakes stopped'
+        # Claude wakes go on while Codex wakes are stopped.
+        Write-Text (Join-Path $fx.mb 'tasks\T-NEW\assignment.md') $NewAssignment
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-Calls $fx 'start').Count -eq 1) 'stopped Codex wakes also stopped the coordinator wake'
+        # Signed in with an API key: refused before any turn.
+        $r = Invoke-Relay $fx 'ClearHalt' $null
+        Check ($r.code -eq 0 -and $r.out -match 'Codex wake halt cleared') "-ClearHalt did not clear the Codex halt (exit $($r.code))"
+        Set-CodexStubMode $fx 'api-key'
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 3) 'Codex was started although it is signed in with an API key'
+        $d = @(Get-CodexDispatches $fx)
+        Check ($d.Count -ge 1 -and $d[-1].state -eq 'failed' -and [string]$d[-1].error -match 'ChatGPT') 'the API-key sign-in was not refused with a ChatGPT message'
+        # A wake that runs in a different thread: delivered, but Codex wakes stop.
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        Set-CodexStubMode $fx 'wrong-thread'
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 4) 'the wrong-thread wake did not run'
+        $st = Get-RelayState $fx
+        Check ([string]$st.codex_halt -match 'mismatch') 'a wake that ran in a different thread did not stop Codex wakes'
+        Check (-not $st.halt) 'the thread mismatch stopped the coordinator direction'
+    }
 } catch {
     $script:Fail++
     Write-Host ('FAIL harness: ' + $_.Exception.Message)
 } finally {
+    if ($null -ne $PreviousOpenAiKey) { $env:OPENAI_API_KEY = $PreviousOpenAiKey } else { Remove-Item Env:OPENAI_API_KEY -ErrorAction SilentlyContinue }
     Remove-Item Env:RELAY_STUB_DIR -ErrorAction SilentlyContinue
     Remove-Item Env:RELAY_STUB_CONFIG_DIR -ErrorAction SilentlyContinue
     $left = Stop-Leftovers

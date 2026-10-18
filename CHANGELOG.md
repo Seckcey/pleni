@@ -15,6 +15,13 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- The mailbox relay can wake the planner's Codex thread, so the planner and the coordinator keep
+  each other going without the Codex app. It is off until you turn it on with
+  `bridge-relay.ps1 -EnrollCodex -ThreadId <id>`. Then each new item for the planner (a question
+  that blocks the coordinator, or a handoff ready for review) wakes that thread once, with
+  `codex exec resume`. It waits while the Codex app or a window has the thread open, and while a
+  coordinator turn runs. It uses your ChatGPT sign-in, never an API key, and has its own daily limit
+  and its own stop after repeated errors.
 - More under Needs you from the mailbox: a new note for you in a `NEEDS-<NAME>.md` file, the
   relay's alerts from `.relay/alerts.md`, and a relay that is paused or halted, with what to do
   about it.
