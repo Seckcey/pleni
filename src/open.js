@@ -294,7 +294,7 @@ export function processAlive(pid) {
 }
 
 // %SystemRoot% when it is a plain folder such as C:\Windows, else C:\Windows itself.
-function plainWindowsDir(systemRoot) {
+export function plainWindowsDir(systemRoot) {
   return typeof systemRoot === 'string' && PLAIN_WINDOWS_DIR.test(systemRoot) ? systemRoot.replace(/\\+$/, '') : 'C:\\Windows';
 }
 
@@ -308,7 +308,7 @@ function modifiedAt(file) {
 
 // cmd.exe cannot start in a network folder (\\server\share): it would fall back to the Windows
 // folder, and the session would then work in the wrong place.
-function folderProblem(dir, platform) {
+export function folderProblem(dir, platform) {
   if (typeof dir !== 'string' || !dir) return OPEN_MESSAGES.noFolder;
   if (platform === 'win32' && /^[\\/]{2}/.test(dir)) return OPEN_MESSAGES.network;
   try {
@@ -319,7 +319,7 @@ function folderProblem(dir, platform) {
 }
 
 // Resolves true once cmd.exe has started, false if it could not.
-function launch(spawn, file, args, options) {
+export function launch(spawn, file, args, options) {
   return new Promise((resolve) => {
     let child;
     try {

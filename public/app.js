@@ -63,7 +63,7 @@ const DEFAULTS = {
   projects: {},
   chain: [],
   remote: { hosts: [], tailscaleUsers: [] },
-  actions: { openTerminal: false },
+  actions: { openTerminal: false, rollover: false },
   alerts: { stoppedMinutes: 15 },
 };
 
@@ -248,7 +248,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-roll', 'data-copy', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -1963,6 +1963,7 @@ function renderDrawerParts() {
   const sub = n ? [rankLine(n), isSession(n) ? modelText(n) : ''].filter(Boolean).join(' · ') : '';
   if ($('#drawer-sub').textContent !== sub) $('#drawer-sub').textContent = sub;
   setHtml($('#drawer-status'), drawerStatusHtml(n));
+  if (d.roll && !d.roll.loading && Date.now() - d.roll.at > ROLL_REFRESH_MS) rollLoad();
   paintPlace(n, d);
   paintWatch(n);
   paintMoved();
@@ -2106,6 +2107,7 @@ function sessionNowHtml(n, d) {
     out.push(`<p class="dnow"><b>${esc(now.label)}:</b> ${doingHtml(now)}</p>`);
   }
   out.push(openHtml(n));
+  out.push(rollHtml(n, d));
   if (isWorkerKey(d.key)) {
     out.push('<p class="empty">This worker keeps no session file.</p>');
     return out.join('');
@@ -2142,6 +2144,93 @@ function openHtml(n) {
     ? `This helper works inside "${t.title}". Open that session to watch it and type to it.`
     : 'Opens a new PowerShell window where you can see this conversation and type to it.';
   return `<div class="dopen"><button type="button" class="btn" data-open="${esc(t.key)}" data-title="${esc(t.title)}" aria-describedby="d-open-help">${esc(label)}</button><p class="help" id="d-open-help">${esc(help)}</p></div>`;
+}
+
+// ---- Roll over ----
+
+const ROLL_KEY = /^(claude|codex):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const ROLL_REFRESH_MS = 5000; // how often the open section asks again whether the handoff note is there
+
+// Roll over is for a main Claude Code session or Codex thread, on this computer, when it is on.
+function canRoll(n) {
+  return !!n && LOCAL_PAGE && !!(S.snap && S.snap.actions && S.snap.actions.rollover) && n.kind === 'session' && ROLL_KEY.test(n.key);
+}
+
+function rollHtml(n, d) {
+  if (!canRoll(n)) return '';
+  const r = d.roll;
+  if (!r) {
+    return (
+      '<div class="droll"><button type="button" class="btn" data-roll="open" aria-describedby="d-roll-help">Roll over…</button>' +
+      '<p class="help" id="d-roll-help">Start a fresh session with the same name. It picks up from a handoff note, so it stays quick and costs less than a long one.</p></div>'
+    );
+  }
+  let body;
+  if (r.error) body = `<p class="empty">${esc(r.error)}</p>`;
+  else if (!r.info) body = '<p class="empty">Loading…</p>';
+  else if (r.info.problem) body = `<p class="empty">${esc(r.info.problem)}</p>`;
+  else body = rollStepsHtml(n, r);
+  return (
+    '<section class="droll open" aria-labelledby="d-roll-title">' +
+    '<div class="droll-head"><h3 id="d-roll-title" tabindex="-1">Roll over</h3><button type="button" class="btn" data-roll="close">Close</button></div>' +
+    body +
+    '</section>'
+  );
+}
+
+function rollStepsHtml(n, r) {
+  const i = r.info;
+  const codex = n.platform === 'codex';
+  const exit = codex ? '/quit' : '/exit';
+  const found = rollFound(n, i.name);
+  const msg = (step) => {
+    const m = r.msg[step];
+    return `<p class="roll-msg${m && m.bad ? ' bad' : ''}">${m ? esc(m.text) : ''}</p>`;
+  };
+  const note = isTime(i.handoffAt)
+    ? `Pleni sees <code>${esc(i.file)}</code> in the session's folder, written ${agoHtml(i.handoffAt)}.`
+    : `Pleni does not see <code>${esc(i.file)}</code> in the session's folder yet.`;
+  const copy = (which, what) => `<button type="button" class="btn" data-copy="${which}">Copy ${what}</button>`;
+  const check = found
+    ? `<p>New session found: <button type="button" class="linkish" data-node="${esc(found.key)}">${esc(titleOf(found))}</button>, started ${agoHtml(found.startedAt)}.` +
+      `${found.parent === 'relay' ? ' The relay now wakes it.' : ''}</p>`
+    : '<p>Pleni has not found the new session yet.</p>';
+  return (
+    `<p class="note">The new session gets the name <b>${esc(i.name)}</b> and works in the same folder. It starts by reading a handoff note that this session writes first.</p>` +
+    '<ol class="roll-steps">' +
+    '<li><h4>Ask for a handoff note</h4>' +
+    `<p>Pleni opens this session in a new PowerShell window and sends it this message:</p><blockquote class="roll-text">${esc(i.ask)}</blockquote>` +
+    `<div class="roll-btns"><button type="button" class="btn primary" data-roll="ask">Ask in PowerShell</button>${copy('ask', 'the message')}</div>` +
+    msg('ask') +
+    `<p class="help">${note} If this session is open in an app, paste the message there instead.</p></li>` +
+    `<li><h4>Close the old session</h4><p>When the note is written, type <code>${exit}</code> in that window.</p></li>` +
+    '<li><h4>Start the new session</h4>' +
+    `<p>Pleni opens a new PowerShell window in the same folder${codex ? '' : ', with the same name,'} and sends this message:</p><blockquote class="roll-text">${esc(i.start)}</blockquote>` +
+    `<div class="roll-btns"><button type="button" class="btn primary" data-roll="start">Start in PowerShell</button>${copy('start', 'the message')}</div>` +
+    msg('start') +
+    (codex
+      ? `<p>Then give it the name: type <code>${esc(i.rename)}</code> in the new window.</p><div class="roll-btns">${copy('rename', 'the name command')}</div>${msg('rename')}`
+      : '') +
+    '</li>' +
+    `<li><h4>Check</h4>${check}<p class="help">${
+      codex
+        ? 'When the new thread says it is ready, keep working in its window, or type <code>/quit</code> and open the thread in the Codex app. You can archive the old thread there too.'
+        : 'When the new session says it is ready, type <code>/exit</code> in its window. A script such as the mailbox relay cannot see that window, and two programs writing one session would mix up its messages.'
+    } Pleni and the relay find it by its name.</p></li>` +
+    '</ol>'
+  );
+}
+
+// The newest other session of the same tool with this name, started after this one.
+function rollFound(n, name) {
+  const want = String(name || '').trim().toLowerCase();
+  let best = null;
+  for (const m of (S.snap && S.snap.nodes) || []) {
+    if (m.key === n.key || m.platform !== n.platform || m.kind !== 'session' || !isTime(m.startedAt)) continue;
+    if (String(m.title || '').trim().toLowerCase() !== want || (isTime(n.startedAt) && m.startedAt <= n.startedAt)) continue;
+    if (!best || m.startedAt > best.startedAt) best = m;
+  }
+  return best;
 }
 
 function groupNowHtml(n) {
@@ -2642,6 +2731,90 @@ async function openInWindow(btn) {
   }
 }
 
+// Roll over: the section in a session's side panel. Pleni builds both messages; the page only
+// shows them and says which step to take.
+function rollClick(what) {
+  const d = S.drawer;
+  if (!d) return;
+  if (what === 'open') {
+    d.roll = { info: null, error: '', loading: false, at: 0, busy: '', msg: {} };
+    rollLoad();
+    renderDrawerParts();
+    $('#d-roll-title')?.focus();
+  } else if (what === 'close') {
+    d.roll = null;
+    renderDrawerParts();
+    $('#drawer [data-roll="open"]')?.focus();
+  } else if (what === 'ask' || what === 'start') {
+    rollStep(what);
+  }
+}
+
+async function rollLoad() {
+  const d = S.drawer;
+  const r = d && d.roll;
+  if (!r || r.loading) return;
+  r.loading = true;
+  try {
+    const info = await getJson(`/api/rollover?key=${encodeURIComponent(d.key)}`);
+    r.info = info;
+    r.error = '';
+  } catch (err) {
+    r.error = plainError(err);
+  } finally {
+    r.loading = false;
+    r.at = Date.now();
+    if (S.drawer === d && d.roll === r) renderDrawerParts();
+  }
+}
+
+async function rollStep(step) {
+  const d = S.drawer;
+  const r = d && d.roll;
+  if (!r || !r.info || !r.info.name || r.busy) return;
+  r.busy = step;
+  r.msg[step] = { text: 'Opening a PowerShell window…' };
+  renderDrawerParts();
+  try {
+    await postJson('/api/rollover', { key: d.key, step, name: r.info.name });
+    r.msg[step] = {
+      text: step === 'ask'
+        ? 'A PowerShell window is opening with this session. Look for it on your taskbar, and watch it write the note.'
+        : 'A PowerShell window is opening with the new session. Look for it on your taskbar.',
+    };
+  } catch (err) {
+    r.msg[step] = { text: `Not opened. ${plainError(err)}`, bad: true };
+  } finally {
+    say(r.msg[step].text); // the message by the button is not a live region: it is rebuilt with the panel
+    r.busy = '';
+    if (S.drawer === d && d.roll === r) {
+      renderDrawerParts();
+      rollLoad();
+    }
+  }
+}
+
+const COPIED = { ask: 'Copied the message for the old session.', start: 'Copied the message for the new session.', rename: 'Copied the name command.' };
+
+// The page that can roll over runs on this computer, where the browser allows copying. The answer
+// shows under the step the button belongs to.
+async function rollCopy(which) {
+  const d = S.drawer;
+  const r = d && d.roll;
+  const text = r && r.info && r.info[which];
+  if (!text) return;
+  let said;
+  try {
+    await navigator.clipboard.writeText(text);
+    said = { text: COPIED[which] || 'Copied.' };
+  } catch {
+    said = { text: 'The browser did not allow copying. Select the text and copy it yourself.', bad: true };
+  }
+  r.msg[which] = said;
+  say(said.text);
+  if (S.drawer === d) renderDrawerParts();
+}
+
 // ---------------------------------------------------------------------------------------------
 // settings
 // ---------------------------------------------------------------------------------------------
@@ -3100,8 +3273,10 @@ function renderSettingsForm() {
       ${alertsRowHtml()}
     </section>
     <section class="panel" aria-labelledby="s-h-open"><h2 id="s-h-open">Open sessions</h2>
-      <p class="note">Pleni only looks, unless you turn this on. Then each Claude Code and Codex session's side panel gets an Open in PowerShell button. It opens a new PowerShell window in the session's folder and runs <code>claude --resume</code> or <code>codex resume</code> for it, so you can see the conversation and type to it. Pleni never types into a session itself.</p>
+      <p class="note">Pleni only looks, unless you turn these on. Open in PowerShell gives each Claude Code and Codex session's side panel a button that opens a new PowerShell window in the session's folder and runs <code>claude --resume</code> or <code>codex resume</code> for it, so you can see the conversation and type to it. It never types into a session itself.</p>
       ${checkRow('s-open', 'Open in PowerShell', 'actions.openTerminal', 'Show the Open in PowerShell button', 'It works only on Windows, and only on this computer, not from another device. Pleni will not open a session that is already open in another window.')}
+      <p class="note">Roll over starts a fresh session that takes over from a long one. It asks the old session to write a handoff note, then starts a new session with the same name that reads the note first. Each step opens a PowerShell window and sends one short message. The side panel shows you each message before you click.</p>
+      ${checkRow('s-roll', 'Roll over', 'actions.rollover', 'Show the Roll over button', 'It works only on Windows, and only on this computer, for sessions that have a name of their own. It will not send to a session that is busy or open in another window.')}
       ${st.info.platform && st.info.platform !== 'win32' ? '<p class="note">This computer does not run Windows, so the button will not show here yet.</p>' : ''}
     </section>
     <section class="panel" aria-labelledby="s-h-remote"><h2 id="s-h-remote">Other devices</h2>
@@ -3407,6 +3582,8 @@ document.addEventListener('click', (ev) => {
   if (el.dataset.dismiss) return dismissNotice(el);
   if (el.id === 's-alerts-test') return testAlert();
   if (el.dataset.open) return openInWindow(el);
+  if (el.dataset.roll) return rollClick(el.dataset.roll);
+  if (el.dataset.copy) return rollCopy(el.dataset.copy);
   if (el.dataset.node) return openDrawer(el.dataset.node, el);
   if (el.dataset.listFilter) {
     S.listFilter = el.dataset.listFilter;

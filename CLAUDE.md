@@ -9,13 +9,14 @@ before you change code, and follow its names, shapes, and file paths.
   use a technical word, say what it means right after it.
 - **Zero dependencies.** Node.js 22.12 or newer, ES modules, `node:` built-ins only. Never add an
   npm package, not even a dev one. No build step.
-- **Read-only by design.** Pleni writes nowhere except its own settings file. It never stops or
-  sends anything to a session, and never writes into Claude Code's, Codex's, or a mailbox's
-  folders. The only programs it may start are for the opt-in Open in PowerShell button
-  (`src/open.js`, Windows only, this computer only): the window that runs `claude --resume` or
-  `codex resume` for the person to type into, and a hidden PowerShell that only asks when a
-  process started.
-  Sending work and approvals need their own design first.
+- **Read-only by design.** Pleni writes nowhere except its own settings file. It never stops a
+  session, and never writes into Claude Code's, Codex's, or a mailbox's folders. It sends nothing
+  to a session except Roll over's two fixed messages (`src/rollover.js`), each in a window the
+  person sees, after a click. The only programs it may start are for the opt-in Open in PowerShell
+  and Roll over buttons (`src/open.js`, `src/rollover.js`, Windows only, this computer only): a
+  window that runs `claude --resume`, `codex resume`, `claude --name` or `codex` for the person to
+  type into, and a hidden PowerShell that only asks when a process started.
+  Sending other work, free text, and approvals need their own design first.
 - **The relay is separate.** The `relay/` folder holds the mailbox relay: a Windows PowerShell
   program that writes into a mailbox and starts Claude Code sessions. It is not part of Pleni.
   Pleni never runs it, and it is not in the npm package. Read `relay/README.md` before you change

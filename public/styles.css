@@ -758,6 +758,27 @@ table.models .auto { display: block; margin-top: var(--ui-space-1); font-size: v
 .dwatch-msg { margin: 0; font-size: var(--ui-font-md); color: var(--ui-text-secondary); }
 .dwatch-msg:not(:empty) { margin-top: var(--ui-space-3); }
 .dopen .help { margin: var(--ui-space-2) 0 0; font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+.droll { max-width: 640px; margin-top: var(--ui-space-5); }
+.droll .help { margin: var(--ui-space-2) 0 0; font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+.droll.open { padding: var(--ui-space-4) var(--ui-space-5) var(--ui-space-5); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-md); }
+.droll-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ui-space-5); }
+.droll-head h3 { margin: 0; font-size: var(--ui-font-md); }
+.droll-head .btn { flex: none; min-height: 32px; padding: 0 var(--ui-space-5); }
+.droll .note { margin: var(--ui-space-3) 0 0; }
+.roll-steps { margin: var(--ui-space-4) 0 0; padding-left: var(--ui-space-7); }
+.roll-steps > li { margin-top: var(--ui-space-5); }
+.roll-steps h4 { margin: 0; font-size: var(--ui-font-md); }
+.roll-steps p { margin: var(--ui-space-2) 0 0; font-size: var(--ui-font-md); color: var(--ui-text-secondary); overflow-wrap: anywhere; }
+/* The exact message a step sends, so the person reads it before clicking. */
+.roll-text {
+  margin: var(--ui-space-3) 0 0; padding: var(--ui-space-3) var(--ui-space-4); background: var(--ui-surface-sunken);
+  border-left: 3px solid var(--ui-accent); border-radius: var(--ui-radius-sm); font-size: var(--ui-font-md); overflow-wrap: anywhere;
+}
+.roll-btns { display: flex; flex-wrap: wrap; gap: var(--ui-space-3); margin-top: var(--ui-space-3); }
+.roll-msg { margin: var(--ui-space-2) 0 0; font-size: var(--ui-font-md); color: var(--ui-text-secondary); }
+.roll-msg:empty { display: none; }
+.roll-msg.bad { color: var(--ui-error-text); }
+.linkish { padding: 0; border: 0; background: none; color: var(--ui-accent); font: inherit; text-decoration: underline; cursor: pointer; }
 .dplace > label { display: block; margin-bottom: var(--ui-space-2); font-weight: var(--ui-weight-semibold); font-size: var(--ui-font-md); }
 .dplace .help { margin: var(--ui-space-2) 0 0; font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
 .dplace-done { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3) var(--ui-space-5); margin: 0; font-size: var(--ui-font-md); color: var(--ui-text-secondary); }

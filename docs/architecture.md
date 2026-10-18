@@ -4,12 +4,15 @@ Pleni ("Plenipo Browser") is a small local web app. It reads the session files t
 Codex already write on your computer, works out who is working on what, and shows it live in your
 browser as an organization map with the hand-offs between agents drawn as moving lines.
 
-Version 0.1 only **watches**. It never stops, sends to or changes a session, and it never writes
-into Claude Code's, Codex's or a mailbox's folders. The one thing it may start is a window the
-person asks for: with **Open in PowerShell** turned on (off by default, Windows only), a button
-opens a PowerShell window that runs `claude --resume` or `codex resume` for one Claude Code session
-or Codex thread, and the person types there (see `src/open.js` below). Sending work and approving actions come later and will get
-their own design.
+Version 0.1 mostly **watches**. It never stops or changes a session, and it never writes into
+Claude Code's, Codex's or a mailbox's folders. What it may start is a window the person asks for:
+with **Open in PowerShell** turned on (off by default, Windows only), a button opens a PowerShell
+window that runs `claude --resume` or `codex resume` for one Claude Code session or Codex thread,
+and the person types there (see `src/open.js` below). With **Roll over** turned on (also off by
+default), two buttons open such windows with one fixed message each, which the page shows first:
+a request to the old session to write a handoff note, and the first message of a new session with
+the same name (see `src/rollover.js` below). Sending other work and approving actions come later
+and will get their own design.
 
 ## Ground rules
 
@@ -21,7 +24,8 @@ their own design.
 - **Only the person who started it.** Every account on the computer can reach `127.0.0.1`, so the
   API also needs a random key made at each start and printed in Pleni's address (see Server).
 - **Read-only.** Pleni reads; it does not write anywhere except its own settings file. It starts no
-  program except the opt-in Open in PowerShell window, and only when the person clicks for it.
+  program except the opt-in Open in PowerShell and Roll over windows, and only when the person
+  clicks for one. The only messages it sends are Roll over's two fixed ones.
 - **Private by default.** Nothing leaves the computer. No telemetry, no network calls. The page shows
   short snippets of session text only when `content` is `"snippets"` (the default); `"none"` shows
   only tool names and states.
@@ -44,6 +48,7 @@ src/sources/mailbox.js  optional coordination mailbox (task folders of Markdown 
 src/model.js            builds the snapshot the page draws (nodes, edges, events)
 src/store.js            owns the sources, polls them, caches the snapshot
 src/open.js             Open in PowerShell: a Claude Code session or Codex thread in a new window (opt-in, Windows)
+src/rollover.js         Roll over: a handoff note from a long session, then a new one with its name (opt-in, Windows)
 src/demo.js             synthetic, moving demo data (no files needed)
 src/server.js           HTTP server, security gate, routes
 public/index.html       the page (no inline script or style)
@@ -83,7 +88,7 @@ export const DEFAULTS = {
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
-  actions: { openTerminal: false },                    // the Open in PowerShell button; true only when set to true
+  actions: { openTerminal: false, rollover: false },   // the Open in PowerShell and Roll over buttons; each true only when set to true
   alerts: { stoppedMinutes: 15 },                      // a watched tile counts as stopped after this long without work
 }
 // Role = 'superintendent' | 'coordinator' | 'lead' | 'worker' | 'hidden'
@@ -381,7 +386,7 @@ Snapshot = {
   nodes: Node[], edges: Edge[], events: Event[], counts: { working, ready, idle, done, error, total },
   attention: [{ id: '<key>|<kind>', key, kind, text, at }],  // at is 0 when unknown
   tasks: MailboxState['tasks'] | null,
-  actions: { openTerminal: boolean },  // the page may show Open in PowerShell (setting on, Pleni on Windows)
+  actions: { openTerminal: boolean, rollover: boolean },  // the page may show each button (setting on, Pleni on Windows)
 }
 SourceInfo = { enabled, ok, error, count }
 Node = {
@@ -470,14 +475,15 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
 ```js
 export function createStore({ settings, roots, demo = false, now = Date.now, stateDir = null, platform = process.platform })
 // -> { snapshot(): Snapshot, detail(key, since), reload(settings, roots), close(), dismiss(id, at),
-//      session(key): { id, cwd, status, entrypoint, kind } | null, demo: boolean }
+//      session(key): { id, cwd, status, entrypoint, kind, title, titleSource } | null, demo: boolean }
 ```
 
 Creates the enabled sources (or the demo source), polls at most every 2 s on demand, caches the
 snapshot with its JSON and its ETag, and rebuilds when settings change. `snapshot().actions.openTerminal`
-is `settings.actions.openTerminal` and `platform === 'win32'`. `session(key)` gives what the newest
-poll knows about a top-level Claude Code session or a Codex thread (`{ id, cwd, status, entrypoint,
-kind }`) for Open in PowerShell, and `null` for anything else and in the demo. The ETag is
+is `settings.actions.openTerminal` and `platform === 'win32'`, and `actions.rollover` the same for
+`settings.actions.rollover`. `session(key)` gives what the newest poll knows about a top-level
+Claude Code session or a Codex thread (`{ id, cwd, status, entrypoint, kind, title, titleSource }`)
+for Open in PowerShell and Roll over, and `null` for anything else and in the demo. The ETag is
 `snapshotTag(snapshot)` from `src/model.js`: `W/"<sha1 of the JSON with now set to 0>"`. `now`
 changes on every build, and the page needs it only to allow for a clock difference, so a snapshot
 that changed only its time keeps its ETag and the page's poll gets `304`.
@@ -555,6 +561,65 @@ export function openLimits()                              // -> { take(key, now)
   gets that variable set to it; otherwise the environment is passed on unchanged, because naming
   Claude Code's usual folder there is not the same as leaving it unset.
 
+## Roll over (`src/rollover.js`)
+
+Starts a fresh session that takes over from a long one, so the work stays quick and costs less. It
+is off until the person turns it on (`actions.rollover`), works only on Windows for now, and the
+server allows it only for a request made on this computer. It has two steps, each a PowerShell
+window the person sees. Unlike Open in PowerShell, each window sends one message, but only a fixed
+one that Pleni builds from the session's own name and that the page shows before the click.
+
+```js
+export function rolloverPlan(tool, session)   // -> { name, problem, file, ask, start, rename }
+export function rolloverInfo({ key, settings, store, platform, stat }) // -> { ok: true, info: { ...plan, handoffAt } } | { ok: false, status, error }
+export async function rollover({ key, step, name, settings, roots, store, limits, platform, env, home, spawn, now, isAlive, isLocked, processStarts })
+// -> { ok: true } | { ok: false, status, error }   (error is a plain sentence)
+export function ownName(tool, session)         // the name the tool keeps for the session, or null
+export function nameProblem(name)              // why the name cannot go on a command line, or null
+export function handoffFile(name)              // 'HANDOFF-<name in lower case, a-z0-9 and dashes, ≤40>.md'
+export function askText(file), startText(name, file)
+export function claudeRollProblem(step, session, processes), codexRollProblem(step, session, locked)
+export function rollCommand(tool, step, { id, name, text }, systemRoot) // -> { file, args }
+```
+
+- **What can be rolled over:** a main session on the map: `claude:<session id>` or
+  `codex:<thread id>` with kind `session` (not a helper or a reviewer), and not in the demo. It
+  needs a name the person gave it, because the new session takes that name and the relay and
+  chain rules find sessions by name: a Claude Code `custom-title` or `agent-name` record (from
+  `/rename` or `--name`), or a Codex `session_index.jsonl` thread name. A title the tool made up
+  (`ai-title`) does not count. The name must be at most 80 characters of letters, digits, spaces
+  and `. _ - # + * ,`, start with a letter, a digit or `*`, and hold a letter or digit: these marks
+  are plain text to cmd.exe inside double quotes, to PowerShell inside single quotes, and to the
+  `.cmd` files npm makes. Otherwise the page says how to rename it.
+- **The handoff note** is `handoffFile(name)` in the session's own folder, for example
+  `HANDOFF-sergeant-ada.md`. The old session writes it; Pleni never writes or reads it, and only
+  asks for its time (`handoffAt`, from `fs.statSync`, a file only) so the page can say it is there.
+- **The messages** (letters, digits, spaces and `. _ - # + * , :` only, checked again in
+  `rollCommand`):
+  - ask: `Pleni roll over: a new session will take over your work. Write a handoff note for it in
+    <file> in this folder. Say what work is open and where it stands, what waits on whom, and what
+    else it must know. Do not commit the file. Then stop.`
+  - start: `Pleni roll over: you take over from the last session named <name>. First read <file>
+    in this folder. Then say in one line that you are ready.`
+- **The commands**, in the same `cmd.exe /d /s /c "start "<title>" "<powershell.exe>" -NoExit
+  -NoLogo -Command "<run>""` line as Open in PowerShell, spawned the same way in the session's
+  folder with `toolEnv`:
+  - ask: `claude --resume '<id>' '<ask>'`, or `codex resume '<id>' '<ask>'`;
+  - start: `claude --name '<name>' '<start>'`, or `codex '<start>'`. Codex cannot name a thread
+    when it starts, so the page shows `/rename <name>` for the person to type in the new window.
+- **One writer.** Asking resumes the old session, so it follows Open in PowerShell's checks
+  (`openProblem`, `codexProblem`), except that a live Claude Code background session is refused too:
+  the message must not land in a turn that is already running. A Claude desktop app or VS Code
+  session, and a Codex thread another program holds (most likely the Codex app), get "copy the
+  message and paste it there". Starting needs the old Claude Code session closed (no live process
+  of any kind, and not `working`): Claude Code gives a new session another name while one with the
+  same name still runs. A Codex thread only needs to not be `working`, because the Codex app holds
+  every thread it has opened.
+- **The name the page showed.** The step request carries the name; if the session's name changed
+  since, nothing starts ("look at the steps again"), so the message sent is the one the person saw.
+- **Limits** are Open in PowerShell's (`openLimits`, shared): asking takes the session's own
+  "just opened" slot, starting takes `start:<key>`.
+
 ## Server (`src/server.js`)
 
 ```js
@@ -608,7 +673,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `[a-z0-9._-]+`, extensions png, svg, ico, webp; resolved inside `public/brand` only),
   `GET /favicon.ico`, `GET /api/health`, `GET /api/snapshot` (weak ETag, `304` on match),
   `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`,
-  `POST /api/placement`, `POST /api/dismiss`, `POST /api/watch`, `POST /api/open`.
+  `POST /api/placement`, `POST /api/dismiss`, `POST /api/watch`, `POST /api/open`,
+  `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
 - `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
   them the same way (`snapshotTag`) for a store that did not.
@@ -632,6 +698,12 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `src/open.js` makes the rest of the checks and opens the window; it answers `{ ok: true }` or
   `{ error }` with the status it gives. `platform` and `spawnProcess` (a stand-in for
   `child_process.spawn`) let tests run this without opening anything.
+- **GET /api/rollover?key=<nodeKey>** needs the key cookie and, like `/api/open`, a request from this
+  computer (`403` otherwise). It answers `rolloverInfo`'s `{ name, problem, file, ask, start, rename,
+  handoffAt }`, or `{ error }` with its status. It starts nothing.
+- **POST /api/rollover** `{ key, step: 'ask' | 'start', name }` passes the same checks as
+  `/api/open`, then `rollover` in `src/rollover.js` makes the rest and opens the window. It answers
+  `{ ok: true }` or `{ error }` with the status it gives. Both share the server's `openLimits`.
 - `GET /api/settings` returns `{ settings, file, roots, nodes: [{ key, title, platform, kind }], platform }`,
   where the last `platform` is the server's `process.platform`.
 - JSON responses use `Content-Type: application/json; charset=utf-8`. Errors are `{ error }` with a
@@ -664,11 +736,22 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   Codex helper has an **Open in PowerShell** button that posts `/api/open`; a Claude Code helper's
   has **Open its session in PowerShell**, which opens the session it works inside. The answer shows
   in the status line under the tabs; a refusal fades after 20 seconds, so the button does not look
-  stuck once its reason has passed. Sessions and the relay have a **Tell me if this stops working**
+  stuck once its reason has passed. When `snapshot.actions.rollover` is true, on this computer, the
+  Now tab of a main Claude Code session or Codex thread has **Roll over…**. It opens a section that
+  asks `GET /api/rollover` (again every 5 seconds while open) and shows the four steps: the exact
+  ask message with **Ask in PowerShell** and **Copy the message**, closing the old session (`/exit`,
+  or `/quit` for Codex), the exact start message with **Start in PowerShell** and **Copy the
+  message** (plus `/rename <name>` and its copy button for Codex), and a check. Each button posts
+  `/api/rollover`; its answer shows under that step and is read out through the page's live region.
+  The check finds the newest other session of the same tool whose title is the name and that
+  started later, links to it, and says when the relay now wakes it (its parent is the relay
+  tile). It says whether the handoff note is there, and when it was written. A session without a
+  usable name shows the reason instead of the steps.
+  Sessions and the relay have a **Tell me if this stops working**
   box that posts `/api/watch`; Settings' own copy of the settings is updated too, so saving Settings
   later keeps it.
 - **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. The Open sessions
-  section turns Open in PowerShell on and says when the computer does not run Windows. The Alerts
+  section turns Open in PowerShell and Roll over on and says when the computer does not run Windows. The Alerts
   section sets `alerts.stoppedMinutes` and holds the Pop-ups box. Before saving, the page
   checks the form: whole numbers within the server's limits, full folder paths, host names, and
   Tailscale logins (`name@domain`), at most 20 of each. A bad field gets `aria-invalid="true"` and

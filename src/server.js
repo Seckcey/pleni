@@ -17,6 +17,7 @@ import {
 import { stripBom } from './jsonl.js';
 import { snapshotTag } from './model.js';
 import { openLimits, openSession } from './open.js';
+import { rollover, rolloverInfo } from './rollover.js';
 
 const BIND_HOST = '127.0.0.1';
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -90,6 +91,7 @@ const MESSAGES = {
   badWatch: 'Pleni could not read that. Only a session or the relay can be watched.',
   goneWatch: 'That tile is not on the map any more.',
   openRemote: 'A session can be opened in a window only on the computer that runs Pleni, not from another device.',
+  rollRemote: 'A session can be rolled over only on the computer that runs Pleni, not from another device.',
 };
 
 // A new random key.
@@ -255,6 +257,7 @@ async function handle(app, req, res) {
     if (pathname === '/api/dismiss') return postDismiss(app, req, res, host);
     if (pathname === '/api/watch') return postWatch(app, req, res, host);
     if (pathname === '/api/open') return postOpen(app, req, res, host);
+    if (pathname === '/api/rollover') return postRollover(app, req, res, host);
     return postSettings(app, req, res, host);
   }
   if (pathname.startsWith('/brand/')) return sendBrand(app, req, res, pathname.slice('/brand/'.length));
@@ -263,11 +266,12 @@ async function handle(app, req, res) {
   if (pathname === '/api/health') return sendJson(req, res, 200, { ok: true, version: app.version });
   if (pathname === '/api/snapshot') return sendSnapshot(app, req, res);
   if (pathname === '/api/session') return sendSession(app, req, res, new URLSearchParams(query));
+  if (pathname === '/api/rollover') return sendRollover(app, req, res, host, new URLSearchParams(query));
   return sendJson(req, res, 200, await settingsPayload(app, app.readSettings()));
 }
 
 function allowedMethods(pathname) {
-  if (pathname === '/api/settings') return ['GET', 'HEAD', 'POST'];
+  if (pathname === '/api/settings' || pathname === '/api/rollover') return ['GET', 'HEAD', 'POST'];
   if (['/api/placement', '/api/dismiss', '/api/watch', '/api/open'].includes(pathname)) return ['POST'];
   if (PAGE_FILES.has(pathname) || API_GET.has(pathname)) return READ_ONLY;
   if (/^\/brand\/[^/]+$/.test(pathname)) return READ_ONLY;
@@ -501,6 +505,37 @@ async function postOpen(app, req, res, host) {
   const state = app.readSettings();
   const result = await openSession({
     key: body.key,
+    settings: state.settings,
+    roots: state.roots ?? {},
+    store: app.store,
+    limits: app.opens,
+    platform: app.platform,
+    ...(app.spawnProcess ? { spawn: app.spawnProcess } : {}),
+  });
+  if (result.ok) return sendJson(req, res, 200, { ok: true });
+  return sendError(req, res, result.status, result.error);
+}
+
+// Roll over, one step at a time: GET /api/rollover?key=<key> answers what the page shows before
+// either step ({ name, problem, file, ask, start, rename, handoffAt }), and POST /api/rollover
+// { key, step: 'ask' | 'start', name } takes one step. Both work only on this computer, like Open in
+// PowerShell; src/rollover.js makes the other checks.
+function sendRollover(app, req, res, host, params) {
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.rollRemote);
+  const result = rolloverInfo({ key: params.get('key'), settings: app.readSettings().settings, store: app.store, platform: app.platform });
+  if (result.ok) return sendJson(req, res, 200, result.info);
+  return sendError(req, res, result.status, result.error);
+}
+
+async function postRollover(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.rollRemote);
+  const state = app.readSettings();
+  const result = await rollover({
+    key: body.key,
+    step: body.step,
+    name: body.name,
     settings: state.settings,
     roots: state.roots ?? {},
     store: app.store,

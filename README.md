@@ -216,6 +216,39 @@ Tip: to watch several sessions at once, start them in the background with
 `claude --bg --name "Sergeant" "<task>"`. Then `claude agents` lists them all in one window, and
 Pleni's button opens any one of them live.
 
+## Roll over a session
+
+A session that has run for days gets slow, and each turn costs more: the model reads the whole
+history again every time. Rolling it over starts a fresh session with the same name that picks up
+from a handoff note. On Windows, Pleni walks you through it. This is off until you turn it on:
+
+1. Open **Settings**. Under **Open sessions**, tick **Show the Roll over button**, then choose
+   **Save settings**.
+2. Click the session on the map. In its side panel, choose **Roll over…**.
+
+The section shows four steps, and the exact message of each step before you click:
+
+1. **Ask for a handoff note.** **Ask in PowerShell** opens the old session in a new window and
+   asks it to write `HANDOFF-<its name>.md` in its folder. Watch it write the note.
+2. **Close the old session.** Type `/exit` in that window (`/quit` for Codex).
+3. **Start the new session.** **Start in PowerShell** opens a new window in the same folder. A new
+   Claude Code session gets the same name on its own. For Codex, type `/rename <name>` in the new
+   window; the section shows the exact words.
+4. **Check.** Pleni shows the new session once it finds it, and says when the mailbox relay now
+   wakes it. Then type `/exit` in the new Claude Code window: a script such as the relay cannot see
+   that window, and two programs writing one session would mix up its messages. A new Codex thread
+   can stay open; Codex itself keeps a second program out.
+
+- **The session needs a name of its own.** Give it one with `/rename` first. The new session takes
+  it, and the mailbox relay and chain-of-command rules find sessions by name.
+- **Open in an app?** If the Codex app or the Claude desktop app has the session open, Pleni cannot
+  send to it. Use **Copy the message** and paste it there, then start the new session from Pleni
+  or in the app.
+- **Pleni sends only these two messages,** and only when you click. It never reads the note, and
+  it never archives, pins or closes a session: do that in the app if you like.
+- **The note is a file in the session's folder.** In a git repository, it says not to commit it.
+  You can add `HANDOFF-*.md` to that repository's `.gitignore`.
+
 ## Where it looks
 
 Pleni finds the usual folders on its own. You can change any of them in Settings.
@@ -259,8 +292,10 @@ it. It is not part of the npm package.
 ## Privacy and safety
 
 - Pleni reads files. It writes only its own settings file.
-- It starts nothing unless you turn on **Open in PowerShell** and click it. Then it opens one
-  PowerShell window that runs `claude --resume` or `codex resume`. It never types into a session.
+- It starts nothing unless you turn on **Open in PowerShell** or **Roll over** and click a button.
+  Then it opens one PowerShell window that runs `claude` or `codex` for that session. Open in
+  PowerShell never types into a session. Roll over sends one short message, which it shows you
+  first.
 - Pop-ups are off until you turn them on. Your browser makes them on your own screen; nothing is
   sent over the internet.
 - It makes no network calls and sends no data about you or your work. There is no telemetry.
@@ -327,8 +362,9 @@ both. Both are made by 8 West Ventures, LLC.
 
 ## What comes next
 
-Version 0.1 watches, and can open a Claude Code or Codex session in PowerShell for you. The next step is
-to let you answer questions, approve plans and send messages to a session right from the browser. The design is in
+Version 0.1 watches. It can also open a Claude Code or Codex session in PowerShell for you, and
+roll a long session over to a fresh one. The next step is to let you answer questions, approve plans
+and send messages to a session right from the browser. The design is in
 [docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md).
 
 These are plans, not promises. Ideas are welcome in

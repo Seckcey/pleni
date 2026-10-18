@@ -19,6 +19,13 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- Roll over (Windows, off until you turn it on in Settings → Open sessions): a session's side panel
+  gets **Roll over…**, which starts a fresh session with the same name that picks up from a handoff
+  note. **Ask in PowerShell** opens the old session and asks it to write `HANDOFF-<name>.md` in its
+  folder; **Start in PowerShell** opens a new session there that reads the note first (Claude Code
+  with `--name`; for Codex, type `/rename`). Pleni shows both messages before you click, sends
+  nothing else, and works only on this computer. Each message also has a Copy button, for a
+  session that is open in the Codex app or the Claude desktop app.
 - Rollovers without new ids: the mailbox relay can follow a session by name. Enroll with
   `bridge-relay.ps1 -Enroll -SessionName <name>` or `-EnrollCodex -ThreadName <name>`, and when a newer
   session takes over that name, the relay wakes it instead, on its own. It only moves on to a

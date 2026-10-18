@@ -1207,8 +1207,10 @@ test('a model picked by its exact name beats the words', () => {
   assert.equal(node(s, CHILD).rank, 'Specialist');
 });
 
-test('the snapshot says whether the page may offer Open in PowerShell', () => {
-  assert.deepEqual(buildSnapshot({ now: NOW, settings: cleanSettings({}) }).actions, { openTerminal: false });
-  assert.deepEqual(buildSnapshot({ now: NOW, settings: cleanSettings({}), actions: { openTerminal: true } }).actions, { openTerminal: true });
-  assert.deepEqual(buildSnapshot({ now: NOW, settings: cleanSettings({}), actions: { openTerminal: 'yes' } }).actions, { openTerminal: false });
+test('the snapshot says whether the page may offer Open in PowerShell and Roll over', () => {
+  const build = (actions) => buildSnapshot({ now: NOW, settings: cleanSettings({}), actions }).actions;
+  assert.deepEqual(build(undefined), { openTerminal: false, rollover: false });
+  assert.deepEqual(build({ openTerminal: true }), { openTerminal: true, rollover: false });
+  assert.deepEqual(build({ rollover: true }), { openTerminal: false, rollover: true });
+  assert.deepEqual(build({ openTerminal: 'yes', rollover: 1 }), { openTerminal: false, rollover: false });
 });

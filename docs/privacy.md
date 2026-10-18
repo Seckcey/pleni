@@ -8,8 +8,9 @@ what it never does.
 
 - Pleni **reads** session files. It **writes** only in its own folder: its settings, its key, and
   the list of notices you dismissed.
-- Pleni **starts** nothing, unless you turn on **Open in PowerShell** and click it. Then it opens one
-  PowerShell window for that session. You do the typing.
+- Pleni **starts** nothing, unless you turn on **Open in PowerShell** or **Roll over** and click a
+  button. Then it opens one PowerShell window for that session. You do the typing, except for Roll
+  over's one short message, which the page shows you before you click.
 - Pleni makes **no network calls**. It has no telemetry, no tracking, and no account. Its only
   sign-in is its own key, which it keeps on your computer.
 - Pleni opens only on your own computer (`127.0.0.1`), unless you set up remote access yourself,
@@ -38,6 +39,8 @@ read the start of a file once, to find a session's name and where it started.
 | A session's project folder, only when it is inside a `_worktrees` folder on a local drive | Only the small `.git` pointer file (at most 4 KB) of that worktree, to learn the name of the repository it belongs to. Nothing else in your project is read |
 | Claude Code folder, only when you click Open in PowerShell | The small files in `sessions/` that Claude Code keeps for each running process. Pleni reads only which session each one has open, whether it runs in the background or in a terminal, and its process number, to be sure no other window has that session open. To tell a live Claude Code from a leftover file, it then asks Windows (through a hidden PowerShell) only when the program with that number started |
 | Codex folder, only when you click Open in PowerShell | One empty file, `thread-writer-locks/<thread id>.lock`, which Codex locks while a program writes that thread. Pleni tries to read one byte of it, only to learn whether another window has the thread open |
+| The same two folders, when you click Roll over's buttons | The same small files as for Open in PowerShell, for the same reason |
+| A session's own folder, only while its Roll over section is open | Only whether the handoff note (`HANDOFF-<name>.md`) is there, and when it last changed. Pleni never reads what is in it |
 | Pleni's own folder                      | `settings.json`, `key`, and `dismissed.json` (which notices you dismissed, and when) in Pleni's settings folder |
 
 From the session files it uses: when each step happened, the working folder, the git branch, the
@@ -89,12 +92,19 @@ recent pop-ups in its notification list until you clear them.
   mailbox folders.
 - It writes nowhere except its own folder (`settings.json`, `key`, `dismissed.json`). It saves each
   file safely: it writes a temporary file in the same folder, then renames it.
-- It never stops a session or sends anything to one.
+- It never stops a session. It sends nothing to one, except Roll over's two short messages when you
+  click its buttons (see below).
 - It starts nothing unless you turn on **Open in PowerShell** (Settings → Open sessions, off until
   you turn it on, Windows only) and click the button on this computer. Then it opens one
   PowerShell window that runs `claude --resume` or `codex resume` for that session. Whatever is typed there comes
   from you. It does not open a session that is already open in another window, and it refuses the
   button from another device.
+- **Roll over** (Settings → Open sessions, off until you turn it on, Windows only, this computer
+  only) works the same way, with one message per window. **Ask in PowerShell** runs
+  `claude --resume` or `codex resume` with a request to write a handoff note. **Start in
+  PowerShell** runs `claude --name <name>` or `codex` in the session's folder with a request to read
+  that note. Pleni builds both messages from the session's name, holds them to letters, digits,
+  spaces and a few plain marks, and shows them before you click. It sends nothing else.
 - It makes no network calls. It sends no telemetry, usage counts, or crash reports.
 - The page loads nothing from the internet. Its scripts, styles, and pictures all come from Pleni
   itself, and the page's security rules block anything else.

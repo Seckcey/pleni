@@ -70,7 +70,7 @@ test('cleanSettings keeps good values', () => {
     projects: { pleni: { label: 'Pleni', hidden: false } },
     chain: [{ match: 'Sergeant', reportsTo: 'Colonel', role: 'coordinator' }, { match: 'Colonel', reportsTo: 'you', role: null }],
     remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] },
-    actions: { openTerminal: true },
+    actions: { openTerminal: true, rollover: true },
     alerts: { stoppedMinutes: 20 },
   };
   assert.deepEqual(cleanSettings(raw), raw);
@@ -92,13 +92,15 @@ test('alerts: the stopped time stays in range, and only a real true watches a ti
   assert.deepEqual(people, { [`codex:${UUID}`]: { label: 'Planner', watch: true } });
 });
 
-test('Open in PowerShell stays off unless it is turned on with a real true', () => {
-  assert.deepEqual(cleanSettings({}).actions, { openTerminal: false });
+test('Open in PowerShell and Roll over stay off unless each is turned on with a real true', () => {
+  const off = { openTerminal: false, rollover: false };
+  assert.deepEqual(cleanSettings({}).actions, off);
   for (const value of ['true', 1, null, {}, []]) {
-    assert.deepEqual(cleanSettings({ actions: { openTerminal: value } }).actions, { openTerminal: false }, String(value));
+    assert.deepEqual(cleanSettings({ actions: { openTerminal: value, rollover: value } }).actions, off, String(value));
   }
-  assert.deepEqual(cleanSettings({ actions: 'on' }).actions, { openTerminal: false });
-  assert.deepEqual(cleanSettings({ actions: { openTerminal: true, other: true } }).actions, { openTerminal: true });
+  assert.deepEqual(cleanSettings({ actions: 'on' }).actions, off);
+  assert.deepEqual(cleanSettings({ actions: { openTerminal: true, other: true } }).actions, { openTerminal: true, rollover: false });
+  assert.deepEqual(cleanSettings({ actions: { rollover: true } }).actions, { openTerminal: false, rollover: true });
 });
 
 test('cleanSettings clamps and rounds numbers', () => {
