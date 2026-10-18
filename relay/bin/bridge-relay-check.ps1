@@ -14,7 +14,8 @@
   (off until enrolled, one wake per new item, waits for a held thread / a coordinator turn / a running wake,
   errors back off and stop only the Codex direction, a different thread id stops it, ChatGPT sign-in only);
   15 rollovers (-Enroll -SessionName and -EnrollCodex -ThreadName follow the newest session with the name, forward
-  only and between turns).
+  only and between turns); 16 a window whose command line does not name the session (Claude Code's own list of
+  running sessions) holds the coordinator turn, and files left behind by closed windows do not.
   It runs only the bridge-relay.ps1 beside it, ..\tests\stub-claude.js and ..\tests\stub-codex.js; other
   -RelayScript/-StubCli values are refused.
   Prints one PASS/FAIL line per check, then a summary. Exit 0 only when every check passes (2 = could not set up).
@@ -948,6 +949,34 @@ try {
         if ($c.Count -ge 1) { Check ([string]$c[0].cwd -like '*\ro\planner2') "the Codex turn ran in '$($c[0].cwd)', not in the new thread's folder" }
         $r = Invoke-Relay $fx 'Status' $null
         Check ($r.out -match "Coordinator follows the name 'sergeant test'" -and $r.out -match "CodexWake follows the name 'planner test'") 'status does not show the names the relay follows'
+    }
+
+    Invoke-Scenario '16 a window that Claude Code lists, with no session id on its command line, holds the coordinator turn' {
+        $fx = New-Fixture 's16'
+        Initialize-Fixture $fx
+        # Claude Code's own list of running sessions. This harness stands in for a window started with claude --name,
+        # such as a Pleni Roll over window, whose command line does not name the session.
+        $list = Join-Path $fx.cfg 'sessions'
+        $mine = Join-Path $list "$PID.json"
+        Write-Text $mine ('{"pid":' + $PID + ',"sessionId":"' + $fx.sid + '","kind":"interactive","entrypoint":"cli"}')
+        Write-Text (Join-Path $fx.mb 'tasks\T-NEW\assignment.md') $NewAssignment
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ($r.code -eq 0) "-Once exit code $($r.code)"
+        Check (@(Get-Calls $fx 'start').Count -eq 0) 'the relay resumed a session that a window has open'
+        Check ($r.out -match ('is open in pid ' + $PID)) 'the relay did not say that the session is open'
+        Check (Test-Pending $fx 'tasks/T-NEW/assignment.md') 'the notification was not kept pending'
+        $r = Invoke-Relay $fx 'Status' $null
+        Check ($r.out -match ('Coordinator open now in pid ' + $PID)) '-Status does not show that the coordinator is open'
+        $r = Invoke-Relay $fx 'Enroll' @{ SessionId = $fx.sid }
+        Check ($r.code -ne 0 -and $r.out -match 'is open right now') 'enrolling a fixed id did not refuse a session that a window has open'
+        # Files left behind count for nothing: one whose process is gone, and one older than the process that has its number now.
+        $gone = Start-Process -FilePath $env:ComSpec -ArgumentList '/c exit 0' -WindowStyle Hidden -PassThru
+        $gone.WaitForExit()
+        Write-Text (Join-Path $list "$($gone.Id).json") ('{"pid":' + $gone.Id + ',"sessionId":"' + $fx.sid + '","kind":"interactive","entrypoint":"cli"}')
+        (Get-Item -LiteralPath $mine).LastWriteTimeUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().AddHours(-1)
+        $r = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-Calls $fx 'start').Count -eq 1) 'files left behind by closed windows still held the turn'
+        Check (-not (Test-Pending $fx 'tasks/T-NEW/assignment.md')) 'the notification stayed pending after the window closed'
     }
 } catch {
     $script:Fail++

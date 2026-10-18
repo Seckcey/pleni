@@ -8,6 +8,13 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Fixed
 
+- The mailbox relay now waits while any Claude Code window has the coordinator open, also a window
+  whose command line does not name the session, such as one started with `claude --name` or by
+  Roll over. It finds those in Claude Code's own list of running sessions. Before, it could wake
+  the coordinator while such a window was open, and two programs writing one session mix up its
+  messages. `-Status` now says when a window has the coordinator open. Update the relay copy in
+  your mailbox to get this. Roll over's last step now says you may keep the new window open.
+
 - Pleni's address no longer changes on its own. Pleni used to make a new key whenever it could not
   read its key file, even for a moment, and that broke every bookmark. Now it makes a key only the
   first time it starts, or when you ask with `--new-key`. It tries a busy key file again for about
