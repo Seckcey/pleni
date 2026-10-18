@@ -114,9 +114,9 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   and which ones need you.
 - **Settings** — six short groups: **Basics** (your name, the look, which sessions show),
   **Team** (names, roles, who reports to whom), **Sources** (which folders to read, and the
-  mailbox), **Alerts**, **Buttons** (Open in PowerShell and Roll over), and **Devices** (opening
-  Pleni from another device). Type in **Find a setting** to find one by name, such as "port" or
-  "folder".
+  mailbox), **Alerts**, **Buttons** (Open in PowerShell, New agent and Roll over), and **Devices**
+  (opening Pleni from another device). Type in **Find a setting** to find one by name, such as
+  "port" or "folder".
 
 Click any tile to see more about that session, with its recent steps. Press Esc to close it.
 
@@ -306,7 +306,8 @@ Pleni finds the usual folders on its own. You can change any of them in **Settin
 | Kimi Code sessions and helpers      | `~/.kimi-code` (on Windows, `C:\Users\<you>\.kimi-code`)                                                           | `KIMI_CODE_HOME`    |
 | A coordination mailbox (optional)   | Off until you choose a folder                                                                                      | Settings            |
 
-Pleni shows sessions that were active in the last 24 hours. You can change that in **Settings → Basics**.
+Pleni shows sessions that were active in the last 24 hours. You can change that in
+**Settings → Basics**.
 
 Pleni keeps its own settings in one file, `settings.json`:
 
@@ -408,8 +409,8 @@ both. Both are made by 8 West Ventures, LLC.
 
 Version 0.1 watches. It can also open a Claude Code or Codex session in PowerShell for you, roll a
 long session over to a fresh one, and start a new agent next to one. The next step is to let you
-send messages to a session, answer questions and approve plans right from the browser. The design is in
-[docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md).
+send messages to a session, answer questions and approve plans right from the browser. The design
+is in [docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md).
 
 These are plans, not promises. Ideas are welcome in
 [Discussions](https://github.com/Seckcey/pleni/discussions).
