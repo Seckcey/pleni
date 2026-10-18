@@ -94,7 +94,7 @@ test('--help lists every option and the settings file', (t) => {
   const home = tempDir(t);
   const result = runCli(['--help'], cliEnv(home));
   assert.equal(result.status, 0);
-  for (const word of [`Usage: ${COMMAND} [options]`, '--port N', '--demo', '--open', '--config FILE', '--version', '--help', 'PLENI_PORT', 'PLENI_HOME']) {
+  for (const word of [`Usage: ${COMMAND} [options]`, '--port N', '--demo', '--open', '--config FILE', '--new-key', '--url', '--version', '--help', 'PLENI_PORT', 'PLENI_HOME']) {
     assert.ok(result.stdout.includes(word), word);
   }
   assert.ok(result.stdout.includes(path.join(home, 'settings.json')));
@@ -159,6 +159,8 @@ test('the address stays the same after a restart, and --new-key changes it', RUN
   const first = startCli(t, ['--port', '0'], cliEnv(home));
   const a = await first.ready;
   assert.match(first.out.stdout, /stays the same each time Pleni starts/);
+  assert.ok(first.out.stdout.includes(`Bookmark: http://localhost:${a.port}/\n`), 'the plain address to bookmark');
+  assert.ok(first.out.stdout.includes(`To see it again, run: ${COMMAND} --url`));
   await stopCli(first);
   const second = startCli(t, ['--port', '0'], cliEnv(home));
   const b = await second.ready;
@@ -170,6 +172,48 @@ test('the address stays the same after a restart, and --new-key changes it', RUN
   assert.match(third.out.stdout, /This is a new key/);
   await stopCli(third);
   assert.equal(fs.readFileSync(path.join(home, 'key'), 'utf8').trim(), c.key);
+});
+
+test('--url shows the address and the key without starting Pleni', (t) => {
+  const home = tempDir(t);
+  // No key yet: it says so, and makes none.
+  const none = runCli(['--url'], cliEnv(home));
+  assert.equal(none.status, 1);
+  assert.match(none.stderr, /Pleni has no key yet/);
+  assert.deepEqual(fs.readdirSync(home), []);
+
+  const key = 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG';
+  fs.writeFileSync(path.join(home, 'key'), `${key}\n`);
+  const settings = { port: 9123, remote: { hosts: ['my-pc.tail1234.ts.net'], tailscaleUsers: ['ada@example.com'] } };
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify(settings));
+  const before = fs.readdirSync(home).sort();
+  const shown = runCli(['--url'], cliEnv(home));
+  assert.equal(shown.status, 0, shown.stderr);
+  const lines = shown.stdout.split('\n');
+  for (const line of ["Pleni's address: http://localhost:9123/", 'From your other devices: https://my-pc.tail1234.ts.net/',
+    `Key: ${key}`, `Sign-in link: http://localhost:9123/?t=${key}`]) {
+    assert.ok(lines.includes(line), line);
+  }
+  assert.ok(runCli(['--url', '--port', '9300'], cliEnv(home)).stdout.includes('http://localhost:9300/'));
+  assert.ok(runCli(['--url'], cliEnv(home, { PLENI_PORT: '9400' })).stdout.includes('http://localhost:9400/'));
+  assert.deepEqual(fs.readdirSync(home).sort(), before, 'nothing is written');
+
+  const demo = runCli(['--url', '--demo'], cliEnv(home));
+  assert.equal(demo.status, 1);
+  assert.match(demo.stderr, /demo makes a new key each time/);
+});
+
+test('a damaged key file stops Pleni and is left alone', RUN, (t) => {
+  const home = tempDir(t);
+  fs.writeFileSync(path.join(home, 'key'), 'not a key!');
+  for (const args of [['--port', '0'], ['--url']]) {
+    const result = runCli(args, cliEnv(home));
+    assert.equal(result.status, 1, args.join(' '));
+    assert.match(result.stderr, /key file is damaged/, args.join(' '));
+    assert.match(result.stderr, /--new-key/, args.join(' '));
+    assert.ok(!/\n\s+at\s/.test(result.stderr), 'no stack trace');
+  }
+  assert.equal(fs.readFileSync(path.join(home, 'key'), 'utf8'), 'not a key!');
 });
 
 test('pleni --demo runs, answers, uses PLENI_HOME and stops', RUN, async (t) => {

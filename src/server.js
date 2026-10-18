@@ -9,6 +9,7 @@ import {
   cleanSettings,
   isNodeKey,
   loadSettings,
+  renameWithRetry,
   resolveRoots,
   saveSettings as saveSettingsFile,
   settingsFile,
@@ -97,27 +98,76 @@ export function newKey() {
 }
 
 const KEY_RE = /^[A-Za-z0-9_-]{16,}$/;
+// Windows can hold a file for a moment, mostly just after you sign in (virus scanners, backup
+// tools), so reading the key is tried again for about ten seconds before Pleni gives up.
+const KEY_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const KEY_TRIES = 20;
+const KEY_PAUSE_MS = 500;
 
-// The key kept in the "key" file next to the settings, so Pleni's address stays the same after a
-// restart. A missing or damaged file, or `renew`, makes a new key. If the file cannot be written the
-// key still works, but only until Pleni stops: { key, saved: false }.
-export function loadOrCreateKey(file, { renew = false } = {}) {
-  if (!renew) {
+// The key file sits next to the settings file.
+export function keyFile(settingsPath) {
+  return path.join(path.dirname(settingsPath), 'key');
+}
+
+// What the key file holds: { key }, { missing: true } when there is none yet, or
+// { problem: 'damaged' | <error code> }. `read` and the waits are there for tests.
+export function readKeyFile(file, { tries = KEY_TRIES, pause = KEY_PAUSE_MS, read = fs.readFileSync } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    let text;
     try {
-      const kept = fs.readFileSync(file, 'utf8').trim();
-      if (KEY_RE.test(kept)) return { key: kept, saved: true };
-    } catch {
-      // Missing or unreadable: make a new one below.
+      text = read(file, 'utf8');
+    } catch (err) {
+      // ENOTDIR: a file stands where the folder should be, so there is no key file either.
+      if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return { missing: true };
+      if (attempt < tries && KEY_RETRY_CODES.has(err?.code)) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pause);
+        continue;
+      }
+      return { problem: err?.code || 'unknown' };
     }
+    const kept = String(text).trim();
+    return KEY_RE.test(kept) ? { key: kept } : { problem: 'damaged' };
+  }
+}
+
+// Why Pleni will not start with this key file. It stops instead of making a new key, because a
+// new key would change its address on every device.
+export function keyFileError(file, problem) {
+  const text = problem === 'damaged'
+    ? `Pleni's key file is damaged: ${file}\n` +
+      'Pleni did not make a new key, because that would change its address. To make a new key on ' +
+      'purpose, start Pleni once with --new-key. Each browser then needs the new key once.'
+    : `Pleni could not read its key file (${problem}): ${file}\n` +
+      'Pleni did not make a new key, so your bookmarks keep working. Try again in a minute. If this ' +
+      'keeps happening, check that no other program holds that file.';
+  const err = new Error(text);
+  err.code = 'PLENI_KEY_FILE';
+  return err;
+}
+
+// The key kept in the key file, so Pleni's address stays the same after a restart. Pleni makes a
+// key only when there is none yet, or when `renew` asks for one (--new-key). A key file it cannot
+// read, or that is damaged, is never replaced: that throws keyFileError. If a new key cannot be
+// saved it still works, but only until Pleni stops: { key, saved: false }.
+export function loadOrCreateKey(file, { renew = false, tries, pause } = {}) {
+  if (!renew) {
+    const found = readKeyFile(file, { tries, pause });
+    if (found.key) return { key: found.key, saved: true };
+    if (!found.missing) throw keyFileError(file, found.problem);
   }
   const key = newKey();
+  const temp = `${file}.${process.pid}.tmp`;
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const temp = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(temp, `${key}\n`, { mode: 0o600 });
-    fs.renameSync(temp, file);
+    renameWithRetry(temp, file);
     return { key, saved: true };
   } catch {
+    try {
+      fs.rmSync(temp, { force: true });
+    } catch {
+      // Nothing was written.
+    }
     return { key, saved: false };
   }
 }
@@ -156,14 +206,15 @@ export async function start({ port, configFile, demo = false, open = false, rene
   const settings = fileSettings(file);
   const first = settings.get();
   if (first.error) process.stderr.write(`${first.error}\n`);
+  // Demo mode gets a throw-away key, so trying the demo never touches the real one. The key comes
+  // first: a key file that cannot be used stops Pleni before anything else starts.
+  const kept = demo ? { key: newKey(), saved: false } : loadOrCreateKey(keyFile(file), { renew: renewKey });
+  const { key } = kept;
   // Loaded here, not at the top, so createServer works without the sources.
   const { createStore } = await import('./store.js');
   // Dismissed notices are kept next to the settings, so every device sees the same; the demo keeps
   // them only while it runs.
   const store = createStore({ settings: first.settings, roots: first.roots, demo, stateDir: demo ? null : path.dirname(file) });
-  // Demo mode gets a throw-away key, so trying the demo never touches the real one.
-  const kept = demo ? { key: newKey(), saved: false } : loadOrCreateKey(path.join(path.dirname(file), 'key'), { renew: renewKey });
-  const { key } = kept;
   const server = createServer({ store, getSettings: settings.get, saveSettings: settings.save, key });
   try {
     await listen(server, port ?? first.settings.port);

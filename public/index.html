@@ -42,6 +42,18 @@
 <main id="main" tabindex="-1">
   <div class="notices" id="notices"></div>
 
+  <form class="signin" id="signin" aria-labelledby="signin-title" hidden>
+    <h2 id="signin-title">Pleni needs its key</h2>
+    <p>Paste the key Pleni showed when it started. It is the long part after <code>?t=</code> in its address. To see it again, run Pleni with <code>--url</code> on the computer that runs it. Your browser can save the key like a password.</p>
+    <input type="text" name="username" autocomplete="username" value="Pleni" hidden>
+    <div class="signin-row">
+      <label for="signin-key">Key</label>
+      <input class="field" id="signin-key" name="password" type="password" autocomplete="current-password" spellcheck="false" autocapitalize="off" aria-describedby="signin-msg">
+      <button type="submit" class="btn primary">Sign in</button>
+    </div>
+    <p class="signin-msg" id="signin-msg" role="status"></p>
+  </form>
+
   <section class="view" id="view-map" aria-labelledby="map-title">
     <div class="view-head">
       <div>

@@ -33,7 +33,7 @@ their own design.
 ## Layout
 
 ```
-bin/pleni.js            command line: node bin/pleni.js [--port N] [--demo] [--open] [--config FILE]
+bin/pleni.js            command line: node bin/pleni.js [--port N] [--demo] [--open] [--config FILE] [--new-key] [--url]
 src/config.js           settings: defaults, validation, load/save, folder discovery
 src/jsonl.js            safe incremental JSONL reading (tail, head scan, BOM)
 src/sources/claude.js   Claude Code sessions and sub-agents
@@ -101,6 +101,8 @@ Exports:
   defaults and no error; a broken file gives defaults and an `error` string).
 - `saveSettings(settings, file)` writes `cleanSettings(settings)` atomically (temp file, then rename),
   creating the folder.
+- `renameWithRetry(from, to)` renames, trying again up to 5 times when Windows answers `EPERM`,
+  `EACCES` or `EBUSY` (a virus scanner or sync tool holding the file). The key file uses it too.
 - `resolveRoots(settings, env, platform, home)` returns `{ claude, claudeDesktop, codex, mailbox }`
   absolute paths or `null`. Defaults: `claude` = `$CLAUDE_CONFIG_DIR` or `~/.claude`; `codex` =
   `$CODEX_HOME` or `~/.codex`; `claudeDesktop` = `%APPDATA%\Claude` on Windows,
@@ -558,7 +560,10 @@ export function openLimits()                              // -> { take(key, now)
 ```js
 export function newKey()  // -> 43 random base64url characters (32 bytes)
 export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess })  // -> http.Server
-export function loadOrCreateKey(file, { renew })  // -> { key, saved }
+export function keyFile(settingsPath)  // -> the "key" file next to the settings file
+export function readKeyFile(file, { tries, pause, read })  // -> { key } | { missing: true } | { problem: 'damaged' | <error code> }
+export function keyFileError(file, problem)  // -> Error with code 'PLENI_KEY_FILE' and a plain message
+export function loadOrCreateKey(file, { renew, tries, pause })  // -> { key, saved }; throws keyFileError
 export async function start({ port, configFile, demo, open, renewKey })  // -> { server, url, key, keySaved, close }
 ```
 
@@ -568,11 +573,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   in `remote.tailscaleUsers` (both compared lower-case). Otherwise `403`. This also blocks DNS
   rebinding.
 - **Key gate:** the host gate stops web sites, but every account and program on the computer can
-  reach `127.0.0.1` and send any header, Tailscale's included. So `start()` reads the key from the
-  `key` file next to the settings file, making it with `newKey()` when it is missing, damaged or
-  `renewKey` is set (`--new-key`); the file is written with mode 0600 through a temp file. If it
-  cannot be written the key lasts only this run. Demo mode always uses a throw-away key. `url` is
-  `http://localhost:<port>/?t=<key>`, which the CLI prints and `--open` opens. `createServer` takes the key (letters, digits, `-`, `_`; at least 16;
+  reach `127.0.0.1` and send any header, Tailscale's included. So every API request also needs a key.
+  Demo mode always uses a throw-away key. `url` is `http://localhost:<port>/?t=<key>`, which the CLI
+  prints and `--open` opens. `createServer` takes the key (letters, digits, `-`, `_`; at least 16;
   a new one when left out) and keeps only its SHA-256.
   - `GET`/`HEAD /?t=<key>` answers `303` to `/`. When the key is right it also sets
     `pleni-<local port>=<key>; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict` (one name per port, so two Plenis
@@ -581,6 +584,22 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
     of both, then `timingSafeEqual`), after the method check. Without it: `401` with a plain
     message. Remote requests need it too: the Tailscale headers prove nothing on their own.
   - The page files and `/brand/` need no key; they hold no session data.
+- **Key file:** `start()` reads the key from the `key` file next to the settings file (`keyFile`)
+  before it starts anything else. The key never changes on its own, because a new key would break
+  every bookmark and every signed-in browser:
+  - `readKeyFile` tries a read that fails with `EPERM`, `EACCES` or `EBUSY` (a Windows virus
+    scanner or backup tool holding the file) again every 500 ms, 20 times in all.
+  - `loadOrCreateKey` makes a key with `newKey()` only when there is no key file yet (`ENOENT`, or
+    `ENOTDIR` when a file stands where its folder should be) or `renewKey` is set (`--new-key`). The
+    file is written with mode 0600 through a temp file (`renameWithRetry`). If it cannot be written,
+    the key lasts only this run (`saved: false`).
+  - A key file that still cannot be read, or that does not hold a key, is never replaced:
+    `loadOrCreateKey` throws `keyFileError`, and the CLI prints its message and stops with exit 1.
+- **`--url`** (CLI): prints the plain address `http://localhost:<port>/`, one `https://<host>/` line
+  per `remote.hosts` entry, the key, and the sign-in link `http://localhost:<port>/?t=<key>`. The
+  port is `--port`, else `PLENI_PORT`, else the settings. It reads the settings and the key file
+  (`readKeyFile`), starts nothing and writes nothing. No key file yet, or one that cannot be used,
+  prints a plain message and exits 1; so does `--demo`, whose key does not last.
 - **Headers on every response:** `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`,
   `Cross-Origin-Resource-Policy: same-origin`. HTML also gets
@@ -656,8 +675,14 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   a plain message tied to it with `aria-describedby`, focus moves to the first one, and nothing is
   sent. After a save, the page compares what the server saved with what it sent and names any
   value the server had to change; the port message uses the saved port.
-- **Missing key:** a `401` from the API shows "Pleni needs its key" with what to do, instead of
-  "Cannot reach Pleni", and the page keeps polling.
+- **Missing key:** a `401` from the API shows the sign-in box (`#signin`) instead of "Cannot reach
+  Pleni", and the page keeps polling. The box is a form with a hidden `username` field ("Pleni") and
+  a `current-password` field, so browsers can save the key like a password. Sign in takes the key,
+  or a whole pasted address that holds `?t=<key>`, checks that it looks like a key, and opens
+  `/?t=<key>`: the server's own redirect sets the cookie and sends the browser back to `/`, so the
+  address to bookmark never holds the key. Before it goes, it sets `sessionStorage` `pleni.signin`;
+  if the page comes back still locked, the box says the key did not work. The flag is cleared once
+  the page is live. The box takes the focus only when nothing else has it.
 - **Focus:** keyboard focus is never left under the sticky app bar or the Settings button row: the
   page scrolls the focused control clear of both (WCAG 2.4.11), and `scroll-padding-top` follows
   the app bar's height.

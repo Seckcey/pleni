@@ -354,7 +354,7 @@ function writeSynced(file, text) {
 }
 
 // On Windows a virus scanner or sync tool can hold the old file for a moment.
-function renameWithRetry(from, to) {
+export function renameWithRetry(from, to) {
   for (let attempt = 1; ; attempt++) {
     try {
       fs.renameSync(from, to);

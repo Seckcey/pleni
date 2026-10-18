@@ -390,6 +390,19 @@ main:focus { outline: none; }
 .notice .k { font-weight: var(--ui-weight-semibold); }
 .notice .v { color: var(--ui-text-secondary); min-width: 0; overflow-wrap: anywhere; }
 
+.signin {
+  max-width: 640px; margin: 0 0 var(--ui-space-6); padding: var(--ui-space-6);
+  border-radius: var(--ui-radius-lg); background: var(--ui-surface-raised); border: 1px solid var(--ui-border-strong);
+}
+.signin > * + * { margin-top: var(--ui-space-4); }
+.signin h2 { margin: 0; font-size: var(--ui-font-lg); }
+.signin p { margin-bottom: 0; color: var(--ui-text-secondary); }
+.signin-row { display: flex; flex-wrap: wrap; gap: var(--ui-space-4); align-items: center; }
+.signin-row label { font-weight: var(--ui-weight-semibold); }
+.signin-row .field { flex: 1 1 16rem; max-width: none; }
+.signin .signin-msg { color: var(--ui-error-text); }
+.signin .signin-msg:empty { margin-top: 0; }
+
 .attention { display: flex; flex-wrap: wrap; gap: var(--ui-space-4); }
 .attention:not(:empty) { margin-top: var(--ui-space-5); }
 /* A notice is two controls side by side: the notice itself (.attn-go) and the × that dismisses it. */

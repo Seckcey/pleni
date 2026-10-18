@@ -46,7 +46,8 @@ is handed down and when a report comes back up.
   window for you (see [Open a session in PowerShell](#open-a-session-in-powershell)).
   Even then, you do the typing.
 - **It stays on your computer.** It opens only on your own computer (`127.0.0.1`). It sends
-  nothing anywhere. There is no account, no sign-in, and no tracking.
+  nothing anywhere. There is no account and no tracking. The only sign-in is Pleni's own key,
+  which it keeps on your computer.
 - **It has zero dependencies.** You need only Node.js. Pleni installs nothing else from npm and has
   nothing to build.
 
@@ -60,9 +61,16 @@ npx pleni
 
 Pleni prints its address, such as `http://localhost:8790/?t=...`. Open that whole address in
 your browser. The part after `?t=` is a secret key that keeps other people who use this computer
-out. The key is saved, so the address stays the same after a restart, and each browser only needs
-it once. To change the key, start Pleni once with `--new-key`. Press Ctrl+C in
-the terminal to stop Pleni.
+out. Each browser needs the key only once. After that, bookmark `http://localhost:8790/`.
+
+- **The address and the key stay the same.** Pleni saves the key and never changes it on its own.
+  To see the address and the key again, run `npx pleni --url`.
+- **If a browser forgets the key,** Pleni shows a sign-in box. Paste the key there. Your browser can
+  save it like a password.
+- **To change the key,** for example if someone saw it, start Pleni once with `--new-key`. Each
+  browser then needs the new key once.
+
+Press Ctrl+C in the terminal to stop Pleni.
 
 No sessions yet? Try the demo. It shows a made-up team that moves on its own, so you can look
 around without any real data:
@@ -85,6 +93,8 @@ node bin/pleni.js
 | `--demo`        | Show the made-up demo team instead of your sessions     |
 | `--open`        | Open Pleni in your browser when it starts               |
 | `--config FILE` | Use this settings file instead of the usual one         |
+| `--url`         | Show Pleni's address and key, without starting it       |
+| `--new-key`     | Make a new key, so the old one stops working            |
 | `--version`     | Show the version number                                 |
 | `--help`        | Show all the options                                    |
 
@@ -281,10 +291,10 @@ Pleni opens only on your own computer. To see it on your phone, you can use
 4. In Pleni's **Settings**, add two things to the remote access lists: the host name from that
    address (`my-pc.tail1234.ts.net`) and your Tailscale login name (the Tailscale app shows it).
    Save.
-5. Open the web address on your phone, with Pleni's key at the end. Take the address Pleni
-   printed and put your Tailscale address in place of `http://localhost:8790`, for example
-   `https://my-pc.tail1234.ts.net/?t=<key>`. You only need the key once per device; after that,
-   bookmark the plain address. It keeps working after restarts.
+5. Open the web address on your phone and bookmark it, for example
+   `https://my-pc.tail1234.ts.net/`. Pleni asks for its key the first time. Paste the key that
+   `npx pleni --url` shows on your computer. You only need the key once per device, and the
+   address keeps working after restarts.
 
 In `settings.json`, the same thing looks like this:
 

@@ -10,7 +10,8 @@ what it never does.
   the list of notices you dismissed.
 - Pleni **starts** nothing, unless you turn on **Open in PowerShell** and click it. Then it opens one
   PowerShell window for that session. You do the typing.
-- Pleni makes **no network calls**. It has no telemetry, no tracking, no account, and no sign-in.
+- Pleni makes **no network calls**. It has no telemetry, no tracking, and no account. Its only
+  sign-in is its own key, which it keeps on your computer.
 - Pleni opens only on your own computer (`127.0.0.1`), unless you set up remote access yourself,
   and only for a browser that has the key Pleni prints when it starts.
 - You can turn session text off. Then the page shows only names, tools, and states.
@@ -108,18 +109,22 @@ from tricking your browser into reading Pleni (an attack called DNS rebinding).
 
 A computer can have more than one account, for example a shared Linux machine or a Windows
 computer that several people sign in to remotely. Every account can reach `127.0.0.1`. So Pleni
-also makes a new secret key each time it starts and prints it as part of its address
-(`http://localhost:8790/?t=<key>`). Session data and settings answer only a browser that has the
-key:
+also has a secret key. It makes the key the first time it starts and prints it as part of its
+address (`http://localhost:8790/?t=<key>`). Session data and settings answer only a browser that
+has the key:
 
 - When you open the address, Pleni gives your browser the key as a cookie that the page's own
   scripts cannot read and that other web sites cannot make your browser send. It then drops the
   key from the address bar.
 - A request without the right key gets `401`. Only `/api/health`, which says just that Pleni is
   running, and the page's own files (which hold no session data) answer without it.
+- A browser without the key sees a sign-in box. Pasting the key there opens the same address, so
+  it works the same way. The browser can save the key like a password, in its own password store.
 - The key is saved in a file named `key` next to `settings.json`, so the address stays the same
-  after a restart. A browser keeps it as a cookie for a year. Do not share the address. If it
-  leaks, start Pleni once with `--new-key`: the old key stops working.
+  after a restart. A browser keeps it as a cookie for a year. Pleni never changes the key on its
+  own: if it cannot read the key file, or the file is damaged, it stops with a message instead of
+  making a new key. `--url` shows the address and the key again. Do not share the key. If it leaks,
+  start Pleni once with `--new-key`: the old key stops working.
 - With `--open`, Pleni hands the address to your browser. On a shared Linux computer, other
   accounts may see it in the list of running programs while the browser starts, so there it is
   safer to copy the address from the terminal yourself.
