@@ -294,14 +294,17 @@ test('dismissed notices hide until something newer happens, and are kept in the 
 
 // ---- Open in PowerShell ----
 
-test('the snapshot offers Open in PowerShell and Roll over only when turned on and Pleni runs on Windows', () => {
+test('the snapshot offers Open in PowerShell, Roll over and New agent only when turned on and Pleni runs on Windows', () => {
   const make = (settings, platform) => createStore({ settings: cleanSettings(settings), roots: ROOTS, now: clock(), factories: fakes().factories, platform });
-  const both = { actions: { openTerminal: true, rollover: true } };
-  assert.deepEqual(make({}, 'win32').snapshot().actions, { openTerminal: false, rollover: false });
-  assert.deepEqual(make({ actions: { openTerminal: true } }, 'win32').snapshot().actions, { openTerminal: true, rollover: false });
-  assert.deepEqual(make({ actions: { rollover: true } }, 'win32').snapshot().actions, { openTerminal: false, rollover: true });
-  assert.deepEqual(make(both, 'linux').snapshot().actions, { openTerminal: false, rollover: false });
-  assert.deepEqual(make(both, 'darwin').snapshot().actions, { openTerminal: false, rollover: false });
+  const all = { actions: { openTerminal: true, rollover: true, newAgent: true } };
+  const off = { openTerminal: false, rollover: false, newAgent: false };
+  assert.deepEqual(make({}, 'win32').snapshot().actions, off);
+  assert.deepEqual(make({ actions: { openTerminal: true } }, 'win32').snapshot().actions, { ...off, openTerminal: true });
+  assert.deepEqual(make({ actions: { rollover: true } }, 'win32').snapshot().actions, { ...off, rollover: true });
+  assert.deepEqual(make({ actions: { newAgent: true } }, 'win32').snapshot().actions, { ...off, newAgent: true });
+  assert.deepEqual(make(all, 'win32').snapshot().actions, all.actions);
+  assert.deepEqual(make(all, 'linux').snapshot().actions, off);
+  assert.deepEqual(make(all, 'darwin').snapshot().actions, off);
 });
 
 test('turning Open in PowerShell on keeps the sources and shows at once', () => {

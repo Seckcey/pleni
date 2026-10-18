@@ -1207,12 +1207,14 @@ test('a model picked by its exact name beats the words', () => {
   assert.equal(node(s, CHILD).rank, 'Specialist');
 });
 
-test('the snapshot says whether the page may offer Open in PowerShell and Roll over', () => {
+test('the snapshot says whether the page may offer Open in PowerShell, Roll over and New agent', () => {
   const build = (actions) => buildSnapshot({ now: NOW, settings: cleanSettings({}), actions }).actions;
-  assert.deepEqual(build(undefined), { openTerminal: false, rollover: false });
-  assert.deepEqual(build({ openTerminal: true }), { openTerminal: true, rollover: false });
-  assert.deepEqual(build({ rollover: true }), { openTerminal: false, rollover: true });
-  assert.deepEqual(build({ openTerminal: 'yes', rollover: 1 }), { openTerminal: false, rollover: false });
+  const off = { openTerminal: false, rollover: false, newAgent: false };
+  assert.deepEqual(build(undefined), off);
+  assert.deepEqual(build({ openTerminal: true }), { ...off, openTerminal: true });
+  assert.deepEqual(build({ rollover: true }), { ...off, rollover: true });
+  assert.deepEqual(build({ newAgent: true }), { ...off, newAgent: true });
+  assert.deepEqual(build({ openTerminal: 'yes', rollover: 1, newAgent: {} }), off);
 });
 
 test('hiddenSessions names the recent sessions the person hid, which are not on the map', () => {

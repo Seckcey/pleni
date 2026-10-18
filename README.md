@@ -269,6 +269,30 @@ The section shows four steps, and the exact message of each step before you clic
 - **The note is a file in the session's folder.** In a git repository, it says not to commit it.
   You can add `HANDOFF-*.md` to that repository's `.gitignore`.
 
+## Start a new agent
+
+On Windows, Pleni can start a new Claude Code or Codex agent in the same folder as a session on
+the map, for example a new Sergeant next to its Colonel. This is off until you turn it on:
+
+1. Open **Settings**, then **Buttons**. Tick **Show the New agent button**, then choose **Save
+   settings**.
+2. Click a Claude Code or Codex session on the map. In its side panel, choose **New agent here…**.
+3. Pick **Claude Code** or **Codex**, type a name such as `Sergeant 3`, and choose **Start in
+   PowerShell**.
+
+A new PowerShell window opens in that session's folder and runs `claude --name <name>`, or
+`codex` for Codex. Type the new agent's first message there. It shows on the map after that
+message.
+
+- **Pleni sends it nothing.** You type everything in the window.
+- **Codex takes its name later.** After the first message, type `/rename <name>` in the window.
+  The section shows the exact words, with a copy button.
+- **Names are kept apart.** The name may have letters, digits, spaces and `. _ - # + * ,`. Pleni
+  refuses a name that a session on the map already has, because the relay and your chain of
+  command rules find agents by name. To replace a session, use [Roll over](#roll-over-a-session).
+- **Only on this computer,** like the other buttons, and it uses your plan like any Claude Code or
+  Codex window.
+
 ## Where it looks
 
 Pleni finds the usual folders on its own. You can change any of them in **Settings → Sources**.
@@ -312,10 +336,10 @@ it. It is not part of the npm package.
 ## Privacy and safety
 
 - Pleni reads files. It writes only its own settings file.
-- It starts nothing unless you turn on **Open in PowerShell** or **Roll over** and click a button.
-  Then it opens one PowerShell window that runs `claude` or `codex` for that session. Open in
-  PowerShell never types into a session. Roll over sends one short message, which it shows you
-  first.
+- It starts nothing unless you turn on **Open in PowerShell**, **Roll over** or **New agent** and
+  click a button. Then it opens one PowerShell window that runs `claude` or `codex`. Open in
+  PowerShell and New agent never type into a session. Roll over sends one short message, which it
+  shows you first.
 - Pop-ups are off until you turn them on. Your browser makes them on your own screen; nothing is
   sent over the internet.
 - It makes no network calls and sends no data about you or your work. There is no telemetry.
@@ -382,9 +406,9 @@ both. Both are made by 8 West Ventures, LLC.
 
 ## What comes next
 
-Version 0.1 watches. It can also open a Claude Code or Codex session in PowerShell for you, and
-roll a long session over to a fresh one. The next step is to let you answer questions, approve plans
-and send messages to a session right from the browser. The design is in
+Version 0.1 watches. It can also open a Claude Code or Codex session in PowerShell for you, roll a
+long session over to a fresh one, and start a new agent next to one. The next step is to let you
+send messages to a session, answer questions and approve plans right from the browser. The design is in
 [docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md).
 
 These are plans, not promises. Ideas are welcome in

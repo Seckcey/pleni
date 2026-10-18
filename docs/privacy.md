@@ -8,9 +8,9 @@ what it never does.
 
 - Pleni **reads** session files. It **writes** only in its own folder: its settings, its key, and
   the list of notices you dismissed.
-- Pleni **starts** nothing, unless you turn on **Open in PowerShell** or **Roll over** and click a
-  button. Then it opens one PowerShell window for that session. You do the typing, except for Roll
-  over's one short message, which the page shows you before you click.
+- Pleni **starts** nothing, unless you turn on **Open in PowerShell**, **Roll over** or **New
+  agent** and click a button. Then it opens one PowerShell window. You do the typing, except for
+  Roll over's one short message, which the page shows you before you click.
 - Pleni makes **no network calls**. It has no telemetry, no tracking, and no account. Its only
   sign-in is its own key, which it keeps on your computer.
 - Pleni opens only on your own computer (`127.0.0.1`), unless you set up remote access yourself,
@@ -108,6 +108,10 @@ recent pop-ups in its notification list until you clear them.
   PowerShell** runs `claude --name <name>` or `codex` in the session's folder with a request to read
   that note. Pleni builds both messages from the session's name, holds them to letters, digits,
   spaces and a few plain marks, and shows them before you click. It sends nothing else.
+- **New agent** (Settings → Buttons, off until you turn it on, Windows only, this computer only)
+  opens one PowerShell window in the folder of a session you pick and runs `claude --name <name>`
+  or `codex` there. The name you type is held to the same plain marks. Pleni sends the new agent
+  nothing: you type its first message.
 - It makes no network calls. It sends no telemetry, usage counts, or crash reports.
 - The page loads nothing from the internet. Its scripts, styles, and pictures all come from Pleni
   itself, and the page's security rules block anything else.

@@ -26,6 +26,11 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- New agent (Windows, off until you turn it on in Settings → Buttons): a session's side panel has
+  **New agent here…**. Pick Claude Code or Codex, type a name, and Pleni opens a PowerShell window
+  in that session's folder that runs `claude --name <name>`, or `codex`. You type the first
+  message there; Pleni sends nothing. It refuses a name that a session on the map already has, and
+  works only on the computer that runs Pleni.
 - Hide a session with one click: **Hide from the map** in a session's side panel, with Undo. Roll
   over's last step offers **Hide the old session**. The counts under the Map and List titles say
   how many are hidden, and Settings → Team → Names and roles now names them, so one can be shown again.

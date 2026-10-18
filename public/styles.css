@@ -793,6 +793,13 @@ table.models .auto { display: block; margin-top: var(--ui-space-1); font-size: v
 .droll { max-width: 640px; margin-top: var(--ui-space-5); }
 .dhide { margin-top: var(--ui-space-5); }
 .dhide .help { margin: var(--ui-space-2) 0 0; font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+/* New agent: a short form in the side panel, in Roll over's frame. */
+.dnew { margin-top: var(--ui-space-5); }
+.dnew .help { margin: var(--ui-space-2) 0 0; font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+.dnew-row { margin-top: var(--ui-space-4); }
+.dnew-row > label, .dnew-row > .lbl { display: block; margin-bottom: var(--ui-space-2); font-weight: var(--ui-weight-semibold); }
+.dnew-row .checks { padding-top: 0; }
+.dnew-row .field { max-width: 360px; }
 .droll .help { margin: var(--ui-space-2) 0 0; font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
 .droll.open { padding: var(--ui-space-4) var(--ui-space-5) var(--ui-space-5); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-md); }
 .droll-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ui-space-5); }

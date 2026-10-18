@@ -5,6 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { cleanSettings } from '../src/config.js';
+import { NEW_MESSAGES } from '../src/newagent.js';
 import { OPEN_MESSAGES } from '../src/open.js';
 import { ROLL_MESSAGES } from '../src/rollover.js';
 import { browserCommand, createServer, keyFile, loadOrCreateKey, newKey, readBuild, readKeyFile } from '../src/server.js';
@@ -1081,6 +1082,58 @@ test('open is off until it is turned on, and says why in plain words', async (t)
   const sub = await openReq(helper.port, { key: AGENT_KEY });
   assertPlainError(sub, 400);
   assert.equal(sub.json.error, OPEN_MESSAGES.helper);
+  assert.equal(spawnProcess.calls.length, 0);
+});
+
+// ---- New agent ----
+
+const newReq = (port, body, headers = {}) => request(port, {
+  method: 'POST',
+  path: '/api/new',
+  headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+  body: JSON.stringify(body),
+});
+
+const NEW_ON = { actions: { newAgent: true } };
+
+test('new agent starts a named Claude Code session in the folder of the session it starts next to', async (t) => {
+  const folder = tempDir(t);
+  const spawnProcess = recordSpawns();
+  const { port } = await startServer(t, { store: rollStore(folder), settings: NEW_ON, platform: 'win32', spawnProcess });
+  const res = await newReq(port, { from: SESSION_KEY, tool: 'claude', name: 'Sergeant 3' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json, { ok: true });
+  assert.equal(spawnProcess.calls.length, 1);
+  assert.equal(spawnProcess.calls[0].options.cwd, folder);
+  assert.ok(spawnProcess.calls[0].args.at(-1).includes(`-Command "claude --name 'Sergeant 3'"`));
+  const again = await newReq(port, { from: SESSION_KEY, tool: 'claude', name: 'Sergeant 4' });
+  assertPlainError(again, 429);
+  assert.equal(again.json.error, NEW_MESSAGES.again);
+  assert.equal(spawnProcess.calls.length, 1);
+});
+
+test('new agent needs the key, the page itself, this computer, and the switch', async (t) => {
+  const spawnProcess = recordSpawns();
+  const settings = { ...NEW_ON, remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } };
+  const { port } = await startServer(t, { store: rollStore(tempDir(t)), settings, platform: 'win32', spawnProcess });
+  const body = { from: SESSION_KEY, tool: 'codex', name: 'Sergeant 3' };
+  assertPlainError(await newReq(port, body, { cookie: undefined }), 401);
+  assertPlainError(await newReq(port, body, { 'x-pleni': undefined }), 403);
+  assertPlainError(await newReq(port, body, { origin: 'https://evil.example' }), 403);
+  assertPlainError(await newReq(port, body, { 'content-type': 'text/plain' }), 415);
+  assertPlainError(await request(port, { path: '/api/new' }), 405);
+  for (const headers of [{ host: 'box.example.ts.net', 'tailscale-user-login': 'ada@example.com' }, { 'x-forwarded-for': '100.64.0.7' }]) {
+    const res = await newReq(port, body, headers);
+    assertPlainError(res, 403);
+    assert.match(res.json.error, /only on the computer that runs Pleni/);
+  }
+  const off = await startServer(t, { store: rollStore(tempDir(t)), settings: { actions: { openTerminal: true, rollover: true } }, platform: 'win32', spawnProcess });
+  const res = await newReq(off.port, body);
+  assertPlainError(res, 403);
+  assert.equal(res.json.error, NEW_MESSAGES.off);
+  const bad = await newReq(port, { ...body, name: `Ada' ; calc ; '` });
+  assertPlainError(bad, 400);
+  assert.equal(bad.json.error, NEW_MESSAGES.badName);
   assert.equal(spawnProcess.calls.length, 0);
 });
 

@@ -27,7 +27,7 @@ export const DEFAULTS = deepFreeze({
   projects: {},
   chain: [], // [{ match, reportsTo, role }] who reports to whom, by session name; first match wins
   remote: { hosts: [], tailscaleUsers: [] },
-  actions: { openTerminal: false, rollover: false }, // Open in PowerShell and Roll over (Windows, this computer only)
+  actions: { openTerminal: false, rollover: false, newAgent: false }, // Open in PowerShell, Roll over and New agent (Windows, this computer only)
   alerts: { stoppedMinutes: 15 }, // a watched tile counts as stopped after this long without work
   // "Roll over soon" when any limit is passed; 0 turns that limit off.
   rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 },
@@ -246,6 +246,7 @@ function cleanActions(raw) {
   return {
     openTerminal: cleanBool(a.openTerminal, DEFAULTS.actions.openTerminal),
     rollover: cleanBool(a.rollover, DEFAULTS.actions.rollover),
+    newAgent: cleanBool(a.newAgent, DEFAULTS.actions.newAgent),
   };
 }
 

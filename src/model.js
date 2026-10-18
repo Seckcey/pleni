@@ -29,7 +29,7 @@ const RANKS = {
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 const gitCache = new Map();
 
-// `actions` says which actions the page may offer: { openTerminal, rollover }, each true when that
+// `actions` says which actions the page may offer: { openTerminal, rollover, newAgent }, each true when that
 // button is turned on and can work on this computer.
 export function buildSnapshot({ now, settings, claude = null, codex = null, grok = null, kimi = null, mailbox = null, dismissed = null, actions = null } = {}) {
   const s = cleanSettings(settings);
@@ -74,7 +74,7 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
       .filter((item) => !(hidden(item.id) >= item.at)),
     tasks,
     hiddenSessions: hiddenSessions(all, ctx),
-    actions: { openTerminal: actions?.openTerminal === true, rollover: actions?.rollover === true },
+    actions: { openTerminal: actions?.openTerminal === true, rollover: actions?.rollover === true, newAgent: actions?.newAgent === true },
   };
 }
 

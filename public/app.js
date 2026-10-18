@@ -63,7 +63,7 @@ const DEFAULTS = {
   projects: {},
   chain: [],
   remote: { hosts: [], tailscaleUsers: [] },
-  actions: { openTerminal: false, rollover: false },
+  actions: { openTerminal: false, rollover: false, newAgent: false },
   alerts: { stoppedMinutes: 15 },
   rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 },
 };
@@ -265,6 +265,8 @@ function setHtml(el, html) {
   }
   const active = document.activeElement;
   const restore = active && active !== el && el.contains(active) ? focusSelector(active) : null;
+  // A text box keeps its caret, so a repaint while someone types does not move it.
+  const caret = restore && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
   el.innerHTML = html;
   painted.set(el, { html, shape });
   if (restore) {
@@ -273,6 +275,7 @@ function setHtml(el, html) {
       restoringFocus = true;
       try {
         next.focus({ preventScroll: true });
+        if (caret && typeof next.selectionStart === 'number') next.setSelectionRange(caret[0], caret[1]);
       } finally {
         restoringFocus = false;
       }
@@ -2156,6 +2159,7 @@ function sessionNowHtml(n, d) {
   if (n && n.rollSoon) out.push(`<p class="dnow roll-soon"><b>Roll over soon:</b> ${esc(sentence(n.rollSoon))}</p>`);
   out.push(openHtml(n));
   out.push(rollHtml(n, d));
+  out.push(newHtml(n, d));
   out.push(hideHtml(n));
   if (isWorkerKey(d.key)) {
     out.push('<p class="empty">This worker keeps no session file.</p>');
@@ -2281,6 +2285,125 @@ function rollFound(n, name) {
     if (!best || m.startedAt > best.startedAt) best = m;
   }
   return best;
+}
+
+// ---- New agent ----
+// Starts a new Claude Code or Codex agent in this session's folder, in a PowerShell window. The
+// person types its first message there; Pleni sends nothing. The server takes the folder from the
+// session, so the page never needs its path.
+
+const NEW_FROM = /^(claude|codex):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// The same marks the server lets through, so most mistakes are caught before a click.
+const NEW_NAME = /^[A-Za-z0-9*][A-Za-z0-9 ._#+*,-]*$/;
+
+function canStartHere(n) {
+  return !!n && LOCAL_PAGE && !!(S.snap && S.snap.actions && S.snap.actions.newAgent) && isSession(n) && n.kind !== 'reviewer' && NEW_FROM.test(n.key);
+}
+
+function newAgentName(a) {
+  return String(a.name || '').replace(/\s+/g, ' ').trim();
+}
+
+function newNameProblem(name) {
+  if (!name) return 'Type a name for the new agent.';
+  if (name.length > MAX_NAME) return `Use ${MAX_NAME} letters or fewer for the name.`;
+  if (!NEW_NAME.test(name) || !/[A-Za-z0-9]/.test(name)) return 'Use only letters, digits, spaces and . _ - # + * , signs in the name, and start it with a letter or a digit.';
+  return '';
+}
+
+function newHtml(n, d) {
+  if (!canStartHere(n)) return '';
+  const a = d.newAgent;
+  if (!a) {
+    return (
+      '<div class="dnew"><button type="button" class="btn" data-new="open" aria-describedby="d-new-help">New agent here…</button>' +
+      '<p class="help" id="d-new-help">Start a new Claude Code or Codex session in this folder, in a PowerShell window.</p></div>'
+    );
+  }
+  const name = newAgentName(a);
+  const where = n.project ? ` (${esc(n.project)})` : '';
+  const radio = (tool, label) => `<label><input type="radio" name="d-new-tool" id="d-new-${tool}" value="${tool}"${a.tool === tool ? ' checked' : ''}>${label}</label>`;
+  const rename = a.tool === 'codex'
+    ? `<p class="help">Codex cannot take a name when it starts. After its first message, type <code>/rename ${esc(name || 'name')}</code> in the new window.</p>` +
+      (name ? '<div class="roll-btns"><button type="button" class="btn" data-copy="new-rename">Copy the name command</button></div>' : '')
+    : '';
+  return (
+    '<section class="droll dnew open" aria-labelledby="d-new-title">' +
+    '<div class="droll-head"><h3 id="d-new-title" tabindex="-1">New agent here</h3><button type="button" class="btn" data-new="close">Close</button></div>' +
+    `<p class="note">Pleni opens a new PowerShell window in this session's folder${where} and starts a new agent there. You type its first message in that window. Pleni sends it nothing.</p>` +
+    `<div class="dnew-row" role="radiogroup" aria-labelledby="d-new-tool-lbl"><span class="lbl" id="d-new-tool-lbl">Tool</span><div class="checks">${radio('claude', 'Claude Code')}${radio('codex', 'Codex')}</div></div>` +
+    `<div class="dnew-row"><label for="d-new-name">Name</label><input class="field" id="d-new-name" type="text" value="${esc(a.name)}" maxlength="${MAX_NAME}" autocomplete="off" spellcheck="false"${a.bad ? ' aria-invalid="true"' : ''} aria-describedby="d-new-name-help">` +
+    '<p class="help" id="d-new-name-help">For example Sergeant 3. Letters, digits, spaces and . _ - # + * , signs. The relay and your chain of command rules find agents by name.</p></div>' +
+    '<div class="roll-btns"><button type="button" class="btn primary" data-new="start">Start in PowerShell</button></div>' +
+    `<p class="roll-msg${a.msg && a.msg.bad ? ' bad' : ''}">${a.msg ? esc(a.msg.text) : ''}</p>` +
+    rename +
+    '</section>'
+  );
+}
+
+function newClick(what) {
+  const d = S.drawer;
+  if (!d) return;
+  if (what === 'open') {
+    d.newAgent = { tool: d.key.startsWith('codex:') ? 'codex' : 'claude', name: '', msg: null, bad: false, busy: false };
+    renderDrawerParts();
+    $('#d-new-name')?.focus();
+  } else if (what === 'close') {
+    d.newAgent = null;
+    renderDrawerParts();
+    $('#drawer [data-new="open"]')?.focus();
+  } else if (what === 'start') {
+    newStart();
+  }
+}
+
+async function newStart() {
+  const d = S.drawer;
+  const a = d && d.newAgent;
+  if (!a || a.busy) return;
+  const name = newAgentName(a);
+  const problem = newNameProblem(name);
+  if (problem) {
+    a.bad = true;
+    a.msg = { text: problem, bad: true };
+    renderDrawerParts();
+    say(problem);
+    $('#d-new-name')?.focus();
+    return;
+  }
+  a.bad = false;
+  a.busy = true;
+  a.msg = { text: 'Opening a PowerShell window…' };
+  renderDrawerParts();
+  try {
+    await postJson('/api/new', { from: d.key, tool: a.tool, name });
+    a.msg = {
+      text: a.tool === 'codex'
+        ? `A PowerShell window is opening with Codex. Type its first message there, then /rename ${name}.`
+        : `A PowerShell window is opening with a new Claude Code session named "${name}". Type its first message there.`,
+    };
+  } catch (err) {
+    a.msg = { text: `Not started. ${plainError(err)}`, bad: true };
+  } finally {
+    a.busy = false;
+    say(a.msg.text); // the message by the button is not a live region: it is rebuilt with the panel
+    if (S.drawer === d && d.newAgent === a) renderDrawerParts();
+  }
+}
+
+async function newCopy() {
+  const d = S.drawer;
+  const a = d && d.newAgent;
+  const name = a ? newAgentName(a) : '';
+  if (!name) return;
+  try {
+    await navigator.clipboard.writeText(`/rename ${name}`);
+    a.msg = { text: 'Copied the name command.' };
+  } catch {
+    a.msg = { text: 'The browser did not allow copying. Select the text and copy it yourself.', bad: true };
+  }
+  say(a.msg.text);
+  if (S.drawer === d) renderDrawerParts();
 }
 
 // ---- Roll over soon ----
@@ -2765,6 +2888,11 @@ function say(text) {
 
 const drawerBox = $('#drawer');
 drawerBox.addEventListener('keydown', (ev) => {
+  if (ev.target.id === 'd-new-name' && ev.key === 'Enter') {
+    ev.preventDefault();
+    newStart();
+    return;
+  }
   if (ev.target.id !== 'd-boss') return;
   // Enter sends a pick made with the arrow keys at once.
   if (ev.key === 'Enter') {
@@ -2774,7 +2902,20 @@ drawerBox.addEventListener('keydown', (ev) => {
     keyedAt = Date.now();
   }
 });
+drawerBox.addEventListener('input', (ev) => {
+  const a = S.drawer && S.drawer.newAgent;
+  if (!a || ev.target.id !== 'd-new-name') return;
+  a.name = ev.target.value;
+  if (a.bad) {
+    a.bad = false;
+    ev.target.removeAttribute('aria-invalid');
+  }
+});
 drawerBox.addEventListener('change', (ev) => {
+  if (ev.target.name === 'd-new-tool' && S.drawer && S.drawer.newAgent) {
+    S.drawer.newAgent.tool = ev.target.value;
+    return void renderDrawerParts();
+  }
   if (ev.target.id === 'd-watch') return void setWatch(ev.target);
   if (ev.target.id !== 'd-boss') return;
   releasePress(0);
@@ -3443,9 +3584,10 @@ function renderSettingsForm() {
       ${numberRow('s-roll-squeezes', 'Squeezed at least', 'rollSoon.squeezes', 0, 100, 'Times its history was squeezed into a summary.')}
       ${numberRow('s-roll-days', 'Older than', 'rollSoon.days', 0, 365, 'Days since the session started.')}
     </section>`)}
-    ${group('buttons', 'Buttons that open sessions in PowerShell windows. Off until you turn them on.', `
-    <section class="panel" aria-labelledby="s-h-open" data-find="buttons powershell terminal window resume roll over windows"><h2 id="s-h-open">Open sessions</h2>
+    ${group('buttons', 'Buttons that open and start sessions in PowerShell windows. Off until you turn them on.', `
+    <section class="panel" aria-labelledby="s-h-open" data-find="buttons powershell terminal window resume roll over windows new agent start team"><h2 id="s-h-open">Open sessions</h2>
       ${checkRow('s-open', 'Open in PowerShell', 'actions.openTerminal', 'Show the Open in PowerShell button', 'Opens a session in a new PowerShell window, so you can see it and type to it. Pleni never types into it. Windows only, this computer only. It will not open a session that is already open in another window.')}
+      ${checkRow('s-new', 'New agent', 'actions.newAgent', 'Show the New agent button', 'Starts a new Claude Code or Codex session in the folder of a session you pick, in a new PowerShell window. You type its first message there. Windows only, this computer only.')}
       ${checkRow('s-roll', 'Roll over', 'actions.rollover', 'Show the Roll over button', 'Starts a fresh session with the same name, from a handoff note the old one writes. Each step opens a window and sends one short message, which the side panel shows first. Windows only, this computer only, for sessions with a name of their own. It will not send to a session that is busy or open in another window.')}
       ${st.info.platform && st.info.platform !== 'win32' ? '<p class="note">This computer does not run Windows, so these buttons will not show here yet.</p>' : ''}
     </section>`)}
@@ -3883,7 +4025,9 @@ document.addEventListener('click', (ev) => {
   if (el.id === 's-alerts-test') return testAlert();
   if (el.dataset.open) return openInWindow(el);
   if (el.dataset.roll) return rollClick(el.dataset.roll);
+  if (el.dataset.new) return newClick(el.dataset.new);
   if (el.dataset.hide) return hideNode(el.dataset.hide, el.dataset.title || keyName(el.dataset.hide));
+  if (el.dataset.copy === 'new-rename') return newCopy();
   if (el.dataset.copy) return rollCopy(el.dataset.copy);
   if (el.dataset.node) return openDrawer(el.dataset.node, el);
   if (el.dataset.listFilter) {

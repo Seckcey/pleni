@@ -17,6 +17,7 @@ import {
 import { stripBom } from './jsonl.js';
 import { snapshotTag } from './model.js';
 import { openLimits, openSession } from './open.js';
+import { newAgent } from './newagent.js';
 import { rollover, rolloverInfo } from './rollover.js';
 
 const BIND_HOST = '127.0.0.1';
@@ -98,6 +99,7 @@ const MESSAGES = {
   goneWatch: 'That tile is not on the map any more.',
   openRemote: 'A session can be opened in a window only on the computer that runs Pleni, not from another device.',
   rollRemote: 'A session can be rolled over only on the computer that runs Pleni, not from another device.',
+  newRemote: 'A new agent can be started only on the computer that runs Pleni, not from another device.',
 };
 
 // A new random key.
@@ -266,6 +268,7 @@ async function handle(app, req, res) {
     if (pathname === '/api/hide') return postHide(app, req, res, host);
     if (pathname === '/api/open') return postOpen(app, req, res, host);
     if (pathname === '/api/rollover') return postRollover(app, req, res, host);
+    if (pathname === '/api/new') return postNewAgent(app, req, res, host);
     return postSettings(app, req, res, host);
   }
   if (pathname.startsWith('/brand/')) return sendBrand(app, req, res, pathname.slice('/brand/'.length));
@@ -280,7 +283,7 @@ async function handle(app, req, res) {
 
 function allowedMethods(pathname) {
   if (pathname === '/api/settings' || pathname === '/api/rollover') return ['GET', 'HEAD', 'POST'];
-  if (['/api/placement', '/api/dismiss', '/api/watch', '/api/hide', '/api/open'].includes(pathname)) return ['POST'];
+  if (['/api/placement', '/api/dismiss', '/api/watch', '/api/hide', '/api/open', '/api/new'].includes(pathname)) return ['POST'];
   if (PAGE_FILES.has(pathname) || API_GET.has(pathname)) return READ_ONLY;
   if (/^\/brand\/[^/]+$/.test(pathname)) return READ_ONLY;
   return null;
@@ -576,6 +579,28 @@ async function postRollover(app, req, res, host) {
   const result = await rollover({
     key: body.key,
     step: body.step,
+    name: body.name,
+    settings: state.settings,
+    roots: state.roots ?? {},
+    store: app.store,
+    limits: app.opens,
+    platform: app.platform,
+    ...(app.spawnProcess ? { spawn: app.spawnProcess } : {}),
+  });
+  if (result.ok) return sendJson(req, res, 200, { ok: true });
+  return sendError(req, res, result.status, result.error);
+}
+
+// New agent: { from: '<session key>', tool: 'claude' | 'codex', name }. Only on this computer, like
+// Open in PowerShell; src/newagent.js makes the other checks.
+async function postNewAgent(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.newRemote);
+  const state = app.readSettings();
+  const result = await newAgent({
+    from: body.from,
+    tool: body.tool,
     name: body.name,
     settings: state.settings,
     roots: state.roots ?? {},
