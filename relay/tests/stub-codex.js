@@ -52,6 +52,9 @@ function findThread(id) {
 
 const ri = argv.indexOf('resume');
 const before = ri >= 0 ? argv.slice(0, ri) : argv;
+// The notice after the thread id is free text (a mail notice says "-ExecutionPolicy Bypass"), so only the
+// options are checked for --last and a sandbox bypass.
+const options = ri >= 0 ? [...argv.slice(0, ri + 2), ...argv.slice(ri + 3)] : argv;
 const thread = ri >= 0 ? (argv[ri + 1] || '') : '';
 const prompt = ri >= 0 ? (argv[ri + 2] || '') : '';
 const m = /\[bridge-relay ([^\]]+)\]/.exec(prompt);
@@ -62,7 +65,7 @@ log({
   phase: 'start', t: start, pid: process.pid, mode, exec: argv[0] === 'exec', thread, prompt, dispatch: m ? m[1] : '',
   json: before.includes('--json'), skip_git: before.includes('--skip-git-repo-check'),
   extra: before.slice(1).filter((a) => a !== '--json' && a !== '--skip-git-repo-check'),
-  last: argv.includes('--last'), bypass: argv.some((a) => /danger|bypass|yolo/i.test(a)),
+  last: options.includes('--last'), bypass: options.some((a) => /danger|bypass|yolo/i.test(a)),
   key_absent: !process.env.OPENAI_API_KEY && !process.env.CODEX_API_KEY, codex_home: home, cwd: process.cwd()
 });
 if (running) fs.writeFileSync(running, String(start));
