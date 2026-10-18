@@ -708,6 +708,15 @@ details.fold > summary { cursor: pointer; color: var(--ui-text-secondary); }
   border-radius: 50%; background: var(--ui-error); vertical-align: middle;
 }
 .sgroup { display: grid; gap: var(--ui-space-6); }
+/* Open Pleni on another device: the addresses, the steps, and the devices turned away. */
+#devices-box > p { margin: var(--ui-space-3) 0 0; }
+#devices-box > p:first-child { margin-top: 0; }
+#devices-box .help { font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+.addr-list, .knocks { list-style: none; margin: var(--ui-space-3) 0 0; padding: 0; display: grid; gap: var(--ui-space-3); }
+.addr-list li, .knocks li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3) var(--ui-space-5); }
+.addr-list code, .knocks code { font-size: var(--ui-font-md); }
+.steps { margin: var(--ui-space-3) 0 0; padding-left: 1.4em; display: grid; gap: var(--ui-space-2); }
+.sub-h { margin: var(--ui-space-6) 0 0; font-size: var(--ui-font-md); }
 .sgroup-intro { margin: 0; color: var(--ui-text-secondary); }
 /* While finding, each group's name sits over its matching sections. */
 .settings.finding .sgroup-intro { display: none; }

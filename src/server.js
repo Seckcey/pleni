@@ -22,6 +22,10 @@ import { rollover, rolloverInfo } from './rollover.js';
 
 const BIND_HOST = '127.0.0.1';
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+// A Tailscale machine name, <machine>.<tailnet>.ts.net, and a Tailscale login such as ada@example.com.
+const TS_HOST = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net$/;
+const KNOCK_LOGIN = /^[^\s@]{1,128}@[^\s@]{1,125}$/;
+const MAX_KNOCKS = 5;
 const MAX_BODY_BYTES = 64 * 1024;
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const PACKAGE_FILE = new URL('../package.json', import.meta.url);
@@ -66,7 +70,7 @@ const BRAND_NAME = /^[a-z0-9][a-z0-9._-]*\.(png|svg|ico|webp)$/;
 // Names such as "nul.png" or "com1.svg" are devices, not files, on Windows.
 const WINDOWS_DEVICE = /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/;
 const BRAND_TYPES = { png: 'image/png', svg: 'image/svg+xml', ico: 'image/x-icon', webp: 'image/webp' };
-const API_GET = new Set(['/api/health', '/api/snapshot', '/api/session']);
+const API_GET = new Set(['/api/health', '/api/snapshot', '/api/session', '/api/devices']);
 // Only the health check answers without the key: it says nothing but "Pleni is running".
 const OPEN_API = new Set(['/api/health']);
 const READ_ONLY = ['GET', 'HEAD'];
@@ -100,6 +104,8 @@ const MESSAGES = {
   openRemote: 'A session can be opened in a window only on the computer that runs Pleni, not from another device.',
   rollRemote: 'A session can be rolled over only on the computer that runs Pleni, not from another device.',
   newRemote: 'A new agent can be started only on the computer that runs Pleni, not from another device.',
+  devicesRemote: "Pleni's key and the devices it turned away show only on the computer that runs Pleni.",
+  hostPage: 'Pleni does not answer requests for this address yet.\n\nIf this is your own device: on the computer that runs Pleni, open Pleni, go to Settings, then Devices, and choose Allow next to this device. Then reload this page.\n',
 };
 
 // A new random key.
@@ -203,6 +209,7 @@ export function createServer({ store, getSettings, saveSettings, publicDir = PUB
     platform,
     spawnProcess,
     opens: openLimits(),
+    knocks: new Map(),
   };
   return http.createServer((req, res) => {
     handle(app, req, res).catch(() => {
@@ -237,7 +244,8 @@ export async function start({ port, configFile, demo = false, open = false, rene
   let closing = null;
   const close = () => (closing ??= shutdown(server, store));
   if (open) openBrowser(url);
-  return { server, url, key, keySaved: kept.saved, close };
+  const remote = demo ? [] : first.settings.remote.hosts.map((h) => `https://${h}/`);
+  return { server, url, key, keySaved: kept.saved, remote, close };
 }
 
 // The command that opens a web page in the default browser, without a shell.
@@ -251,7 +259,7 @@ export function browserCommand(url, platform = process.platform) {
 
 async function handle(app, req, res) {
   const host = parseHost(req.headers.host);
-  if (!hostAllowed(host, req, app.readSettings())) return sendError(req, res, 403, MESSAGES.host);
+  if (!hostAllowed(host, req, app.readSettings())) return refuseHost(app, req, res, host);
   const [pathname, query] = splitUrl(req.url);
   const methods = allowedMethods(pathname);
   if (!methods) return sendError(req, res, 404, MESSAGES.notFound);
@@ -278,6 +286,7 @@ async function handle(app, req, res) {
   if (pathname === '/api/snapshot') return sendSnapshot(app, req, res);
   if (pathname === '/api/session') return sendSession(app, req, res, new URLSearchParams(query));
   if (pathname === '/api/rollover') return sendRollover(app, req, res, host, new URLSearchParams(query));
+  if (pathname === '/api/devices') return sendDevices(app, req, res, host);
   return sendJson(req, res, 200, await settingsPayload(app, app.readSettings()));
 }
 
@@ -315,6 +324,27 @@ function hostAllowed(host, req, state) {
   if (!hosts.includes(host.name) && !hosts.includes(host.host)) return false;
   const login = req.headers['tailscale-user-login'];
   return typeof login === 'string' && lowerList(remote.tailscaleUsers).includes(login.trim().toLowerCase());
+}
+
+// A turned-away visit through Tailscale is kept (in memory, the last few), so Settings can offer to
+// allow that device. A browser that opens a page gets plain words; the API keeps its JSON error.
+function refuseHost(app, req, res, host) {
+  noteKnock(app, host, req);
+  if (String(req.url ?? '').startsWith('/api/')) return sendError(req, res, 403, MESSAGES.host);
+  return send(req, res, 403, { 'Content-Type': 'text/plain; charset=utf-8' }, MESSAGES.hostPage);
+}
+
+// Only a visit that came through Tailscale counts: a <machine>.<tailnet>.ts.net name, which no web
+// site can point at this computer, and the Tailscale login that Tailscale adds.
+function noteKnock(app, host, req, now = Date.now()) {
+  const login = req.headers['tailscale-user-login'];
+  if (!host || !TS_HOST.test(host.name) || typeof login !== 'string') return;
+  const who = login.trim().toLowerCase();
+  if (!KNOCK_LOGIN.test(who)) return;
+  const id = `${host.name}|${who}`;
+  app.knocks.delete(id);
+  app.knocks.set(id, { host: host.name, login: who, at: now });
+  while (app.knocks.size > MAX_KNOCKS) app.knocks.delete(app.knocks.keys().next().value);
 }
 
 function lowerList(list) {
@@ -611,6 +641,17 @@ async function postNewAgent(app, req, res, host) {
   });
   if (result.ok) return sendJson(req, res, 200, { ok: true });
   return sendError(req, res, result.status, result.error);
+}
+
+// What Settings shows under Devices, only on this computer: the addresses for other devices, the
+// key, and the devices turned away lately (newest first), each with whether it is allowed now.
+function sendDevices(app, req, res, host) {
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.devicesRemote);
+  const { settings } = app.readSettings();
+  const hosts = lowerList(settings?.remote?.hosts);
+  const logins = lowerList(settings?.remote?.tailscaleUsers);
+  const knocks = [...app.knocks.values()].reverse().map((k) => ({ ...k, allowed: hosts.includes(k.host) && logins.includes(k.login) }));
+  return sendJson(req, res, 200, { addresses: hosts.map((h) => `https://${h}/`), key: app.key, knocks });
 }
 
 // A window opens on this computer, so only the person at it may ask: a request passed on by a proxy

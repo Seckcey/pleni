@@ -102,6 +102,12 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   Pleni learns the repository from the `origin` address in the folder's git settings, keeps only
   the owner and name, and sends nothing to GitHub.
 
+- Settings → Devices shows how to open Pleni on another device. It has the address to use, with
+  a Copy button, and buttons to copy the key or a sign-in link, on the computer that runs Pleni.
+  When Pleni turns away a phone or laptop that Tailscale brings, the device shows up there with
+  **Allow**, which adds its address and login to the lists in one click. The turned-away page now
+  says what to do in plain words, and Pleni prints the address for other devices when it starts.
+
 ### Changed
 
 - Settings is no longer one long page. It has six short groups, each behind a tab: Basics, Team,

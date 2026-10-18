@@ -711,8 +711,12 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - Bind `127.0.0.1` only.
 - **Host gate:** allow `localhost`, `127.0.0.1` and `[::1]` with any port. Any other host is allowed
   only when it is listed in `remote.hosts` and the request's `Tailscale-User-Login` header is listed
-  in `remote.tailscaleUsers` (both compared lower-case). Otherwise `403`. This also blocks DNS
-  rebinding.
+  in `remote.tailscaleUsers` (both compared lower-case). Otherwise `403`: JSON `{ error }` for
+  `/api/` paths, and for a page a plain-text answer that says to choose Allow in Settings → Devices
+  on the computer that runs Pleni. This also blocks DNS rebinding. A refused request whose host is
+  a Tailscale name (`<machine>.<tailnet>.ts.net`, which no web site can point at this computer) and
+  that carries a `Tailscale-User-Login` of the form `name@domain` is kept as a turned-away device
+  `{ host, login, at }`: in memory only, the newest 5, one per host and login.
 - **Key gate:** the host gate stops web sites, but every account and program on the computer can
   reach `127.0.0.1` and send any header, Tailscale's included. So every API request also needs a key.
   Demo mode always uses a throw-away key. `url` is `http://localhost:<port>/?t=<key>`, which the CLI
@@ -750,7 +754,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `GET /favicon.ico`, `GET /api/health`, `GET /api/snapshot` (weak ETag, `304` on match),
   `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`,
   `POST /api/placement`, `POST /api/dismiss`, `POST /api/watch`, `POST /api/open`,
-  `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`, `POST /api/new`.
+  `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`, `POST /api/new`, `GET /api/devices`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
 - `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
   them the same way (`snapshotTag`) for a store that did not. Its answers, `304` included, carry
@@ -793,6 +797,10 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **POST /api/new** `{ from: nodeKey, tool: 'claude' | 'codex', name }` passes the same checks as
   `/api/open`, then `newAgent` in `src/newagent.js` makes the rest and opens the window. It answers
   `{ ok: true }` or `{ error }` with the status it gives, and shares the server's `openLimits`.
+- **GET /api/devices** needs the key cookie and a request from this computer (like `/api/open`;
+  `403` otherwise). It answers `{ addresses: ['https://<host>/' for each remote.hosts], key,
+  knocks: [{ host, login, at, allowed }] }`, the turned-away devices newest first, where `allowed`
+  is whether both are on the lists now.
 - `GET /api/settings` returns `{ settings, file, roots, nodes: [{ key, title, platform, kind }], platform }`,
   where the last `platform` is the server's `process.platform`. `nodes` holds the snapshot's nodes
   and its `hiddenSessions`, so Settings can name hidden sessions.
@@ -866,8 +874,16 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   Projects, Ranks by model with its words folded), **Sources** (Where Pleni looks, Mailbox),
   **Alerts** (Needs you, with `alerts.stoppedMinutes` and the Pop-ups box; Roll over soon, with
   the three `rollSoon` limits), **Buttons** (Open sessions: Open in PowerShell, New agent and Roll
-  over, and a line when the computer does not run Windows) and **Devices** (Other devices, the port, and
-  where the settings file is). `#/settings/<group>` opens a group, and choosing a tab puts its
+  over, and a line when the computer does not run Windows) and **Devices** (Open Pleni on another
+  device; Other devices, the port, and where the settings file is). **Open Pleni on another
+  device**, on this computer, asks `GET /api/devices` when the group opens and every 5 seconds while
+  it shows. It shows this computer's address, the address for other devices with **Copy the
+  address** (or the three setup steps, `tailscale serve --bg <port>`, open it on the other device,
+  Allow, when none is set), the devices turned away lately with **Allow**, and **Copy the key** and
+  **Copy a sign-in link** (`https://<host>/?t=<key>`). Allow adds the host and the login to the
+  lists and saves when no other change waits to be saved; otherwise it fills them in and asks to
+  save. On another device the section only says which address the page is using and to bookmark
+  it. `#/settings/<group>` opens a group, and choosing a tab puts its
   group in the address. **Find a setting** shows, from every group, the sections whose group
   name, heading, notes, rows, or a few extra words (`data-find`) have each typed word at the start
   of a word. It marks the matching rows, opens a fold that holds a match, hides the tabs, and says

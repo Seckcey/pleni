@@ -1085,6 +1085,55 @@ test('open is off until it is turned on, and says why in plain words', async (t)
   assert.equal(spawnProcess.calls.length, 0);
 });
 
+// ---- other devices ----
+
+test('a device Tailscale brings that is not allowed yet gets plain words, and Settings can see it', async (t) => {
+  const settings = { remote: { hosts: [], tailscaleUsers: [] } };
+  const { port, memory } = await startServer(t, { settings });
+  const visit = { host: 'desk.tail1234.ts.net', 'tailscale-user-login': 'Ada@Example.com' };
+  const page = await request(port, { path: '/', headers: visit });
+  assert.equal(page.status, 403);
+  assert.match(page.headers['content-type'], /^text\/plain/);
+  assert.match(page.text, /Settings, then Devices, and choose Allow/);
+  assertPlainError(await request(port, { path: '/api/snapshot', headers: visit }), 403);
+  const devices = await request(port, { path: '/api/devices' });
+  assert.equal(devices.status, 200);
+  assert.deepEqual(devices.json.addresses, []);
+  assert.equal(devices.json.key, TEST_KEY);
+  assert.equal(devices.json.knocks.length, 1);
+  assert.deepEqual({ ...devices.json.knocks[0], at: 0 }, { host: 'desk.tail1234.ts.net', login: 'ada@example.com', at: 0, allowed: false });
+  memory.state.settings = cleanSettings({ remote: { hosts: ['desk.tail1234.ts.net'], tailscaleUsers: ['ada@example.com'] } });
+  const after = await request(port, { path: '/api/devices' });
+  assert.deepEqual(after.json.addresses, ['https://desk.tail1234.ts.net/']);
+  assert.equal(after.json.knocks[0].allowed, true);
+  assert.equal((await request(port, { path: '/api/health', headers: visit })).status, 200, 'now it gets in');
+});
+
+test('only visits through Tailscale are kept, the last five', async (t) => {
+  const { port } = await startServer(t, { settings: { remote: { hosts: [], tailscaleUsers: [] } } });
+  await request(port, { path: '/', headers: { host: 'evil.example.com', 'tailscale-user-login': 'ada@example.com' } });
+  await request(port, { path: '/', headers: { host: 'desk.tail1234.ts.net' } });
+  await request(port, { path: '/', headers: { host: 'desk.tail1234.ts.net', 'tailscale-user-login': 'not a login' } });
+  assert.deepEqual((await request(port, { path: '/api/devices' })).json.knocks, []);
+  for (let i = 0; i < 7; i += 1) {
+    await request(port, { path: '/', headers: { host: `pc${i}.tail1234.ts.net`, 'tailscale-user-login': 'ada@example.com' } });
+  }
+  const knocks = (await request(port, { path: '/api/devices' })).json.knocks;
+  assert.deepEqual(knocks.map((k) => k.host), ['pc6.tail1234.ts.net', 'pc5.tail1234.ts.net', 'pc4.tail1234.ts.net', 'pc3.tail1234.ts.net', 'pc2.tail1234.ts.net']);
+});
+
+test('the devices list needs the key and works only on this computer', async (t) => {
+  const settings = { remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } };
+  const { port } = await startServer(t, { settings });
+  assertPlainError(await request(port, { path: '/api/devices', headers: { cookie: undefined } }), 401);
+  for (const headers of [{ host: 'box.example.ts.net', 'tailscale-user-login': 'ada@example.com' }, { 'x-forwarded-for': '100.64.0.7' }]) {
+    const res = await request(port, { path: '/api/devices', headers });
+    assertPlainError(res, 403);
+    assert.equal(res.json.key, undefined);
+  }
+  assertPlainError(await request(port, { method: 'POST', path: '/api/devices' }), 405);
+});
+
 // ---- New agent ----
 
 const newReq = (port, body, headers = {}) => request(port, {

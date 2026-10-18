@@ -251,7 +251,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-roll', 'data-copy', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -759,7 +759,10 @@ function render() {
   else if (S.view === 'activity') renderActivity();
   else if (S.view === 'tasks') renderTasks();
   else if (S.view === 'pulls') renderPulls();
-  else if (S.view === 'settings') paintModels();
+  else if (S.view === 'settings') {
+    paintModels();
+    loadDevices(false);
+  }
   if (S.drawer) renderDrawerParts();
   announce();
 }
@@ -3204,6 +3207,131 @@ function settingsState() {
   return S.set;
 }
 
+// ---- other devices ----
+// On this computer, Settings shows the addresses for other devices, copies the key or a sign-in
+// link, and lists devices Pleni turned away lately, with Allow. It asks again every few seconds
+// while the Devices group is open, so a device that just tried shows up.
+const DEVICES_REFRESH_MS = 5000;
+
+async function loadDevices(force) {
+  const st = S.set;
+  if (!LOCAL_PAGE || !st || !st.info) return;
+  const shown = S.view === 'settings' && (st.group === 'devices' || !!st.find);
+  if (!force && (!shown || st.devicesBusy || Date.now() - (st.devicesAt || 0) < DEVICES_REFRESH_MS)) return;
+  st.devicesBusy = true;
+  try {
+    st.devices = await getJson('/api/devices');
+    st.devicesError = '';
+  } catch (err) {
+    st.devicesError = plainError(err);
+  } finally {
+    st.devicesBusy = false;
+    st.devicesAt = Date.now();
+  }
+  paintDevices();
+}
+
+function paintDevices() {
+  setHtml($('#devices-box'), devicesHtml());
+}
+
+function devicesHtml() {
+  const st = S.set;
+  const here = `${location.origin}/`;
+  if (!LOCAL_PAGE) {
+    return `<p>You are using Pleni at <code>${esc(here)}</code>. Bookmark this page to come back: in Chrome, press Ctrl+D.</p>` +
+      '<p class="help">The key and the list of devices show only on the computer that runs Pleni.</p>';
+  }
+  const d = st && st.devices;
+  if (!d) return `<p class="help">${esc(st && st.devicesError ? `Could not read this. ${st.devicesError}` : 'Loading…')}</p>`;
+  const addresses = Array.isArray(d.addresses) ? d.addresses : [];
+  const waiting = (Array.isArray(d.knocks) ? d.knocks : []).filter((k) => k && !k.allowed);
+  const out = [`<p>On this computer: <code>${esc(here)}</code></p>`];
+  if (addresses.length) {
+    out.push(
+      '<p>On your other devices, open this address and bookmark it:</p><ul class="addr-list">' +
+        addresses.map((a, i) => `<li><code>${esc(a)}</code><button type="button" class="btn" data-copy-addr="${i}">Copy the address</button></li>`).join('') +
+        '</ul>',
+    );
+  } else {
+    out.push(
+      '<p>No other device is set up yet. To set one up:</p><ol class="steps">' +
+        `<li>On this computer, in PowerShell, run <code>tailscale serve --bg ${esc(location.port || String(getPath(st.draft, 'port', 8790)))}</code>. It shows an address such as <code>https://my-pc.tail1234.ts.net</code>.</li>` +
+        '<li>Open that address on your other device, with Tailscale on. Pleni turns it away the first time, and it shows up here.</li>' +
+        '<li>Choose <b>Allow</b> next to it. Then reload the page there.</li></ol>',
+    );
+  }
+  if (waiting.length) {
+    out.push(
+      '<h3 class="sub-h">Turned away lately</h3><ul class="knocks">' +
+        waiting.map((k, i) =>
+          `<li><span><code>${esc(k.host)}</code> as <b>${esc(k.login)}</b>, ${agoHtml(k.at)}</span>` +
+          `<button type="button" class="btn primary" data-allow="${i}">Allow</button></li>`).join('') +
+        '</ul><p class="help">Allow only your own devices, or people you trust with your work: they see everything you see here.</p>',
+    );
+  }
+  out.push(
+    '<p>The first time, Pleni on the other device asks for its key.</p>' +
+      '<div class="roll-btns"><button type="button" class="btn" id="s-key-copy">Copy the key</button>' +
+      (addresses.length ? '<button type="button" class="btn" id="s-link-copy">Copy a sign-in link</button>' : '') +
+      '</div><p class="help">Paste the key there. A sign-in link holds the key: open it once on the other device and it signs in by itself. Keep both private, like a password.</p>' +
+      `<p class="roll-msg${st.devicesMsg && st.devicesMsg.bad ? ' bad' : ''}">${st.devicesMsg ? esc(st.devicesMsg.text) : ''}</p>`,
+  );
+  return out.join('');
+}
+
+async function copyDevices(what, index) {
+  const st = S.set;
+  const d = st && st.devices;
+  if (!d) return;
+  const addresses = Array.isArray(d.addresses) ? d.addresses : [];
+  const texts = {
+    addr: [addresses[index], 'Copied the address.'],
+    key: [d.key, 'Copied the key.'],
+    link: [addresses[0] && d.key ? `${addresses[0]}?t=${encodeURIComponent(d.key)}` : '', 'Copied a sign-in link.'],
+  };
+  const [text, done] = texts[what] || [];
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    st.devicesMsg = { text: done };
+  } catch {
+    st.devicesMsg = { text: 'The browser did not allow copying. Run "node bin/pleni.js --url" in PowerShell to see the address and the key.', bad: true };
+  }
+  say(st.devicesMsg.text);
+  paintDevices();
+}
+
+// Allow fills in the host name and the login, and saves at once when nothing else waits to be
+// saved; otherwise it leaves Save to the person, so other changes are not saved by surprise.
+function allowDevice(index) {
+  const st = S.set;
+  const waiting = st && st.devices && Array.isArray(st.devices.knocks) ? st.devices.knocks.filter((k) => k && !k.allowed) : [];
+  const k = waiting[index];
+  if (!k) return;
+  const clean = same(st.draft, st.info.settings);
+  if (!st.draft.remote || typeof st.draft.remote !== 'object') st.draft.remote = {};
+  for (const [field, value] of [['hosts', k.host], ['tailscaleUsers', k.login]]) {
+    const list = Array.isArray(st.draft.remote[field]) ? st.draft.remote[field] : [];
+    if (!list.some((v) => String(v).toLowerCase() === value)) list.push(value);
+    st.draft.remote[field] = list;
+  }
+  for (const [id, path] of [['s-hosts', 'remote.hosts'], ['s-users', 'remote.tailscaleUsers']]) {
+    const field = $(`#${id}`);
+    if (field) field.value = getPath(st.draft, path, []).join(', ');
+  }
+  if (clean) {
+    st.devicesMsg = { text: `Allowing ${k.host} for ${k.login}…` };
+    paintDevices();
+    saveSettings().then(() => loadDevices(true));
+  } else {
+    st.devicesMsg = { text: 'Added to the lists below. Choose Save settings to keep it.' };
+    say(st.devicesMsg.text);
+    paintDevices();
+    updateSettingsMsg();
+  }
+}
+
 async function loadSettings(force) {
   const st = settingsState();
   if (st.info && !force) {
@@ -3223,6 +3351,7 @@ async function loadSettings(force) {
     st.error = plainError(err);
   }
   if (S.view === 'settings') renderSettingsForm();
+  loadDevices(true);
 }
 
 function getPath(obj, path, fallback) {
@@ -3688,8 +3817,11 @@ function renderSettingsForm() {
       ${st.info.platform && st.info.platform !== 'win32' ? '<p class="note">This computer does not run Windows, so these buttons will not show here yet.</p>' : ''}
     </section>`)}
     ${group('devices', 'Opening Pleni from another device, and where its settings are kept.', `
+    <section class="panel" aria-labelledby="s-h-link" data-find="address url link bookmark key sign in phone laptop chrome allow"><h2 id="s-h-link">Open Pleni on another device</h2>
+      <div id="devices-box">${devicesHtml()}</div>
+    </section>
     <section class="panel" aria-labelledby="s-h-remote" data-find="phone tablet laptop remote tailscale proxy port host login"><h2 id="s-h-remote">Other devices</h2>
-      <p class="note">Pleni only listens on this computer. To open it from another device, put a private proxy such as <code>tailscale serve</code> in front of it, then list the host name and the Tailscale logins that may use it. The other device also needs Pleni's key: open the address Pleni printed when it started, with your Tailscale address in place of the part before <code>/?t=</code>.</p>
+      <p class="note">Pleni only lets in the host names and Tailscale logins listed here. <b>Allow</b> above fills both in for you.</p>
       ${textRow('s-hosts', 'Allowed host names', 'remote.hosts', { kind: 'words', placeholder: 'pleni.example.ts.net', help: 'Separate names with commas. Up to 20.' })}
       ${textRow('s-users', 'Allowed Tailscale logins', 'remote.tailscaleUsers', { kind: 'words', placeholder: 'ada@example.com', help: 'Separate logins with commas. Up to 20.' })}
       ${numberRow('s-port', 'Port', 'port', 1024, 65535, 'Pleni uses a new port the next time it starts.')}
@@ -3734,6 +3866,7 @@ function selectSettingsGroup(id, focus) {
   if (find) find.value = '';
   history.replaceState(null, '', `#/settings/${id}`);
   applySettingsView();
+  if (id === 'devices') loadDevices(true);
   if (focus) $(`#stab-${id}`).focus();
 }
 
@@ -4144,6 +4277,10 @@ document.addEventListener('click', (ev) => {
   }
   if (el.id === 's-retry') return loadSettings(true);
   if (el.dataset.stab) return selectSettingsGroup(el.dataset.stab, false);
+  if (el.dataset.copyAddr) return copyDevices('addr', Number(el.dataset.copyAddr));
+  if (el.id === 's-key-copy') return copyDevices('key');
+  if (el.id === 's-link-copy') return copyDevices('link');
+  if (el.dataset.allow) return allowDevice(Number(el.dataset.allow));
   if (el.id === 's-chain-add') return addChainRule();
   if (el.dataset.chainRemove) return removeChainRule(Number(el.dataset.chainRemove));
   if (el.id === 's-undo' && S.set && S.set.info) {

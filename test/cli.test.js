@@ -174,6 +174,19 @@ test('the address stays the same after a restart, and --new-key changes it', RUN
   assert.equal(fs.readFileSync(path.join(home, 'key'), 'utf8').trim(), c.key);
 });
 
+test('the start message names the address for other devices', RUN, async (t) => {
+  const home = tempDir(t);
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({ remote: { hosts: ['my-pc.tail1234.ts.net'], tailscaleUsers: ['ada@example.com'] } }));
+  const started = startCli(t, ['--port', '0'], cliEnv(home));
+  await started.ready;
+  assert.ok(started.out.stdout.includes('From your other devices: https://my-pc.tail1234.ts.net/\n'), started.out.stdout);
+  await stopCli(started);
+  const plain = startCli(t, ['--port', '0'], cliEnv(tempDir(t)));
+  await plain.ready;
+  assert.equal(plain.out.stdout.includes('From your other devices'), false, 'nothing when no device is set up');
+  await stopCli(plain);
+});
+
 test('--url shows the address and the key without starting Pleni', (t) => {
   const home = tempDir(t);
   // No key yet: it says so, and makes none.

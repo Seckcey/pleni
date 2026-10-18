@@ -96,6 +96,9 @@ recent pop-ups in its notification list until you clear them.
   mailbox folders.
 - It writes nowhere except its own folder (`settings.json`, `key`, `dismissed.json`). It saves each
   file safely: it writes a temporary file in the same folder, then renames it.
+- When it turns away a device that Tailscale brings, it keeps that device's Tailscale address and
+  login in memory (the last 5, never in a file), so Settings → Devices on your computer can offer
+  **Allow**. Only your computer's page can see this list, and Pleni's key.
 - It never stops a session. It sends nothing to one, except Roll over's two short messages when you
   click its buttons (see below).
 - It starts nothing unless you turn on **Open in PowerShell** (Settings → Buttons, off until
