@@ -13,10 +13,10 @@ before you change code, and follow its names, shapes, and file paths.
   session, and never writes into Claude Code's, Codex's, or a mailbox's folders. It sends nothing
   to a session except Roll over's two fixed messages (`src/rollover.js`), each in a window the
   person sees, after a click. The only programs it may start are for the opt-in Open in PowerShell,
-  Roll over and New agent buttons (`src/open.js`, `src/rollover.js`, `src/newagent.js`, Windows
-  only, this computer only): a window that runs `claude --resume`, `codex resume`, `claude --name`
-  or `codex` for the person to type into, and a hidden PowerShell that only asks when a process
-  started.
+  Roll over, New agent and Bring a cloud session here buttons (`src/open.js`, `src/rollover.js`,
+  `src/newagent.js`, Windows only, this computer only): a window that runs `claude --resume`,
+  `codex resume`, `claude --name`, `claude --teleport` or `codex` for the person to type into, and
+  a hidden PowerShell that only asks when a process started.
   Sending other work, free text, and approvals need their own design first.
 - **The relay is separate.** The `relay/` folder holds the mailbox relay: a Windows PowerShell
   program that writes into a mailbox and starts Claude Code sessions. It is not part of Pleni.

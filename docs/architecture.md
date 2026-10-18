@@ -13,8 +13,10 @@ default), two buttons open such windows with one fixed message each, which the p
 a request to the old session to write a handoff note, and the first message of a new session with
 the same name (see `src/rollover.js` below). With **New agent** turned on (also off by default), a
 button opens a window that starts a new named session in the folder of a session on the map, and
-the person types its first message there (see `src/newagent.js` below). Sending other work and
-approving actions come later and will get their own design.
+the person types its first message there (see `src/newagent.js` below). With **Bring a cloud
+session here** turned on, a button opens a window in a Claude Code session's folder that runs
+`claude --teleport`, where the person picks a claude.ai cloud session to go on with on this
+computer. Sending other work and approving actions come later and will get their own design.
 
 ## Ground rules
 
@@ -26,8 +28,8 @@ approving actions come later and will get their own design.
 - **Only the person who started it.** Every account on the computer can reach `127.0.0.1`, so the
   API also needs a random key made at each start and printed in Pleni's address (see Server).
 - **Read-only.** Pleni reads; it does not write anywhere except its own settings file. It starts no
-  program except the opt-in Open in PowerShell, Roll over and New agent windows, and only when the
-  person clicks for one. The only messages it sends are Roll over's two fixed ones.
+  program except the opt-in Open in PowerShell, Roll over, New agent and Bring a cloud session here
+  windows, and only when the person clicks for one. The only messages it sends are Roll over's two fixed ones.
 - **Private by default.** Nothing leaves the computer. No telemetry, no network calls. The page shows
   short snippets of session text only when `content` is `"snippets"` (the default); `"none"` shows
   only tool names and states.
@@ -92,7 +94,7 @@ export const DEFAULTS = {
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
-  actions: { openTerminal: false, rollover: false, newAgent: false }, // the Open in PowerShell, Roll over and New agent buttons; each true only when set to true
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false }, // the window buttons; each true only when set to true
   alerts: { stoppedMinutes: 15 },                      // a watched tile counts as stopped after this long without work
   rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 }, // "Roll over soon" limits (0-100, 0-100, 0-365); 0 turns one off
 }
@@ -412,7 +414,7 @@ Snapshot = {
   attention: [{ id: '<key>|<kind>', key, kind, text, at }],  // at is 0 when unknown
   tasks: MailboxState['tasks'] | null,
   hiddenSessions: [{ key, title, platform, kind }],  // recent sessions with Role "Hide it": off the map, named in Settings
-  actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean },  // the page may show each button (setting on, Pleni on Windows)
+  actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean, teleport: boolean },  // the page may show each button (setting on, Pleni on Windows)
 }
 SourceInfo = { enabled, ok, error, count }
 Node = {
@@ -527,8 +529,8 @@ export function createStore({ settings, roots, demo = false, now = Date.now, sta
 
 Creates the enabled sources (or the demo source), polls at most every 2 s on demand, caches the
 snapshot with its JSON and its ETag, and rebuilds when settings change. `snapshot().actions.openTerminal`
-is `settings.actions.openTerminal` and `platform === 'win32'`, and `actions.rollover` and
-`actions.newAgent` the same for their settings. `session(key)` gives what the newest poll knows
+is `settings.actions.openTerminal` and `platform === 'win32'`, and `actions.rollover`,
+`actions.newAgent` and `actions.teleport` the same for their settings. `session(key)` gives what the newest poll knows
 about a top-level Claude Code session or a Codex thread (`{ id, cwd, status, entrypoint, kind,
 title, titleSource, model, effort, mode }`) for Open in PowerShell, Roll over and New agent, and
 `null` for anything else and in the demo. The ETag is
@@ -709,6 +711,13 @@ export function newAgentCommand(tool, name, systemRoot) // -> { file, args }
   starts, so the page shows `/rename <name>` for the person to type after the first message.
 - **Limits** are Open in PowerShell's (`openLimits`, shared), with the slot `new:<from>`: a second
   click from the same side panel within a few seconds starts nothing.
+- **Bring a cloud session here** (`teleport({ from, settings, roots, store, limits, platform, env,
+  home, spawn, now })`, `teleportCommand(systemRoot)`): off until `actions.teleport`. `from` must be
+  a main Claude Code session on the map (`claude:<session id>`, kind `session`), not in the demo,
+  with a folder `folderProblem` accepts. The window runs `claude --teleport` in that folder with
+  `toolEnv('claude', …)`; Claude Code lists the person's claude.ai cloud sessions there and checks
+  its own needs (the same repository, no unsaved changes, the session's branch pushed). Limits:
+  `openLimits`, slot `teleport:<from>`.
 
 ## Server (`src/server.js`)
 
@@ -768,7 +777,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `GET /favicon.ico`, `GET /api/health`, `GET /api/snapshot` (weak ETag, `304` on match),
   `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`,
   `POST /api/placement`, `POST /api/dismiss`, `POST /api/watch`, `POST /api/open`,
-  `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`, `POST /api/new`, `GET /api/devices`.
+  `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`, `POST /api/new`, `POST /api/teleport`,
+  `GET /api/devices`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
 - `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
   them the same way (`snapshotTag`) for a store that did not. Its answers, `304` included, carry
@@ -811,6 +821,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **POST /api/new** `{ from: nodeKey, tool: 'claude' | 'codex', name }` passes the same checks as
   `/api/open`, then `newAgent` in `src/newagent.js` makes the rest and opens the window. It answers
   `{ ok: true }` or `{ error }` with the status it gives, and shares the server's `openLimits`.
+- **POST /api/teleport** `{ from: nodeKey }` passes the same checks as `/api/open`, then `teleport`
+  in `src/newagent.js` makes the rest and opens the window.
 - **GET /api/devices** needs the key cookie and a request from this computer (like `/api/open`;
   `403` otherwise). It answers `{ addresses: ['https://<host>/' for each remote.hosts], key,
   knocks: [{ host, login, at, allowed }] }`, the turned-away devices newest first, where `allowed`
@@ -876,7 +888,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   same). The page checks the name with the server's rule first and marks the box when it is bad.
   For Codex it shows `/rename <name>` with a copy button. The answer shows under the button and is
   read out through the page's live region. A repaint keeps a text box's caret where it was, so
-  typing goes on while the panel updates.
+  typing goes on while the panel updates. When `snapshot.actions.teleport` is true, on this
+  computer, a main Claude Code session's Now tab has **Bring a cloud session here**, which posts
+  `/api/teleport`; its answer shows in the status line under the tabs, like Open in PowerShell.
   Sessions and the relay have a **Tell me if this stops working**
   box that posts `/api/watch`; Settings' own copy of the settings is updated too, so saving Settings
   later keeps it.
@@ -887,8 +901,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   after and Reviewers folded under **More choices**), **Team** (Names and roles, Chain of command,
   Projects, Ranks by model with its words folded), **Sources** (Where Pleni looks, Mailbox),
   **Alerts** (Needs you, with `alerts.stoppedMinutes` and the Pop-ups box; Roll over soon, with
-  the three `rollSoon` limits), **Buttons** (Open sessions: Open in PowerShell, New agent and Roll
-  over, and a line when the computer does not run Windows) and **Devices** (Open Pleni on another
+  the three `rollSoon` limits), **Buttons** (Open sessions: Open in PowerShell, New agent, Bring a
+  cloud session here and Roll over, and a line when the computer does not run Windows) and **Devices** (Open Pleni on another
   device; Other devices, the port, and where the settings file is). **Open Pleni on another
   device**, on this computer, asks `GET /api/devices` when the group opens and every 5 seconds while
   it shows. It shows this computer's address, the address for other devices with **Copy the

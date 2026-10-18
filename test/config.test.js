@@ -70,7 +70,7 @@ test('cleanSettings keeps good values', () => {
     projects: { pleni: { label: 'Pleni', hidden: false } },
     chain: [{ match: 'Sergeant', reportsTo: 'Colonel', role: 'coordinator' }, { match: 'Colonel', reportsTo: 'you', role: null }],
     remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] },
-    actions: { openTerminal: true, rollover: true, newAgent: true },
+    actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true },
     alerts: { stoppedMinutes: 20 },
     rollSoon: { memoryPercent: 80, squeezes: 0, days: 10 },
   };
@@ -93,16 +93,17 @@ test('alerts: the stopped time stays in range, and only a real true watches a ti
   assert.deepEqual(people, { [`codex:${UUID}`]: { label: 'Planner', watch: true } });
 });
 
-test('Open in PowerShell, Roll over and New agent stay off unless each is turned on with a real true', () => {
-  const off = { openTerminal: false, rollover: false, newAgent: false };
+test('the window buttons stay off unless each is turned on with a real true', () => {
+  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false };
   assert.deepEqual(cleanSettings({}).actions, off);
   for (const value of ['true', 1, null, {}, []]) {
-    assert.deepEqual(cleanSettings({ actions: { openTerminal: value, rollover: value, newAgent: value } }).actions, off, String(value));
+    assert.deepEqual(cleanSettings({ actions: { openTerminal: value, rollover: value, newAgent: value, teleport: value } }).actions, off, String(value));
   }
   assert.deepEqual(cleanSettings({ actions: 'on' }).actions, off);
   assert.deepEqual(cleanSettings({ actions: { openTerminal: true, other: true } }).actions, { ...off, openTerminal: true });
   assert.deepEqual(cleanSettings({ actions: { rollover: true } }).actions, { ...off, rollover: true });
   assert.deepEqual(cleanSettings({ actions: { newAgent: true } }).actions, { ...off, newAgent: true });
+  assert.deepEqual(cleanSettings({ actions: { teleport: true } }).actions, { ...off, teleport: true });
 });
 
 test('cleanSettings clamps and rounds numbers', () => {

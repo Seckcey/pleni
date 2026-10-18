@@ -26,6 +26,10 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- Bring a cloud session here (Windows, off until you turn it on in Settings → Buttons): a Claude
+  Code session's side panel opens a PowerShell window in its folder that runs `claude --teleport`.
+  Pick one of your claude.ai cloud sessions there, and it goes on on this computer, where Pleni
+  shows it. Pleni itself still sends nothing.
 - New agent (Windows, off until you turn it on in Settings → Buttons): a session's side panel has
   **New agent here…**. Pick Claude Code or Codex, type a name, and Pleni opens a PowerShell window
   in that session's folder that runs `claude --name <name>`, or `codex`. You type the first

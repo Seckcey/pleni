@@ -63,7 +63,7 @@ const DEFAULTS = {
   projects: {},
   chain: [],
   remote: { hosts: [], tailscaleUsers: [] },
-  actions: { openTerminal: false, rollover: false, newAgent: false },
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false },
   alerts: { stoppedMinutes: 15 },
   rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 },
 };
@@ -251,7 +251,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -2256,6 +2256,7 @@ function sessionNowHtml(n, d) {
   out.push(openHtml(n));
   out.push(rollHtml(n, d));
   out.push(newHtml(n, d));
+  out.push(teleportHtml(n));
   out.push(hideHtml(n));
   if (isWorkerKey(d.key)) {
     out.push('<p class="empty">This worker keeps no session file.</p>');
@@ -2511,6 +2512,36 @@ async function newCopy() {
   }
   say(a.msg.text);
   if (S.drawer === d) renderDrawerParts();
+}
+
+// ---- Bring a cloud session here ----
+// A window in this Claude Code session's folder that runs claude --teleport, where the person picks
+// one of their claude.ai cloud sessions to go on with on this computer.
+
+const TELEPORT_FROM = /^claude:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function teleportHtml(n) {
+  if (!n || !LOCAL_PAGE || !(S.snap && S.snap.actions && S.snap.actions.teleport) || n.kind !== 'session' || !TELEPORT_FROM.test(n.key)) return '';
+  return (
+    `<div class="dnew"><button type="button" class="btn" data-teleport="${esc(n.key)}" aria-describedby="d-teleport-help">Bring a cloud session here</button>` +
+    '<p class="help" id="d-teleport-help">Opens a PowerShell window in this folder that runs <code>claude --teleport</code>. Pick one of your claude.ai cloud sessions there, and it goes on on this computer, where Pleni shows it.</p></div>'
+  );
+}
+
+async function teleportHere(btn) {
+  const key = btn.dataset.teleport;
+  const here = S.drawer ? S.drawer.key : key;
+  if (!key || opening.has(`teleport:${key}`)) return;
+  opening.add(`teleport:${key}`);
+  showMoved({ key: here, spot: 'note', text: 'Opening a PowerShell window…' });
+  try {
+    await postJson('/api/teleport', { from: key });
+    showMoved({ key: here, spot: 'note', text: 'A PowerShell window is opening with your cloud sessions. Pick one there. If Claude Code asks you to save or push your changes first, do that, then try again.' });
+  } catch (err) {
+    showMoved({ key: here, spot: 'note', bad: true, fadeMs: OPEN_ERROR_MS, text: `Not opened. ${plainError(err)}` });
+  } finally {
+    opening.delete(`teleport:${key}`);
+  }
 }
 
 // ---- Roll over soon ----
@@ -3821,9 +3852,10 @@ function renderSettingsForm() {
       ${numberRow('s-roll-days', 'Older than', 'rollSoon.days', 0, 365, 'Days since the session started.')}
     </section>`)}
     ${group('buttons', 'Buttons that open and start sessions in PowerShell windows. Off until you turn them on.', `
-    <section class="panel" aria-labelledby="s-h-open" data-find="buttons powershell terminal window resume roll over windows new agent start team"><h2 id="s-h-open">Open sessions</h2>
+    <section class="panel" aria-labelledby="s-h-open" data-find="buttons powershell terminal window resume roll over windows new agent start team cloud teleport web"><h2 id="s-h-open">Open sessions</h2>
       ${checkRow('s-open', 'Open in PowerShell', 'actions.openTerminal', 'Show the Open in PowerShell button', 'Opens a session in a new PowerShell window, so you can see it and type to it. Pleni never types into it. Windows only, this computer only. It will not open a session that is already open in another window.')}
       ${checkRow('s-new', 'New agent', 'actions.newAgent', 'Show the New agent button', 'Starts a new Claude Code or Codex session in the folder of a session you pick, in a new PowerShell window. You type its first message there. Windows only, this computer only.')}
+      ${checkRow('s-teleport', 'Bring a cloud session here', 'actions.teleport', 'Show the Bring a cloud session here button', 'Opens a PowerShell window in a Claude Code session\'s folder that runs claude --teleport, so you can pick one of your claude.ai cloud sessions and go on with it on this computer, where Pleni shows it. That folder must hold the same repository with no unsaved changes, and the cloud session\'s branch must be pushed. Windows only, this computer only.')}
       ${checkRow('s-roll', 'Roll over', 'actions.rollover', 'Show the Roll over button', 'Starts a fresh session with the same name, from a handoff note the old one writes. Each step opens a window and sends one short message, which the side panel shows first. Windows only, this computer only, for sessions with a name of their own. It will not send to a session that is busy or open in another window.')}
       ${st.info.platform && st.info.platform !== 'win32' ? '<p class="note">This computer does not run Windows, so these buttons will not show here yet.</p>' : ''}
     </section>`)}
@@ -4264,6 +4296,7 @@ document.addEventListener('click', (ev) => {
   if (el.dataset.dismiss) return dismissNotice(el);
   if (el.id === 's-alerts-test') return testAlert();
   if (el.dataset.open) return openInWindow(el);
+  if (el.dataset.teleport) return teleportHere(el);
   if (el.dataset.roll) return rollClick(el.dataset.roll);
   if (el.dataset.new) return newClick(el.dataset.new);
   if (el.dataset.hide) return hideNode(el.dataset.hide, el.dataset.title || keyName(el.dataset.hide));

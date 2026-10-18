@@ -1186,6 +1186,33 @@ test('new agent needs the key, the page itself, this computer, and the switch', 
   assert.equal(spawnProcess.calls.length, 0);
 });
 
+// ---- Bring a cloud session here ----
+
+test('teleport opens claude --teleport for a Claude Code session, only on this computer', async (t) => {
+  const folder = tempDir(t);
+  const spawnProcess = recordSpawns();
+  const settings = { actions: { teleport: true }, remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } };
+  const { port } = await startServer(t, { store: rollStore(folder), settings, platform: 'win32', spawnProcess });
+  const send = (headers = {}) => request(port, {
+    method: 'POST',
+    path: '/api/teleport',
+    headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+    body: JSON.stringify({ from: SESSION_KEY }),
+  });
+  assertPlainError(await send({ cookie: undefined }), 401);
+  assertPlainError(await send({ 'x-pleni': undefined }), 403);
+  const remote = await send({ host: 'box.example.ts.net', 'tailscale-user-login': 'ada@example.com' });
+  assertPlainError(remote, 403);
+  assert.match(remote.json.error, /only on the computer that runs Pleni/);
+  assert.equal(spawnProcess.calls.length, 0);
+  const res = await send();
+  assert.equal(res.status, 200);
+  assert.equal(spawnProcess.calls.length, 1);
+  assert.equal(spawnProcess.calls[0].options.cwd, folder);
+  assert.ok(spawnProcess.calls[0].args.at(-1).includes('-Command "claude --teleport"'));
+  assertPlainError(await request(port, { path: '/api/teleport' }), 405);
+});
+
 // ---- version ----
 
 test('snapshot answers say which Pleni sent them, also when nothing changed', async (t) => {

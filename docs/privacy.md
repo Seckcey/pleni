@@ -8,8 +8,8 @@ what it never does.
 
 - Pleni **reads** session files. It **writes** only in its own folder: its settings, its key, and
   the list of notices you dismissed.
-- Pleni **starts** nothing, unless you turn on **Open in PowerShell**, **Roll over** or **New
-  agent** and click a button. Then it opens one PowerShell window. You do the typing, except for
+- Pleni **starts** nothing, unless you turn on **Open in PowerShell**, **Roll over**, **New
+  agent** or **Bring a cloud session here** and click a button. Then it opens one PowerShell window. You do the typing, except for
   Roll over's one short message, which the page shows you before you click.
 - Pleni makes **no network calls**. It has no telemetry, no tracking, and no account. Its only
   sign-in is its own key, which it keeps on your computer.
@@ -112,6 +112,10 @@ recent pop-ups in its notification list until you clear them.
   PowerShell** runs `claude --name <name>` or `codex` in the session's folder with a request to read
   that note. Pleni builds both messages from the session's name, holds them to letters, digits,
   spaces and a few plain marks, and shows them before you click. It sends nothing else.
+- **Bring a cloud session here** (Settings → Buttons, off until you turn it on, Windows only, this
+  computer only) opens one PowerShell window in a Claude Code session's folder that runs
+  `claude --teleport`. Claude Code itself then talks to claude.ai to list your cloud sessions, as it
+  does when you run it yourself. Pleni sends nothing.
 - **New agent** (Settings → Buttons, off until you turn it on, Windows only, this computer only)
   opens one PowerShell window in the folder of a session you pick and runs `claude --name <name>`
   or `codex` there. The name you type is held to the same plain marks. Pleni sends the new agent

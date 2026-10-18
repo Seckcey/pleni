@@ -117,7 +117,8 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   or to open one. Pleni only links to GitHub; it sends nothing there.
 - **Settings** — six short groups: **Basics** (your name, the look, which sessions show),
   **Team** (names, roles, who reports to whom), **Sources** (which folders to read, and the
-  mailbox), **Alerts**, **Buttons** (Open in PowerShell, New agent and Roll over), and **Devices**
+  mailbox), **Alerts**, **Buttons** (Open in PowerShell, New agent, Bring a cloud session here and Roll
+  over), and **Devices**
   (opening Pleni from another device). Type in **Find a setting** to find one by name, such as
   "port" or "folder".
 
@@ -302,6 +303,23 @@ message.
 - **Only on this computer,** like the other buttons, and it uses your plan like any Claude Code or
   Codex window.
 
+## Bring a cloud session to this computer
+
+Sessions you run in Claude Code on the web (claude.ai/code) run on Anthropic's computers, so Pleni
+cannot see them. Claude Code can copy one onto your computer to go on with it here, and then Pleni
+shows it like any other session. On Windows, Pleni gives you a button for that:
+
+1. Open **Settings**, then **Buttons**. Tick **Show the Bring a cloud session here button**, then
+   choose **Save settings**.
+2. Click a Claude Code session that works in the same repository. In its side panel, choose **Bring
+   a cloud session here**.
+3. A PowerShell window opens in that folder and runs `claude --teleport`. Pick your cloud session
+   there.
+
+Claude Code needs the folder to hold the same repository with no unsaved changes, and the cloud
+session's branch pushed to GitHub. If one of those is missing, the window says what to do. The copy
+on your computer goes on by itself: new work there does not go back to the cloud session.
+
 ## Where it looks
 
 Pleni finds the usual folders on its own. You can change any of them in **Settings → Sources**.
@@ -346,8 +364,8 @@ it. It is not part of the npm package.
 ## Privacy and safety
 
 - Pleni reads files. It writes only its own settings file.
-- It starts nothing unless you turn on **Open in PowerShell**, **Roll over** or **New agent** and
-  click a button. Then it opens one PowerShell window that runs `claude` or `codex`. Open in
+- It starts nothing unless you turn on **Open in PowerShell**, **Roll over**, **New agent** or
+  **Bring a cloud session here** and click a button. Then it opens one PowerShell window that runs `claude` or `codex`. Open in
   PowerShell and New agent never type into a session. Roll over sends one short message, which it
   shows you first.
 - Pop-ups are off until you turn them on. Your browser makes them on your own screen; nothing is
