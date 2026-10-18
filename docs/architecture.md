@@ -318,6 +318,7 @@ work and a **coordinator** reports back.
 <root>/tasks/<taskId>/workers/W<n>.run.json, W<n>-report.md   optional worker runs; session_id names the run's Claude session
 <root>/NEEDS-<NAME>.md                optional notes for the person, such as NEEDS-ADA.md
 <root>/.relay/coordinator.json        optional: { session_id } of the coordinator's Claude session
+<root>/.relay/codex.json              optional: { thread_id } of the planner's Codex thread, if the relay wakes it (Pleni does not read it)
 <root>/.relay/state.json, relay.lock, PAUSE, STOP   optional relay state
 <root>/.relay/alerts.md               optional: the relay's alerts for the person
 ```

@@ -355,6 +355,21 @@ test('check finds a relay script that is not plain ASCII, and only there', (t) =
   assert.match(result.stdout, /Found 1 problem\(s\)/);
 });
 
+test('check finds a relay script that defines the same function twice', (t) => {
+  const root = tempDir(t, 'pleni-check-');
+  writeFiles(root, {
+    'relay/bin/good.ps1': 'function Get-One { 1 }\nfunction Get-Two { 2 }\n',
+    'relay/bin/bad.ps1': '# notes\nfunction Add-Note([string]$A) { $A }\n\n    function add-note { 2 }\n',
+    'scripts/other.ps1': 'function Get-One { 1 }\nfunction Get-One { 2 }\n',
+  });
+  const result = runCheck(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /relay\/bin\/bad\.ps1:4: function add-note is defined again \(first at line 2\)/);
+  assert.ok(!result.stdout.includes('good.ps1'));
+  assert.ok(!result.stdout.includes('other.ps1'));
+  assert.match(result.stdout, /Found 1 problem\(s\)/);
+});
+
 test('check stays fast on a long run of letters', (t) => {
   const root = tempDir(t, 'pleni-check-');
   // A token-like run with no "@" once made the address search take minutes.

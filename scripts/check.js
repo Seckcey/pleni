@@ -1,5 +1,5 @@
-// Repository checks: every script parses, the relay's PowerShell scripts are plain ASCII, and no
-// text file holds a personal Windows folder path or a real e-mail address.
+// Repository checks: every script parses, the relay's PowerShell scripts are plain ASCII and define
+// each function once, and no text file holds a personal Windows folder path or a real e-mail address.
 // Usage: node scripts/check.js [folder]
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -34,6 +34,7 @@ const FILE_ENDINGS = /\.(png|jpe?g|gif|svg|webp|ico|js|mjs|css|json|html?)$/i;
 const problems = [];
 const parsed = checkSyntax();
 checkAscii();
+checkFunctionNames();
 const scanned = scanFiles();
 
 if (problems.length) {
@@ -66,6 +67,25 @@ function checkAscii() {
       const line = bytes.subarray(0, at).toString('latin1').split('\n').length;
       problems.push(`${relative(file)}:${line}: a character that is not plain ASCII`);
     }
+  }
+}
+
+// PowerShell keeps the last definition of a function name (in any letter case), so a second
+// function with an old name silently replaces the first one for every caller.
+function checkFunctionNames() {
+  for (const file of walk(path.join(ROOT, ASCII_DIR))) {
+    if (!ASCII_EXTENSIONS.has(path.extname(file))) continue;
+    const first = new Map();
+    fs.readFileSync(file, 'latin1').split('\n').forEach((text, index) => {
+      const m = /^\s*function\s+([A-Za-z][\w-]*)/i.exec(text);
+      if (!m) return;
+      const name = m[1].toLowerCase();
+      if (first.has(name)) {
+        problems.push(`${relative(file)}:${index + 1}: function ${m[1]} is defined again (first at line ${first.get(name)}); the later one replaces it`);
+      } else {
+        first.set(name, index + 1);
+      }
+    });
   }
 }
 

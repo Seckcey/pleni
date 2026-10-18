@@ -13,11 +13,16 @@
       One turn at a time; new revisions queue while busy. Never uses --continue, --fork-session or
       --no-session-persistence, never resumes a session that looks open elsewhere, and never kills a process.
   Return direction (Claude -> Codex): lists unanswered BLOCKING questions and unreviewed IN_REVIEW handoffs in
-    .relay\codex-attention.md. CodexWake=NOT_CONFIGURED: nothing here wakes the Codex desktop chat.
+    .relay\codex-attention.md. Optional CodexWake (off until -EnrollCodex): each new item wakes ONE enrolled Codex
+    thread once, with codex exec --json --skip-git-repo-check resume <thread id> <notice>, in the thread's folder.
+    One wake at a time, never while another Codex program holds the thread (the Codex app keeps every thread it
+    opened), while a process has the thread id on its command line, or while a coordinator turn runs.
+    ChatGPT sign-in only (codex login status); OpenAI/Codex API keys are removed for the child launch.
   Billing: the existing Claude Code subscription login. No --bare, API-key injection or API
     fallback. Funding overrides are removed only for the child launch, then the original environment is restored.
   State: <MailboxRoot>\.relay\ only, one serialized writer (relay.lock). No secrets and no transcripts are stored.
-  Settings: <MailboxRoot>\bin\cost-limits.json and bin\relay-settings.json (projects_dir, owner_name), both optional.
+  Settings: <MailboxRoot>\bin\cost-limits.json and bin\relay-settings.json (projects_dir, owner_name, and for the
+    Codex wake codex_exe and codex_exec_args), both optional.
   The mailbox is the folder above bin\, where this script lives, unless -MailboxRoot names another one.
   No installation: no scheduled task, service, registry entry or permanent background process.
   Windows PowerShell 5.1 compatible. ASCII only.
@@ -32,6 +37,8 @@
        accepts -AllowCheck. Refused: '*', empty, git/claude/codex/npm/npx/rm/del, pwsh, cmd, powershell without
        -File <script>, node without a script path or with -e/-p.)
   .\bridge-relay.ps1 -ShowCoordinatorArgs   (read-only: prints the coordinator's allowed/denied tools and rules as JSON)
+  .\bridge-relay.ps1 -EnrollCodex -ThreadId 01234567-89ab-4def-8123-456789abcdef   (optional: wake that Codex thread)
+  .\bridge-relay.ps1 -UnenrollCodex          (turn the Codex wake off again)
   .\bridge-relay.ps1 -Once
   .\bridge-relay.ps1 -Start        (foreground; stop with -Stop from another window, or Ctrl+C)
   .\bridge-relay.ps1 -Stop
@@ -46,7 +53,11 @@ param(
     [switch]$Enroll,
     [switch]$ClearHalt,
     [switch]$ShowCoordinatorArgs,
+    [switch]$EnrollCodex,
+    [switch]$UnenrollCodex,
     [string]$SessionId,
+    [string]$ThreadId,      # -EnrollCodex: the Codex thread to wake
+    [string]$CodexCwd,      # -EnrollCodex: the thread's folder, when its first line does not name it
     [string]$CoordinatorCwd,
     [string]$MailboxRoot,   # default: the folder above bin\, where this script lives
     [switch]$NoWait,
@@ -56,12 +67,15 @@ param(
     [ValidateRange(0.05, 5)][double]$TurnBudgetUsd = 1,
     [ValidateRange(0.05, 50)][double]$DailyBudgetUsd = 5,
     [ValidateRange(0, 500)][int]$MaxWakesPerDay = 12, # 0 = unlimited coordinator wakes
+    [ValidateRange(0, 500)][int]$MaxCodexWakesPerDay = 12, # 0 = unlimited Codex wakes
     [ValidateRange(1, 20)][int]$MaxFailures = 3,
     [ValidateRange(1, 86400)][int]$BackoffSeconds = 120,
     [ValidateRange(1, 1440)][int]$WaitMinutes = 30,
     [string]$ClaudeExe = (Join-Path $env:APPDATA 'npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe'),
     [string]$KeyFile = (Join-Path $env:USERPROFILE '.claude-coordinator\anthropic-key.dpapi'), # legacy argument; never read
     [string]$ClaudeConfigDir,
+    [string]$CodexExe,      # default: codex_exe in bin\relay-settings.json, else codex.exe or codex.cmd on PATH
+    [string]$CodexHome,     # default: $env:CODEX_HOME, else %USERPROFILE%\.codex
     [string]$ProjectsDir,   # default: projects_dir in bin\relay-settings.json
     [string]$Model,
     [string]$Effort,
@@ -87,10 +101,13 @@ if ($DryRun)    { $modes += 'DryRun' }
 if ($Enroll)    { $modes += 'Enroll' }
 if ($ClearHalt) { $modes += 'ClearHalt' }
 if ($ShowCoordinatorArgs) { $modes += 'ShowCoordinatorArgs' }
+if ($EnrollCodex) { $modes += 'EnrollCodex' }
+if ($UnenrollCodex) { $modes += 'UnenrollCodex' }
 if ($modes.Count -gt 1) { Fail ('Pick one mode, got: ' + ($modes -join ', ')) 64 }
 if ($modes.Count -eq 0) { $modes = @('Status') }
 $Mode = $modes[0]
 if ($Effort -and @('low', 'medium', 'high', 'xhigh', 'max') -notcontains $Effort) { Fail "-Effort must be low, medium, high, xhigh or max (got '$Effort')" 64 }
+if (($ThreadId -or $CodexCwd) -and $Mode -ne 'EnrollCodex') { Fail '-ThreadId and -CodexCwd are accepted only with -EnrollCodex.' 64 }
 
 # The mailbox is the folder above bin\ unless -MailboxRoot names another one.
 if (-not $MailboxRoot) {
@@ -109,6 +126,7 @@ if (Test-Path -LiteralPath $clFile -PathType Leaf) {
         $cl = Get-Content -LiteralPath $clFile -Raw | ConvertFrom-Json
         if ($null -ne $cl.enabled) { $script:CostLimits = [bool]$cl.enabled }
         if (-not $PSBoundParameters.ContainsKey('MaxWakesPerDay') -and $null -ne $cl.relay_max_wakes_per_day) { $MaxWakesPerDay = [int]$cl.relay_max_wakes_per_day }
+        if (-not $PSBoundParameters.ContainsKey('MaxCodexWakesPerDay') -and $null -ne $cl.relay_max_codex_wakes_per_day) { $MaxCodexWakesPerDay = [int]$cl.relay_max_codex_wakes_per_day }
     } catch { Write-Host "WARNING: could not read $clFile; cost limits stay ON" }
 }
 
@@ -117,6 +135,7 @@ if (Test-Path -LiteralPath $clFile -PathType Leaf) {
 # ask for help; without it they ask "the owner" and use the tag NEEDS-OWNER.
 $OwnerName = 'the owner'
 $OwnerTag = 'NEEDS-OWNER'
+$CodexArgsRaw = @()   # codex_exec_args: extra codex exec options for the Codex wake (checked below)
 $rsFile = Join-Path ([IO.Path]::GetFullPath($MailboxRoot).TrimEnd('\')) 'bin\relay-settings.json'
 if (Test-Path -LiteralPath $rsFile -PathType Leaf) {
     try {
@@ -127,6 +146,8 @@ if (Test-Path -LiteralPath $rsFile -PathType Leaf) {
             $OwnerName = $on
             $OwnerTag = 'NEEDS-' + (($on -replace '[^A-Za-z]+', '-').Trim('-').ToUpperInvariant())
         } elseif ($on) { Write-Host "WARNING: owner_name in $rsFile must be 1-40 letters, spaces, dots, apostrophes or hyphens; using 'the owner'" }
+        if (-not $CodexExe -and $rs.codex_exe) { $CodexExe = [string]$rs.codex_exe }
+        if ($null -ne $rs.codex_exec_args) { $CodexArgsRaw = @($rs.codex_exec_args) }
     } catch { Write-Host "WARNING: could not read $rsFile; using the defaults" }
 }
 if ($ProjectsDir) { $ProjectsDir = [IO.Path]::GetFullPath($ProjectsDir).TrimEnd('\') }
@@ -176,6 +197,28 @@ if ($PSBoundParameters.ContainsKey('AllowCheck')) {
     }
 }
 
+function Get-CodexArgError($Value) {
+    # A codex_exec_args entry is passed to 'codex exec' before 'resume'. The owner sets them (bin\ is out of the
+    # sessions' reach); the relay still refuses anything that turns the sandbox off or changes what it controls.
+    if (-not ($Value -is [string])) { return 'it is not a string' }
+    $v = [string]$Value
+    if (-not $v) { return 'it is empty' }
+    if ($v -match '[\x00-\x20"%!^&|<>`]') { return 'it holds a space, a quote, a control character or a character cmd.exe treats specially (put each option and each value in its own entry)' }
+    if ($v -match '(?i)danger|bypass|yolo') { return 'it would turn the Codex sandbox off, which the relay never does' }
+    if (@('resume', '--last', '--json', '--skip-git-repo-check', '--cd') -contains $v -or $v -ceq '-C' -or $v -match '^--cd=') {
+        return 'the relay sets it itself (it always resumes the enrolled thread, in its own folder, with JSON output)'
+    }
+    return ''
+}
+
+$CodexArgs = New-Object System.Collections.Generic.List[string]
+$CodexArgsError = ''
+foreach ($caEntry in @($CodexArgsRaw)) {
+    $caWhy = Get-CodexArgError $caEntry
+    if ($caWhy) { $CodexArgsError = "codex_exec_args entry '$caEntry' in bin\relay-settings.json refused: $caWhy"; break }
+    $CodexArgs.Add([string]$caEntry)
+}
+
 # ---------- paths (all relay state lives under <MailboxRoot>\.relay) ----------
 $Root = [IO.Path]::GetFullPath($MailboxRoot).TrimEnd('\')
 if (-not (Test-Path -LiteralPath $Root -PathType Container)) { Fail "MailboxRoot not found: $Root" }
@@ -185,9 +228,14 @@ if (-not ((Test-Path -LiteralPath (Join-Path $Root 'CODEX-QUEUE.md')) -or (Test-
 if (-not $ClaudeConfigDir) {
     if ($env:CLAUDE_CONFIG_DIR) { $ClaudeConfigDir = $env:CLAUDE_CONFIG_DIR } else { $ClaudeConfigDir = Join-Path $env:USERPROFILE '.claude' }
 }
+if (-not $CodexHome) {
+    if ($env:CODEX_HOME) { $CodexHome = $env:CODEX_HOME } else { $CodexHome = Join-Path $env:USERPROFILE '.codex' }
+}
+$CodexHomeDir = [IO.Path]::GetFullPath($CodexHome).TrimEnd('\')
 $RelayDir    = Join-Path $Root '.relay'
 $StateFile   = Join-Path $RelayDir 'state.json'
 $CoordFile   = Join-Path $RelayDir 'coordinator.json'
+$CodexFile   = Join-Path $RelayDir 'codex.json'
 $LockFile    = Join-Path $RelayDir 'relay.lock'
 $StopFile    = Join-Path $RelayDir 'STOP'
 $PauseFile   = Join-Path $RelayDir 'PAUSE'
@@ -201,6 +249,7 @@ $script:CanWrite     = $false   # true only while this process holds relay.lock 
 $script:LockStream   = $null
 $script:Procs        = @{}      # dispatch id -> Process started by THIS relay process
 $script:LastLaunched = $null
+$script:LastCodexLaunched = $null
 
 # ---------- small helpers ----------
 function Get-Now { return [int64][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
@@ -349,7 +398,8 @@ function Get-State {
     try { $s = Read-Json $StateFile } catch { Fail "Relay state is unreadable ($StateFile): $($_.Exception.Message). Not overwriting it; move it aside to start fresh." }
     if (-not $s) { $s = @{} }
     $defaults = @{ version = 1; baseline_utc = 0; seq = 0; files = @{}; workers = @{}; notes = @{}; dispatches = @{}; attention = @{};
-        daily = @{ date = ''; wakes = 0; cost = 0.0 }; failures = 0; next_attempt_utc = 0; halt = ''; last_finish_utc = 0; flags = @{} }
+        daily = @{ date = ''; wakes = 0; cost = 0.0; codex_wakes = 0 }; failures = 0; next_attempt_utc = 0; halt = ''; last_finish_utc = 0; flags = @{};
+        codex_notes = @{}; codex_dispatches = @{}; codex_failures = 0; codex_next_attempt_utc = 0; codex_halt = ''; codex_last_finish_utc = 0 }
     foreach ($k in @($defaults.Keys)) { if (-not $s.ContainsKey($k) -or $null -eq $s[$k]) { $s[$k] = $defaults[$k] } }
     return $s
 }
@@ -359,6 +409,10 @@ function Save-State([hashtable]$State) {
     if ($done.Count -gt 50) { foreach ($d in $done[50..($done.Count - 1)]) { [void]$State.dispatches.Remove($d.id) } }
     $old = @($State.notes.Values | Where-Object { $_.state -eq 'completed' } | Sort-Object { [int64]$_.detected_utc } -Descending)
     if ($old.Count -gt 200) { foreach ($n in $old[200..($old.Count - 1)]) { [void]$State.notes.Remove($n.id) } }
+    $cdone = @($State.codex_dispatches.Values | Where-Object { $_.state -ne 'running' -and $_.state -ne 'launching' } | Sort-Object { [int64]$_.seq } -Descending)
+    if ($cdone.Count -gt 50) { foreach ($d in $cdone[50..($cdone.Count - 1)]) { [void]$State.codex_dispatches.Remove($d.id) } }
+    $cold = @($State.codex_notes.Values | Where-Object { $_.state -eq 'completed' } | Sort-Object { [int64]$_.detected_utc } -Descending)
+    if ($cold.Count -gt 200) { foreach ($n in $cold[200..($cold.Count - 1)]) { [void]$State.codex_notes.Remove($n.id) } }
     Save-Json $StateFile $State
 }
 
@@ -371,7 +425,7 @@ function Get-Coordinator {
 
 function Update-Daily([hashtable]$State) {
     $today = (Get-Date).ToString('yyyy-MM-dd', $Inv)
-    if ($State.daily.date -ne $today) { $State.daily = @{ date = $today; wakes = 0; cost = 0.0 } }
+    if ($State.daily.date -ne $today) { $State.daily = @{ date = $today; wakes = 0; cost = 0.0; codex_wakes = 0 } }
 }
 
 function Add-Alert([hashtable]$State, [string]$Flag, [string]$Message) {
@@ -523,8 +577,16 @@ function Write-AttentionFile([hashtable]$State) {
     $sb = New-Object System.Text.StringBuilder
     [void]$sb.AppendLine('# Codex attention (machine-generated by bin/bridge-relay.ps1; owner: relay; not a conversation file)')
     [void]$sb.AppendLine('')
-    [void]$sb.AppendLine('CodexWake=NOT_CONFIGURED - the relay cannot wake the Codex desktop chat. Codex reads STATUS.md first on its own schedule;')
-    [void]$sb.AppendLine('this list is only a hint derived from questions.md, answers.md, status.md, handoff.md and review.md.')
+    $cx = Get-CodexConfig
+    if ($cx) {
+        [void]$sb.AppendLine("CodexWake=ON - the relay wakes Codex thread $($cx.thread_id) with codex exec resume, once for each new item below,")
+        [void]$sb.AppendLine('when no other Codex program has that thread open. This list holds everything that still waits for the planner;')
+        [void]$sb.AppendLine('it is derived from questions.md, answers.md, status.md, handoff.md and review.md.')
+    } else {
+        [void]$sb.AppendLine('CodexWake=NOT_CONFIGURED - the relay does not wake Codex (to turn that on: bin\bridge-relay.ps1 -EnrollCodex -ThreadId <id>).')
+        [void]$sb.AppendLine('Codex reads STATUS.md first on its own schedule; this list is only a hint derived from questions.md, answers.md,')
+        [void]$sb.AppendLine('status.md, handoff.md and review.md.')
+    }
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine('Generated: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv))
     [void]$sb.AppendLine('')
@@ -539,19 +601,26 @@ function Write-AttentionFile([hashtable]$State) {
     [IO.File]::WriteAllText($AttnFile, $sb.ToString(), $Utf8)
 }
 
-function Update-Attention([hashtable]$State) {
+function Update-Attention([hashtable]$State, [bool]$Baseline) {
+    # With CodexWake on, each NEW item (not one already listed, and never at the baseline) is queued to wake Codex once.
     $cur = Get-AttentionItems
+    $codexOn = [bool](Get-CodexConfig)
     $changed = $false
     foreach ($k in @($cur.Keys)) {
         if (-not $State.attention.ContainsKey($k)) {
             $State.attention[$k] = @{ task = $cur[$k].task; what = $cur[$k].what; first_seen_utc = (Get-Now) }
-            Write-Log "Return direction: NEW for Codex - $($cur[$k].task): $($cur[$k].what) (listed in .relay\codex-attention.md; CodexWake=NOT_CONFIGURED, not delivered)"
+            $how = '(listed in .relay\codex-attention.md; CodexWake=NOT_CONFIGURED, not delivered)'
+            if ($codexOn -and $Baseline) { $how = '(already waiting at the first run; listed, not sent)' }
+            elseif ($codexOn) { Add-CodexWakeNote $State $k $cur[$k]; $how = '(queued to wake the Codex thread)' }
+            Write-Log "Return direction: NEW for Codex - $($cur[$k].task): $($cur[$k].what) $how"
             $changed = $true
         }
     }
     foreach ($k in @($State.attention.Keys)) {
         if (-not $cur.ContainsKey($k)) {
             [void]$State.attention.Remove($k)
+            $cn = $State.codex_notes[$k]
+            if ($cn -and $cn.state -eq 'pending') { [void]$State.codex_notes.Remove($k) }   # resolved before it was sent
             Write-Log "Return direction: no longer pending for Codex - $k"
             $changed = $true
         }
@@ -771,8 +840,9 @@ function Restore-SubscriptionEnvironment([hashtable]$Previous) {
     foreach ($name in $Previous.Keys) { [Environment]::SetEnvironmentVariable($name, $Previous[$name], 'Process') }
 }
 
-function Add-LedgerLine([hashtable]$D) {
+function Add-LedgerLine([hashtable]$D, [string]$Budget) {
     if (-not $script:CanWrite) { return }
+    if (-not $Budget) { $Budget = $TurnBudgetUsd.ToString($Inv) }
     if (-not (Test-Path -LiteralPath $LedgerFile)) {
         [IO.File]::WriteAllText($LedgerFile, "| Started | Finished | Dispatch | Items | State | Outcome | Exit | Cost USD | Turns | Budget |`r`n|---|---|---|---|---|---|---|---|---|---|`r`n", $Utf8)
     }
@@ -780,7 +850,7 @@ function Add-LedgerLine([hashtable]$D) {
     if ($D.error) { $outcome = $outcome + ' / ' + [string]$D.error }
     $outcome = (Get-Short $outcome 300) -replace '\|', '/'
     $line = '| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} |' -f (Format-Unix $D.started_utc), (Format-Unix $D.finished_utc), $D.id,
-        @($D.items).Count, $D.state, $outcome, $D.exit_code, $D.cost, $D.turns, $TurnBudgetUsd.ToString($Inv)
+        @($D.items).Count, $D.state, $outcome, $D.exit_code, $D.cost, $D.turns, $Budget
     [IO.File]::AppendAllText($LedgerFile, $line + "`r`n", $Utf8)
 }
 
@@ -1064,16 +1134,493 @@ function Get-BlockReason([hashtable]$State, $Coord, [int]$Settling) {
     return $null
 }
 
+# ---------- Codex wake (optional; off until -EnrollCodex) ----------
+# One enrolled Codex thread is woken once for each new item that waits for the planner, with
+#   codex exec --json --skip-git-repo-check [codex_exec_args] resume <thread id> <notice>
+# in the thread's own folder. Never two writers: it waits while another Codex program holds the thread's writer lock
+# (the Codex app keeps every thread it opened until it quits fully), while a process has the thread id on its command
+# line, while the thread file was written by another client in the quiet window, and while a coordinator turn runs.
+function Get-CodexConfig {
+    $c = $null
+    try { $c = Read-Json $CodexFile } catch { $c = $null }
+    if ($c -and $c.thread_id) { return $c }
+    return $null
+}
+
+function Read-HeadText([string]$Path, [int]$MaxBytes) {
+    $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+    $fs = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+    try {
+        $n = [int][Math]::Min([int64]$MaxBytes, $fs.Length)
+        $buf = New-Object byte[] $n
+        $read = 0
+        while ($read -lt $n) {
+            $k = $fs.Read($buf, $read, $n - $read)
+            if ($k -le 0) { break }
+            $read += $k
+        }
+        return [Text.Encoding]::UTF8.GetString($buf, 0, $read)
+    } finally { $fs.Dispose() }
+}
+
+function Find-CodexRollout([string]$Id) {
+    # Codex keeps each thread in <CODEX_HOME>\sessions\YYYY\MM\DD\rollout-<time>-<thread id>.jsonl (archived threads
+    # move to archived_sessions). Returns @{ path; archived } or $null.
+    if ($Id -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') { return $null }
+    foreach ($sub in @('sessions', 'archived_sessions')) {
+        $dir = Join-Path $CodexHomeDir $sub
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+        $f = @(Get-ChildItem -LiteralPath $dir -Recurse -File -Filter "rollout-*$Id.jsonl" -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($f.Count) { return @{ path = $f[0].FullName; archived = ($sub -eq 'archived_sessions') } }
+    }
+    return $null
+}
+
+function Get-CodexRolloutPath($Cx) {
+    # The enrolled file, or the thread's file found again (a live thread only; an archived one is not woken).
+    if (-not $Cx) { return '' }
+    $p = [string]$Cx.rollout_path
+    if ($p -and (Test-Path -LiteralPath $p -PathType Leaf)) { return $p }
+    $f = Find-CodexRollout ([string]$Cx.thread_id)
+    if ($f -and -not $f.archived) { return $f.path }
+    return ''
+}
+
+function Get-CodexThreadCwd([string]$Path) {
+    # The first line of a thread file is its session_meta record; its payload names the thread's working folder.
+    try { $head = Read-HeadText $Path 1048576 } catch { return '' }
+    $line = ($head -split "`n", 2)[0]
+    if ($line -notmatch '"type"\s*:\s*"session_meta"') { return '' }
+    $m = [regex]::Match($line, '"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
+    if (-not $m.Success) { return '' }
+    try { return [regex]::Unescape($m.Groups[1].Value) } catch { return '' }
+}
+
+function Test-CodexThreadLocked([string]$Id) {
+    # While a program writes a thread, Codex holds an operating-system lock on
+    # <CODEX_HOME>\thread-writer-locks\<thread id>.lock, and Windows refuses another program's read of a locked file.
+    # A refused open or read means the thread is open somewhere. The relay only reads this file.
+    $f = Join-Path (Join-Path $CodexHomeDir 'thread-writer-locks') "$Id.lock"
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $false }
+    try {
+        $fs = [IO.File]::Open($f, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        try {
+            $b = New-Object byte[] 1
+            [void]$fs.Read($b, 0, 1)
+            return $false
+        } finally { $fs.Dispose() }
+    } catch { return $true }
+}
+
+function Get-CodexExePath {
+    if ($CodexExe) { return $CodexExe }
+    foreach ($n in @('codex.exe', 'codex.cmd')) {
+        $c = Get-Command $n -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($c) { return $c.Path }
+    }
+    return ''
+}
+
+function ConvertTo-SafeText([string]$Text) {
+    # The notice may pass through cmd.exe (codex.cmd), so it keeps only plain characters.
+    $t = [string]$Text -replace "[^A-Za-z0-9 .,:;/\\()_#@+=?'\[\]-]", ' '
+    return (($t -replace '\s+', ' ').Trim())
+}
+
+function New-CodexPrompt([string]$Id, [object[]]$Batch) {
+    $parts = New-Object System.Collections.Generic.List[string]
+    $i = 0
+    foreach ($n in $Batch) { $i++; $parts.Add(('{0}) {1}: {2}' -f $i, $n.task, $n.what)) }
+    $p = "[bridge-relay $Id] Mailbox notice for the Codex planner. bin/bridge-relay.ps1 started this turn from the command line ($OwnerName did not type it). " +
+        "The Claude coordinator wrote $i new item(s) for the planner: " + ($parts -join '; ') + ". " +
+        "Read STATUS.md and the named task files in the mailbox $Root, then act as the planner under its README.md: " +
+        'write only planner-owned files (CODEX-QUEUE.md and the tasks assignment.md, answers.md and review.md). ' +
+        '.relay/codex-attention.md lists everything that still waits for the planner. Codex app thread tools may be unavailable in this turn. ' +
+        'Do not invent tasks. If nothing is actionable, change nothing. End with a one to three sentence summary.'
+    return (ConvertTo-SafeText $p)
+}
+
+function Get-CodexArguments([hashtable]$Cx, [string]$Prompt) {
+    $a = New-Object System.Collections.Generic.List[string]
+    foreach ($x in @('exec', '--json', '--skip-git-repo-check')) { $a.Add($x) }
+    foreach ($x in $CodexArgs) { $a.Add([string]$x) }
+    foreach ($x in @('resume', [string]$Cx.thread_id, $Prompt)) { $a.Add([string]$x) }
+    return , $a
+}
+
+function Get-CodexCommandLine([string[]]$Prefix, [hashtable]$Cx, [string]$Prompt) {
+    # The argument string for Start-Process. The list goes through a variable: @(<function>) would keep it as one item.
+    $cliArgs = Get-CodexArguments $Cx $Prompt
+    return ((@($Prefix) + @($cliArgs)) | ForEach-Object { ConvertTo-ArgToken $_ }) -join ' '
+}
+
+function Get-CodexPreflightError([hashtable]$Cx) {
+    if ($CodexArgsError) { return $CodexArgsError }
+    $exe = Get-CodexExePath
+    if (-not $exe) { return 'the Codex CLI was not found (install it, or set codex_exe in bin\relay-settings.json)' }
+    if (-not [IO.Path]::IsPathRooted($exe)) { return "codex_exe must be a full path (got $exe)" }
+    if ($exe -match '\.js$') {
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { return "stub Codex CLI not found at $exe" }
+        if (-not (Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue)) { return 'node.exe not found (needed only for a .js stub CLI)' }
+    } elseif (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        return "the Codex CLI was not found at $exe"
+    }
+    if (-not $Cx.cwd -or -not (Test-Path -LiteralPath ([string]$Cx.cwd) -PathType Container)) { return "the Codex thread's folder was not found: $($Cx.cwd)" }
+    if (-not (Get-CodexRolloutPath $Cx)) {
+        $f = Find-CodexRollout ([string]$Cx.thread_id)
+        if ($f -and $f.archived) { return "Codex thread $($Cx.thread_id) is archived; unarchive it in Codex, or enroll another thread" }
+        return "Codex thread $($Cx.thread_id) was not found under $CodexHomeDir\sessions; re-enroll with -EnrollCodex"
+    }
+    return ''
+}
+
+function Set-CodexEnvironment {
+    # Process-local only: the Codex turn uses the saved ChatGPT sign-in, never an inherited API key or endpoint.
+    $previous = @{}
+    foreach ($name in @('OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'OPENAI_PROJECT_ID', 'CODEX_HOME')) {
+        $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
+    [Environment]::SetEnvironmentVariable('CODEX_HOME', $CodexHomeDir, 'Process')
+    return $previous
+}
+
+function Read-CodexEvents([string]$Path) {
+    # codex exec --json writes one event per line: thread.started, turn.started, item.*, turn.completed, turn.failed, error.
+    $r = @{ any = $false; thread = ''; completed = $false; failed = ''; error = ''; message = '' }
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $r }
+    $raw = ''
+    try { $raw = Read-SharedText $Path } catch { return $r }
+    foreach ($line in ($raw -split "`r?`n")) {
+        $l = $line.Trim()
+        if (-not $l.StartsWith('{')) { continue }
+        $e = $null
+        try { $e = ConvertTo-HT (ConvertFrom-Json -InputObject $l) } catch { continue }
+        if (-not ($e -is [hashtable])) { continue }
+        $r.any = $true
+        $type = [string]$e['type']
+        if ($type -eq 'thread.started') { $r.thread = ([string]$e['thread_id']).ToLowerInvariant() }
+        elseif ($type -eq 'turn.completed') { $r.completed = $true }
+        elseif ($type -eq 'turn.failed') {
+            $m = ''
+            if ($e['error'] -is [hashtable]) { $m = [string]$e['error']['message'] }
+            if (-not $m) { $m = 'the turn failed' }
+            $r.failed = $m
+        } elseif ($type -eq 'error') { $r.error = [string]$e['message'] }
+        elseif ($type -eq 'item.completed' -and $e['item'] -is [hashtable]) {
+            $it = $e['item']
+            $kind = [string]$it['type']
+            if (-not $kind) { $kind = [string]$it['item_type'] }
+            if ($kind -eq 'agent_message' -and $it['text']) { $r.message = [string]$it['text'] }
+        }
+    }
+    return $r
+}
+
+function Test-CodexMarker([hashtable]$D) {
+    # True when the wake's marker is in the thread file: Codex accepted the notice into the thread.
+    $t = [string]$D.rollout
+    if (-not $t -or -not (Test-Path -LiteralPath $t -PathType Leaf)) { return $false }
+    try { return ((Read-TailText $t 8388608).IndexOf("[bridge-relay $($D.id)]", [StringComparison]::Ordinal) -ge 0) } catch { return $false }
+}
+
+function Add-CodexWakeNote([hashtable]$State, [string]$Key, [hashtable]$Item) {
+    $State.codex_notes[$Key] = @{ id = $Key; key = $Key; task = [string]$Item.task; what = [string]$Item.what; state = 'pending'; detected_utc = (Get-Now);
+        dispatch_id = ''; attempts = 0; outcome = ''; accepted_utc = 0; completed_utc = 0 }
+}
+
+function Set-CodexItemsDone([hashtable]$State, [hashtable]$D, [string]$Outcome) {
+    $now = Get-Now
+    foreach ($nid in @($D.items)) {
+        $n = $State.codex_notes[$nid]
+        if ($n -and $n.dispatch_id -eq $D.id) {
+            $n.state = 'completed'; $n.outcome = $Outcome; $n.completed_utc = $now
+            if (-not $n.accepted_utc) { $n.accepted_utc = $now }
+        }
+    }
+}
+
+function Add-CodexBackoff([hashtable]$State) {
+    $State.codex_failures = [int]$State.codex_failures + 1
+    $delay = [Math]::Min(3600, $BackoffSeconds * [Math]::Pow(2, [int]$State.codex_failures - 1))
+    $State.codex_next_attempt_utc = (Get-Now) + [int64]$delay
+}
+
+function Set-CodexHalt([hashtable]$State, [string]$Reason, [string]$Message) {
+    $State.codex_halt = $Reason
+    Add-Alert $State '' "$Message Claude wakes go on. Fix the cause, then run bridge-relay.ps1 -ClearHalt."
+}
+
+function Set-CodexDispatchFailed([hashtable]$State, [hashtable]$D, [string]$Message) {
+    $D.state = 'failed'; $D.error = $Message; $D.finished_utc = Get-Now; $D.outcome = 'not delivered'
+    foreach ($nid in @($D.items)) {
+        $n = $State.codex_notes[$nid]
+        if ($n -and $n.dispatch_id -eq $D.id) { $n.state = 'pending'; $n.dispatch_id = ''; $n.outcome = "previous attempt not delivered: $Message" }
+    }
+    Add-CodexBackoff $State
+    Write-Log ('Codex wake {0} FAILED (not delivered): {1}. {2} item(s) kept pending; failure {3}/{4}; next attempt not before {5}.' -f
+        $D.id, $Message, @($D.items).Count, $State.codex_failures, $MaxFailures, (Format-Unix $State.codex_next_attempt_utc))
+    if ([int]$State.codex_failures -ge $MaxFailures) {
+        Set-CodexHalt $State "$($State.codex_failures) consecutive Codex wake failures; last: $Message" "Codex wakes stopped after $($State.codex_failures) failures in a row. Last error: $Message. Pending items for Codex are kept."
+    }
+    Add-LedgerLine $D '-'
+    Remove-DispatchFiles $D
+}
+
+function Get-CodexBusyReason([hashtable]$State, [hashtable]$Cx) {
+    foreach ($d in @($State.codex_dispatches.Values)) {
+        if ($d.state -eq 'running' -or $d.state -eq 'launching') { return "relay Codex wake $($d.id) is still running (pid $($d.pid))" }
+    }
+    $tid = [string]$Cx.thread_id
+    if (Test-CodexThreadLocked $tid) { return "another Codex program has thread $tid open (most likely the Codex app, which keeps every thread it opened until it quits fully)" }
+    $procs = Get-SessionProcesses $tid
+    if ($null -eq $procs) { return 'the process list could not be read to confirm the thread is idle' }
+    if ($procs.Count -gt 0) { return ('thread ' + $tid + ' is open in pid ' + (($procs | ForEach-Object { $_.ProcessId }) -join ',')) }
+    $roll = Get-CodexRolloutPath $Cx
+    if ($QuietSeconds -gt 0 -and $roll) {
+        $tw = ConvertTo-Unix (Get-Item -LiteralPath $roll).LastWriteTimeUtc
+        $now = Get-Now
+        if ($tw -gt ($now - $QuietSeconds) -and $tw -gt ([int64]$State.codex_last_finish_utc + 15)) {
+            return "the thread file was written $($now - $tw) s ago by another client (quiet window $QuietSeconds s)"
+        }
+    }
+    return ''
+}
+
+function Get-CodexBlockReason([hashtable]$State, [hashtable]$Cx, [object[]]$Pending) {
+    $now = Get-Now
+    if (Test-Path -LiteralPath $PauseFile) { return @{ code = 'paused'; text = "PAUSED ($PauseFile exists); pending items are kept" } }
+    if ($State.codex_halt) { return @{ code = 'halted'; text = "Codex wakes STOPPED: $($State.codex_halt). Pending items are kept; check .relay\alerts.md, then run -ClearHalt" } }
+    foreach ($d in @($State.dispatches.Values)) {
+        if ($d.state -eq 'running' -or $d.state -eq 'launching') { return @{ code = 'coordinator-turn'; text = "a coordinator turn is still running ($($d.id)); the planner is woken after it ends, so it reads finished work" } }
+    }
+    $newest = [int64](@($Pending | ForEach-Object { [int64]$_.detected_utc }) | Measure-Object -Maximum).Maximum
+    if ($DebounceSeconds -gt 0 -and ($now - $newest) -lt $DebounceSeconds) { return @{ code = 'settling'; text = "settling: an item for Codex appeared less than $DebounceSeconds s ago (debounce)" } }
+    if ($State.codex_next_attempt_utc -and $now -lt [int64]$State.codex_next_attempt_utc) {
+        return @{ code = 'backoff'; text = "backoff after Codex failure $($State.codex_failures)/$MaxFailures; next attempt not before $(Format-Unix $State.codex_next_attempt_utc)" }
+    }
+    if ($MaxCodexWakesPerDay -gt 0 -and [int]$State.daily.codex_wakes -ge $MaxCodexWakesPerDay) {
+        Add-Alert $State ('cap-codex-' + $State.daily.date) "Daily Codex wake limit reached ($MaxCodexWakesPerDay planner turns). Items for Codex stay queued until tomorrow. Possible loop: check .relay\relay.log."
+        return @{ code = 'cap-codex'; text = "daily Codex wake limit reached ($([int]$State.daily.codex_wakes)/$MaxCodexWakesPerDay)" }
+    }
+    $busy = Get-CodexBusyReason $State $Cx
+    if ($busy) { return @{ code = 'busy'; text = "Codex thread busy: $busy. Queued; no new process" } }
+    return $null
+}
+
+function Start-CodexDispatch([hashtable]$State, [hashtable]$Cx, [object[]]$Pending) {
+    $script:LastCodexLaunched = $null
+    $now = Get-Now
+    if (-not (Test-Path -LiteralPath $DispatchDir)) { New-Item -ItemType Directory -Path $DispatchDir -Force | Out-Null }
+    $id = 'C' + (Get-Date).ToString('yyyyMMdd-HHmmss', $Inv) + '-' + [guid]::NewGuid().ToString('N').Substring(0, 4)
+    $batch = @($Pending | Select-Object -First 10)
+    $prompt = New-CodexPrompt $id $batch
+    $promptFile = Join-Path $DispatchDir "$id.prompt.txt"
+    $stdin = Join-Path $DispatchDir "$id.stdin.txt"
+    $out = Join-Path $DispatchDir "$id.out.jsonl"
+    $err = Join-Path $DispatchDir "$id.err.txt"
+    [IO.File]::WriteAllText($promptFile, $prompt, $Utf8)
+    [IO.File]::WriteAllText($stdin, '', $Utf8)
+    $State.seq = [int64]$State.seq + 1
+    $d = @{ id = $id; seq = $State.seq; target = 'codex'; state = 'launching'; items = @($batch | ForEach-Object { $_.id }); started_utc = $now; finished_utc = 0;
+        thread_id = [string]$Cx.thread_id; rollout = (Get-CodexRolloutPath $Cx); cwd = [string]$Cx.cwd; pid = 0; proc_start = '';
+        out = $out; err = $err; stdin = $stdin; prompt_file = $promptFile; accepted_utc = 0; exit_code = $null; outcome = ''; error = '';
+        result_thread = ''; summary = ''; billing = 'chatgpt-sign-in' }
+    $State.codex_dispatches[$id] = $d
+    foreach ($n in $batch) { $n.state = 'launched'; $n.dispatch_id = $id; $n.attempts = [int]$n.attempts + 1 }
+    Save-State $State   # write-ahead, as for coordinator turns
+
+    $pf = Get-CodexPreflightError $Cx
+    if ($pf) { Set-CodexDispatchFailed $State $d $pf; return }
+
+    $exe = Get-CodexExePath
+    $file = $exe
+    $prefix = @()
+    if ($exe -match '\.js$') {
+        $file = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Path
+        $prefix = @($exe)
+    }
+    $argString = Get-CodexCommandLine $prefix $Cx $prompt
+    $proc = $null
+    $launchError = ''
+    $previousEnvironment = $null
+    try {
+        try {
+            $previousEnvironment = Set-CodexEnvironment
+            # 'codex login status' reports the saved sign-in, on stderr in some versions; capture both as plain text.
+            $probePreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $signIn = ((& $file @prefix login status 2>&1) | ForEach-Object { [string]$_ }) -join ' '
+                $signInExit = $LASTEXITCODE
+            } finally { $ErrorActionPreference = $probePreference }
+            if ($signInExit -ne 0 -or $signIn -notmatch '(?i)chatgpt' -or $signIn -match '(?i)api key') {
+                $launchError = 'Codex is not signed in with ChatGPT; run codex login and choose ChatGPT (the relay never uses an API key)'
+            }
+        } catch { $launchError = 'could not check the Codex sign-in (the relay never uses an API key)' }
+        if (-not $launchError) {
+            try {
+                # Hidden own console: Ctrl+C in the relay window must never reach the planner turn.
+                $proc = Start-Process -FilePath $file -ArgumentList $argString -WorkingDirectory ([string]$Cx.cwd) -WindowStyle Hidden -PassThru `
+                    -RedirectStandardInput $stdin -RedirectStandardOutput $out -RedirectStandardError $err
+            } catch { $launchError = 'could not start the Codex CLI: ' + $_.Exception.Message }
+        }
+    } finally {
+        Restore-SubscriptionEnvironment $previousEnvironment
+    }
+    if ($launchError -or -not $proc) {
+        if (-not $launchError) { $launchError = 'could not start the Codex CLI (no process returned)' }
+        Set-CodexDispatchFailed $State $d $launchError
+        return
+    }
+    try { $null = $proc.Handle } catch { }   # keep a handle so the exit code stays readable
+    $d.pid = $proc.Id
+    try { $d.proc_start = [string]$proc.StartTime.ToUniversalTime().Ticks } catch { $d.proc_start = '' }
+    $d.state = 'running'
+    $State.daily.codex_wakes = [int]$State.daily.codex_wakes + 1
+    $script:Procs[$id] = $proc
+    $script:LastCodexLaunched = $id
+    [void]$State.flags.Remove('last_codex_block')
+    Save-State $State
+    Write-Log ('Woke Codex thread {0} with {1} (pid {2}; {3} item(s)): {4}' -f $Cx.thread_id, $id, $proc.Id, $batch.Count,
+        (($batch | ForEach-Object { "$($_.task): $($_.what)" }) -join '; '))
+}
+
+function Complete-CodexDispatch([hashtable]$State, [hashtable]$D) {
+    $now = Get-Now
+    $exit = $null
+    if ($script:Procs.ContainsKey($D.id)) {
+        $p = $script:Procs[$D.id]
+        try { $p.WaitForExit(); $exit = $p.ExitCode } catch { }
+        [void]$script:Procs.Remove($D.id)
+    }
+    $D.exit_code = $exit
+    $ev = Read-CodexEvents $D.out
+    $marker = Test-CodexMarker $D
+    $errText = ''
+    try { if ($D.err -and (Test-Path -LiteralPath $D.err)) { $errText = Get-Short (Read-SharedText $D.err) 300 } } catch { }
+    $D.finished_utc = $now
+    $D.result_thread = $ev.thread
+    if ($ev.message) { $D.summary = Get-Short $ev.message 300 }
+    $State.codex_last_finish_utc = $now
+    $enrolled = ([string]$D.thread_id).ToLowerInvariant()
+    if ($ev.thread -and $ev.thread -ne $enrolled) {
+        $D.state = 'completed'
+        $D.outcome = "THREAD MISMATCH: Codex used $($ev.thread), enrolled is $enrolled"
+        Set-CodexItemsDone $State $D 'delivered to a different thread; not replayed'
+        Set-CodexHalt $State "thread mismatch on $($D.id): Codex reported thread $($ev.thread) instead of the enrolled $enrolled" "Codex wakes stopped: wake $($D.id) ran in Codex thread $($ev.thread), not the enrolled $enrolled. Check the enrollment (-EnrollCodex)."
+    } elseif ($ev.completed -and -not $ev.failed) {
+        $D.state = 'completed'
+        $D.outcome = 'success'
+        Set-CodexItemsDone $State $D 'completed: the planner turn ended successfully'
+        $State.codex_failures = 0
+        $State.codex_next_attempt_utc = 0
+    } elseif (-not $marker) {
+        $msg = "Codex ended without a result (exit $exit)"
+        if ($ev.failed) { $msg = "the Codex turn failed before the notice reached the thread: $($ev.failed)" }
+        elseif ($ev.error) { $msg = "Codex reported an error before the notice reached the thread: $($ev.error)" }
+        if ($errText) { $msg += ": $errText" }
+        Set-CodexDispatchFailed $State $D $msg
+        return
+    } elseif ($ev.failed -or $ev.error) {
+        $D.state = 'completed'
+        $D.outcome = 'turn ended with an error; delivered, not replayed'
+        $D.error = Get-Short ("$($ev.failed) $($ev.error)") 300
+        Set-CodexItemsDone $State $D 'delivered; the turn ended with an error; not replayed'
+        Add-CodexBackoff $State
+        Add-Alert $State '' "Codex planner turn $($D.id) ended with an error: $($D.error). Not replayed."
+        if ([int]$State.codex_failures -ge $MaxFailures) {
+            Set-CodexHalt $State "$($State.codex_failures) consecutive failed Codex turns" "Codex wakes stopped after $($State.codex_failures) failed planner turns in a row."
+        }
+    } else {
+        $D.state = 'completed'
+        $D.outcome = 'unknown: Codex ended without a result, but the notice is in the thread (delivered; not replayed)'
+        if ($errText) { $D.error = $errText }
+        Set-CodexItemsDone $State $D 'delivered; outcome unknown (not replayed)'
+        Add-Alert $State '' "Codex planner turn $($D.id) ended without a result (exit $exit) after its notice reached the thread. Not replayed. Check the planner's files."
+    }
+    Write-Log ('Codex wake {0} {1}: {2}; exit {3}' -f $D.id, $D.state, $D.outcome, $exit)
+    Add-LedgerLine $D '-'
+    Remove-DispatchFiles $D
+}
+
+function Update-CodexDispatches([hashtable]$State) {
+    foreach ($d in @($State.codex_dispatches.Values | Where-Object { $_.state -eq 'running' -or $_.state -eq 'launching' })) {
+        if ($d.state -eq 'launching' -and -not $d.pid) {
+            # The relay stopped after the write-ahead but before it recorded a process id.
+            $ps = Get-SessionProcesses $d.thread_id
+            if ($ps -and $ps.Count -gt 0) {
+                $d.pid = [int]$ps[0].ProcessId
+                $d.state = 'running'
+                Write-Log "Recovered Codex wake $($d.id): a process (pid $($d.pid)) has the thread open; waiting for it, never killing it"
+                continue
+            }
+            if (-not (Test-Path -LiteralPath $d.out) -and -not (Test-CodexMarker $d)) {
+                $d.state = 'abandoned'
+                $d.finished_utc = Get-Now
+                $d.outcome = 'the relay stopped before the Codex CLI started; items re-queued'
+                foreach ($nid in @($d.items)) { $n = $State.codex_notes[$nid]; if ($n -and $n.dispatch_id -eq $d.id) { $n.state = 'pending'; $n.dispatch_id = '' } }
+                Write-Log "Codex wake $($d.id) never started (the relay stopped first); $(@($d.items).Count) item(s) re-queued"
+                Add-LedgerLine $d '-'
+                continue
+            }
+        }
+        if ($d.state -eq 'launching') { $d.state = 'running' }
+        if (Test-DispatchAlive $d) {
+            if (-not $d.accepted_utc -and (Test-CodexMarker $d)) {
+                $d.accepted_utc = Get-Now
+                foreach ($nid in @($d.items)) { $n = $State.codex_notes[$nid]; if ($n -and $n.state -eq 'launched') { $n.state = 'accepted'; $n.accepted_utc = $d.accepted_utc } }
+                Write-Log "Codex wake $($d.id) accepted: the notice is in thread $($d.thread_id); the turn is still running"
+            }
+            $mins = [int][Math]::Floor(((Get-Now) - [int64]$d.started_utc) / 60)
+            if ($mins -ge $WaitMinutes) {
+                Add-Alert $State ('long:' + $d.id) "Codex planner turn $($d.id) is still running after $mins min (pid $($d.pid)). The relay never kills it; new items for Codex stay queued."
+            }
+            continue
+        }
+        Complete-CodexDispatch $State $d
+    }
+}
+
+function Invoke-CodexTick([hashtable]$State, [bool]$ReadOnly) {
+    $cx = Get-CodexConfig
+    if (-not $cx) { return }
+    $pending = @($State.codex_notes.Values | Where-Object { $_.state -eq 'pending' } | Sort-Object { [int64]$_.detected_utc })
+    if ($pending.Count -eq 0) {
+        [void]$State.flags.Remove('last_codex_block')
+        if ($ReadOnly) { Write-Note 'DRY-RUN: nothing to wake Codex for.' }
+        return
+    }
+    $why = Get-CodexBlockReason $State $cx $pending
+    if ($why) {
+        $text = "$($pending.Count) item(s) for Codex queued, not sent: $($why.text)"
+        if ($ReadOnly) { Write-Note "DRY-RUN: would not wake Codex now. $text" }
+        elseif ($State.flags['last_codex_block'] -ne $why.code) { $State.flags['last_codex_block'] = $why.code; Write-Log $text }
+        else { Write-Note $text }
+        return
+    }
+    if ($ReadOnly) {
+        $batch = @($pending | Select-Object -First 10)
+        $prompt = New-CodexPrompt 'C-dry-run' $batch
+        Write-Note ('DRY-RUN: would wake Codex thread {0} with {1} item(s) (cwd {2}). Nothing started, nothing written.' -f $cx.thread_id, $batch.Count, $cx.cwd)
+        Write-Host ('  command: ' + (Get-CodexExePath) + ' ' + (Get-CodexCommandLine @() $cx $prompt))
+        return
+    }
+    Start-CodexDispatch $State $cx $pending
+}
+
 # ---------- one tick ----------
 function Invoke-Tick([hashtable]$State, [bool]$ReadOnly) {
     $script:LastLaunched = $null
+    $script:LastCodexLaunched = $null
     $coord = Get-Coordinator
     $baseline = (-not $State.baseline_utc)
     Update-Daily $State
     Update-Dispatches $State
+    Update-CodexDispatches $State
     $settling = Update-Inbound $State $baseline
     Update-Workers $State $baseline
-    Update-Attention $State
+    Update-Attention $State $baseline
     if ($settling -gt 0) { Write-Note "Debounce: $settling inbound file(s) still settling (changed less than $DebounceSeconds s ago); looking again later" }
     if ($baseline) {
         $State.baseline_utc = Get-Now
@@ -1101,6 +1648,7 @@ function Invoke-Tick([hashtable]$State, [bool]$ReadOnly) {
             Start-Dispatch $State $coord $pending
         }
     }
+    Invoke-CodexTick $State $ReadOnly
     Save-State $State
 }
 
@@ -1108,21 +1656,27 @@ function Invoke-Tick([hashtable]$State, [bool]$ReadOnly) {
 function Invoke-OnceMode {
     $state = Get-State
     Invoke-Tick $state $false
-    $id = $script:LastLaunched
-    if ($id -and -not $NoWait) {
-        Write-Note "Waiting for dispatch $id to end (up to $WaitMinutes min; the turn is never killed)..."
+    $ids = @(@($script:LastLaunched, $script:LastCodexLaunched) | Where-Object { $_ })
+    if ($ids.Count -and -not $NoWait) {
+        Write-Note ("Waiting for {0} to end (up to {1} min; a turn is never killed)..." -f ($ids -join ', '), $WaitMinutes)
         $deadline = (Get-Now) + $WaitMinutes * 60
         while ((Get-Now) -lt $deadline) {
-            $p = $script:Procs[$id]
-            if (-not $p -or $p.HasExited) { break }
+            $open = @($ids | Where-Object { $p = $script:Procs[$_]; $p -and -not $p.HasExited })
+            if ($open.Count -eq 0) { break }
             Start-Sleep -Milliseconds 500
         }
         Update-Dispatches $state
+        Update-CodexDispatches $state
         Save-State $state
     }
     $pend = @($state.notes.Values | Where-Object { $_.state -eq 'pending' }).Count
     $fly = @($state.dispatches.Values | Where-Object { $_.state -eq 'running' -or $_.state -eq 'launching' } | ForEach-Object { $_.id })
     Write-Note ("Once done: {0} pending; in flight: {1}" -f $pend, $(if ($fly.Count) { $fly -join ',' } else { 'none' }))
+    if (Get-CodexConfig) {
+        $cpend = @($state.codex_notes.Values | Where-Object { $_.state -eq 'pending' }).Count
+        $cfly = @($state.codex_dispatches.Values | Where-Object { $_.state -eq 'running' -or $_.state -eq 'launching' } | ForEach-Object { $_.id })
+        Write-Note ("Codex: {0} item(s) pending; in flight: {1}" -f $cpend, $(if ($cfly.Count) { $cfly -join ',' } else { 'none' }))
+    }
 }
 
 function Invoke-Loop {
@@ -1130,7 +1684,10 @@ function Invoke-Loop {
     $fsw = New-Object System.IO.FileSystemWatcher($Root)
     $fsw.IncludeSubdirectories = $true
     $fsw.NotifyFilter = [IO.NotifyFilters]::FileName -bor [IO.NotifyFilters]::DirectoryName -bor [IO.NotifyFilters]::LastWrite -bor [IO.NotifyFilters]::Size
-    Write-Log "Relay loop started (pid $PID; mailbox $Root; poll $PollSeconds s; debounce $DebounceSeconds s). Stop: bridge-relay.ps1 -Stop, or Ctrl+C here. CodexWake=NOT_CONFIGURED."
+    $cxl = Get-CodexConfig
+    $cxWord = 'CodexWake=NOT_CONFIGURED'
+    if ($cxl) { $cxWord = "CodexWake=ON (thread $($cxl.thread_id))" }
+    Write-Log "Relay loop started (pid $PID; mailbox $Root; poll $PollSeconds s; debounce $DebounceSeconds s). Stop: bridge-relay.ps1 -Stop, or Ctrl+C here. $cxWord."
     $state = Get-State
     try {
         try { Invoke-Tick $state $false } catch { Write-Log "Tick error: $($_.Exception.Message)" }
@@ -1196,6 +1753,53 @@ function Invoke-Enroll {
         '. To change them, exit the coordinator session and run -Enroll again.')
 }
 
+function Invoke-EnrollCodex {
+    # Operator only. Records the ONE Codex thread the relay may wake. Enrolling wakes nothing: the items that wait for
+    # the planner now count as known, so only new ones wake the thread.
+    if ($ThreadId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+        Fail "-ThreadId must be the Codex thread id (a UUID; got '$ThreadId'). The relay never guesses it."
+    }
+    $tid = $ThreadId.ToLowerInvariant()
+    $found = Find-CodexRollout $tid
+    if (-not $found) {
+        Fail "No Codex thread $tid found under $CodexHomeDir\sessions. Take the id from the thread itself (Pleni shows it in the thread's details), and pass -CodexHome if Codex keeps its files elsewhere."
+    }
+    if ($found.archived) { Fail "Codex thread $tid is archived. Unarchive it in Codex first, or enroll another thread." }
+    $cwd = ''
+    if ($CodexCwd) { $cwd = [IO.Path]::GetFullPath($CodexCwd).TrimEnd('\') } else { $cwd = Get-CodexThreadCwd $found.path }
+    if (-not $cwd) { Fail "Could not read the thread's working folder from the first line of $($found.path). Pass -CodexCwd <folder>." }
+    if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { Fail "The Codex thread's working folder was not found: $cwd" }
+    $held = Test-CodexThreadLocked $tid
+    $cx = @{ thread_id = $tid; cwd = $cwd; rollout_path = $found.path; codex_home = $CodexHomeDir; enrolled_utc = (Get-Now);
+        enrolled = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv);
+        wake_rule = 'codex exec --json --skip-git-repo-check [codex_exec_args] resume <thread_id> <notice>, in cwd, ChatGPT sign-in only; never --last, never a sandbox bypass; never while another Codex program holds the thread' }
+    $state = Get-State
+    Update-Attention $state $true   # before codex.json exists: what waits now is listed, not queued
+    Save-Json $CodexFile $cx
+    $state.codex_halt = ''
+    $state.codex_failures = 0
+    $state.codex_next_attempt_utc = 0
+    [void]$state.flags.Remove('last_codex_block')
+    Write-AttentionFile $state
+    Save-State $state
+    Write-Log "Enrolled Codex thread $tid for CodexWake (cwd $cwd; thread file $($found.path)). Each NEW item for the planner wakes it once; the $($state.attention.Count) item(s) waiting now count as known."
+    if ($held) { Write-Log 'Another Codex program has this thread open right now (most likely the Codex app). The relay wakes it only after that program lets go of it; quit the Codex app fully to hand the thread to the relay.' }
+    $exe = Get-CodexExePath
+    if (-not $exe) { Write-Log 'WARNING: the Codex CLI was not found on PATH. Install it, or set codex_exe in bin\relay-settings.json, before the first wake.' }
+    if ($CodexArgsError) { Write-Log "WARNING: $CodexArgsError. No Codex wake starts until it is fixed." }
+}
+
+function Invoke-UnenrollCodex {
+    $state = Get-State
+    $drop = @($state.codex_notes.Values | Where-Object { $_.state -eq 'pending' })
+    foreach ($n in $drop) { [void]$state.codex_notes.Remove($n.id) }
+    if (Test-Path -LiteralPath $CodexFile) { Remove-Item -LiteralPath $CodexFile -Force }
+    [void]$state.flags.Remove('last_codex_block')
+    Write-AttentionFile $state
+    Save-State $state
+    Write-Log ("CodexWake turned off: .relay\codex.json removed; {0} pending item(s) for Codex dropped (they stay listed in .relay\codex-attention.md). A running Codex turn is never stopped." -f $drop.Count)
+}
+
 function Invoke-ClearHalt {
     $state = Get-State
     $was = $state.halt
@@ -1203,8 +1807,14 @@ function Invoke-ClearHalt {
     $state.failures = 0
     $state.next_attempt_utc = 0
     [void]$state.flags.Remove('last_block')
+    $cwas = $state.codex_halt
+    $state.codex_halt = ''
+    $state.codex_failures = 0
+    $state.codex_next_attempt_utc = 0
+    [void]$state.flags.Remove('last_codex_block')
     Save-State $state
     Write-Log ("Halt cleared by the operator (was: {0})." -f $(if ($was) { $was } else { 'not halted' }))
+    if ($cwas) { Write-Log "Codex wake halt cleared by the operator (was: $cwas)." }
 }
 
 function Invoke-Stop {
@@ -1255,10 +1865,35 @@ function Show-Status {
     $recent = @($state.dispatches.Values | Sort-Object { [int64]$_.seq } -Descending | Select-Object -First 5)
     if ($recent.Count) { Write-Host 'Recent dispatches:' }
     foreach ($d in $recent) { Write-Host ("  - {0} {1}: {2} (cost {3} USD, items {4})" -f $d.id, $d.state, (Get-Short ([string]$d.outcome + ' ' + [string]$d.error) 160), $d.cost, @($d.items).Count) }
+    $cx = Get-CodexConfig
+    if ($cx) {
+        $roll = Get-CodexRolloutPath $cx
+        $held = Test-CodexThreadLocked ([string]$cx.thread_id)
+        Write-Host ("CodexWake: ON for Codex thread {0} (cwd {1}; enrolled {2}; thread file found: {3}; open in another Codex program now: {4})" -f
+            $cx.thread_id, $cx.cwd, $cx.enrolled, [bool]$roll, $held)
+        $exe = Get-CodexExePath
+        Write-Host ('Codex CLI: ' + $(if ($exe) { $exe } else { 'NOT FOUND (install it, or set codex_exe in bin\relay-settings.json)' }))
+        if ($CodexArgsError) { Write-Host "Codex options: REFUSED - $CodexArgsError" }
+        elseif ($CodexArgs.Count) { Write-Host ('Codex options: ' + ($CodexArgs -join ' ')) }
+        $cfly = @($state.codex_dispatches.Values | Where-Object { $_.state -eq 'running' -or $_.state -eq 'launching' })
+        if ($cfly.Count -eq 0) { Write-Host 'Codex in flight: none' }
+        foreach ($d in $cfly) { Write-Host ("Codex in flight: {0} pid {1} started {2} alive {3}" -f $d.id, $d.pid, (Format-Unix $d.started_utc), (Test-DispatchAlive $d)) }
+        $cpend = @($state.codex_notes.Values | Where-Object { $_.state -eq 'pending' } | Sort-Object { [int64]$_.detected_utc })
+        Write-Host "Codex items pending: $($cpend.Count)"
+        foreach ($n in $cpend) { Write-Host ("  - {0}: {1} (detected {2}, attempts {3})" -f $n.task, $n.what, (Format-Unix $n.detected_utc), $n.attempts) }
+        Write-Host ('Codex halt: ' + $(if ($state.codex_halt) { $state.codex_halt } else { 'none' }) + "; consecutive failures: $($state.codex_failures)" +
+            $(if ($state.codex_next_attempt_utc) { '; next attempt not before ' + (Format-Unix $state.codex_next_attempt_utc) } else { '' }))
+        $cLimit = $(if ($MaxCodexWakesPerDay -eq 0) { 'unlimited' } else { [string]$MaxCodexWakesPerDay })
+        Write-Host ("Today ({0}): {1}/{2} Codex wakes" -f $state.daily.date, [int]$state.daily.codex_wakes, $cLimit)
+        $crecent = @($state.codex_dispatches.Values | Sort-Object { [int64]$_.seq } -Descending | Select-Object -First 3)
+        if ($crecent.Count) { Write-Host 'Recent Codex wakes:' }
+        foreach ($d in $crecent) { Write-Host ("  - {0} {1}: {2} (items {3})" -f $d.id, $d.state, (Get-Short ([string]$d.outcome + ' ' + [string]$d.error) 160), @($d.items).Count) }
+    }
     $att = Get-AttentionItems
-    Write-Host "Codex attention (return direction, listed only): $($att.Count)"
+    Write-Host "Codex attention (return direction): $($att.Count)"
     foreach ($k in @($att.Keys | Sort-Object)) { Write-Host ("  - {0}: {1}" -f $k, $att[$k].what) }
-    Write-Host 'CodexWake=NOT_CONFIGURED (the relay never wakes the Codex desktop chat; Codex needs its own supported scheduled review)'
+    if ($cx) { Write-Host "CodexWake=ON (each new item above wakes Codex thread $($cx.thread_id) once; -UnenrollCodex turns it off)" }
+    else { Write-Host 'CodexWake=NOT_CONFIGURED (the relay does not wake Codex; to turn that on: bridge-relay.ps1 -EnrollCodex -ThreadId <thread id>)' }
 }
 
 function Show-CoordinatorArgs {
@@ -1293,6 +1928,8 @@ try {
         'Start'     { Invoke-Loop }
         'Once'      { Invoke-OnceMode }
         'Enroll'    { Invoke-Enroll }
+        'EnrollCodex'   { Invoke-EnrollCodex }
+        'UnenrollCodex' { Invoke-UnenrollCodex }
         'ClearHalt' { Invoke-ClearHalt }
     }
 } finally {
