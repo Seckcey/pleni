@@ -449,6 +449,7 @@ Snapshot = {
   nodes: Node[], edges: Edge[], events: Event[], counts: { working, ready, idle, done, error, total },
   attention: [{ id: '<key>|<kind>', key, kind, text, at }],  // at is 0 when unknown
   tasks: MailboxState['tasks'] | null,
+  mail: null | { name, unread, lastAt },  // agent mail: the person's mail name, their new mail, the newest message's time
   hiddenSessions: [{ key, title, platform, kind }],  // recent sessions with Role "Hide it": off the map, named in Settings
   actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean, teleport: boolean },  // the page may show each button (setting on, Pleni on Windows)
 }
@@ -540,7 +541,9 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
   for it (`codex:<threadId>`), when listed; else the newest listed session (by `lastAt`) whose
   title, or the name the person gave it, has that same key. A tile with a mail name gets
   `mail = { name, unread, since, wakes, toYou }`: `toYou` counts the unread messages it sent the
-  person; a tile with two names adds them up. Every message whose sender and receiver are both
+  person; a tile with two names adds them up. Mail the person marked as read on the Mail page
+  (`you|mailread` in the dismissed notices) no longer counts in `unread`, `toYou`, Needs you or
+  `snapshot.mail.unread`, though its file stays in `new/`. Every message whose sender and receiver are both
   session tiles lights the line between them like a hand-off: along the tree lines, down when the
   receiver is below the sender and up when it is above; otherwise one `message` line for the two
   tiles (from the one whose key sorts first, `down` when that one sent it). Mail between the
@@ -902,7 +905,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`,
   `POST /api/placement`, `POST /api/dismiss`, `POST /api/watch`, `POST /api/open`,
   `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`, `POST /api/new`, `POST /api/teleport`,
-  `GET /api/devices`, `GET /api/github`, `POST /api/github/merge`.
+  `GET /api/devices`, `GET /api/github`, `POST /api/github/merge`, `GET /api/mail`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
 - `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
   them the same way (`snapshotTag`) for a store that did not. Its answers, `304` included, carry
@@ -914,9 +917,10 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   application/json`, a body of at most 64 KB, and an `Origin` (when present) whose host equals the
   request host. The body is cleaned with `cleanSettings`, saved, and the store reloaded.
 - **POST /api/dismiss** `{ id: '<key>|<kind>', at: number | null }` passes the same checks; `kind`
-  is one of `needs`, `error`, `question`, `review`, `alert`, `paused`, `halted`, `note`, `stopped`. It hides
-  that notice while its `at` is not newer than the given time (a session's `needs` becomes null too),
-  and `at: null` brings it back. Dismissals are kept in `dismissed.json` next to the settings (at most
+  is one of `needs`, `error`, `question`, `review`, `alert`, `paused`, `halted`, `note`, `stopped`,
+  `mail`, `mailread`. It hides that notice while its `at` is not newer than the given time (a
+  session's `needs` becomes null too), and `at: null` brings it back. `you|mailread` is the Mail
+  page's "Mark all as read": the time of the newest mail the person has read. Dismissals are kept in `dismissed.json` next to the settings (at most
   1000), so every device sees the same; the demo keeps them in memory.
 - **POST /api/placement** `{ key, reportsTo: nodeKey | 'you' | null }` passes the same checks and
   saves `people[key].reportsTo` (null removes it). It refuses the person, projects, sessions that
@@ -954,6 +958,14 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `error` and `repos` come from `github.status` for the repositories on the map (`node.github`,
   reviewers left out), or from `demoGithub` in the demo. Another device gets the same status, with
   `merge: false`. `createServer({ github })` lets tests replace `createGithub()`.
+- **GET /api/mail** (`?all=1` for every message) needs the key cookie. It answers `{ on: false, name:
+  null, readAt: null, messages: [] }` without agent mail, else `{ on: true, name, readAt, messages }`
+  from `store.mail({ all })`: the person's mail name, the `you|mailread` time (or null), and up to
+  100 messages, newest first: `{ id, to, toName, from, fromName, at, unread, text, toYou, fromYou }`.
+  Without `all`, only messages to or from one of the person's mail names (`personMailKeys`: the
+  relay's `owner_name`, `owner`, the name in Settings). `text` is the whole message (at most 64 KB),
+  null when `content` is `none`. The mailbox source reads these files only for this request
+  (`source.mail({ keys, all })`), never on a poll; the demo makes them from its own mail.
 - **POST /api/github/merge** `{ repo, number, head }` passes the same checks as `/api/open` (this
   computer only), needs `github.live` and `github.merge` (`403` otherwise), and is refused in the
   demo (`409`). `github.merge` makes the rest, with `settings.github.mergeMethod` and the
@@ -989,6 +1001,16 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **List:** a table of sessions grouped by project with status filters; it is also the accessible
   alternative to the map.
 - **Activity:** the event feed, newest first.
+- **Mail:** shown when the mailbox has agent mail (`snapshot.mail`), with the number of new
+  messages beside its name. It asks `GET /api/mail` when it shows and again when `snapshot.mail`
+  changes. **With you** lists the messages to and from the person; **All mail** lists every
+  message. Each shows who wrote to whom, when, and the whole text (line breaks kept). A message to
+  the person is **New** while it waits in `new/` and is newer than `readAt`; a message to an agent
+  still in `new/` says **Not read yet**. Each message to the person has the command that answers
+  it, with a Copy button: `& '<mailbox>\bin\agent-mail.ps1' -Send -From '<name>' -To '<sender>'
+  -Text 'your answer'` (`.\bin\agent-mail.ps1` when Pleni does not know the mailbox folder).
+  **Mark all as read** posts `you|mailread` with the newest new message's time; the files stay
+  where they are. A "Mail for you" notice opens this page, and so does its pop-up.
 - **Tasks:** mailbox tasks with state and attention.
 - **Pull requests:** one card per GitHub repository (`node.github`) of the sessions on the map, with
   links to its Pull requests, Branches and Checks (Actions) pages on github.com. Under it, each

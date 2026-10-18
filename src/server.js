@@ -72,7 +72,7 @@ const BRAND_NAME = /^[a-z0-9][a-z0-9._-]*\.(png|svg|ico|webp)$/;
 // Names such as "nul.png" or "com1.svg" are devices, not files, on Windows.
 const WINDOWS_DEVICE = /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/;
 const BRAND_TYPES = { png: 'image/png', svg: 'image/svg+xml', ico: 'image/x-icon', webp: 'image/webp' };
-const API_GET = new Set(['/api/health', '/api/snapshot', '/api/session', '/api/devices', '/api/github']);
+const API_GET = new Set(['/api/health', '/api/snapshot', '/api/session', '/api/devices', '/api/github', '/api/mail']);
 // Only the health check answers without the key: it says nothing but "Pleni is running".
 const OPEN_API = new Set(['/api/health']);
 const READ_ONLY = ['GET', 'HEAD'];
@@ -296,6 +296,7 @@ async function handle(app, req, res) {
   if (pathname === '/api/rollover') return sendRollover(app, req, res, host, new URLSearchParams(query));
   if (pathname === '/api/devices') return sendDevices(app, req, res, host);
   if (pathname === '/api/github') return sendGithub(app, req, res, host, new URLSearchParams(query));
+  if (pathname === '/api/mail') return sendMail(app, req, res, new URLSearchParams(query));
   return sendJson(req, res, 200, await settingsPayload(app, app.readSettings()));
 }
 
@@ -472,6 +473,15 @@ async function sendSession(app, req, res, params) {
   return sendJson(req, res, 200, detail);
 }
 
+// The Mail page: { on, name, readAt, messages } with the person's mail, or every message with ?all=1.
+// Only reads: marking mail as read is a dismissal ("you|mailread"), kept in Pleni's own folder.
+async function sendMail(app, req, res, params) {
+  const all = params.get('all') === '1';
+  const mail = typeof app.store.mail === 'function' ? await app.store.mail({ all }) : null;
+  if (!mail) return sendJson(req, res, 200, { on: false, name: null, readAt: null, messages: [] });
+  return sendJson(req, res, 200, { on: true, ...mail });
+}
+
 async function settingsPayload(app, state) {
   const snapshot = await app.store.snapshot();
   // Hidden sessions are not on the map, but Settings still names them.
@@ -566,7 +576,8 @@ async function postWatch(app, req, res, host) {
 
 // Dismiss a "Needs you" notice: { id: '<key>|<kind>', at: <its time> }, or { id, at: null } to
 // bring it back. It stays hidden until something newer happens.
-const NOTICE_ID = /^[^\s|\p{Cc}]{1,250}\|(needs|error|question|review|alert|paused|halted|note|stopped)$/u;
+// "you|mailread" is the time of the newest mail the person marked as read on the Mail page.
+const NOTICE_ID = /^[^\s|\p{Cc}]{1,250}\|(needs|error|question|review|alert|paused|halted|note|stopped|mail|mailread)$/u;
 async function postDismiss(app, req, res, host) {
   const body = await readJsonPost(req, res, host);
   if (body === undefined) return undefined;

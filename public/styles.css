@@ -539,6 +539,22 @@ main:focus { outline: none; }
   color: var(--ui-accent-strong); font-size: var(--ui-font-xs); line-height: 18px; white-space: nowrap;
 }
 .dnow.mail { background: var(--ui-accent-soft); }
+/* The Mail page and the count of new mail beside its name in the app bar. */
+.nav-count {
+  display: inline-block; margin-left: var(--ui-space-2); padding: 0 6px; border-radius: var(--ui-radius-pill);
+  background: var(--ui-accent-soft); color: var(--ui-accent-strong); font-size: var(--ui-font-xs); line-height: 18px; font-variant-numeric: tabular-nums;
+}
+.mail-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--ui-space-3) var(--ui-space-5); margin-top: var(--ui-space-5); }
+.mail-bar p { margin: 0; }
+.mail-list { list-style: none; margin: var(--ui-space-5) 0 0; padding: 0; display: grid; gap: var(--ui-space-4); }
+.mail-msg { padding: var(--ui-space-4) var(--ui-space-5); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-md); background: var(--ui-surface-sunken); }
+.mail-msg.is-new { border-color: color-mix(in srgb, var(--ui-accent) 55%, var(--ui-border)); background: var(--ui-accent-soft); }
+.mail-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--ui-space-2) var(--ui-space-4); }
+.mail-head time { margin-left: auto; font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+.mail-text { margin-top: var(--ui-space-3); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.mail-answer { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3); margin-top: var(--ui-space-4); }
+.mail-answer code { flex: 1 1 320px; }
+.pill.mail-new { color: var(--ui-accent-strong); background: var(--ui-accent-soft); }
 .tile-quiet {
   position: absolute; right: 10px; top: -10px; padding: 0 var(--ui-space-4);
   border: 1px dashed var(--ui-border-strong); border-radius: var(--ui-radius-pill);

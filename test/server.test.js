@@ -897,10 +897,32 @@ test('dismiss passes a valid notice to the store and refuses bad ones', async (t
   assert.equal((await post({ id: 'task:T-1|review', at: 1 }, { 'x-pleni': undefined })).status, 403);
   assert.equal((await post({ id: 'task:T-1|review', at: 1 }, { cookie: undefined })).status, 401);
   assert.equal((await request(port, { path: '/api/dismiss' })).status, 405);
+  assert.equal((await post({ id: `${SESSION_KEY}|mail`, at: 7 })).status, 200, 'a "Mail for you" notice');
+  assert.equal((await post({ id: 'you|mailread', at: 8 })).status, 200, 'mail marked as read on the Mail page');
   assert.deepEqual(store.dismissed, [
     [`${SESSION_KEY}|needs`, 1234], ['task:T-1|question', null],
     ['relay|alert', 5], ['relay|paused', 5], ['relay|halted', 5], ['relay|note', 5], ['relay|stopped', 5],
+    [`${SESSION_KEY}|mail`, 7], ['you|mailread', 8],
   ]);
+});
+
+test('the Mail page reads the person\'s mail, or every message with ?all=1', async (t) => {
+  const store = fakeStore();
+  store.mailCalls = [];
+  store.mail = ({ all }) => {
+    store.mailCalls.push(all);
+    return { name: 'Ada', readAt: 50, messages: [{ id: 'ada/new/x.md', to: 'ada', from: 'sergeant-bo', fromName: 'Sergeant Bo', at: 60, unread: true, text: 'Done.', toYou: true, fromYou: false }] };
+  };
+  const { port } = await startServer(t, { store });
+  const res = await request(port, { path: '/api/mail' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json, { on: true, name: 'Ada', readAt: 50, messages: [{ id: 'ada/new/x.md', to: 'ada', from: 'sergeant-bo', fromName: 'Sergeant Bo', at: 60, unread: true, text: 'Done.', toYou: true, fromYou: false }] });
+  assert.equal((await request(port, { path: '/api/mail?all=1' })).status, 200);
+  assert.deepEqual(store.mailCalls, [false, true]);
+  assert.equal((await request(port, { path: '/api/mail', headers: { cookie: undefined } })).status, 401);
+  assert.equal((await request(port, { method: 'POST', path: '/api/mail', headers: { 'content-type': 'application/json', 'x-pleni': 'settings' }, body: '{}' })).status, 405);
+  store.mail = () => null;
+  assert.deepEqual((await request(port, { path: '/api/mail' })).json, { on: false, name: null, readAt: null, messages: [] }, 'no mail folder');
 });
 
 // ---- Open in PowerShell ----

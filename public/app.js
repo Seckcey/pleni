@@ -11,8 +11,10 @@ const FEED_PAGE = 150;
 const FL = { W: 268, H: 128, GX: 96, GY: 22, PAD: 48 };
 const ZOOM_MIN = 0.3;
 const ZOOM_MAX = 1.6;
-const VIEWS = ['map', 'list', 'activity', 'tasks', 'pulls', 'settings'];
-const VIEW_NAMES = { map: 'Map', list: 'List', activity: 'Activity', tasks: 'Tasks', pulls: 'Pull requests', settings: 'Settings' };
+const VIEWS = ['map', 'list', 'activity', 'mail', 'tasks', 'pulls', 'settings'];
+const VIEW_NAMES = { map: 'Map', list: 'List', activity: 'Activity', mail: 'Mail', tasks: 'Tasks', pulls: 'Pull requests', settings: 'Settings' };
+// Kept with the dismissed notices: the newest mail the person marked as read (src/model.js).
+const MAIL_READ_ID = 'you|mailread';
 const STATUS_WORDS = { needs: 'Needs you', working: 'Working', ready: 'Finished', idle: 'Idle', done: 'Done', error: 'Error' };
 const FILTERS = [['all', 'All'], ['needs', 'Needs you'], ['working', 'Working'], ['ready', 'Finished'], ['error', 'Error'], ['idle', 'Idle'], ['done', 'Done']];
 const FEED_FILTERS = [['all', 'Everything'], ['down', 'Work handed out'], ['up', 'Reports back'], ['error', 'Errors']];
@@ -111,6 +113,8 @@ const S = {
   sayTimer: 0,
   // Live GitHub status: the newest answer, when the page last asked, and the Merge steps.
   gh: { data: null, askedAt: 0, asking: false, error: '', confirm: null, merging: null, msg: null },
+  // The Mail page: the newest answer, which list it holds, and a message for the person.
+  mail: { data: null, all: false, asking: false, error: '', key: '', msg: null, cmds: [] },
 };
 
 const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
@@ -651,7 +655,8 @@ function popUp(a) {
     note.onclick = () => {
       window.focus();
       note.close();
-      if (S.index && S.index.byKey.has(a.key)) openDrawer(a.key);
+      if (a.kind === 'mail') location.hash = '#/mail';
+      else if (S.index && S.index.byKey.has(a.key)) openDrawer(a.key);
       else if (String(a.key).startsWith('task:')) location.hash = '#/tasks';
     };
     return true;
@@ -757,11 +762,13 @@ function render() {
   renderSignIn();
   $('#nav-tasks').hidden = !(S.snap && Array.isArray(S.snap.tasks));
   $('#nav-pulls').hidden = !repoGroups().length;
+  paintMailNav();
   const asking = (S.snap && S.snap.counts && S.snap.counts.needs) || 0;
   document.title = `${asking ? `(${asking}) ` : ''}${VIEW_NAMES[S.view]} · Pleni`;
   if (S.view === 'map') renderMap();
   else if (S.view === 'list') renderList();
   else if (S.view === 'activity') renderActivity();
+  else if (S.view === 'mail') renderMail();
   else if (S.view === 'tasks') renderTasks();
   else if (S.view === 'pulls') renderPulls();
   else if (S.view === 'settings') {
@@ -964,7 +971,8 @@ function attentionHtml() {
     const text = a.text || keyName(a.key);
     const inner = `<span class="k">${esc(kind)}</span><span class="v">${esc(text)}</span>`;
     let main = `<span class="attn-go">${inner}</span>`;
-    if (S.index.byKey.has(a.key)) main = `<button type="button" class="attn-go" data-node="${esc(a.key)}">${inner}</button>`;
+    if (a.kind === 'mail') main = `<a class="attn-go" href="#/mail">${inner}</a>`;
+    else if (S.index.byKey.has(a.key)) main = `<button type="button" class="attn-go" data-node="${esc(a.key)}">${inner}</button>`;
     else if (String(a.key).startsWith('task:')) main = `<a class="attn-go" href="#/tasks">${inner}</a>`;
     return `<div class="attn k-${safeClass(a.kind)}">${main}${dismissHtml(a, text)}</div>`;
   });
@@ -2758,7 +2766,7 @@ function rollSoonText(n) {
 
 // ---- agent mail ----
 // Agents send each other mail by name with the relay's agent-mail.ps1 (relay/README.md). Pleni only
-// shows it; reading and answering happen in PowerShell, in the mailbox's bin folder.
+// shows it: the Mail page reads it whole, and answers go through agent-mail.ps1 in PowerShell.
 
 // "2 new messages" when mail waits for a tile, else ''.
 function mailText(n) {
@@ -2767,7 +2775,7 @@ function mailText(n) {
 }
 
 // The drawer's mail lines: what waits for this tile and what wakes it to read it, or for the
-// person, how to read their mail; and mail this tile sent the person that they have not read.
+// person, where to read their mail; and mail this tile sent the person that they have not read.
 function mailHtml(n) {
   const m = n && n.mail;
   if (!m) return '';
@@ -2777,26 +2785,160 @@ function mailHtml(n) {
   const name = str(m.name);
   const parts = [unread > 0 ? `${esc(plural(unread, 'new message waits', 'new messages wait'))} for ${who}.` : `No new mail for ${who}.`];
   if (unread > 0 && isTime(m.since)) parts.push(`The first came ${agoHtml(m.since)}.`);
-  if (you && unread > 0 && name) parts.push(`To read ${unread === 1 ? 'it' : 'them'}, run this in PowerShell in the mailbox's bin folder: <code>${esc(mailCommand('Read', name))}</code>`);
+  if (you) parts.push(`<a href="#/mail">${unread > 0 ? `Read ${unread === 1 ? 'it' : 'them'} on the Mail page` : 'Open the Mail page'}</a>.`);
   if (!you) parts.push(m.wakes ? 'The relay wakes it when mail comes.' : 'Nothing wakes it for mail. It sees mail only when it checks.');
   const out = [`<p class="dnow mail"><b>Mail${name ? ` for ${esc(name)}` : ''}:</b> ${parts.join(' ')}</p>`];
-  const me = S.index && S.index.byKey.get('you');
-  const myName = me && me.mail ? str(me.mail.name) : '';
   const toYou = num(m.toYou);
-  if (!you && toYou > 0 && myName && name) {
-    out.push(
-      `<p class="dnow mail"><b>Mail for you:</b> ${esc(`It sent you ${plural(toYou, 'message', 'messages')} you have not read.`)} ` +
-        `In PowerShell in the mailbox's bin folder, to read: <code>${esc(mailCommand('Read', myName))}</code> To answer: <code>${esc(mailCommand('Send', myName, name))}</code></p>`,
-    );
+  if (!you && toYou > 0) {
+    out.push(`<p class="dnow mail"><b>Mail for you:</b> ${esc(`It sent you ${plural(toYou, 'message', 'messages')} you have not read.`)} <a href="#/mail">Read ${toYou === 1 ? 'it' : 'them'} on the Mail page</a>.</p>`);
   }
   return out.join('');
 }
 
-// An agent-mail.ps1 command line. PowerShell writes a ' inside '...' as ''.
-function mailCommand(mode, me, to = '') {
-  const q = (s) => `'${s.replace(/'/g, "''")}'`;
-  if (mode === 'Read') return `.\\agent-mail.ps1 -Read -Me ${q(me)}`;
-  return `.\\agent-mail.ps1 -Send -From ${q(me)} -To ${q(to)} -Text 'your answer'`;
+// The command that answers a message: agent-mail.ps1 by its full path when Pleni knows the mailbox
+// folder, so it runs from any folder. PowerShell writes a ' inside '...' as ''.
+function mailAnswerCommand(me, to) {
+  const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
+  const root = S.roots && typeof S.roots.mailbox === 'string' ? S.roots.mailbox.replace(/[\\/]+$/, '') : '';
+  const sep = root.includes('/') && !root.includes('\\') ? '/' : '\\';
+  const script = root ? `& ${q(`${root}${sep}bin${sep}agent-mail.ps1`)}` : '.\\bin\\agent-mail.ps1';
+  return `${script} -Send -From ${q(me)} -To ${q(to)} -Text 'your answer'`;
+}
+
+// ---- the Mail page ----
+
+function paintMailNav() {
+  const m = S.snap && S.snap.mail;
+  $('#nav-mail').hidden = !m;
+  const unread = m ? num(m.unread) : 0;
+  const count = $('#nav-mail-count');
+  count.hidden = unread <= 0;
+  setText(count, unread > 0 ? String(unread) : '');
+  const link = $('#nav-mail a');
+  if (link) link.setAttribute('aria-label', unread > 0 ? `Mail, ${plural(unread, 'new message', 'new messages')}` : 'Mail');
+}
+
+// The page asks again when new mail comes, when mail is read, or when the list changes.
+function mailWant() {
+  const m = S.snap && S.snap.mail;
+  return m ? `${S.mail.all ? 'all' : 'you'}|${num(m.lastAt)}|${num(m.unread)}` : '';
+}
+
+async function askMail() {
+  if (S.mail.asking) return;
+  const want = mailWant();
+  S.mail.asking = true;
+  try {
+    const data = await getJson(`/api/mail${S.mail.all ? '?all=1' : ''}`);
+    S.mail.data = data && typeof data === 'object' ? data : null;
+    S.mail.error = '';
+  } catch (err) {
+    S.mail.error = plainError(err);
+  } finally {
+    S.mail.key = want;
+    S.mail.asking = false;
+    if (S.view === 'mail') renderMail();
+  }
+}
+
+// The mailbox folder, for the answer command's full path.
+function needRoots() {
+  if (S.roots || S.rootsAsked) return;
+  S.rootsAsked = true;
+  getJson('/api/settings')
+    .then((info) => {
+      S.roots = (info && info.roots) || {};
+      if (S.view === 'mail') renderMail();
+    })
+    .catch(() => {});
+}
+
+function renderMail() {
+  const box = $('#mail');
+  const m = S.snap && S.snap.mail;
+  setHtml(
+    $('#mail-filters'),
+    m
+      ? [['you', 'With you'], ['all', 'All mail']]
+        .map(([key, label]) => `<button type="button" class="chip" data-mail-show="${key}" aria-pressed="${(key === 'all') === S.mail.all}">${esc(label)}</button>`)
+        .join('')
+      : '',
+  );
+  if (!m) {
+    setText($('#mail-meta'), '');
+    setHtml(box, '<p class="empty">No agent mail here yet. When your agents write to each other, or to you, with the relay\'s agent-mail.ps1, it shows up here.</p>');
+    return;
+  }
+  setText($('#mail-meta'), S.mail.all ? 'All mail between your agents and with you, newest first.' : 'Mail between you and your agents, newest first.');
+  needRoots();
+  if (S.mail.key !== mailWant()) askMail();
+  const d = S.mail.data;
+  if (!d) {
+    setHtml(box, S.mail.error ? `<p class="empty">Could not load the mail. ${esc(S.mail.error)}</p>` : '<p class="empty">Loading the mail…</p>');
+    return;
+  }
+  const readAt = isTime(d.readAt) ? d.readAt : null;
+  const me = str(d.name) || str(m.name) || personName();
+  const list = (Array.isArray(d.messages) ? d.messages : []).filter((x) => x && isTime(x.at));
+  const isNew = (x) => x.toYou === true && x.unread === true && !(readAt !== null && x.at <= readAt);
+  const fresh = list.filter(isNew);
+  const newest = fresh.reduce((at, x) => Math.max(at, x.at), 0);
+  S.mail.cmds = [];
+  const items = list.map((x) => mailItemHtml(x, isNew(x), me));
+  const msg = S.mail.msg ? `<p class="roll-msg${S.mail.msg.bad ? ' bad' : ''}" role="status">${esc(S.mail.msg.text)}</p>` : '';
+  setHtml(
+    box,
+    `<div class="mail-bar"><p>${fresh.length ? esc(plural(fresh.length, 'new message for you.', 'new messages for you.')) : 'No new mail for you.'}</p>` +
+      (fresh.length ? `<button type="button" class="btn" data-mail-read="${esc(newest)}">Mark all as read</button>` : '') +
+      `</div>${msg}<p class="note">Pleni shows your mail but never sends it. To answer, copy the command under a message and run it in PowerShell. Marking mail as read here changes only what Pleni shows: the mail stays in its folder.</p>` +
+      (list.length ? `<ol class="mail-list">${items.join('')}</ol>` : `<p class="empty">${S.mail.all ? 'No mail yet.' : 'No mail with you yet.'}</p>`),
+  );
+}
+
+function mailItemHtml(x, fresh, me) {
+  const from = x.fromYou ? 'You' : str(x.fromName) || str(x.from) || 'Someone';
+  const to = x.toYou ? 'you' : str(x.toName) || str(x.to) || 'someone';
+  const state = fresh ? '<span class="pill mail-new">New</span>' : !x.toYou && x.unread === true ? '<span class="pill">Not read yet</span>' : '';
+  const text = typeof x.text === 'string'
+    ? `<div class="mail-text">${esc(x.text)}</div>`
+    : '<p class="note">The message is hidden: session text is off in Settings.</p>';
+  let answer = '';
+  if (x.toYou && !x.fromYou) {
+    const i = S.mail.cmds.push(mailAnswerCommand(me, str(x.fromName) || str(x.from))) - 1;
+    answer = `<div class="mail-answer"><code>${esc(S.mail.cmds[i])}</code><button type="button" class="btn" data-mail-copy="${i}">Copy the answer command</button></div>`;
+  }
+  return (
+    `<li class="mail-msg${fresh ? ' is-new' : ''}"><div class="mail-head"><span class="mail-who"><b>${esc(from)}</b> to <b>${esc(to)}</b></span>${state}` +
+    `${timeHtml(x.at, stamp(x.at))}</div>${text}${answer}</li>`
+  );
+}
+
+async function mailCopy(i) {
+  const text = S.mail.cmds[i];
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    S.mail.msg = { text: 'Copied. Paste it in PowerShell, put your answer in place of "your answer", and press Enter.' };
+  } catch {
+    S.mail.msg = { text: 'The browser did not allow copying. Select the command and copy it yourself.', bad: true };
+  }
+  say(S.mail.msg.text);
+  renderMail();
+}
+
+// Marks the person's mail read up to the newest new message, in Pleni only (a dismissal).
+async function markMailRead(at) {
+  if (!isTime(at)) return;
+  try {
+    await postJson('/api/dismiss', { id: MAIL_READ_ID, at });
+    S.mail.msg = { text: 'Marked as read in Pleni.' };
+  } catch (err) {
+    S.mail.msg = { text: `Not marked as read. ${plainError(err)}`, bad: true };
+  }
+  say(S.mail.msg.text);
+  await pollNow().catch(() => {});
+  S.mail.key = '';
+  renderMail();
 }
 
 // ['Memory 87% full', 'Squeezed 3 times'] -> 'Memory 87% full, squeezed 3 times.'
@@ -4563,6 +4705,14 @@ document.addEventListener('click', (ev) => {
   if (el.dataset.new) return newClick(el.dataset.new);
   if (el.dataset.hide) return hideNode(el.dataset.hide, el.dataset.title || keyName(el.dataset.hide));
   if (el.dataset.copy === 'new-rename') return newCopy();
+  if (el.dataset.mailCopy) return mailCopy(Number(el.dataset.mailCopy));
+  if (el.dataset.mailRead) return markMailRead(Number(el.dataset.mailRead));
+  if (el.dataset.mailShow) {
+    S.mail.all = el.dataset.mailShow === 'all';
+    S.mail.msg = null;
+    renderMail();
+    return;
+  }
   if (el.dataset.copy) return rollCopy(el.dataset.copy);
   if (el.dataset.node) return openDrawer(el.dataset.node, el);
   if (el.dataset.listFilter) {

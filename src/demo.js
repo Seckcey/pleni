@@ -205,7 +205,11 @@ const MAIL_AGENTS = [
 const MAIL_NAMES = new Map(MAIL_AGENTS.map((a) => [a.key, a.name]));
 const LETTERS = [
   { ago: 34, from: 'q4-billing-plan', to: 'sales-tax-research', text: 'Find the sales tax changes coming next year in our three states.' },
-  { ago: 6, from: 'sales-tax-research', to: 'ada', unread: true, text: 'Two states change their rates next year. Should I update the tax table now, or wait for T-103?' },
+  {
+    ago: 6, from: 'sales-tax-research', to: 'ada', unread: true,
+    text: 'Two of our three states change their sales tax next year:\n\n- North: 6.5% from January 1\n- South: 7% from July 1\n\nShould I update the tax table now, or wait for T-103?',
+  },
+  { ago: 52, from: 'ada', to: 'sales-tax-research', text: 'Please find the sales tax changes coming next year in our three states, and tell me before you change anything.' },
 ];
 const LETTER_SCRIPT = [
   { beat: 6, from: 'q4-billing-plan', to: 'sales-tax-research', read: 4, text: 'Which of the rate changes start in January?' },
@@ -228,6 +232,24 @@ export function createDemoSource({ now = Date.now } = {}) {
       const sessions = CAST.map((member) => session(member, clock, handoffs));
       const read = (name) => ({ ok: true, error: null, root: `${HOME}/${ROOTS[name]}`, sessions: sessions.filter((s) => s.platform === name) });
       return { ...Object.fromEntries(TOOLS.map((name) => [name, read(name)])), mailbox: mailbox(clock, mail, letters) };
+    },
+    // The Mail page's messages, in the shape src/sources/mailbox.js gives them.
+    mail({ keys = [], all = false } = {}) {
+      const mine = new Set(keys);
+      return history(clockAt(now())).letters
+        .filter((m) => all || mine.has(m.to) || mine.has(m.from))
+        .sort((a, b) => b.at - a.at)
+        .slice(0, 100)
+        .map((m) => ({
+          id: `${m.to}/${m.unread ? 'new' : 'read'}/${m.at}-${m.from}`,
+          to: m.to,
+          toName: MAIL_NAMES.get(m.to) ?? null,
+          from: m.from,
+          fromName: MAIL_NAMES.get(m.from) ?? null,
+          at: m.at,
+          unread: m.unread,
+          text: m.text,
+        }));
     },
     detail(key, since) {
       const member = BY_KEY.get(key);

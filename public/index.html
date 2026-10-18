@@ -30,6 +30,7 @@
       <li><a href="#/" data-view="map">Map</a></li>
       <li><a href="#/list" data-view="list">List</a></li>
       <li><a href="#/activity" data-view="activity">Activity</a></li>
+      <li id="nav-mail" hidden><a href="#/mail" data-view="mail">Mail<span class="nav-count" id="nav-mail-count" hidden></span></a></li>
       <li id="nav-tasks" hidden><a href="#/tasks" data-view="tasks">Tasks</a></li>
       <li id="nav-pulls" hidden><a href="#/pulls" data-view="pulls">Pull requests</a></li>
       <li><a href="#/settings" data-view="settings">Settings</a></li>
@@ -116,6 +117,17 @@
     </div>
     <div class="chips" id="feed-filters" role="group" aria-label="Show"></div>
     <div id="feed"></div>
+  </section>
+
+  <section class="view" id="view-mail" aria-labelledby="mail-title" hidden>
+    <div class="view-head">
+      <div>
+        <h1 id="mail-title" tabindex="-1">Mail</h1>
+        <p class="meta" id="mail-meta"></p>
+      </div>
+    </div>
+    <div class="chips" id="mail-filters" role="group" aria-label="Show"></div>
+    <div id="mail"></div>
   </section>
 
   <section class="view" id="view-tasks" aria-labelledby="tasks-title" hidden>

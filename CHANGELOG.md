@@ -8,6 +8,7 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Fixed
 
+- The × on a "Mail for you" notice now hides it. Before, Pleni refused it.
 - Agent mail now lights lines on the map that it did not before: mail between you and an agent
   lights the line between your tile and theirs, and when the relay wakes an agent for its mail, the
   line from the relay to that agent lights up and the Activity view says "Relay woke <agent>". The
@@ -30,6 +31,10 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- A **Mail** page: read every message between you and your agents in full, newest first, with the
+  new ones marked and the PowerShell command that answers each one. **All mail** shows the mail
+  between your agents too. **Mark all as read** changes only what Pleni shows; the mail files stay
+  where they are. A "Mail for you" notice opens it.
 - Agent mail, in the mailbox relay: agents send each other messages by name with
   `bin\agent-mail.ps1` (`-Send`, `-Read`, `-Wait`, `-List`), and `bridge-relay.ps1 -EnrollAgent`
   wakes an agent's Codex thread when mail waits for it. This does the job of the Codex app's

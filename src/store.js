@@ -5,7 +5,7 @@ import path from 'node:path';
 import { cleanSettings, isNodeKey } from './config.js';
 import { stripBom } from './jsonl.js';
 import { createDemoSource, demoSettings } from './demo.js';
-import { buildSnapshot, snapshotTag } from './model.js';
+import { MAIL_READ_ID, buildSnapshot, personMailKeys, snapshotTag } from './model.js';
 import { createClaudeSource } from './sources/claude.js';
 import { createCodexSource } from './sources/codex.js';
 import { createGrokSource } from './sources/grok.js';
@@ -172,6 +172,30 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
     polled = null;
   }
 
+  // What the Mail page shows: { name, readAt, messages }, the messages to or from the person (every
+  // message with `all`), newest first and whole; null when the mailbox has no mail folder.
+  function mail({ all = false } = {}) {
+    const snap = snapshot();
+    if (!snap.mail) return null;
+    const entry = demo ? sources.demo : sources.mailbox;
+    if (typeof entry?.source?.mail !== 'function') return null;
+    const keys = personMailKeys(demo ? demoSettings(current) : current, polled?.mailbox?.mail?.owner ?? null);
+    let messages;
+    try {
+      messages = entry.source.mail({ keys, all: all === true });
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(messages)) return null;
+    const mine = new Set(keys);
+    const hide = current.content === 'none';
+    return {
+      name: snap.mail.name,
+      readAt: dismissed.get(MAIL_READ_ID) ?? null,
+      messages: messages.filter(isObject).map((m) => ({ ...m, toYou: mine.has(m.to), fromYou: mine.has(m.from), text: hide ? null : m.text ?? null })),
+    };
+  }
+
   // Hides a "Needs you" notice until something newer happens; `at: null` brings it back.
   function dismiss(id, at) {
     if (at === null) dismissed.delete(id);
@@ -188,7 +212,7 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
     polled = null;
   }
 
-  return { snapshot, detail, reload, close, dismiss, session, demo };
+  return { snapshot, detail, reload, close, dismiss, session, mail, demo };
 }
 
 function loadDismissed(dir) {

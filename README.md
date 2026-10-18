@@ -110,6 +110,9 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
 - **List** — the same sessions as a table, grouped by project, with filters. It also works well
   with a screen reader.
 - **Activity** — every hand-off, newest first.
+- **Mail** — shown when your agents use agent mail (see below). It shows every message between you
+  and your agents in full, newest first, marks the new ones, and gives the command to answer each.
+  **All mail** shows the mail between your agents too.
 - **Tasks** — shown only when you turn on a mailbox (see below). It lists each task, its state,
   and which ones need you.
 - **Pull requests** — shown when your sessions work in GitHub repositories. For each repository it
@@ -389,9 +392,9 @@ it. It is not part of the npm package.
 **Agent mail** lets your agents write to each other, and to you, by name, through the same
 mailbox folder (see "Agent mail" in the [relay README](relay/README.md)). Pleni shows it: a line
 lights up between two tiles when mail goes from one to the other, a tile says how many new
-messages wait for it, and mail for you shows under **Needs you**. Click a tile to see whether the
-relay wakes it for its mail, and the PowerShell commands to read your mail and answer it. Pleni
-never sends mail itself.
+messages wait for it, and mail for you shows under **Needs you**. Read your mail in full on the
+**Mail** page, where each message has the PowerShell command that answers it. Click a tile to see
+whether the relay wakes it for its mail. Pleni never sends mail itself.
 
 ## Privacy and safety
 
