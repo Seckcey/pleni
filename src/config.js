@@ -27,7 +27,7 @@ export const DEFAULTS = deepFreeze({
   projects: {},
   chain: [], // [{ match, reportsTo, role }] who reports to whom, by session name; first match wins
   remote: { hosts: [], tailscaleUsers: [] },
-  actions: { openTerminal: false }, // the Open in PowerShell button (Windows, this computer only)
+  actions: { openTerminal: false, rollover: false }, // Open in PowerShell and Roll over (Windows, this computer only)
   alerts: { stoppedMinutes: 15 }, // a watched tile counts as stopped after this long without work
 });
 
@@ -237,7 +237,10 @@ function cleanRemote(raw) {
 
 function cleanActions(raw) {
   const a = isObject(raw) ? raw : {};
-  return { openTerminal: cleanBool(a.openTerminal, DEFAULTS.actions.openTerminal) };
+  return {
+    openTerminal: cleanBool(a.openTerminal, DEFAULTS.actions.openTerminal),
+    rollover: cleanBool(a.rollover, DEFAULTS.actions.rollover),
+  };
 }
 
 function cleanAlerts(raw) {

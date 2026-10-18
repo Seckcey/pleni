@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { cleanSettings } from '../src/config.js';
 import { OPEN_MESSAGES } from '../src/open.js';
+import { ROLL_MESSAGES } from '../src/rollover.js';
 import { browserCommand, createServer, keyFile, loadOrCreateKey, newKey, readKeyFile } from '../src/server.js';
 
 const CSP = "default-src 'none'; script-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; " +
@@ -990,6 +991,79 @@ test('open gives a Codex thread the Codex folder Pleni reads', async (t) => {
   assert.equal(spawnProcess.calls[0].options.cwd, folder);
   assert.equal(spawnProcess.calls[0].options.env.CODEX_HOME, codexRoot);
   assert.ok(spawnProcess.calls[0].args.at(-1).includes(`codex resume '${codexKey.slice('codex:'.length)}'`));
+});
+
+// ---- Roll over ----
+
+// A store whose one Claude Code session, named by the person, works in `folder`.
+function rollStore(folder) {
+  const store = fakeStore();
+  store.demo = false;
+  store.session = (key) => (key === SESSION_KEY
+    ? { id: SESSION_KEY.slice('claude:'.length), cwd: folder, status: 'idle', kind: 'session', title: 'Sergeant Ada', titleSource: 'custom-title' }
+    : null);
+  return store;
+}
+
+const rollReq = (port, body, headers = {}) => request(port, {
+  method: 'POST',
+  path: '/api/rollover',
+  headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+  body: JSON.stringify(body),
+});
+const rollInfo = (port, headers = {}) => request(port, { path: `/api/rollover?key=${encodeURIComponent(SESSION_KEY)}`, headers });
+
+const ROLL_ON = { actions: { rollover: true } };
+
+test('rollover first says what each step will send, then takes the step it is asked for', async (t) => {
+  const folder = tempDir(t);
+  const spawnProcess = recordSpawns();
+  const { port } = await startServer(t, { store: rollStore(folder), settings: ROLL_ON, platform: 'win32', spawnProcess });
+  const info = await rollInfo(port);
+  assert.equal(info.status, 200);
+  assert.equal(info.json.name, 'Sergeant Ada');
+  assert.equal(info.json.file, 'HANDOFF-sergeant-ada.md');
+  assert.equal(info.json.handoffAt, null);
+  assert.equal(spawnProcess.calls.length, 0, 'asking what a step sends starts nothing');
+  const res = await rollReq(port, { key: SESSION_KEY, step: 'start', name: 'Sergeant Ada' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json, { ok: true });
+  assert.equal(spawnProcess.calls.length, 1);
+  assert.equal(spawnProcess.calls[0].options.cwd, folder);
+  assert.ok(spawnProcess.calls[0].args.at(-1).includes(`claude --name 'Sergeant Ada' '${info.json.start}'`));
+});
+
+test('rollover needs the key, the page itself, and this computer', async (t) => {
+  const spawnProcess = recordSpawns();
+  const settings = { ...ROLL_ON, remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } };
+  const { port } = await startServer(t, { store: rollStore(tempDir(t)), settings, platform: 'win32', spawnProcess });
+  const body = { key: SESSION_KEY, step: 'ask', name: 'Sergeant Ada' };
+  assertPlainError(await rollInfo(port, { cookie: undefined }), 401);
+  assertPlainError(await rollReq(port, body, { cookie: undefined }), 401);
+  assertPlainError(await rollReq(port, body, { 'x-pleni': undefined }), 403);
+  assertPlainError(await rollReq(port, body, { origin: 'https://evil.example' }), 403);
+  assertPlainError(await rollReq(port, body, { 'content-type': 'text/plain' }), 415);
+  assertPlainError(await request(port, { method: 'PUT', path: '/api/rollover' }), 405);
+  const remote = { host: 'box.example.ts.net', 'tailscale-user-login': 'ada@example.com' };
+  for (const headers of [remote, { 'x-forwarded-for': '100.64.0.7' }]) {
+    const asked = await rollInfo(port, headers);
+    assertPlainError(asked, 403);
+    assert.match(asked.json.error, /only on the computer that runs Pleni/);
+    assertPlainError(await rollReq(port, body, headers), 403);
+  }
+  assert.equal(spawnProcess.calls.length, 0);
+});
+
+test('rollover is off until it is turned on, and says why in plain words', async (t) => {
+  const spawnProcess = recordSpawns();
+  const { port } = await startServer(t, { store: rollStore(tempDir(t)), settings: { actions: { openTerminal: true } }, platform: 'win32', spawnProcess });
+  const info = await rollInfo(port);
+  assertPlainError(info, 403);
+  assert.equal(info.json.error, ROLL_MESSAGES.off);
+  const res = await rollReq(port, { key: SESSION_KEY, step: 'ask', name: 'Sergeant Ada' });
+  assertPlainError(res, 403);
+  assert.equal(res.json.error, ROLL_MESSAGES.off);
+  assert.equal(spawnProcess.calls.length, 0);
 });
 
 test('open is off until it is turned on, and says why in plain words', async (t) => {

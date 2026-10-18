@@ -108,7 +108,8 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
     const t = now();
     if (cache && t >= cache.at && t - cache.at < POLL_MS) return cache.snapshot;
     polled = pollAll();
-    const actions = { openTerminal: current.actions.openTerminal && platform === 'win32' };
+    const windows = platform === 'win32';
+    const actions = { openTerminal: current.actions.openTerminal && windows, rollover: current.actions.rollover && windows };
     const snap = buildSnapshot({ now: t, settings: demo ? demoSettings(current) : current, dismissed, actions, ...polled });
     // Not enumerable, so they never show up in the JSON itself.
     Object.defineProperties(snap, { etag: { value: snapshotTag(snap) }, json: { value: JSON.stringify(snap) } });
@@ -133,8 +134,9 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
   }
 
   // What the newest poll knows about one top-level Claude Code session or one Codex thread:
-  // { id, cwd, status, entrypoint, kind }, or null. Open in PowerShell needs its folder, whether a
-  // turn is running, and which program it belongs to. The demo has no real sessions.
+  // { id, cwd, status, entrypoint, kind, title, titleSource }, or null. Open in PowerShell needs its
+  // folder, whether a turn is running, and which program it belongs to; Roll over also needs its
+  // name and where the name came from. The demo has no real sessions.
   function session(key) {
     const tool = typeof key === 'string' ? /^(claude|codex):[^/]+$/.exec(key)?.[1] : null;
     if (demo || !tool) return null;
@@ -143,7 +145,15 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
     const found = Array.isArray(list) ? list.find((s) => isObject(s) && s.key === key) : null;
     if (!found) return null;
     const text = (value) => (typeof value === 'string' ? value : null);
-    return { id: text(found.id), cwd: text(found.cwd), status: text(found.status), entrypoint: text(found.entrypoint), kind: text(found.kind) };
+    return {
+      id: text(found.id),
+      cwd: text(found.cwd),
+      status: text(found.status),
+      entrypoint: text(found.entrypoint),
+      kind: text(found.kind),
+      title: text(found.title),
+      titleSource: text(found.titleSource),
+    };
   }
 
   function reload(nextSettings, nextRoots = currentRoots) {

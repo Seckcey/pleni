@@ -1,7 +1,8 @@
 # Proposal: answer and send from Pleni
 
 Status: proposal. Step 1 of the plan, the relay waking the planner's Codex thread, is built in
-`relay/`. The rest is not built yet, and Pleni itself still only watches.
+`relay/`. **Roll over**, a narrow first part of steps 3 and 4, is built in Pleni (see below). The
+rest is not built yet.
 
 ## What we want
 
@@ -102,6 +103,38 @@ carries on as before. Quit the app, and the relay wakes the planner itself.
 
 Step 1 does not move other Codex threads off app messaging, wakes only one Codex thread per
 mailbox, and never answers anything for the owner.
+
+## Roll over (built)
+
+Long sessions get slow and cost more: every turn makes the model read the whole history again,
+and old details get squeezed into summaries. Teams that run named agents (a Colonel, Sergeants, a
+coordinator) roll them over now and then: the old session writes a handoff note, and a new session
+with the same name starts from it. The relay and Pleni's chain rules find sessions by name, so the
+new one takes over on its own.
+
+Roll over is the first time Pleni sends a message, so it is kept narrow:
+
+- **Two fixed messages, never free text.** Pleni builds both from the session's own name, and they
+  hold only letters, digits, spaces and a few plain marks, so no shell can read any of it as a
+  command. The page shows each one before the button. A session whose name has other marks is
+  refused, with how to rename it.
+- **In a window the person sees.** Each step opens a PowerShell window, the same way Open in
+  PowerShell does: the person watches the old session write the note, and talks to the new one.
+- **Ask:** `claude --resume <id> "<ask>"` or `codex resume <id> "<ask>"`: please write
+  `HANDOFF-<name>.md` in this folder, do not commit it, then stop.
+- **Start:** `claude --name <name> "<start>"` or `codex "<start>"`: you take over from the last
+  session with this name, read the note first, then say you are ready. Claude Code names the
+  session from `--name`; Codex has no such option, so the person types `/rename <name>`.
+- **The same one-writer checks as Open in PowerShell**, plus: a live background session is not
+  asked (the message could land in a running turn), and a new Claude Code session waits until the
+  old one has closed, because Claude Code renames a new session while one with that name runs.
+  A thread the Codex app holds is asked there: the page has a Copy button for each message.
+- **Off by default**, Windows only, this computer only, with Open in PowerShell's limits, and the
+  name the page showed must still be the session's name.
+
+What it does not do: it never archives, pins or closes the old session (the person does that in
+the app), never reads the note, and keeps no action log: the window and the session's own file
+show what was sent.
 
 ## Claude Code
 
@@ -226,8 +259,8 @@ sessions can run commands on the computer. So:
 | --- | --- | --- | --- |
 | 1 | The relay wakes the planner's Codex thread (above) | Medium, outside Pleni | Built |
 | 2 | Tests on a spare computer: Claude hooks in the desktop app (HTTP hooks, secret header, what the app shows while a hook waits, the `ExitPlanMode` answer format), and the Codex app server questions above | Small | |
-| 3 | Send a message to idle sessions, Claude and Codex, with the safety checks | Medium | |
-| 4 | **New agent:** choose Claude Code or Codex, a project folder, a name and a first message; Pleni opens it in a PowerShell window, the same way as Open in PowerShell | Medium | |
+| 3 | Send a message to idle sessions, Claude and Codex, with the safety checks | Medium | Roll over's fixed handoff request is built |
+| 4 | **New agent:** choose Claude Code or Codex, a project folder, a name and a first message; Pleni opens it in a PowerShell window, the same way as Open in PowerShell | Medium | Roll over's new session with the old name is built |
 | 5 | Claude questions, plans and permission prompts through hooks, with the "Connect" step, the switch per session, and the answer controls | Large | |
 | 6 | Codex answers and messages through the app server, with `codex exec resume` as the fallback | Large, depends on step 2 | |
 | 7 | Move other Codex threads from app messaging to mailboxes, each with a wake (a relay, or Pleni's Send) | Large, per team | |
