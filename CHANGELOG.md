@@ -96,6 +96,12 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   window closed with its X does not block the button afterwards, and a thread the Codex app
   holds says so.
 
+- Pull requests view: for each GitHub repository your sessions work in, the branches your agents
+  are on, who is on each, and links to the branch's pull request on GitHub, or to open one, plus
+  the repository's pull requests, branches and checks. A session's Details tab has the same links.
+  Pleni learns the repository from the `origin` address in the folder's git settings, keeps only
+  the owner and name, and sends nothing to GitHub.
+
 ### Changed
 
 - Settings is no longer one long page. It has six short groups, each behind a tab: Basics, Team,

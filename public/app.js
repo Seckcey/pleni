@@ -11,8 +11,8 @@ const FEED_PAGE = 150;
 const FL = { W: 268, H: 128, GX: 96, GY: 22, PAD: 48 };
 const ZOOM_MIN = 0.3;
 const ZOOM_MAX = 1.6;
-const VIEWS = ['map', 'list', 'activity', 'tasks', 'settings'];
-const VIEW_NAMES = { map: 'Map', list: 'List', activity: 'Activity', tasks: 'Tasks', settings: 'Settings' };
+const VIEWS = ['map', 'list', 'activity', 'tasks', 'pulls', 'settings'];
+const VIEW_NAMES = { map: 'Map', list: 'List', activity: 'Activity', tasks: 'Tasks', pulls: 'Pull requests', settings: 'Settings' };
 const STATUS_WORDS = { needs: 'Needs you', working: 'Working', ready: 'Finished', idle: 'Idle', done: 'Done', error: 'Error' };
 const FILTERS = [['all', 'All'], ['needs', 'Needs you'], ['working', 'Working'], ['ready', 'Finished'], ['error', 'Error'], ['idle', 'Idle'], ['done', 'Done']];
 const FEED_FILTERS = [['all', 'Everything'], ['down', 'Work handed out'], ['up', 'Reports back'], ['error', 'Errors']];
@@ -751,12 +751,14 @@ function render() {
   renderVersion();
   renderSignIn();
   $('#nav-tasks').hidden = !(S.snap && Array.isArray(S.snap.tasks));
+  $('#nav-pulls').hidden = !repoGroups().length;
   const asking = (S.snap && S.snap.counts && S.snap.counts.needs) || 0;
   document.title = `${asking ? `(${asking}) ` : ''}${VIEW_NAMES[S.view]} · Pleni`;
   if (S.view === 'map') renderMap();
   else if (S.view === 'list') renderList();
   else if (S.view === 'activity') renderActivity();
   else if (S.view === 'tasks') renderTasks();
+  else if (S.view === 'pulls') renderPulls();
   else if (S.view === 'settings') paintModels();
   if (S.drawer) renderDrawerParts();
   announce();
@@ -1898,6 +1900,97 @@ function renderTasks() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// pull requests
+// ---------------------------------------------------------------------------------------------
+
+// The GitHub repositories the sessions on the map work in (node.github, read from each folder's git
+// settings), with links to their pull requests. Pleni makes no calls to GitHub: the links open
+// github.com in the browser, and the agents open, review and merge with their own git and gh.
+const GITHUB_PATH = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
+const LINK_BRANCH = /^[A-Za-z0-9._\/-]{1,200}$/;
+const MAIN_BRANCHES = new Set(['main', 'master', 'trunk', 'develop']);
+
+// [[repo, [[branch, sessions], ...]], ...], sorted. Main sessions first; a helper shows only on a
+// branch no main session of its repository works on.
+function repoGroups() {
+  const repos = new Map();
+  const nodes = S.index ? S.index.nodes.filter((n) => isSession(n) && n.kind !== 'reviewer' && typeof n.github === 'string' && GITHUB_PATH.test(n.github)) : [];
+  for (const pass of ['session', 'agent']) {
+    const before = new Map([...repos].map(([repo, branches]) => [repo, new Set(branches.keys())]));
+    for (const n of nodes) {
+      if ((n.kind === 'session') !== (pass === 'session')) continue;
+      const branch = typeof n.subtitle === 'string' ? n.subtitle : '';
+      if (pass === 'agent' && before.get(n.github)?.has(branch)) continue;
+      if (!repos.has(n.github)) repos.set(n.github, new Map());
+      const branches = repos.get(n.github);
+      if (!branches.has(branch)) branches.set(branch, []);
+      branches.get(branch).push(n);
+    }
+  }
+  const order = (a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' });
+  return [...repos]
+    .sort((a, b) => order(a[0], b[0]))
+    .map(([repo, branches]) => [repo, [...branches].sort((a, b) => Number(MAIN_BRANCHES.has(b[0])) - Number(MAIN_BRANCHES.has(a[0])) || order(a[0], b[0]))]);
+}
+
+function githubLink(repo, rest, text) {
+  return `<a class="ext" href="${esc(`https://github.com/${repo}${rest}`)}" target="_blank" rel="noopener noreferrer">${esc(text)}<span class="sr-only"> (opens GitHub in a new tab)</span></a>`;
+}
+
+// Links for one branch: its pull request (if any) and a page to open one. None for a main branch or
+// a name that is not safe in an address.
+function branchLinks(repo, branch) {
+  if (!branch || MAIN_BRANCHES.has(branch) || !LINK_BRANCH.test(branch)) return '';
+  const path = branch.split('/').map(encodeURIComponent).join('/');
+  return githubLink(repo, `/pulls?q=${encodeURIComponent(`is:pr head:${branch}`)}`, 'Its pull request') +
+    githubLink(repo, `/compare/${path}?expand=1`, 'Open a pull request');
+}
+
+function pullSessionHtml(n) {
+  const status = statusOf(n);
+  return (
+    `<li><span class="who">${markHtml(n, 'small')}<button type="button" class="open" data-node="${esc(n.key)}">${esc(titleOf(n))}</button></span>` +
+    `<span class="sub">${esc(rankLine(n))}</span><span class="pill">${esc(STATUS_WORDS[status] || 'Unknown')}</span></li>`
+  );
+}
+
+function renderPulls() {
+  const groups = repoGroups();
+  if (!groups.length) {
+    setText($('#pulls-meta'), '');
+    setHtml(
+      $('#pulls'),
+      '<p class="empty">No session on the map works in a GitHub repository. Pleni finds a repository from the git settings in a session\'s folder: the address of its origin remote, on github.com.</p>',
+    );
+    return;
+  }
+  const branchCount = groups.reduce((sum, [, branches]) => sum + branches.length, 0);
+  const sessionCount = groups.reduce((sum, [, branches]) => sum + branches.reduce((n, [, list]) => n + list.length, 0), 0);
+  setText(
+    $('#pulls-meta'),
+    `${plural(groups.length, 'GitHub repository', 'GitHub repositories')} · ${plural(branchCount, 'branch', 'branches')} · ${plural(sessionCount, 'session', 'sessions')}`,
+  );
+  const cards = groups.map(([repo, branches], i) => {
+    const rows = branches.map(([branch, list]) => {
+      const name = branch ? `<code>${esc(branch)}</code>` : '<span class="quiet">No branch known</span>';
+      const main = MAIN_BRANCHES.has(branch) ? ' <span class="quiet">(main branch)</span>' : '';
+      return `<li class="branch"><div class="branch-head"><span class="branch-name">${name}${main}</span><span class="links">${branchLinks(repo, branch)}</span></div>` +
+        `<ul class="branch-who">${list.map(pullSessionHtml).join('')}</ul></li>`;
+    });
+    return (
+      `<section class="repo" aria-labelledby="repo-${i}"><div class="repo-head"><h2 id="repo-${i}">${esc(repo)}</h2>` +
+      `<span class="links">${githubLink(repo, '/pulls', 'Pull requests')}${githubLink(repo, '/branches', 'Branches')}${githubLink(repo, '/actions', 'Checks')}</span></div>` +
+      `<ul class="branches">${rows.join('')}</ul></section>`
+    );
+  });
+  setHtml(
+    $('#pulls'),
+    cards.join('') +
+      '<p class="note">Pleni only links to GitHub; it sends nothing there. Your agents open, review and merge pull requests with their own git and gh commands.</p>',
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
 // drawer
 // ---------------------------------------------------------------------------------------------
 
@@ -2511,6 +2604,9 @@ function detailsHtml(n) {
   add('Rank', esc(n.rank || ''));
   add('Role', esc(cap(n.role || '')));
   add('Project', esc(n.project ? projectLabel(n.project) : ''));
+  if (isSession(n) && typeof n.github === 'string' && GITHUB_PATH.test(n.github)) {
+    add('GitHub', `<span class="gh-links">${githubLink(n.github, '', n.github)}${branchLinks(n.github, n.subtitle)}</span>`);
+  }
   if (isSession(n)) {
     add('Model', esc([n.modelLabel || prettyModel(n.model), n.model && n.modelLabel !== n.model ? `(${n.model})` : ''].filter(Boolean).join(' ')));
     add('Effort', esc(EFFORT_WORDS[n.effort] || n.effort || ''));

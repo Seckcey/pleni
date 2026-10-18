@@ -31,6 +31,7 @@
       <li><a href="#/list" data-view="list">List</a></li>
       <li><a href="#/activity" data-view="activity">Activity</a></li>
       <li id="nav-tasks" hidden><a href="#/tasks" data-view="tasks">Tasks</a></li>
+      <li id="nav-pulls" hidden><a href="#/pulls" data-view="pulls">Pull requests</a></li>
       <li><a href="#/settings" data-view="settings">Settings</a></li>
     </ul>
   </nav>
@@ -125,6 +126,16 @@
       </div>
     </div>
     <div id="tasks"></div>
+  </section>
+
+  <section class="view" id="view-pulls" aria-labelledby="pulls-title" hidden>
+    <div class="view-head">
+      <div>
+        <h1 id="pulls-title" tabindex="-1">Pull requests</h1>
+        <p class="meta" id="pulls-meta"></p>
+      </div>
+    </div>
+    <div id="pulls"></div>
   </section>
 
   <section class="view" id="view-settings" aria-labelledby="settings-title" hidden>

@@ -112,6 +112,9 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
 - **Activity** — every hand-off, newest first.
 - **Tasks** — shown only when you turn on a mailbox (see below). It lists each task, its state,
   and which ones need you.
+- **Pull requests** — shown when your sessions work in GitHub repositories. For each repository it
+  lists the branches your agents work on, who is on each, and links to its pull request on GitHub,
+  or to open one. Pleni only links to GitHub; it sends nothing there.
 - **Settings** — six short groups: **Basics** (your name, the look, which sessions show),
   **Team** (names, roles, who reports to whom), **Sources** (which folders to read, and the
   mailbox), **Alerts**, **Buttons** (Open in PowerShell, New agent and Roll over), and **Devices**

@@ -802,6 +802,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 ## Page (`public/`)
 
 - Hash routes: `#/` map (default), `#/list`, `#/activity`, `#/tasks` (only with a mailbox),
+  `#/pulls` (shown in the menu only when a session on the map is in a GitHub repository),
   `#/settings`, and `#/settings/<group>` for one group of settings (`basics`, `team`, `sources`,
   `alerts`, `buttons` or `devices`).
 - **Map:** a left-to-right tidy tree of tiles (`W 268 × H 128`, gaps 96 × 22, padding 48) joined by
@@ -820,6 +821,15 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   alternative to the map.
 - **Activity:** the event feed, newest first.
 - **Tasks:** mailbox tasks with state and attention.
+- **Pull requests:** one card per GitHub repository (`node.github`) of the sessions on the map, with
+  links to its Pull requests, Branches and Checks (Actions) pages on github.com. Under it, each
+  branch (the session's `subtitle`), main branches (`main`, `master`, `trunk`, `develop`) first,
+  with the main sessions on it; a helper shows only on a branch no main session of its repository
+  works on. A branch that is not a main branch and whose name is only letters, digits and
+  `. _ / -` links to **Its pull request** (`/pulls?q=is:pr head:<branch>`) and **Open a pull
+  request** (`/compare/<branch>?expand=1`). Links open in a new tab with `rel="noopener
+  noreferrer"`; Pleni itself sends nothing to GitHub. A session's Details tab has a GitHub row with
+  the same links.
 - **Drawer:** clicking a tile opens the session's details and live recent events from
   `/api/session`. Esc closes it; focus is trapped while open and returned afterwards. When
   `snapshot.actions.openTerminal` is true and the page itself was opened on this computer

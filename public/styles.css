@@ -663,6 +663,24 @@ button.name:hover { color: var(--ui-accent-strong); }
 
 ul.tasks { list-style: none; margin: var(--ui-space-5) 0 0; padding: 0; display: grid; gap: var(--ui-space-4); }
 .task { padding: var(--ui-space-5) var(--ui-space-6); background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); }
+/* Pull requests: one card per GitHub repository, its branches, and who works on each. */
+#pulls { display: grid; gap: var(--ui-space-6); max-width: 980px; }
+.repo { padding: var(--ui-space-5) var(--ui-space-6); background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); }
+.repo-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--ui-space-3) var(--ui-space-6); }
+.repo-head h2 { margin: 0; font-size: var(--ui-font-lg); overflow-wrap: anywhere; }
+.links { display: inline-flex; flex-wrap: wrap; gap: var(--ui-space-2) var(--ui-space-5); font-size: var(--ui-font-md); }
+a.ext::after { content: " \2197"; }
+.branches, .branch-who { list-style: none; margin: 0; padding: 0; }
+.branch { padding: var(--ui-space-4) 0; border-top: 1px solid var(--ui-border); }
+.branches { margin-top: var(--ui-space-4); }
+.branch-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--ui-space-2) var(--ui-space-6); }
+.branch-name { overflow-wrap: anywhere; }
+.branch-who li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-2) var(--ui-space-4); margin-top: var(--ui-space-3); }
+.branch-who .who { display: inline-flex; align-items: center; gap: var(--ui-space-3); min-width: 0; }
+.branch-who .open { background: none; border: 0; padding: 0; color: var(--ui-text-primary); font-weight: var(--ui-weight-semibold); text-align: left; overflow-wrap: anywhere; }
+.branch-who .open:hover { text-decoration: underline; }
+.branch-who .sub { color: var(--ui-text-muted); font-size: var(--ui-font-sm); }
+.gh-links { display: inline-flex; flex-wrap: wrap; gap: var(--ui-space-2) var(--ui-space-5); }
 .task.needs { border-color: color-mix(in srgb, var(--ui-warn) 55%, var(--ui-border)); }
 .task-head { display: flex; flex-wrap: wrap; gap: var(--ui-space-3) var(--ui-space-5); align-items: baseline; }
 .task-title { font-weight: var(--ui-weight-semibold); overflow-wrap: anywhere; }
