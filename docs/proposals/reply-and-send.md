@@ -1,9 +1,10 @@
 # Proposal: answer and send from Pleni
 
 Status: proposal. Step 1 of the plan, the relay waking the planner's Codex thread, is built in
-`relay/`. **Roll over** and **New agent** (step 4) are built in Pleni (see below). **Send**
-(step 3) is set aside: the owner would rather open sessions in command-line windows and type
-there. Its design stays below as a record. The rest is not built yet.
+`relay/`, and so is **agent mail** (step 7, below), which lets the other Codex threads message each
+other without the Codex app. **Roll over** and **New agent** (step 4) are built in Pleni (see
+below). **Send** (step 3) is set aside: the owner would rather open sessions in command-line windows
+and type there. Its design stays below as a record. The rest is not built yet.
 
 ## What we want
 
@@ -55,7 +56,7 @@ So running the team from Pleni alone needs these parts:
 | Wake the planner when the coordinator writes back | The relay wakes one Codex thread with `codex exec resume` | 1 (built) |
 | Send a message to any idle session | Pleni runs `claude -p --resume` or `codex exec resume` | 3 (design below) |
 | Start a new agent in a window | A **New agent** button, built on Open in PowerShell | 4 (built) |
-| Codex threads that use app messaging today | Move them to mailboxes, each with something that wakes it | 7 |
+| Codex threads that use app messaging today | Agent mail: `bin\agent-mail.ps1`, and the relay wakes the agent that gets mail | 7 (built in the relay) |
 
 ### One place per session
 
@@ -104,6 +105,37 @@ carries on as before. Quit the app, and the relay wakes the planner itself.
 
 Step 1 does not move other Codex threads off app messaging, wakes only one Codex thread per
 mailbox, and never answers anything for the owner.
+
+## Step 7: agent mail (built in the relay)
+
+The Colonel coordinates its Sergeants with the Codex app's thread tools: `send_message_to_thread`
+to give work, and `wait_threads` to hear back. A Sergeant's answer comes back the same way. Agent
+mail does both jobs with files and the relay, so the app can stay closed.
+
+- **Sending:** `bin\agent-mail.ps1 -Send -From <name> -To <name> -Text <message>` writes one file per
+  message in `mail\<name key>\new` (the name in lower case, other marks as `-`). It is written
+  under another name first and then renamed, so a reader never sees half a message. A message holds
+  `From`, `To` and `Sent` lines, a blank line, then the text, at most 64 KB. A name with no mail
+  folder yet needs `-NewAgent` once, so a typo does not send mail nowhere.
+- **Reading:** `-Read -Me <name>` prints the new mail, oldest first, 10 at a time, and moves it to
+  `read`. `-Wait -Me <name> -Seconds <n>` takes the place of `wait_threads`: it waits for new mail,
+  then reads it.
+- **Waking:** `bridge-relay.ps1 -EnrollAgent -AgentName <name>` records the newest Codex thread with
+  that name, and follows the name like the planner wake. When new mail waits for it, the relay runs
+  `codex exec --json --skip-git-repo-check [codex_exec_args] resume <thread id> "<notice>"` in the
+  thread's folder. The notice says who wrote and how to read and answer, never the mail itself.
+- **Never two writers:** the same checks as the planner wake (the app's writer lock, a window with
+  the thread id, a recent write), one turn at a time per agent, at most 3 agents at once, 12 wakes a
+  day each, and a stop after 3 failures in a row. Mail an agent read by itself, in its own window,
+  needs no wake.
+
+So the team can run like this: the Colonel works in a PowerShell window (Open in PowerShell) on a
+long `/goal`, sends with `-Send` and waits with `-Wait`. The Sergeants stay closed, and the relay
+wakes each one when the Colonel writes. Open a Sergeant's window to look or talk; the relay holds
+its mail until the window closes. The app's scheduled tasks are not replaced yet.
+
+Pleni shows agent mail next: lines between the agents on the map, how much mail waits for each,
+and mail to the owner under Needs you.
 
 ## Roll over (built)
 
@@ -338,7 +370,7 @@ sessions can run commands on the computer. So:
 | 4 | **New agent:** choose Claude Code or Codex and a name; Pleni opens it in a PowerShell window in the folder of a session on the map, the same way as Open in PowerShell. The first message is typed there | Medium | Built |
 | 5 | Claude questions, plans and permission prompts through hooks, with the "Connect" step, the switch per session, and the answer controls | Large | |
 | 6 | Codex answers and messages through the app server, with `codex exec resume` as the fallback | Large, depends on step 2 | |
-| 7 | Move other Codex threads from app messaging to mailboxes, each with a wake (a relay) | Large, per team | |
+| 7 | Move other Codex threads from app messaging to mailboxes, each with a wake (a relay) | Large, per team | Agent mail and its wakes are built in the relay; Pleni shows the mail next |
 | 8 | Actions from the phone: second confirmation | Medium | |
 | 9 | Mailbox owner notes, with the relay change | Small, outside Pleni | |
 

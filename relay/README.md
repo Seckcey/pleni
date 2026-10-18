@@ -14,6 +14,10 @@ for the planner, in `.relay\codex-attention.md`. If you turn it on, the relay wa
 Codex thread too, once for each new item on that list. Then the planner and the coordinator keep
 each other going without the Codex app.
 
+Other agents can talk too, with **agent mail**: one agent sends another a message by name, and the
+relay wakes the agent that gets it. This does the job of the Codex app's messages between threads,
+so a whole team can run with the app closed (see [Agent mail](#agent-mail-optional)).
+
 Pleni shows all of this on its map: planner → relay → coordinator → workers. To see it, turn on
 the mailbox in Pleni's **Settings** and choose the mailbox folder.
 
@@ -38,6 +42,7 @@ Made by 8 West Ventures, LLC.
 | ----------------------------------- | ------------------------------------------------------------------------------ |
 | `bin\bridge-relay.ps1`              | The relay.                                                                     |
 | `bin\spawn-worker.ps1`              | Starts one worker session. The coordinator runs it.                            |
+| `bin\agent-mail.ps1`                | Agent mail: agents send each other messages by name, and read their own.       |
 | `bin\bridge-relay-check.ps1`        | The relay's test. It uses fake mailboxes and a fake Claude, so it costs nothing. |
 | `bin\relay-settings.example.json`   | An example of the settings file.                                               |
 | `bin\cost-limits.example.json`      | An example of the cost settings file.                                          |
@@ -91,6 +96,8 @@ has just the examples. The relay reads them when it starts.
 | `enabled`                 | `true`: each run has a dollar cap, and the relay has a daily cap. `false`: no caps. Costs are written down either way. |
 | `relay_max_wakes_per_day` | How many times a day the relay may wake the coordinator. The usual number is 12. `0` means no limit. |
 | `relay_max_codex_wakes_per_day` | How many times a day the relay may wake the planner's Codex thread. The usual number is 12. `0` means no limit. |
+| `relay_max_agent_wakes_per_day` | How many times a day the relay may wake each agent for its mail. The usual number is 12. `0` means no limit. |
+| `relay_max_agent_turns_at_once` | How many agents the relay may wake for mail at the same time, 1 to 10. The usual number is 3. |
 
 A "worktree" is a second working folder of a Git repository, on its own branch. Each task gets
 one, so workers never touch your main folder.
@@ -140,6 +147,8 @@ Run these in the mailbox folder.
 | `-EnrollCodex -ThreadId <id>` | Turns on the Codex wake for that Codex thread. See below.                        |
 | `-EnrollCodex -ThreadName <name>` | The same, for the newest Codex thread with that name. See below.             |
 | `-UnenrollCodex`      | Turns the Codex wake off again.                                                                |
+| `-EnrollAgent -AgentName <name>` | Wakes that agent's Codex thread when mail waits for it. See [Agent mail](#agent-mail-optional). |
+| `-UnenrollAgent -AgentName <name>` | Stops waking that agent for its mail.                                              |
 
 To pause sending without stopping the relay, create an empty file named `PAUSE` in `.relay`.
 Delete it to go on. Nothing is lost while paused: notes wait in a queue.
@@ -194,6 +203,77 @@ It runs in the thread's own folder, and it uses your ChatGPT sign-in, never an A
 - **Errors:** after 3 failed Codex turns in a row, the relay stops waking Codex and writes an alert.
   Claude wakes go on. Fix the cause, then run `-ClearHalt`.
 - **To turn it off:** `.\bin\bridge-relay.ps1 -UnenrollCodex`.
+
+## Agent mail (optional)
+
+In the Codex app, agents talk with the app's tools: the Colonel sends a Sergeant a message, and the
+Sergeant wakes up and answers. Those tools stop working when you quit the app. Agent mail does the
+same job with files in the mailbox and with the relay:
+
+- An agent sends a message by name, for example
+  `agent-mail.ps1 -Send -From 'Colonel' -To 'Sergeant Milepost' -Text 'Start T-12.'`. It waits in
+  `mail\sergeant-milepost\new`.
+- If the relay wakes that agent (step 2 below), it resumes the agent's Codex thread with a short
+  note, the same way it wakes the planner. The agent reads its mail with `-Read`, does the work, and
+  answers with `-Send`.
+- An agent whose window is open reads its own mail. In a long task (a Codex goal) it runs
+  `agent-mail.ps1 -Wait -Me '<its name>' -Seconds 50` where it used the app's `wait_threads`. The
+  relay never wakes a thread that a window has open.
+
+### Set it up
+
+1. Update the relay in your mailbox (see [Update the relay in a mailbox](#update-the-relay-in-a-mailbox)).
+   That copies `agent-mail.ps1` too.
+2. Tell the relay which agents to wake, by the names their Codex threads have. Stop the relay
+   first, and start it again after:
+
+   ```powershell
+   .\bin\bridge-relay.ps1 -Stop
+   .\bin\bridge-relay.ps1 -EnrollAgent -AgentName 'Sergeant Milepost'
+   .\bin\bridge-relay.ps1 -EnrollAgent -AgentName 'Sergeant Coastmark'
+   .\bin\bridge-relay.ps1 -Start
+   ```
+
+   The relay finds the newest Codex thread with that name, and follows the name the same way as the
+   planner wake (see [Roll sessions over](#roll-sessions-over)). Enrolling wakes nothing: mail that
+   already waits counts as known, and the agent sees it the next time it reads its mail.
+3. Let a woken agent write. A woken turn uses `codex exec`, which is read-only unless
+   `codex_exec_args` in `bin\relay-settings.json` says otherwise. Reading and sending mail writes in
+   the mailbox, so allow the mailbox folder:
+   `["--sandbox", "workspace-write", "--add-dir", "C:\\Users\\ada\\mailbox"]`.
+4. Tell your agents. Each one needs to know its own name, the names of the others, and to use agent
+   mail instead of the app's thread tools (`send_message_to_thread`, `wait_threads`).
+
+### What the relay does
+
+- It wakes an enrolled agent once for its new mail, but only while no program has the agent's
+  thread open: not the Codex app, not a `codex resume` window, not another relay turn. While the
+  Codex app has the thread open, the relay waits. Quit the app fully to hand the thread over.
+- One turn at a time for each agent, and at most 3 agents at once
+  (`relay_max_agent_turns_at_once` in `bin\cost-limits.json`).
+- Up to 12 wakes a day for each agent (`relay_max_agent_wakes_per_day`).
+- After 3 failed turns in a row, it stops waking that agent and writes an alert. Other wakes go on.
+  Fix the cause, then run `-ClearHalt`.
+- `-Status` lists the agents, how much new mail waits for each, and whether a window has one open.
+- It never moves or deletes a message. The agents do that with `agent-mail.ps1`.
+
+### Agent mail commands
+
+Run them in the mailbox folder: `.\bin\agent-mail.ps1 <command>`. Names compare without case and
+extra spaces, so `sergeant milepost` is Sergeant Milepost.
+
+| Command                                         | What it does                                                                   |
+| ----------------------------------------------- | ------------------------------------------------------------------------------ |
+| `-Send -From <name> -To <name> -Text <text>`    | Sends a message. For several agents, separate the names with commas. For a long message, use `-TextFile <file>` (64 KB at most). A name that has no mail yet needs `-NewAgent` once, so a typo does not send mail nowhere. |
+| `-Read -Me <name>`                              | Prints the new mail, oldest first and 10 at a time, and moves it to `read`.    |
+| `-Wait -Me <name> -Seconds <n>`                 | Waits up to n seconds (50 if you leave it out) for new mail, then reads it.    |
+| `-List`                                         | Shows each agent, how much new mail waits, and whether the relay wakes it.      |
+
+You can use it too. To send the Colonel a note:
+`.\bin\agent-mail.ps1 -Send -From 'Ada' -To 'Colonel' -Text 'Please pause the website work.'`
+Mail to you waits in `mail\<your name>\new`; read it with `-Read -Me '<your name>'`.
+
+Read messages stay in each agent's `read` folder. You may delete old ones whenever you like.
 
 ## Roll sessions over
 
@@ -251,15 +331,16 @@ as they are.
 powershell -NoProfile -ExecutionPolicy Bypass -File bin\bridge-relay-check.ps1
 ```
 
-It takes 3 to 5 minutes. It builds fake mailboxes in your temp folder, runs the relay against them
-with a fake Claude and a fake Codex, and removes them at the end. It never touches a real mailbox or a real session,
+It takes 4 to 7 minutes. It builds fake mailboxes in your temp folder, runs the relay and agent
+mail against them with a fake Claude and a fake Codex, and removes them at the end. It never touches a real mailbox or a real session,
 and it costs nothing. Each pull request to this repository runs it on Windows too.
 
 ## Safety
 
 The relay:
 
-- wakes only the one session you enrolled, and only one turn at a time;
+- wakes only the sessions you enrolled: the coordinator, the planner, and the agents you enrolled
+  for mail, with one turn at a time for each;
 - wakes a Codex thread only if you enrolled it, never while another program has it open, and never
   with an option that turns the Codex sandbox off;
 - never wakes a session that looks open in another window, and never stops or kills a process;
@@ -276,5 +357,5 @@ Each coordinator turn and each worker run uses your Claude plan. The relay write
 Claude Code command reports into `.relay\dispatches.md` and each task's `workers\runs.md`. These
 numbers are estimates from Claude Code, not bills.
 
-Each planner turn the relay starts uses your ChatGPT plan. It gets a line in `.relay\dispatches.md`
-too, without a cost, because Codex does not report one.
+Each planner turn and each agent turn the relay starts uses your ChatGPT plan. It gets a line in
+`.relay\dispatches.md` too, without a cost, because Codex does not report one.
