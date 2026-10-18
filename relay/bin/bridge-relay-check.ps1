@@ -12,7 +12,9 @@
   (-Enroll -AllowCheck validation, -ShowCoordinatorArgs allowed/denied tools); 9 and 10 wake limits;
   11 local settings (bin\relay-settings.json: projects_dir, owner_name); 12-14 CodexWake with tests\stub-codex.js
   (off until enrolled, one wake per new item, waits for a held thread / a coordinator turn / a running wake,
-  errors back off and stop only the Codex direction, a different thread id stops it, ChatGPT sign-in only).
+  errors back off and stop only the Codex direction, a different thread id stops it, ChatGPT sign-in only);
+  15 rollovers (-Enroll -SessionName and -EnrollCodex -ThreadName follow the newest session with the name, forward
+  only and between turns).
   It runs only the bridge-relay.ps1 beside it, ..\tests\stub-claude.js and ..\tests\stub-codex.js; other
   -RelayScript/-StubCli values are refused.
   Prints one PASS/FAIL line per check, then a summary. Exit 0 only when every check passes (2 = could not set up).
@@ -96,7 +98,7 @@ function ConvertTo-Token([string]$A) {
 
 function Get-RelayArgs([hashtable]$Fx, [string]$Mode, [hashtable]$Opt) {
     $o = @{ MailboxRoot = $Fx.mb; ClaudeExe = $StubCli; KeyFile = $KeyPath; ClaudeConfigDir = $Fx.cfg; ProjectsDir = $Base;
-        CodexExe = $StubCodex; CodexHome = $Fx.codex;
+        CodexExe = $StubCodex; CodexHome = $Fx.codex; DesktopRoot = (Join-Path $Fx.dir 'desktop');
         DebounceSeconds = 0; QuietSeconds = 0; PollSeconds = 1; BackoffSeconds = 60 }
     if ($Opt) { foreach ($k in @($Opt.Keys)) { $o[$k] = $Opt[$k] } }
     # Safety: only synthetic mailboxes under this run's temp folder, only the stub CLIs and the dummy key.
@@ -104,6 +106,7 @@ function Get-RelayArgs([hashtable]$Fx, [string]$Mode, [hashtable]$Opt) {
     if ([string]$o.ClaudeExe -ne $StubCli -or [string]$o.KeyFile -ne $KeyPath) { throw 'refusing: -ClaudeExe/-KeyFile must be the stub and the dummy key' }
     if ([string]$o.CodexExe -ne $StubCodex) { throw 'refusing: -CodexExe must be the Codex stub' }
     if (-not ([string]$o.CodexHome).StartsWith($Base + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "refusing: Codex home outside $Base" }
+    if (-not ([string]$o.DesktopRoot).StartsWith($Base + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "refusing: desktop app folder outside $Base" }
     $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $RelayScript, "-$Mode")
     foreach ($k in @($o.Keys | Sort-Object)) {
         if ($null -eq $o[$k]) { continue }   # an option set to $null is left out
@@ -247,6 +250,30 @@ function Wait-Until([scriptblock]$Condition, [int]$Seconds) {
         Start-Sleep -Milliseconds 300
     } while ((Get-Date) -lt $deadline)
     return [bool](& $Condition)
+}
+
+function Write-Session([hashtable]$Fx, [string]$Id, [string]$At, [string]$Title) {
+    # A fake Claude Code session in the coordinator's folder. The title line is what /rename writes.
+    $p = Join-Path (Split-Path -Parent $Fx.transcript) "$Id.jsonl"
+    $t = '{"type":"user","sessionId":"' + $Id + '","timestamp":"' + $At + '","message":{"role":"user","content":"synthetic session"}}' + "`n"
+    if ($Title) { $t += '{"type":"custom-title","customTitle":"' + $Title + '","sessionId":"' + $Id + '"}' + "`n" }
+    Write-Text $p $t
+}
+
+function Write-Thread([hashtable]$Fx, [string]$Id, [string]$At, [string]$Cwd, [string]$Name) {
+    # A fake Codex thread, and its name in session_index.jsonl, where Codex keeps thread names.
+    $day = $At.Substring(0, 10) -replace '-', '\'
+    $p = Join-Path $Fx.codex ("sessions\$day\rollout-" + ($At -replace ':', '-').Substring(0, 19) + "-$Id.jsonl")
+    $meta = [ordered]@{ timestamp = $At; type = 'session_meta'; payload = [ordered]@{ id = $Id; timestamp = $At; cwd = $Cwd; originator = 'codex_cli_rs' } }
+    Write-Text $p ((ConvertTo-Json -InputObject $meta -Compress -Depth 4) + "`n")
+    $rec = [ordered]@{ id = $Id; thread_name = $Name; updated_at = $At }
+    [IO.File]::AppendAllText((Join-Path $Fx.codex 'session_index.jsonl'), (ConvertTo-Json -InputObject $rec -Compress) + "`n", $Utf8)
+}
+
+function Get-RelayJson([hashtable]$Fx, [string]$Name) {
+    $f = Join-Path $Fx.mb ".relay\$Name"
+    if (-not (Test-Path -LiteralPath $f)) { return $null }
+    return (ConvertFrom-Json -InputObject (Read-Shared $f))
 }
 
 function Get-AttentionKeys([string]$Out) {
@@ -858,6 +885,69 @@ try {
         $st = Get-RelayState $fx
         Check ([string]$st.codex_halt -match 'mismatch') 'a wake that ran in a different thread did not stop Codex wakes'
         Check (-not $st.halt) 'the thread mismatch stopped the coordinator direction'
+    }
+
+    Invoke-Scenario '15 rollovers: enrolled by name, the relay wakes the newest session with that name, forward only and between turns' {
+        $fx = New-Fixture 'ro'
+        # The fixture's session, named the way /rename names it, started first.
+        Write-Session $fx $fx.sid '2026-10-09T05:00:00Z' 'Sergeant Test'
+        $r = Invoke-Relay $fx 'Enroll' @{ SessionName = 'Nobody' }
+        Check ($r.code -ne 0 -and $r.out -match 'No Claude Code session named') '-Enroll accepted a name that no session has'
+        $r = Invoke-Relay $fx 'Enroll' @{ SessionName = 'sergeant test' }
+        Check ($r.code -eq 0) "-Enroll -SessionName exit code $($r.code): $(Get-Tail $r.out)"
+        $cj = Get-RelayJson $fx 'coordinator.json'
+        Check ($cj -and $cj.session_id -eq $fx.sid -and $cj.follow_name -eq 'sergeant test') 'coordinator.json does not hold the named session and the name to follow'
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-Calls $fx '').Count -eq 0) 'the baseline run called the CLI'
+        # Rollover: a newer session takes the name, so the next turn goes to it.
+        $sid2 = [guid]::NewGuid().ToString()
+        Write-Session $fx $sid2 '2026-10-10T05:00:00Z' 'Sergeant Test'
+        Write-Text (Join-Path $fx.mb 'tasks\T-NEW\assignment.md') $NewAssignment
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ($r.out -match 'Rollover:') 'the relay did not log the rollover'
+        $s = @(Get-Calls $fx 'start')
+        Check ($s.Count -eq 1 -and $s[0].resume -eq $sid2) 'the turn did not go to the newest session named Sergeant Test'
+        $cj = Get-RelayJson $fx 'coordinator.json'
+        Check ($cj.session_id -eq $sid2 -and $cj.previous_session_id -eq $fx.sid) 'coordinator.json does not record the switch'
+        # Forward only: new work in the old session, and a newer session with another name, change nothing.
+        [IO.File]::AppendAllText($fx.transcript, '{"type":"user","sessionId":"' + $fx.sid + '","timestamp":"2026-10-12T05:00:00Z","message":{"role":"user","content":"old again"}}' + "`n", $Utf8)
+        Write-Session $fx ([guid]::NewGuid().ToString()) '2026-10-13T05:00:00Z' 'Someone Else'
+        [IO.File]::AppendAllText((Join-Path $fx.mb 'tasks\T-BASE\answers.md'), "`r`n### A2 (Q2)`r`n**Answer:** b.`r`n", $Utf8)
+        $null = Invoke-Relay $fx 'Once' $null
+        $s = @(Get-Calls $fx 'start')
+        Check ($s.Count -eq 2 -and $s[1].resume -eq $sid2) 'the relay moved away from the newest session named Sergeant Test'
+        # Between turns only: a rollover while a turn runs waits until that turn has ended.
+        Set-StubMode $fx 'sleep:12'
+        Write-Text (Join-Path $fx.mb 'tasks\T-TWO\assignment.md') $NewAssignment
+        $null = Invoke-Relay $fx 'Once' @{ NoWait = $true }
+        Check (Wait-Until { (Get-RunningStubs $fx) -eq 1 } 15) 'the slow turn did not start'
+        $sid3 = [guid]::NewGuid().ToString()
+        Write-Session $fx $sid3 '2026-10-14T05:00:00Z' 'Sergeant Test'
+        $null = Invoke-Relay $fx 'Once' @{ NoWait = $true }
+        if ((Get-RunningStubs $fx) -ne 1) { throw 'timing: the 12 s stub turn ended before the check; re-run on a less loaded machine' }
+        Check ((Get-RelayJson $fx 'coordinator.json').session_id -eq $sid2) 'the relay switched sessions while a turn of the old one ran'
+        Check (Wait-Until { (Get-RunningStubs $fx) -eq 0 } 40) 'the slow stub turn did not end'
+        Set-StubMode $fx 'ok'
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ((Get-RelayJson $fx 'coordinator.json').session_id -eq $sid3) 'the relay did not switch once the turn had ended'
+        Check (Test-NoOverlap $fx) 'two CLI processes were alive at the same time'
+        # Codex: follow a thread name. A newer thread with the name takes over and runs in its own folder.
+        [IO.File]::AppendAllText((Join-Path $fx.codex 'session_index.jsonl'), '{"id":"' + $fx.tid + '","thread_name":"Planner Test","updated_at":"x"}' + "`n", $Utf8)
+        $r = Invoke-Relay $fx 'EnrollCodex' @{ ThreadName = 'planner test' }
+        Check ($r.code -eq 0) "-EnrollCodex -ThreadName exit code $($r.code): $(Get-Tail $r.out)"
+        Check ((Get-RelayJson $fx 'codex.json').thread_id -eq $fx.tid) 'codex.json does not hold the named thread'
+        $planner2 = Join-Path $fx.dir 'planner2'
+        New-Item -ItemType Directory -Path $planner2 -Force | Out-Null
+        $tid2 = [guid]::NewGuid().ToString()
+        Write-Thread $fx $tid2 '2026-10-10T05:00:00Z' $planner2 'Planner Test'
+        Write-Text (Join-Path $fx.mb 'tasks\T-BASE\questions.md') (Get-Questions @(3))
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ($r.out -match 'Rollover:') 'the relay did not log the Codex rollover'
+        $c = @(Get-CodexCalls $fx 'start')
+        Check ($c.Count -eq 1 -and $c[0].thread -eq $tid2) 'the Codex wake did not go to the newest thread named Planner Test'
+        if ($c.Count -ge 1) { Check ([string]$c[0].cwd -like '*\ro\planner2') "the Codex turn ran in '$($c[0].cwd)', not in the new thread's folder" }
+        $r = Invoke-Relay $fx 'Status' $null
+        Check ($r.out -match "Coordinator follows the name 'sergeant test'" -and $r.out -match "CodexWake follows the name 'planner test'") 'status does not show the names the relay follows'
     }
 } catch {
     $script:Fail++

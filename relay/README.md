@@ -106,12 +106,21 @@ Run these in the mailbox folder.
    .\bin\bridge-relay.ps1 -DryRun
    ```
 
-2. Tell the relay which Claude Code session is the coordinator. Do this once. Close that session
-   first, then run:
+2. Tell the relay which Claude Code session is the coordinator. Do this once, in one of two ways:
 
-   ```powershell
-   .\bin\bridge-relay.ps1 -Enroll -SessionId <the coordinator's session id>
-   ```
+   - **By name.** This is best if you start a fresh coordinator session often (see
+     [Roll sessions over](#roll-sessions-over)). Give the session a name: in Claude Code, type
+     `/rename Sergeant` in it, or rename it in the Claude desktop app. Then run:
+
+     ```powershell
+     .\bin\bridge-relay.ps1 -Enroll -SessionName 'Sergeant'
+     ```
+
+   - **By id.** Close that session first, then run:
+
+     ```powershell
+     .\bin\bridge-relay.ps1 -Enroll -SessionId <the coordinator's session id>
+     ```
 
 3. Start it, and keep the window open:
 
@@ -129,6 +138,7 @@ Run these in the mailbox folder.
 | `-ClearHalt`          | Starts sending again after the relay stopped itself because of repeated errors. Fix the cause first. |
 | `-ShowCoordinatorArgs`| Shows the commands the coordinator may and may not run. It changes nothing.                    |
 | `-EnrollCodex -ThreadId <id>` | Turns on the Codex wake for that Codex thread. See below.                        |
+| `-EnrollCodex -ThreadName <name>` | The same, for the newest Codex thread with that name. See below.             |
 | `-UnenrollCodex`      | Turns the Codex wake off again.                                                                |
 
 To pause sending without stopping the relay, create an empty file named `PAUSE` in `.relay`.
@@ -140,16 +150,22 @@ The planner is a Codex thread. Today the Codex app wakes it: other threads messa
 you quit the Codex app, nothing wakes it, and the coordinator's answers wait in the mailbox. The
 relay can do that job instead.
 
-1. Find the planner's thread id. In Pleni, click the planner's tile and open **Details**. The
-   **Key** line reads `codex:<thread id>`. The id is the part after `codex:`.
+1. Pick the thread by name or by id:
+   - **By name,** if you start a fresh planner thread now and then: use the thread's name in Codex,
+     for example `Planner`. The relay then follows that name (see
+     [Roll sessions over](#roll-sessions-over)).
+   - **By id:** in Pleni, click the planner's tile and open **Details**. The **Key** line reads
+     `codex:<thread id>`. The id is the part after `codex:`.
 2. Turn the Codex wake on, in the mailbox folder. If the relay runs, stop it first and start it
    again after:
 
    ```powershell
    .\bin\bridge-relay.ps1 -Stop
-   .\bin\bridge-relay.ps1 -EnrollCodex -ThreadId <the planner's thread id>
+   .\bin\bridge-relay.ps1 -EnrollCodex -ThreadName 'Planner'
    .\bin\bridge-relay.ps1 -Start
    ```
+
+   By id, the middle line is `.\bin\bridge-relay.ps1 -EnrollCodex -ThreadId <the planner's thread id>`.
 
    The relay finds the thread in your Codex folder and reads the folder the thread works in. This
    wakes nothing yet: what already waits for the planner counts as known.
@@ -170,12 +186,41 @@ It runs in the thread's own folder, and it uses your ChatGPT sign-in, never an A
   over.
 - **One place at a time.** The relay also waits while a window has the thread open
   (`codex resume <id>`), while a coordinator turn runs, and while its own last Codex turn runs.
-- **What the planner may change** is set by your Codex settings. If a planner turn says it cannot
-  write to the mailbox, give it write access with `codex_exec_args` in `bin\relay-settings.json`,
-  for example `["--sandbox", "workspace-write"]`. That lets Codex write inside the thread's folder.
+- **What the planner may change** is set by your Codex settings. `codex exec` is read-only unless
+  your settings say otherwise. To let a planner turn write, set `codex_exec_args` in
+  `bin\relay-settings.json`. `["--sandbox", "workspace-write"]` lets it write inside the thread's
+  folder. If the mailbox is in another folder, add that folder too:
+  `["--sandbox", "workspace-write", "--add-dir", "C:\\Users\\ada\\mailbox"]`.
 - **Errors:** after 3 failed Codex turns in a row, the relay stops waking Codex and writes an alert.
   Claude wakes go on. Fix the cause, then run `-ClearHalt`.
 - **To turn it off:** `.\bin\bridge-relay.ps1 -UnenrollCodex`.
+
+## Roll sessions over
+
+Starting a fresh session now and then keeps each turn small and cheap. If you enrolled by name
+(`-Enroll -SessionName`, `-EnrollCodex -ThreadName`), the relay follows the name. Give the new
+session the same name, and the relay switches to it on its own. You type no ids and run no
+commands.
+
+- **Which session:** the newest one with that name. For the coordinator, only Claude Code sessions
+  of its working folder count. For the planner, only live Codex threads count, not archived ones.
+  Case, extra spaces, and marks around the name (like `**`) do not matter.
+- **Newest means started last.** Using an old session again never takes the name back. The relay
+  only moves on to a session that started after the one it wakes now.
+- **Between turns.** The relay switches only when no turn runs. A new coordinator session that is
+  still open in a window gets its first turn after you close it.
+- **What stays:** model, effort and allowed checks carry over to the new coordinator session. A new
+  planner thread runs in its own folder.
+- **To check:** `-Status` shows the name each one follows and the last switch, and `relay.log` has
+  a `Rollover:` line for each switch.
+
+To give the new session the same name:
+
+- **Claude Code:** type `/rename <name>` in the session, or rename it in the Claude desktop app.
+- **Codex:** rename the thread in Codex.
+
+If you enrolled by id (`-SessionId`, `-ThreadId`), the relay never switches. Run `-Enroll` or
+`-EnrollCodex` again after each new session.
 
 ## Update the relay in a mailbox
 

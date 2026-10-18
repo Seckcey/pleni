@@ -143,6 +143,10 @@ for the planner in `.relay/codex-attention.md`. If the owner turned on the Codex
 (`bin/bridge-relay.ps1 -EnrollCodex`), it also wakes the planner's Codex thread once for each new
 item on that list. A turn the relay starts begins with `[bridge-relay <id>]`.
 
+If the owner enrolled by name, a new session that takes over the name (a rollover) gets the wakes
+from then on. A new coordinator or planner session should start by reading `STATUS.md` and its open
+tasks.
+
 Without the relay, tell the other side in one line after you write:
 
 - planner: "Claude: new or updated work in `tasks/<TASK-ID>`" (or "see CODEX-QUEUE")

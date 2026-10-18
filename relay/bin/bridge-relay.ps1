@@ -18,6 +18,8 @@
     One wake at a time, never while another Codex program holds the thread (the Codex app keeps every thread it
     opened), while a process has the thread id on its command line, or while a coordinator turn runs.
     ChatGPT sign-in only (codex login status); OpenAI/Codex API keys are removed for the child launch.
+  Rollovers: enrolled by name (-Enroll -SessionName, -EnrollCodex -ThreadName), the relay wakes the newest session
+    with that name and switches on its own when a newer one takes the name over: forward in time only, between turns.
   Billing: the existing Claude Code subscription login. No --bare, API-key injection or API
     fallback. Funding overrides are removed only for the child launch, then the original environment is restored.
   State: <MailboxRoot>\.relay\ only, one serialized writer (relay.lock). No secrets and no transcripts are stored.
@@ -31,6 +33,7 @@
   .\bridge-relay.ps1 -Status
   .\bridge-relay.ps1 -DryRun
   .\bridge-relay.ps1 -Enroll -SessionId 01234567-89ab-4def-8123-456789abcdef
+  .\bridge-relay.ps1 -Enroll -SessionName 'Sergeant'   (follow a name: a newer session named Sergeant takes over)
   .\bridge-relay.ps1 -Enroll -SessionId <uuid> -AllowCheck 'php -l','powershell -NoProfile -File C:/Users/ada/checks/lint.ps1'
       (operator only: extra check-command prefixes the coordinator may run, granted as Bash(<prefix>*). Stored in
        .relay\coordinator.json. To change them, exit the coordinator session and run -Enroll again; no other mode
@@ -38,6 +41,7 @@
        -File <script>, node without a script path or with -e/-p.)
   .\bridge-relay.ps1 -ShowCoordinatorArgs   (read-only: prints the coordinator's allowed/denied tools and rules as JSON)
   .\bridge-relay.ps1 -EnrollCodex -ThreadId 01234567-89ab-4def-8123-456789abcdef   (optional: wake that Codex thread)
+  .\bridge-relay.ps1 -EnrollCodex -ThreadName 'Planner'   (or follow a name: a newer thread named Planner takes over)
   .\bridge-relay.ps1 -UnenrollCodex          (turn the Codex wake off again)
   .\bridge-relay.ps1 -Once
   .\bridge-relay.ps1 -Start        (foreground; stop with -Stop from another window, or Ctrl+C)
@@ -58,6 +62,9 @@ param(
     [string]$SessionId,
     [string]$ThreadId,      # -EnrollCodex: the Codex thread to wake
     [string]$CodexCwd,      # -EnrollCodex: the thread's folder, when its first line does not name it
+    [string]$SessionName,   # -Enroll: follow the newest Claude Code session with this name (instead of -SessionId)
+    [string]$ThreadName,    # -EnrollCodex: follow the newest Codex thread with this name (instead of -ThreadId)
+    [string]$DesktopRoot,   # the Claude desktop app's data folder (default %APPDATA%\Claude), for names set in the app
     [string]$CoordinatorCwd,
     [string]$MailboxRoot,   # default: the folder above bin\, where this script lives
     [switch]$NoWait,
@@ -107,7 +114,10 @@ if ($modes.Count -gt 1) { Fail ('Pick one mode, got: ' + ($modes -join ', ')) 64
 if ($modes.Count -eq 0) { $modes = @('Status') }
 $Mode = $modes[0]
 if ($Effort -and @('low', 'medium', 'high', 'xhigh', 'max') -notcontains $Effort) { Fail "-Effort must be low, medium, high, xhigh or max (got '$Effort')" 64 }
-if (($ThreadId -or $CodexCwd) -and $Mode -ne 'EnrollCodex') { Fail '-ThreadId and -CodexCwd are accepted only with -EnrollCodex.' 64 }
+if (($ThreadId -or $CodexCwd -or $ThreadName) -and $Mode -ne 'EnrollCodex') { Fail '-ThreadId, -ThreadName and -CodexCwd are accepted only with -EnrollCodex.' 64 }
+if ($SessionName -and $Mode -ne 'Enroll') { Fail '-SessionName is accepted only with -Enroll.' 64 }
+if ($SessionId -and $SessionName) { Fail 'Give -SessionId or -SessionName, not both.' 64 }
+if ($ThreadId -and $ThreadName) { Fail 'Give -ThreadId or -ThreadName, not both.' 64 }
 
 # The mailbox is the folder above bin\ unless -MailboxRoot names another one.
 if (-not $MailboxRoot) {
@@ -1116,7 +1126,7 @@ function Get-BlockReason([hashtable]$State, $Coord, [int]$Settling) {
     $now = Get-Now
     if (Test-Path -LiteralPath $PauseFile) { return @{ code = 'paused'; text = "PAUSED ($PauseFile exists); pending notifications are kept" } }
     if ($State.halt) { return @{ code = 'halted'; text = "HALTED: $($State.halt). Pending notifications are kept; check .relay\alerts.md, then run -ClearHalt" } }
-    if (-not $Coord) { return @{ code = 'not-enrolled'; text = 'NOT ENROLLED: no coordinator session is registered, so nothing is sent; pending notifications are kept. One-time step: bridge-relay.ps1 -Enroll -SessionId <uuid>' } }
+    if (-not $Coord) { return @{ code = 'not-enrolled'; text = 'NOT ENROLLED: no coordinator session is registered, so nothing is sent; pending notifications are kept. One-time step: bridge-relay.ps1 -Enroll -SessionName <name> (or -SessionId <uuid>)' } }
     if ($Settling -gt 0) { return @{ code = 'settling'; text = "settling: $Settling inbound file(s) changed less than $DebounceSeconds s ago (debounce)" } }
     if ($State.next_attempt_utc -and $now -lt [int64]$State.next_attempt_utc) {
         return @{ code = 'backoff'; text = "backoff after failure $($State.failures)/$MaxFailures; next attempt not before $(Format-Unix $State.next_attempt_utc)" }
@@ -1609,15 +1619,300 @@ function Invoke-CodexTick([hashtable]$State, [bool]$ReadOnly) {
     Start-CodexDispatch $State $cx $pending
 }
 
+# ---------- follow by name (rollovers) ----------
+# Enrolled with -SessionName or -ThreadName, the relay wakes the NEWEST session with that name, so a new session that
+# takes the name over (a rollover) is woken without a new -Enroll. Names compare whole: case, runs of spaces and marks
+# around a name (* _ ` " ') do not count. "Newest" means started last, never "used last", and the relay only ever moves
+# forward to a session that started after the one it wakes now, so opening an old session again never takes the name
+# back. It switches only between turns, never while a turn of the old session runs.
+$FollowEverySeconds = 30
+$UuidRe = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+$script:NextFollowCheck = 0
+$script:TitleCache = @{}       # transcript path -> @{ len; title; started; stamped }
+$script:DesktopCache = @{}     # local_*.json path -> @{ stamp; id; title; archived }
+$script:DesktopTitles = @{}    # Claude session id -> the DesktopCache entry that names it
+$script:DesktopListAt = 0
+$script:IndexCache = @{ len = -1; names = @{} }   # Codex session_index.jsonl: thread id -> name
+$script:RolloutCache = @{}     # Codex thread id -> @{ path; started }
+
+function ConvertTo-NameKey([string]$Text) {
+    $t = (([string]$Text) -replace '\s+', ' ').Trim()
+    $t = $t.Trim([char[]]@('*', '_', '`', '"', "'", ' '))
+    return $t.ToLowerInvariant()
+}
+
+function Get-StartMs([string]$Text, [datetime]$Fallback) {
+    # The first time stamp in $Text (milliseconds), else $Fallback: @{ at; stamped }.
+    $m = [regex]::Match($Text, '"timestamp"\s*:\s*"([0-9]{4}-[0-9]{2}-[0-9]{2}T[^"]+)"')
+    $dt = [DateTimeOffset]::MinValue
+    if ($m.Success -and [DateTimeOffset]::TryParse($m.Groups[1].Value, $Inv, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$dt)) {
+        return @{ at = $dt.ToUnixTimeMilliseconds(); stamped = $true }
+    }
+    return @{ at = [int64](New-Object DateTimeOffset ($Fallback.ToUniversalTime())).ToUnixTimeMilliseconds(); stamped = $false }
+}
+
+function Get-ClaudeTitleRecord([string]$Path) {
+    # Claude re-appends its title records (custom-title, agent-name) often, so the last one sits near the end.
+    $tail = ''
+    try { $tail = Read-TailText $Path 262144 } catch { return '' }
+    $title = ''
+    foreach ($line in ($tail -split "`n")) {
+        if ($line -notmatch '"type"\s*:\s*"(custom-title|agent-name)"') { continue }
+        try { $r = ConvertFrom-Json -InputObject $line } catch { continue }
+        if ($r.type -eq 'custom-title' -and $r.customTitle) { $title = [string]$r.customTitle }
+        elseif ($r.type -eq 'agent-name' -and $r.agentName) { $title = [string]$r.agentName }
+    }
+    return $title
+}
+
+function Get-DesktopRoots {
+    # The Claude desktop app lists its sessions in <data>\claude-code-sessions. The Microsoft Store app keeps that
+    # data in its package folder.
+    $out = @()
+    if ($DesktopRoot) {
+        $b = Join-Path $DesktopRoot 'claude-code-sessions'
+        if (Test-Path -LiteralPath $b -PathType Container) { $out += $b }
+        return $out
+    }
+    if ($env:APPDATA) {
+        $b = Join-Path $env:APPDATA 'Claude\claude-code-sessions'
+        if (Test-Path -LiteralPath $b -PathType Container) { $out += $b }
+    }
+    if ($out.Count -eq 0 -and $env:LOCALAPPDATA) {
+        foreach ($d in @(Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue)) {
+            $b = Join-Path $d.FullName 'LocalCache\Roaming\Claude\claude-code-sessions'
+            if (Test-Path -LiteralPath $b -PathType Container) { $out += $b }
+        }
+    }
+    return $out
+}
+
+function Update-DesktopTitles {
+    # Names set in the Claude desktop app: <root>\<a>\<b>\local_<x>.json holds cliSessionId, title and isArchived.
+    # Listed again at most every 30 s; a file is read again only when it changed.
+    $now = Get-Now
+    if ($now -lt $script:DesktopListAt) { return }
+    $script:DesktopListAt = $now + 30
+    $titles = @{}
+    $seen = @{}
+    foreach ($base in @(Get-DesktopRoots)) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $base -Recurse -File -Filter 'local_*.json' -ErrorAction SilentlyContinue)) {
+            $stamp = '{0}|{1}' -f $f.Length, $f.LastWriteTimeUtc.Ticks
+            $c = $script:DesktopCache[$f.FullName]
+            if (-not $c -or $c.stamp -ne $stamp) {
+                $c = @{ stamp = $stamp; id = ''; title = ''; archived = $false }
+                try {
+                    $j = ConvertFrom-Json -InputObject (Read-SharedText $f.FullName)
+                    $c.id = ([string]$j.cliSessionId).ToLowerInvariant()
+                    $c.title = [string]$j.title
+                    $c.archived = ($j.isArchived -eq $true)
+                } catch { }
+                $script:DesktopCache[$f.FullName] = $c
+            }
+            $seen[$f.FullName] = $true
+            if ($c.id) { $titles[$c.id] = $c }
+        }
+    }
+    foreach ($k in @($script:DesktopCache.Keys)) { if (-not $seen.ContainsKey($k)) { $script:DesktopCache.Remove($k) } }
+    $script:DesktopTitles = $titles
+}
+
+function Get-ClaudeSessionInfo($File) {
+    # The name and start of one transcript, read again only when the file grew. A name once seen is kept until another
+    # title record replaces it, because a long turn can push the last title record out of the tail that is read.
+    $c = $script:TitleCache[$File.FullName]
+    if ($c -and $c.len -eq $File.Length) { return $c }
+    if (-not $c) { $c = @{ len = -1; title = ''; started = 0; stamped = $false } }
+    $t = Get-ClaudeTitleRecord $File.FullName
+    if ($t) { $c.title = $t }
+    if (-not $c.stamped) {
+        $head = ''
+        try { $head = Read-HeadText $File.FullName 65536 } catch { }
+        $st = Get-StartMs $head $File.CreationTimeUtc
+        $c.started = $st.at
+        $c.stamped = $st.stamped
+    }
+    $c.len = $File.Length
+    $script:TitleCache[$File.FullName] = $c
+    return $c
+}
+
+function Find-NamedClaudeSession([string]$Name, [string]$Cwd) {
+    # The newest Claude Code session of this working folder named $Name: @{ id; path; started } or $null. Its name is
+    # its own title record (/rename in Claude Code), else the title the desktop app shows. Archived ones do not count.
+    $want = ConvertTo-NameKey $Name
+    if (-not $want -or -not $Cwd) { return $null }
+    $dir = Join-Path (Join-Path $ClaudeConfigDir 'projects') ($Cwd -replace '[^A-Za-z0-9]', '-')
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return $null }
+    Update-DesktopTitles
+    $best = $null
+    foreach ($f in @(Get-ChildItem -LiteralPath $dir -File -Filter '*.jsonl' -ErrorAction SilentlyContinue)) {
+        $id = $f.BaseName.ToLowerInvariant()
+        if ($id -notmatch $UuidRe) { continue }
+        $desk = $script:DesktopTitles[$id]
+        if ($desk -and $desk.archived) { continue }
+        $info = Get-ClaudeSessionInfo $f
+        $title = $info.title
+        if (-not $title -and $desk) { $title = $desk.title }
+        if ((ConvertTo-NameKey $title) -ne $want) { continue }
+        if (-not $best -or $info.started -gt $best.started -or ($info.started -eq $best.started -and $id -gt $best.id)) {
+            $best = @{ id = $id; path = $f.FullName; started = [int64]$info.started }
+        }
+    }
+    return $best
+}
+
+function Get-ClaudeStarted([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return [int64]0 }
+    return [int64](Get-ClaudeSessionInfo (Get-Item -LiteralPath $Path)).started
+}
+
+function Update-CodexNames {
+    # Codex keeps thread names in <CODEX_HOME>\session_index.jsonl: one record per change, the last one wins.
+    $f = Join-Path $CodexHomeDir 'session_index.jsonl'
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { $script:IndexCache = @{ len = -1; names = @{} }; return }
+    $len = (Get-Item -LiteralPath $f).Length
+    if ($len -eq $script:IndexCache.len) { return }
+    $text = ''
+    try { $text = Read-SharedText $f } catch { return }
+    $names = @{}
+    foreach ($line in ($text -split "`n")) {
+        if (-not $line.Trim()) { continue }
+        try { $r = ConvertFrom-Json -InputObject $line } catch { continue }
+        $id = ([string]$r.id).ToLowerInvariant()
+        if ($id -notmatch $UuidRe) { continue }
+        if ($r.thread_name) { $names[$id] = [string]$r.thread_name } else { $names.Remove($id) }
+    }
+    $script:IndexCache = @{ len = $len; names = $names }
+}
+
+function Get-CodexStarted([string]$Path) {
+    # When a thread started: the time stamp on its first line (session_meta), else when its file was made.
+    $head = ''
+    try { $head = (Read-HeadText $Path 65536) } catch { }
+    $line = ($head -split "`n", 2)[0]
+    $fallback = [datetime]::UtcNow
+    try { $fallback = (Get-Item -LiteralPath $Path).CreationTimeUtc } catch { }
+    return [int64](Get-StartMs $line $fallback).at
+}
+
+function Find-NamedCodexThread([string]$Name) {
+    # The newest live (not archived) Codex thread named $Name: @{ id; path; started } or $null.
+    $want = ConvertTo-NameKey $Name
+    if (-not $want) { return $null }
+    Update-CodexNames
+    $best = $null
+    foreach ($id in @($script:IndexCache.names.Keys)) {
+        if ((ConvertTo-NameKey $script:IndexCache.names[$id]) -ne $want) { continue }
+        $c = $script:RolloutCache[$id]
+        if (-not $c -or -not (Test-Path -LiteralPath $c.path -PathType Leaf)) {
+            $found = Find-CodexRollout $id
+            if (-not $found -or $found.archived) { $script:RolloutCache.Remove($id); continue }
+            $c = @{ path = $found.path; started = (Get-CodexStarted $found.path) }
+            $script:RolloutCache[$id] = $c
+        }
+        if (-not $best -or $c.started -gt $best.started -or ($c.started -eq $best.started -and $id -gt $best.id)) {
+            $best = @{ id = $id; path = $c.path; started = [int64]$c.started }
+        }
+    }
+    return $best
+}
+
+function Update-CoordinatorFollow([hashtable]$State, [bool]$ReadOnly) {
+    $c = Get-Coordinator
+    if (-not $c -or -not $c.follow_name) { return }
+    $name = [string]$c.follow_name
+    $cur = [string]$c.session_id
+    $best = Find-NamedClaudeSession $name ([string]$c.cwd)
+    if (-not $best) {
+        if ($State.flags['follow_coordinator_miss'] -ne $cur) {
+            $State.flags['follow_coordinator_miss'] = $cur
+            Write-Log "No Claude Code session named '$name' was found for $($c.cwd); the relay still wakes session $cur."
+        }
+        return
+    }
+    [void]$State.flags.Remove('follow_coordinator_miss')
+    if ($best.id -eq $cur -or $best.started -le [int64]$c.started_ms) { return }
+    if (@($State.dispatches.Values | Where-Object { $_.state -eq 'running' -or $_.state -eq 'launching' }).Count) {
+        $script:NextFollowCheck = 0   # between turns only: look again on the next tick
+        return
+    }
+    if ($ReadOnly) { Write-Note "DRY-RUN: would switch the coordinator to session $($best.id), the newest session named '$name' (it wakes $cur now)."; return }
+    $c.previous_session_id = $cur
+    $c.session_id = $best.id
+    $c.transcript_path = $best.path
+    $c.started_ms = $best.started
+    $c.followed_utc = Get-Now
+    $c.followed = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv)
+    Save-Json $CoordFile $c
+    $State.failures = 0
+    $State.next_attempt_utc = 0
+    [void]$State.flags.Remove('last_block')
+    Write-Log "Rollover: '$name' is now session $($best.id) (newest with that name), so the relay wakes it instead of $cur. Model, effort and allowed checks stay the same."
+}
+
+function Update-CodexFollow([hashtable]$State, [bool]$ReadOnly) {
+    $cx = Get-CodexConfig
+    if (-not $cx -or -not $cx.follow_name) { return }
+    $name = [string]$cx.follow_name
+    $cur = [string]$cx.thread_id
+    $best = Find-NamedCodexThread $name
+    if (-not $best) {
+        if ($State.flags['follow_codex_miss'] -ne $cur) {
+            $State.flags['follow_codex_miss'] = $cur
+            Write-Log "No live Codex thread named '$name' was found; the relay still wakes thread $cur."
+        }
+        return
+    }
+    [void]$State.flags.Remove('follow_codex_miss')
+    if ($best.id -eq $cur -or $best.started -le [int64]$cx.started_ms) { return }
+    if (@($State.codex_dispatches.Values | Where-Object { $_.state -eq 'running' -or $_.state -eq 'launching' }).Count) {
+        $script:NextFollowCheck = 0
+        return
+    }
+    $cwd = Get-CodexThreadCwd $best.path
+    if (-not $cwd -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
+        if ($State.flags['follow_codex_nocwd'] -ne $best.id) {
+            $State.flags['follow_codex_nocwd'] = $best.id
+            Write-Log "The newest Codex thread named '$name' ($($best.id)) names no folder the relay can find ('$cwd'); the relay still wakes thread $cur."
+        }
+        return
+    }
+    if ($ReadOnly) { Write-Note "DRY-RUN: would switch the Codex wake to thread $($best.id), the newest thread named '$name' (it wakes $cur now)."; return }
+    $cx.previous_thread_id = $cur
+    $cx.thread_id = $best.id
+    $cx.cwd = $cwd
+    $cx.rollout_path = $best.path
+    $cx.started_ms = $best.started
+    $cx.followed_utc = Get-Now
+    $cx.followed = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv)
+    Save-Json $CodexFile $cx
+    $State.codex_failures = 0
+    $State.codex_next_attempt_utc = 0
+    [void]$State.flags.Remove('last_codex_block')
+    [void]$State.flags.Remove('follow_codex_nocwd')
+    Write-Log "Rollover: '$name' is now Codex thread $($best.id) (newest with that name; folder $cwd), so the relay wakes it instead of $cur."
+}
+
+function Update-Follow([hashtable]$State, [bool]$ReadOnly) {
+    $now = Get-Now
+    if ($now -lt $script:NextFollowCheck) { return }
+    $script:NextFollowCheck = $now + $FollowEverySeconds
+    Update-CoordinatorFollow $State $ReadOnly
+    Update-CodexFollow $State $ReadOnly
+}
+
 # ---------- one tick ----------
 function Invoke-Tick([hashtable]$State, [bool]$ReadOnly) {
     $script:LastLaunched = $null
     $script:LastCodexLaunched = $null
-    $coord = Get-Coordinator
     $baseline = (-not $State.baseline_utc)
     Update-Daily $State
     Update-Dispatches $State
     Update-CodexDispatches $State
+    # After the turns that ended are recorded, so a rollover never cuts into a running turn.
+    Update-Follow $State $ReadOnly
+    $coord = Get-Coordinator
     $settling = Update-Inbound $State $baseline
     Update-Workers $State $baseline
     Update-Attention $State $baseline
@@ -1712,13 +2007,20 @@ function Invoke-Loop {
 }
 
 function Invoke-Enroll {
-    if ($SessionId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
-        Fail "-SessionId must be the coordinator session UUID (got '$SessionId'). The relay never guesses it."
+    if (-not $SessionName -and $SessionId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+        Fail "-SessionId must be the coordinator session UUID (got '$SessionId'), or give -SessionName <name> to follow a name. The relay never guesses it."
     }
-    $sid = $SessionId.ToLowerInvariant()
     $cwd = $Root
     if ($CoordinatorCwd) { $cwd = [IO.Path]::GetFullPath($CoordinatorCwd).TrimEnd('\') }
     if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { Fail "Coordinator working directory not found: $cwd" }
+    if ($SessionName) {
+        $named = Find-NamedClaudeSession $SessionName $cwd
+        if (-not $named) {
+            Fail "No Claude Code session named '$SessionName' was found for working directory $cwd. Name the session first (in Claude Code: /rename $SessionName), then enroll again."
+        }
+        $SessionId = $named.id
+    }
+    $sid = $SessionId.ToLowerInvariant()
     $projects = Join-Path $ClaudeConfigDir 'projects'
     $expectedDir = Join-Path $projects ($cwd -replace '[^A-Za-z0-9]', '-')
     $transcript = Join-Path $expectedDir "$sid.jsonl"
@@ -1732,15 +2034,20 @@ function Invoke-Enroll {
     }
     $procs = Get-SessionProcesses $sid
     if ($null -eq $procs) { Fail 'Could not read the process list to confirm the session is not running. Not enrolled.' }
-    if ($procs.Count -gt 0) {
+    $openNow = ($procs.Count -gt 0)
+    # A fixed id must be closed and quiet now. A followed name may be open: the relay waits to wake it until it is closed.
+    if ($openNow -and -not $SessionName) {
         Fail ("Session $sid is open right now (pid " + (($procs | ForEach-Object { $_.ProcessId }) -join ',') + '). Exit that Claude session first: the relay must never resume a running session.')
     }
-    if ($QuietSeconds -gt 0) {
+    if ($QuietSeconds -gt 0 -and -not $SessionName) {
         $age = (Get-Now) - (ConvertTo-Unix (Get-Item -LiteralPath $transcript).LastWriteTimeUtc)
         if ($age -lt $QuietSeconds) { Fail "Session $sid was written $age s ago; it may still be open. Exit it, wait $QuietSeconds s, then enroll again." }
     }
+    $verified = 'local transcript present for this working directory; no process had the session id on its command line; transcript quiet'
+    if ($SessionName) { $verified = "newest local session named '$SessionName' for this working directory; a turn starts only while it is closed and quiet" }
     $coord = @{ session_id = $sid; cwd = $cwd; transcript_path = $transcript; enrolled_utc = (Get-Now); enrolled = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv);
-        verified = 'local transcript present for this working directory; no process had the session id on its command line; transcript quiet';
+        follow_name = [string]$SessionName; started_ms = (Get-ClaudeStarted $transcript);
+        verified = $verified;
         model = [string]$Model; effort = [string]$Effort;
         allowed_checks = $CheckList.ToArray();
         resume_rule = 'claude -p <notice> --resume <session_id> using subscription login only; never --continue, --fork-session or --no-session-persistence' }
@@ -1748,7 +2055,12 @@ function Invoke-Enroll {
     $state = Get-State
     [void]$state.flags.Remove('last_block')
     Save-State $state
-    Write-Log "Enrolled coordinator session $sid (cwd $cwd). Verified: transcript present, not running. Model: $(if ($Model) { $Model } else { 'CLI default' }); effort: $(if ($Effort) { $Effort } else { 'CLI default' })."
+    if ($SessionName) {
+        Write-Log "Enrolled coordinator session $sid (cwd $cwd), the newest session named '$SessionName'. When a newer session takes that name, the relay wakes it instead, on its own. Model: $(if ($Model) { $Model } else { 'CLI default' }); effort: $(if ($Effort) { $Effort } else { 'CLI default' })."
+        if ($openNow) { Write-Log 'That session is open right now. The relay wakes it only after it is closed.' }
+    } else {
+        Write-Log "Enrolled coordinator session $sid (cwd $cwd). Verified: transcript present, not running. Model: $(if ($Model) { $Model } else { 'CLI default' }); effort: $(if ($Effort) { $Effort } else { 'CLI default' })."
+    }
     Write-Log ('Allowed checks (operator-enrolled, granted as Bash(<prefix>*)): ' + $(if ($CheckList.Count) { ($CheckList | ForEach-Object { "'" + $_ + "'" }) -join ', ' } else { 'none' }) +
         '. To change them, exit the coordinator session and run -Enroll again.')
 }
@@ -1756,8 +2068,15 @@ function Invoke-Enroll {
 function Invoke-EnrollCodex {
     # Operator only. Records the ONE Codex thread the relay may wake. Enrolling wakes nothing: the items that wait for
     # the planner now count as known, so only new ones wake the thread.
+    if ($ThreadName) {
+        $named = Find-NamedCodexThread $ThreadName
+        if (-not $named) {
+            Fail "No live Codex thread named '$ThreadName' was found in $CodexHomeDir (archived threads do not count). Check the name in Codex, or use -ThreadId."
+        }
+        $ThreadId = $named.id
+    }
     if ($ThreadId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
-        Fail "-ThreadId must be the Codex thread id (a UUID; got '$ThreadId'). The relay never guesses it."
+        Fail "-ThreadId must be the Codex thread id (a UUID; got '$ThreadId'), or give -ThreadName <name> to follow a name. The relay never guesses it."
     }
     $tid = $ThreadId.ToLowerInvariant()
     $found = Find-CodexRollout $tid
@@ -1772,6 +2091,7 @@ function Invoke-EnrollCodex {
     $held = Test-CodexThreadLocked $tid
     $cx = @{ thread_id = $tid; cwd = $cwd; rollout_path = $found.path; codex_home = $CodexHomeDir; enrolled_utc = (Get-Now);
         enrolled = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv);
+        follow_name = [string]$ThreadName; started_ms = (Get-CodexStarted $found.path);
         wake_rule = 'codex exec --json --skip-git-repo-check [codex_exec_args] resume <thread_id> <notice>, in cwd, ChatGPT sign-in only; never --last, never a sandbox bypass; never while another Codex program holds the thread' }
     $state = Get-State
     Update-Attention $state $true   # before codex.json exists: what waits now is listed, not queued
@@ -1783,6 +2103,7 @@ function Invoke-EnrollCodex {
     Write-AttentionFile $state
     Save-State $state
     Write-Log "Enrolled Codex thread $tid for CodexWake (cwd $cwd; thread file $($found.path)). Each NEW item for the planner wakes it once; the $($state.attention.Count) item(s) waiting now count as known."
+    if ($ThreadName) { Write-Log "It follows the name '$ThreadName': when a newer Codex thread takes that name, the relay wakes it instead, on its own." }
     if ($held) { Write-Log 'Another Codex program has this thread open right now (most likely the Codex app). The relay wakes it only after that program lets go of it; quit the Codex app fully to hand the thread to the relay.' }
     $exe = Get-CodexExePath
     if (-not $exe) { Write-Log 'WARNING: the Codex CLI was not found on PATH. Install it, or set codex_exe in bin\relay-settings.json, before the first wake.' }
@@ -1844,9 +2165,14 @@ function Show-Status {
     if ($coord) {
         $tp = [bool]($coord.transcript_path -and (Test-Path -LiteralPath ([string]$coord.transcript_path) -PathType Leaf))
         Write-Host "Coordinator: ENROLLED session $($coord.session_id) (cwd $($coord.cwd); enrolled $($coord.enrolled); transcript present: $tp)"
+        if ($coord.follow_name) {
+            $sw = ''
+            if ($coord.followed) { $sw = "; last switch $($coord.followed), from $($coord.previous_session_id)" }
+            Write-Host "Coordinator follows the name '$($coord.follow_name)': the newest session with that name in that folder is woken$sw"
+        }
     } else {
-        Write-Host 'Coordinator: NOT ENROLLED. One-time step: exit the coordinator session, then run'
-        Write-Host '             bridge-relay.ps1 -Enroll -SessionId <that session uuid>. Nothing is sent until then.'
+        Write-Host 'Coordinator: NOT ENROLLED. One-time step: run bridge-relay.ps1 -Enroll -SessionName <its name>, or exit the'
+        Write-Host '             coordinator session and run bridge-relay.ps1 -Enroll -SessionId <its uuid>. Nothing is sent until then.'
     }
     Write-Host ('Projects folder (the coordinator may read it): ' + $(if ($ProjectsDir) { $ProjectsDir } else { 'not set (projects_dir in bin\relay-settings.json)' }))
     Write-Host ('Baseline: ' + $(if ($state.baseline_utc) { Format-Unix $state.baseline_utc } else { 'not yet recorded (the first -Once/-Start records it)' }))
@@ -1871,6 +2197,11 @@ function Show-Status {
         $held = Test-CodexThreadLocked ([string]$cx.thread_id)
         Write-Host ("CodexWake: ON for Codex thread {0} (cwd {1}; enrolled {2}; thread file found: {3}; open in another Codex program now: {4})" -f
             $cx.thread_id, $cx.cwd, $cx.enrolled, [bool]$roll, $held)
+        if ($cx.follow_name) {
+            $sw = ''
+            if ($cx.followed) { $sw = "; last switch $($cx.followed), from $($cx.previous_thread_id)" }
+            Write-Host "CodexWake follows the name '$($cx.follow_name)': the newest live Codex thread with that name is woken$sw"
+        }
         $exe = Get-CodexExePath
         Write-Host ('Codex CLI: ' + $(if ($exe) { $exe } else { 'NOT FOUND (install it, or set codex_exe in bin\relay-settings.json)' }))
         if ($CodexArgsError) { Write-Host "Codex options: REFUSED - $CodexArgsError" }
