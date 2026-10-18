@@ -8,6 +8,10 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Fixed
 
+- Pleni's address no longer changes on its own. Pleni used to make a new key whenever it could not
+  read its key file, even for a moment, and that broke every bookmark. Now it makes a key only the
+  first time it starts, or when you ask with `--new-key`. It tries a busy key file again for about
+  ten seconds, and if the file still cannot be read, or is damaged, it stops with a message instead.
 - A coordinator that was moved under its planner (by dragging it, or with Reports to) now stays
   below the relay, so the map shows planner → relay → coordinator → its workers.
 - A relay that halted itself (it writes the reason into `state.json`) now shows as halted. Before,
@@ -15,6 +19,10 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- A sign-in box: a browser that does not have Pleni's key (a new device, or one that forgot it) now
+  asks for the key on the page. Bookmark the plain address, `http://localhost:8790/`, and paste
+  the key once. Browsers can save the key like a password.
+- `--url` shows Pleni's address, your Tailscale addresses and the key, without starting Pleni.
 - The mailbox relay can wake the planner's Codex thread, so the planner and the coordinator keep
   each other going without the Codex app. It is off until you turn it on with
   `bridge-relay.ps1 -EnrollCodex -ThreadId <id>`. Then each new item for the planner (a question

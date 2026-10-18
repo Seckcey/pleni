@@ -135,6 +135,24 @@ function writeStore(key, value) {
   }
 }
 
+// Session storage lasts only while this tab is open.
+function readSession(key) {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeSession(key, value) {
+  try {
+    if (value == null) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, value);
+  } catch {
+    // Blocked storage only means a wrong key gets no "did not work" message.
+  }
+}
+
 const own = (obj, key) => (obj && Object.hasOwn(obj, key) ? obj[key] : undefined);
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const cap = (s) => (s ? String(s).charAt(0).toUpperCase() + String(s).slice(1) : '');
@@ -718,6 +736,7 @@ function render() {
   }
   renderFacts();
   renderNotices();
+  renderSignIn();
   $('#nav-tasks').hidden = !(S.snap && Array.isArray(S.snap.tasks));
   const asking = (S.snap && S.snap.counts && S.snap.counts.needs) || 0;
   document.title = `${asking ? `(${asking}) ` : ''}${VIEW_NAMES[S.view]} · Pleni`;
@@ -755,15 +774,61 @@ function notice(bad, title, text) {
 function renderNotices() {
   const out = [];
   if (S.conn === 'error') out.push(notice(true, 'Cannot reach Pleni.', `${S.connError} The page keeps trying every few seconds.`));
-  if (S.conn === 'locked') {
-    out.push(notice(true, 'Pleni needs its key.', 'Open the full address Pleni printed in the terminal when it started. It ends with "?t=" and a long key, which keeps other people on this computer out. The address stays the same until someone makes a new key.'));
-  }
   const src = (S.snap && S.snap.sources) || {};
   for (const [name, label] of [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code'], ['mailbox', 'The mailbox']]) {
     const s = src[name];
     if (s && s.enabled && s.ok === false) out.push(notice(false, `${label} could not be read.`, s.error || 'Pleni will try again.'));
   }
   setHtml($('#notices'), out.join(''));
+}
+
+// ---- sign-in ----
+// Without the key cookie the API answers 401. The sign-in box takes the key and opens "/?t=<key>",
+// the same address Pleni prints, so the server sets the cookie and sends the browser back to "/".
+// The address to bookmark never carries the key.
+const SIGNIN_TRIED = 'pleni.signin';
+const KEY_TEXT = /^[A-Za-z0-9_-]{16,}$/;
+
+function renderSignIn() {
+  const box = $('#signin');
+  const locked = S.conn === 'locked';
+  // Signed in: forget the try, so a later lock does not blame this key.
+  if (S.conn === 'live' && readSession(SIGNIN_TRIED)) writeSession(SIGNIN_TRIED, null);
+  if (box.hidden !== locked) return;
+  box.hidden = !locked;
+  if (!locked) return;
+  // Back from a key that did not work: say so once.
+  if (readSession(SIGNIN_TRIED)) {
+    writeSession(SIGNIN_TRIED, null);
+    signInMessage('That key did not work. Check that you copied all of it.');
+  }
+  // Only take the focus when nothing else has it, so a sign-in box never pulls it away.
+  if (document.activeElement === document.body) $('#signin-key').focus();
+}
+
+function signInMessage(text) {
+  $('#signin-msg').textContent = text;
+  if (text) $('#signin-key').setAttribute('aria-invalid', 'true');
+  else $('#signin-key').removeAttribute('aria-invalid');
+}
+
+// The key alone, or a whole pasted address that holds "?t=<key>".
+function keyFromText(text) {
+  const t = String(text || '').trim();
+  const m = /(?:^|[?&])t=([A-Za-z0-9_-]+)/.exec(t);
+  return m ? m[1] : t;
+}
+
+function signIn() {
+  const key = keyFromText($('#signin-key').value);
+  if (!KEY_TEXT.test(key)) {
+    signInMessage('That is not a key. A key is a long run of letters, digits, "-" and "_".');
+    $('#signin-key').focus();
+    return;
+  }
+  signInMessage('');
+  writeSession(SIGNIN_TRIED, '1');
+  location.assign(`/?t=${encodeURIComponent(key)}`);
 }
 
 function storedTheme() {
@@ -3312,6 +3377,11 @@ settingsBox.addEventListener('keydown', (ev) => {
 settingsBox.addEventListener('submit', (ev) => {
   ev.preventDefault();
   saveSettings();
+});
+
+$('#signin').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  signIn();
 });
 
 // ---------------------------------------------------------------------------------------------

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { cleanSettings } from '../src/config.js';
 import { OPEN_MESSAGES } from '../src/open.js';
-import { browserCommand, createServer, loadOrCreateKey, newKey } from '../src/server.js';
+import { browserCommand, createServer, keyFile, loadOrCreateKey, newKey, readKeyFile } from '../src/server.js';
 
 const CSP = "default-src 'none'; script-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; " +
   "img-src 'self' data:; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; " +
@@ -332,9 +332,10 @@ test('a server is never made without a usable key', () => {
   for (const key of keys) assert.match(key, /^[A-Za-z0-9_-]{43}$/);
 });
 
-test('the kept key survives a restart and --new-key replaces it', (t) => {
+test('the kept key survives a restart and only --new-key replaces it', (t) => {
   const dir = tempDir(t, 'pleni-key-');
   const file = path.join(dir, 'nested', 'key');
+  assert.equal(keyFile(path.join(dir, 'nested', 'settings.json')), file);
   const first = loadOrCreateKey(file);
   assert.equal(first.saved, true);
   assert.match(first.key, /^[A-Za-z0-9_-]{43}$/);
@@ -342,10 +343,49 @@ test('the kept key survives a restart and --new-key replaces it', (t) => {
   const renewed = loadOrCreateKey(file, { renew: true });
   assert.notEqual(renewed.key, first.key);
   assert.equal(loadOrCreateKey(file).key, renewed.key);
+  assert.deepEqual(fs.readdirSync(path.dirname(file)), ['key'], 'no temp file is left behind');
+});
+
+test('a damaged or unreadable key file stops Pleni instead of changing its address', (t) => {
+  const dir = tempDir(t, 'pleni-key-');
+  const file = path.join(dir, 'key');
   fs.writeFileSync(file, 'not a key!');
-  const repaired = loadOrCreateKey(file);
-  assert.notEqual(repaired.key, renewed.key);
-  assert.equal(fs.readFileSync(file, 'utf8').trim(), repaired.key);
+  const damaged = (err) => err.code === 'PLENI_KEY_FILE' && /damaged/.test(err.message) && /--new-key/.test(err.message);
+  assert.throws(() => loadOrCreateKey(file), damaged);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'not a key!', 'the file is left alone');
+  // --new-key still replaces it, on purpose.
+  const renewed = loadOrCreateKey(file, { renew: true });
+  assert.equal(fs.readFileSync(file, 'utf8').trim(), renewed.key);
+  // A folder where the file should be cannot be read: nothing is replaced.
+  const folder = path.join(dir, 'folder');
+  fs.mkdirSync(folder);
+  const unreadable = (err) => err.code === 'PLENI_KEY_FILE' && /could not read its key file/.test(err.message);
+  assert.throws(() => loadOrCreateKey(folder, { tries: 1 }), unreadable);
+  assert.ok(fs.statSync(folder).isDirectory());
+});
+
+test('a key file that Windows holds for a moment is read again', () => {
+  let calls = 0;
+  const failing = (code) => () => {
+    calls += 1;
+    throw Object.assign(new Error(code), { code });
+  };
+  const busyTwice = () => {
+    calls += 1;
+    if (calls < 3) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+    return '\uFEFFabcdefghijklmnopqrstuvwxyz0123456789ABCDEFG\r\n';
+  };
+  assert.deepEqual(readKeyFile('key', { pause: 1, read: busyTwice }), { key: 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG' });
+  assert.equal(calls, 3);
+  calls = 0;
+  assert.deepEqual(readKeyFile('key', { tries: 4, pause: 1, read: failing('EPERM') }), { problem: 'EPERM' });
+  assert.equal(calls, 4);
+  calls = 0;
+  assert.deepEqual(readKeyFile('key', { pause: 1, read: failing('EISDIR') }), { problem: 'EISDIR' });
+  assert.equal(calls, 1, 'other problems are not tried again');
+  assert.deepEqual(readKeyFile('key', { read: failing('ENOENT') }), { missing: true });
+  assert.deepEqual(readKeyFile('key', { read: failing('ENOTDIR') }), { missing: true });
+  assert.deepEqual(readKeyFile('key', { read: () => 'short' }), { problem: 'damaged' });
 });
 
 test('a key that cannot be saved still works for this run', (t) => {

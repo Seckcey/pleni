@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Command line: pleni [--port N] [--demo] [--open] [--config FILE]
+// Command line: pleni [--port N] [--demo] [--open] [--config FILE] [--new-key] [--url]
 import fs from 'node:fs';
 import path from 'node:path';
 import util from 'node:util';
@@ -11,6 +11,7 @@ const OPTIONS = {
   open: { type: 'boolean' },
   config: { type: 'string' },
   'new-key': { type: 'boolean' },
+  url: { type: 'boolean' },
   version: { type: 'boolean', short: 'v' },
   help: { type: 'boolean', short: 'h' },
 };
@@ -45,6 +46,7 @@ async function main(argv, env) {
     process.stdout.write(`${readVersion()}\n`);
     return 0;
   }
+  if (options.url) return showAddress(options, env);
   // Loaded only now, so the version check above can still speak on an old Node.js.
   const { start } = await import('../src/server.js');
   let app;
@@ -58,8 +60,7 @@ async function main(argv, env) {
   // Pleni at once, and that must still be a clean stop.
   stopOnSignal(app);
   if (options.demo) process.stdout.write('Showing made-up demo data.\n');
-  process.stdout.write(`Pleni is running at ${app.url}\n` +
-    'Open that whole address. The part after "?t=" is a key that keeps other people on this computer out.\n' +
+  process.stdout.write(`Pleni is running at ${app.url}\n${openNote(app, options)}\n` +
     `${keyNote(app, options)}\nPress Ctrl+C to stop.\n`);
   return undefined;
 }
@@ -78,6 +79,7 @@ function readOptions(argv, env) {
     demo: values.demo === true,
     open: values.open === true,
     newKey: values['new-key'] === true,
+    url: values.url === true,
     config: values.config?.trim() ? path.resolve(values.config.trim()) : undefined,
     version: values.version === true,
     help: values.help === true,
@@ -100,11 +102,49 @@ function commandName(script = process.argv[1] ?? '') {
   return `node ${/\s/.test(shown) ? `"${shown}"` : shown}`;
 }
 
+// What to open. With a kept key, each browser needs the whole address only once.
+function openNote(app, options) {
+  const first = 'Open that whole address. The part after "?t=" is a key that keeps other people on this computer out.';
+  if (options.demo || !app.keySaved) return first;
+  const plain = app.url.slice(0, app.url.indexOf('?'));
+  return `${first}\nEach browser needs the key only once, and Pleni asks for it if a browser forgets it. Bookmark: ${plain}`;
+}
+
 function keyNote(app, options) {
   if (options.demo) return 'The demo key changes each time the demo starts.';
   if (!app.keySaved) return 'Pleni could not save its key, so this address changes each time Pleni starts.';
   if (options.newKey) return 'This is a new key. Each device needs this full address once; the old one no longer works.';
-  return `This address stays the same each time Pleni starts. To change it, start once with ${commandName()} --new-key`;
+  return `This address stays the same each time Pleni starts. To see it again, run: ${commandName()} --url`;
+}
+
+// --url: the address and the key, read from Pleni's own files. It starts nothing and writes nothing.
+async function showAddress(options, env) {
+  if (options.demo) {
+    process.stderr.write('The demo makes a new key each time it starts, so it has no address to keep.\n');
+    return 1;
+  }
+  const { loadSettings, settingsFile } = await import('../src/config.js');
+  const { keyFile, keyFileError, readKeyFile } = await import('../src/server.js');
+  const file = options.config ?? settingsFile(env);
+  const { settings, error } = loadSettings(file);
+  if (error) process.stderr.write(`${error}\n`);
+  const found = readKeyFile(keyFile(file));
+  if (found.missing) {
+    process.stderr.write(`Pleni has no key yet. Start Pleni once with ${commandName()} and it makes one.\n`);
+    return 1;
+  }
+  if (!found.key) {
+    process.stderr.write(`${keyFileError(keyFile(file), found.problem).message}\n`);
+    return 1;
+  }
+  const port = options.port ?? settings.port;
+  const lines = [`Pleni's address: http://localhost:${port}/`];
+  for (const host of settings.remote.hosts) lines.push(`From your other devices: https://${host}/`);
+  lines.push(`Key: ${found.key}`, `Sign-in link: http://localhost:${port}/?t=${found.key}`, '',
+    'Bookmark the address. If a browser asks for the key, paste the key, or open the sign-in link once.',
+    'The key is like a password: do not share it.');
+  process.stdout.write(`${lines.join('\n')}\n`);
+  return 0;
 }
 
 // 0 is allowed on purpose: it asks for any free port, which tests use.
@@ -116,10 +156,12 @@ function parsePort(text, from) {
 }
 
 function startProblem(err, port) {
+  if (err?.code === 'PLENI_KEY_FILE') return err.message;
   const which = err?.port ?? port;
   if (err?.code === 'EADDRINUSE') {
-    return `Port ${which} is already in use. Pleni may already be running there.\n` +
-      `Open that page, or pick another port, for example: ${commandName()} --port ${otherPort(which)}`;
+    return `Port ${which} is already in use. Pleni may already be running there: open http://localhost:${which}/\n` +
+      `If another program uses that port, pick another one, for example: ${commandName()} --port ${otherPort(which)}\n` +
+      'Pleni\'s address then has that port, so your bookmarks need it too.';
   }
   if (err?.code === 'EACCES') return `Pleni is not allowed to use port ${which}. Try a port from 1024 to 65535.`;
   return `Pleni could not start: ${err?.message ?? 'unknown problem'}`;
@@ -160,6 +202,7 @@ Options:
   --open         Open Pleni in your web browser.
   --config FILE  Read and save settings in FILE.
   --new-key      Make a new key, so the old address stops working.
+  --url          Show Pleni's address and key, without starting it.
   --version      Show the version number.
   --help         Show this help.
 
