@@ -46,7 +46,7 @@ read the start of a file once, to find a session's name and where it started.
 | Pleni's own program folder, if it is a git copy | Only `.git/HEAD` and the one branch file it names (or `packed-refs`), to show which commit runs |
 
 From the session files it uses: when each step happened, the working folder, the git branch, the
-model and effort, which tool was used, short parts of the tool's input (see below), the
+model and effort, the permission mode, which tool was used, short parts of the tool's input (see below), the
 assistant's text, which session started which helper, and for "Roll over soon" only numbers: how
 many tokens the newest step used, how big the model's memory is (Codex), and when the history was
 squeezed into a summary and by how much.

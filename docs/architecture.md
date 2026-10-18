@@ -173,6 +173,8 @@ Session = {
   entrypoint: string | null,// claude: 'claude-desktop' | 'claude-vscode' | 'cli' | 'sdk-cli'; codex: originator
   model: string | null,
   effort: string | null,
+  mode: string | null,      // claude main sessions: the newest turn's permissionMode
+                            // (default, acceptEdits, plan, auto, bypassPermissions, dontAsk); else null
   startedAt: number | null,
   lastAt: number | null,    // newest timestamp seen in a conversation record
   status: 'working' | 'ready' | 'idle' | 'done' | 'error',
@@ -221,7 +223,8 @@ export function createClaudeSource({ root, desktopRoot, settings, now = Date.now
   `started` records (`agentId`, `label`). A sub-agent's key is `claude:<sessionId>/<agentId>`; its
   parent is `claude:<sessionId>/<parentAgentId>` when nested, else `claude:<sessionId>`.
 - Conversation records are `user`, `assistant`, `attachment` and `system`. They carry `timestamp`
-  (ISO), `sessionId`, `cwd`, `gitBranch`, `entrypoint`, `version`. Metadata records (`custom-title`,
+  (ISO), `sessionId`, `cwd`, `gitBranch`, `entrypoint`, `version`, and on turns `effort` and
+  `permissionMode` (the newest known mode is the session's `mode`). Metadata records (`custom-title`,
   `agent-name`, `ai-title`, `last-prompt`, `cost-state`, `queue-operation`, …) have no timestamp and
   are re-appended often; the last one wins. Never use file mtime as `lastAt`.
 - Titles: last `custom-title`/`agent-name`, else last `ai-title`, else the Claude desktop app's
@@ -519,7 +522,7 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
 ```js
 export function createStore({ settings, roots, demo = false, now = Date.now, stateDir = null, platform = process.platform })
 // -> { snapshot(): Snapshot, detail(key, since), reload(settings, roots), close(), dismiss(id, at),
-//      session(key): { id, cwd, status, entrypoint, kind, title, titleSource } | null, demo: boolean }
+//      session(key): { id, cwd, status, entrypoint, kind, title, titleSource, model, effort, mode } | null, demo: boolean }
 ```
 
 Creates the enabled sources (or the demo source), polls at most every 2 s on demand, caches the
@@ -527,8 +530,8 @@ snapshot with its JSON and its ETag, and rebuilds when settings change. `snapsho
 is `settings.actions.openTerminal` and `platform === 'win32'`, and `actions.rollover` and
 `actions.newAgent` the same for their settings. `session(key)` gives what the newest poll knows
 about a top-level Claude Code session or a Codex thread (`{ id, cwd, status, entrypoint, kind,
-title, titleSource }`) for Open in PowerShell, Roll over and New agent, and `null` for anything else
-and in the demo. The ETag is
+title, titleSource, model, effort, mode }`) for Open in PowerShell, Roll over and New agent, and
+`null` for anything else and in the demo. The ETag is
 `snapshotTag(snapshot)` from `src/model.js`: `W/"<sha1 of the JSON with now set to 0>"`. `now`
 changes on every build, and the page needs it only to allow for a clock difference, so a snapshot
 that changed only its time keeps its ETag and the page's poll gets `304`.
@@ -615,7 +618,8 @@ window the person sees. Unlike Open in PowerShell, each window sends one message
 one that Pleni builds from the session's own name and that the page shows before the click.
 
 ```js
-export function rolloverPlan(tool, session)   // -> { name, problem, file, ask, start, rename }
+export function rolloverPlan(tool, session)   // -> { name, problem, file, ask, start, rename, carry }
+export function carryOver(tool, session)       // -> { model, effort, mode }, each null unless plain
 export function rolloverInfo({ key, settings, store, platform, stat }) // -> { ok: true, info: { ...plan, handoffAt } } | { ok: false, status, error }
 export async function rollover({ key, step, name, settings, roots, store, limits, platform, env, home, spawn, now, isAlive, isLocked, processStarts })
 // -> { ok: true } | { ok: false, status, error }   (error is a plain sentence)
@@ -643,15 +647,25 @@ export function rollCommand(tool, step, { id, name, text }, systemRoot) // -> { 
   `rollCommand`):
   - ask: `Pleni roll over: a new session will take over your work. Write a handoff note for it in
     <file> in this folder. Say what work is open and where it stands, what waits on whom, and what
-    else it must know. Do not commit the file. Then stop.`
+    else it must know. Copy in every standing instruction you were given and still follow, such as
+    how to report, how to pick a model and effort, and what you may and may not do. Do not commit
+    the file. Then stop.`
   - start: `Pleni roll over: you take over from the last session named <name>. First read <file>
-    in this folder. Then say in one line that you are ready.`
+    in this folder, and follow the standing instructions in it. Then say in one line that you are
+    ready.`
+- **What carries over** (`carryOver`): the old session's model (letters, digits and `. _ -`, at
+  most 80), its effort (Claude Code: low, medium, high, xhigh, max; Codex: minimal, low, medium,
+  high, xhigh), and for Claude Code its newest permission mode when it is acceptEdits, auto,
+  bypassPermissions, dontAsk or plan (the normal mode needs no flag). Anything else is left out.
+  Codex keeps its permissions in its own settings, which the new thread reads anyway.
 - **The commands**, in the same `cmd.exe /d /s /c "start "<title>" "<powershell.exe>" -NoExit
   -NoLogo -Command "<run>""` line as Open in PowerShell, spawned the same way in the session's
   folder with `toolEnv`:
   - ask: `claude --resume '<id>' '<ask>'`, or `codex resume '<id>' '<ask>'`;
-  - start: `claude --name '<name>' '<start>'`, or `codex '<start>'`. Codex cannot name a thread
-    when it starts, so the page shows `/rename <name>` for the person to type in the new window.
+  - start: `claude --name '<name>' [--model '<model>'] [--effort <effort>] [--permission-mode
+    <mode>] '<start>'`, or `codex [-m '<model>'] [-c model_reasoning_effort=<effort>] '<start>'`.
+    Codex cannot name a thread when it starts, so the page shows `/rename <name>` for the person to
+    type in the new window. The page's note says what the new session starts with.
 - **One writer.** Asking resumes the old session, so it follows Open in PowerShell's checks
   (`openProblem`, `codexProblem`), except that a live Claude Code background session is refused too:
   the message must not land in a turn that is already running. A Claude desktop app or VS Code

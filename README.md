@@ -255,7 +255,8 @@ The section shows four steps, and the exact message of each step before you clic
 2. **Close the old session.** Type `/exit` in that window (`/quit` for Codex).
 3. **Start the new session.** **Start in PowerShell** opens a new window in the same folder. A new
    Claude Code session gets the same name on its own. For Codex, type `/rename <name>` in the new
-   window; the section shows the exact words.
+   window; the section shows the exact words. The new session starts with the old one's model and
+   effort, and for Claude Code its permission mode too.
 4. **Check.** Pleni shows the new session once it finds it, and says when the mailbox relay now
    wakes it. You can keep the new window open to watch it and type to it. While it is open, the
    relay waits and keeps its messages; type `/exit` when you want the relay to wake it again. If you
@@ -264,6 +265,11 @@ The section shows four steps, and the exact message of each step before you clic
 
 - **The session needs a name of its own.** Give it one with `/rename` first. The new session takes
   it, and the mailbox relay and chain-of-command rules find sessions by name.
+- **Standing instructions go along.** The old session is asked to copy into the note every standing
+  instruction it follows, such as how to report, how to pick a model and effort, and what it may
+  and may not do, and the new one is told to follow them. Rules that every agent should always
+  follow are safest in the project's `CLAUDE.md` (Claude Code) or `AGENTS.md` (Codex): each new
+  session reads those by itself.
 - **Open in an app?** If the Codex app or the Claude desktop app has the session open, Pleni cannot
   send to it. Use **Copy the message** and paste it there, then start the new session from Pleni
   or in the app.

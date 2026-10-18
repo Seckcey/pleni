@@ -2346,7 +2346,7 @@ function rollStepsHtml(n, r) {
       `<div class="roll-btns"><button type="button" class="btn" data-hide="${esc(n.key)}" data-title="${esc(titleOf(n))}">Hide the old session</button></div>`
     : '<p>Pleni has not found the new session yet.</p>';
   return (
-    `<p class="note">The new session gets the name <b>${esc(i.name)}</b> and works in the same folder. It starts by reading a handoff note that this session writes first.</p>` +
+    `<p class="note">The new session gets the name <b>${esc(i.name)}</b> and works in the same folder. It starts by reading a handoff note that this session writes first, with the open work and every standing instruction it follows.${carryHtml(i.carry)}</p>` +
     '<ol class="roll-steps">' +
     '<li><h4>Ask for a handoff note</h4>' +
     `<p>Pleni opens this session in a new PowerShell window and sends it this message:</p><blockquote class="roll-text">${esc(i.ask)}</blockquote>` +
@@ -2369,6 +2369,17 @@ function rollStepsHtml(n, r) {
     } Pleni and the relay find it by its name.</p></li>` +
     '</ol>'
   );
+}
+
+const MODE_WORDS = { acceptEdits: 'Accept edits', auto: 'Auto', bypassPermissions: 'Bypass permissions', dontAsk: "Don't ask", plan: 'Plan' };
+
+// " It starts with Opus 5.5, high effort, in Accept edits mode." from what Roll over carries over.
+function carryHtml(c) {
+  if (!c) return '';
+  const parts = [c.model ? prettyModel(c.model) : '', c.effort ? EFFORT_WORDS[c.effort] || `${c.effort} effort` : ''].filter(Boolean);
+  const mode = c.mode && MODE_WORDS[c.mode] ? `in ${MODE_WORDS[c.mode]} mode` : '';
+  if (!parts.length && !mode) return '';
+  return ` It starts with ${esc([...parts, mode].filter(Boolean).join(', '))}, like this one.`;
 }
 
 // The newest other session of the same tool with this name, started after this one.

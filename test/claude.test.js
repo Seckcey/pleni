@@ -335,6 +335,21 @@ test('after more than 16 MiB of new lines, starts again near the end and keeps w
 
 // ---- titles and desktop metadata ----
 
+test('keeps the permission mode of the newest turn, for Roll over', (t) => {
+  const env = setup(t);
+  write(sessionPath(env.root), [
+    user(env.ago(5 * MIN), 'Plan it first', { permissionMode: 'plan' }),
+    assistant(env.ago(4 * MIN), [text('Here is the plan.')]),
+    user(env.ago(3 * MIN), 'Go ahead', { permissionMode: 'acceptEdits' }),
+    user(env.ago(2 * MIN), 'And this', { permissionMode: 'not-a-mode' }),
+    assistant(env.ago(1 * MIN), [text('Done.')]),
+  ]);
+  write(agentPath(env.root, 'a1'), [user(env.ago(2 * MIN), 'Help', { permissionMode: 'auto' }), assistant(env.ago(1 * MIN), [text('Helped.')])]);
+  const sessions = env.poll().sessions;
+  assert.equal(sessions.find((x) => x.key === keyOf(SID)).mode, 'acceptEdits', 'an unknown mode is not kept');
+  assert.equal(sessions.find((x) => x.key === keyOf(SID, 'a1')).mode, null, 'a helper has no mode of its own');
+});
+
 test('picks titles in order: custom or agent name, then AI title, then desktop, then sub-agent description', (t) => {
   const env = setup(t);
   write(sessionPath(env.root), [

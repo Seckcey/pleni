@@ -153,6 +153,9 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
       kind: text(found.kind),
       title: text(found.title),
       titleSource: text(found.titleSource),
+      model: text(found.model),
+      effort: text(found.effort),
+      mode: text(found.mode),
     };
   }
 

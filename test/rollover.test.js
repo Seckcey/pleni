@@ -8,6 +8,7 @@ import { OPEN_MESSAGES, openLimits, openSession } from '../src/open.js';
 import {
   ROLL_MESSAGES,
   askText,
+  carryOver,
   claudeRollProblem,
   codexRollProblem,
   handoffFile,
@@ -44,12 +45,12 @@ function claudeRoot(t, entries = []) {
   return root;
 }
 
-function fakeStore({ key = KEY, cwd, status = 'idle', entrypoint = 'cli', kind = 'session', title = NAME, titleSource, listed = true, demo = false } = {}) {
+function fakeStore({ key = KEY, cwd, status = 'idle', entrypoint = 'cli', kind = 'session', title = NAME, titleSource, listed = true, demo = false, model = null, effort = null, mode = null } = {}) {
   const source = titleSource ?? (key.startsWith('codex:') ? 'session_index' : 'custom-title');
   return {
     demo,
     snapshot: () => ({ nodes: listed ? [{ key: 'you' }, { key }] : [{ key: 'you' }] }),
-    session: (asked) => (asked === key ? { id: ID, cwd, status, entrypoint, kind, title, titleSource: source } : null),
+    session: (asked) => (asked === key ? { id: ID, cwd, status, entrypoint, kind, title, titleSource: source, model, effort, mode } : null),
   };
 }
 
@@ -115,6 +116,27 @@ test('starting opens a new Claude Code session in the same folder, with the same
   assert.deepEqual(result, { ok: true });
   assert.deepEqual(spawn.calls[0].args.at(-1), line('Claude Code', `claude --name '${NAME}' '${startText(NAME, FILE)}'`));
   assert.equal(spawn.calls[0].options.cwd, folder);
+});
+
+test('the new session starts with the old one\'s model, effort and permission mode', async (t) => {
+  const folder = tempDir(t);
+  const claude = await roll(t, { step: 'start', folder, store: fakeStore({ cwd: folder, model: 'claude-opus-5-5', effort: 'high', mode: 'acceptEdits' }) });
+  assert.deepEqual(claude.result, { ok: true });
+  assert.equal(claude.spawn.calls[0].args.at(-1), line('Claude Code', `claude --name '${NAME}' --model 'claude-opus-5-5' --effort high --permission-mode acceptEdits '${startText(NAME, FILE)}'`));
+  const codex = await roll(t, { key: CODEX_KEY, step: 'start', folder, store: fakeStore({ key: CODEX_KEY, cwd: folder, model: 'gpt-6.1-sol', effort: 'medium', mode: 'acceptEdits' }) });
+  assert.equal(codex.spawn.calls[0].args.at(-1), line('Codex', `codex -m 'gpt-6.1-sol' -c model_reasoning_effort=medium '${startText(NAME, FILE)}'`), 'Codex keeps its permissions in its own settings');
+  const odd = await roll(t, { step: 'start', folder, store: fakeStore({ cwd: folder, model: `opus' ; calc ; '`, effort: 'extreme', mode: 'default' }) });
+  assert.equal(odd.spawn.calls[0].args.at(-1), line('Claude Code', `claude --name '${NAME}' '${startText(NAME, FILE)}'`), 'odd or normal values are left out');
+  const asked = await roll(t, { folder, store: fakeStore({ cwd: folder, model: 'claude-opus-5-5', effort: 'high', mode: 'acceptEdits' }) });
+  assert.equal(asked.spawn.calls[0].args.at(-1), line('Claude Code', `claude --resume '${ID}' '${askText(FILE)}'`), 'asking the old session changes nothing');
+});
+
+test('carryOver keeps only plain values the tool takes', () => {
+  assert.deepEqual(carryOver('claude', { model: 'claude-sonnet-5-5', effort: 'max', mode: 'plan' }), { model: 'claude-sonnet-5-5', effort: 'max', mode: 'plan' });
+  assert.deepEqual(carryOver('codex', { model: 'gpt-6.1-sol', effort: 'max', mode: 'plan' }), { model: 'gpt-6.1-sol', effort: null, mode: null });
+  assert.deepEqual(carryOver('claude', { model: 'claude opus', effort: 'High', mode: 'manual' }), { model: null, effort: null, mode: null });
+  assert.deepEqual(carryOver('claude', null), { model: null, effort: null, mode: null });
+  assert.throws(() => rollCommand('claude', 'start', { id: ID, name: NAME, text: startText(NAME, FILE), carry: { model: `x' ; calc`, effort: null, mode: null } }), /cannot go on a command line/);
 });
 
 test('a Codex thread is asked with codex resume, and the new one starts with codex', async (t) => {
@@ -226,7 +248,7 @@ test('rolloverInfo gives the exact messages and when the handoff note last chang
   const before = info(fakeStore({ cwd: folder }));
   assert.deepEqual(before, {
     ok: true,
-    info: { name: NAME, problem: null, file: FILE, ask: askText(FILE), start: startText(NAME, FILE), rename: null, handoffAt: null },
+    info: { name: NAME, problem: null, file: FILE, ask: askText(FILE), start: startText(NAME, FILE), rename: null, carry: { model: null, effort: null, mode: null }, handoffAt: null },
   });
   fs.writeFileSync(path.join(folder, FILE), 'notes');
   const at = new Date('2026-10-01T12:00:00Z');
@@ -238,7 +260,7 @@ test('rolloverInfo gives the exact messages and when the handoff note last chang
   const codex = rolloverInfo({ key: CODEX_KEY, settings: ON, store: fakeStore({ key: CODEX_KEY, cwd: folder }), platform: 'win32' });
   assert.equal(codex.info.rename, `/rename ${NAME}`);
   const unnamed = info(fakeStore({ cwd: folder, title: 'Fix the login page', titleSource: 'ai-title' }));
-  assert.deepEqual(unnamed.info, { name: null, problem: ROLL_MESSAGES.noName, file: null, ask: null, start: null, rename: null, handoffAt: null });
+  assert.deepEqual(unnamed.info, { name: null, problem: ROLL_MESSAGES.noName, file: null, ask: null, start: null, rename: null, carry: null, handoffAt: null });
   assertRefused(info(fakeStore({ cwd: folder }), 'linux'), 409, ROLL_MESSAGES.windowsOnly);
   assertRefused(rolloverInfo({ key: KEY, settings: {}, store: fakeStore({ cwd: folder }), platform: 'win32' }), 403, ROLL_MESSAGES.off);
 });

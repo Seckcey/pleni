@@ -36,6 +36,8 @@ const HANDBACK_TOOLS = new Set(['SubagentHandback', 'StructuredOutput']);
 const COMMAND_ECHO = /^\s*<(command-(name|message|args)|local-command-[a-z-]+|bash-(input|stdout|stderr))>/;
 const INTERRUPTED = /^\s*\[Request interrupted by user/;
 const SYNTHETIC = '<synthetic>';
+// The permission modes Claude Code writes on each turn (permissionMode), for Roll over to keep.
+const PERMISSION_MODES = new Set(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions', 'dontAsk']);
 
 export function createClaudeSource({ root, desktopRoot = null, settings = DEFAULTS, now = Date.now } = {}) {
   const files = new Map();        // transcript path -> FileState
@@ -284,6 +286,7 @@ function freshParse() {
     entrypoint: null,
     model: null,
     effort: null,
+    mode: null,          // the permission mode of the newest turn
     startedAt: null,
     lastAt: null,
     customTitle: null,
@@ -348,6 +351,7 @@ function restart(s) {
     entrypoint: s.entrypoint,
     model: s.model,
     effort: s.effort,
+    mode: s.mode,
     startedAt: s.startedAt,
     lastAt: s.lastAt,
     customTitle: s.customTitle,
@@ -397,6 +401,7 @@ function applyRecord(s, r) {
   if (isText(r.gitBranch)) s.branch = r.gitBranch;
   if (isText(r.entrypoint)) s.entrypoint = r.entrypoint;
   if (isText(r.effort)) s.effort = r.effort;
+  if (PERMISSION_MODES.has(r.permissionMode)) s.mode = r.permissionMode;
   if (r.type === 'assistant') applyAssistant(s, r, at);
   else if (r.type === 'user') applyUser(s, r, at);
 }
@@ -626,6 +631,7 @@ function toSession(view, desk, t, win, snippets) {
     entrypoint: s.entrypoint,
     model: s.model ?? (agent ? s.meta?.model : desk?.model) ?? null,
     effort: s.effort ?? (agent ? null : desk?.effort) ?? null,
+    mode: agent ? null : s.mode,
     startedAt: s.startedAt,
     lastAt: s.lastAt,
     status: statusOf(s, t, win, view.done),

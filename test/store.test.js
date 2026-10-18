@@ -317,11 +317,11 @@ test('turning Open in PowerShell on keeps the sources and shows at once', () => 
   assert.equal(f.made.length, 2);
 });
 
-test('session() gives the folder, state and name of a top-level Claude Code session or a Codex thread', () => {
+test('session() gives the folder, state, name, model, effort and permission mode of a top-level Claude Code session or a Codex thread', () => {
   const { store } = makeStore();
-  const rest = { cwd: '/home/ada/code/alpha', status: 'working', entrypoint: 'cli', kind: 'session', title: 'Billing API refactor', titleSource: null };
-  assert.deepEqual(store.session(CLAUDE_KEY), { id: CLAUDE_KEY.slice('claude:'.length), ...rest });
-  assert.deepEqual(store.session(CODEX_KEY), { id: CODEX_KEY.slice('codex:'.length), ...rest });
+  const rest = { cwd: '/home/ada/code/alpha', status: 'working', entrypoint: 'cli', kind: 'session', title: 'Billing API refactor', titleSource: null, effort: null, mode: null };
+  assert.deepEqual(store.session(CLAUDE_KEY), { id: CLAUDE_KEY.slice('claude:'.length), ...rest, model: 'claude-opus-5-5' });
+  assert.deepEqual(store.session(CODEX_KEY), { id: CODEX_KEY.slice('codex:'.length), ...rest, model: 'gpt-6.1-sol' });
   assert.equal(store.session(`${CLAUDE_KEY}/a1b2c3`), null);
   assert.equal(store.session('grok:cccccccc-0000-4000-8000-000000000001'), null);
   assert.equal(store.session('claude:aaaaaaaa-0000-4000-8000-00000000ffff'), null);

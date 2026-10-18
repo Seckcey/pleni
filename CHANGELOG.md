@@ -110,6 +110,11 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Changed
 
+- Roll over keeps more: the new session starts with the old one's model and effort, and for Claude
+  Code its permission mode too. The handoff request now asks the old session to copy in every
+  standing instruction it follows (how to report, how to pick a model and effort, what it may and
+  may not do), and the new session is told to follow them. Pleni now reads each Claude Code turn's
+  permission mode for this.
 - Settings is no longer one long page. It has six short groups, each behind a tab: Basics, Team,
   Sources, Alerts, Buttons and Devices. Settings most people never change are folded under **More
   choices**. **Find a setting** finds a setting by name in every group, for example "port" or
