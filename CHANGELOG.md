@@ -19,6 +19,13 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- Rollovers without new ids: the mailbox relay can follow a session by name. Enroll with
+  `bridge-relay.ps1 -Enroll -SessionName <name>` or `-EnrollCodex -ThreadName <name>`, and when a newer
+  session takes over that name, the relay wakes it instead, on its own. It only moves on to a
+  session that started later, and only between turns. A Claude Code session's name is set with
+  `/rename` or in the Claude desktop app; a Codex thread's name is set in Codex.
+- The relay README says how to let a planner turn write to a mailbox in another folder
+  (`--add-dir` in `codex_exec_args`).
 - A sign-in box: a browser that does not have Pleni's key (a new device, or one that forgot it) now
   asks for the key on the page. Bookmark the plain address, `http://localhost:8790/`, and paste
   the key once. Browsers can save the key like a password.
