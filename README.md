@@ -362,8 +362,9 @@ both. Both are made by 8 West Ventures, LLC.
 
 ## What comes next
 
-Version 0.1 watches, and can open a Claude Code or Codex session in PowerShell for you. The next step is
-to let you answer questions, approve plans and send messages to a session right from the browser. The design is in
+Version 0.1 watches. It can also open a Claude Code or Codex session in PowerShell for you, and
+roll a long session over to a fresh one. The next step is to let you answer questions, approve plans
+and send messages to a session right from the browser. The design is in
 [docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md).
 
 These are plans, not promises. Ideas are welcome in

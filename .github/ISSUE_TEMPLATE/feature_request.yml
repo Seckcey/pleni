@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Pleni 0.1 only watches. Sending work and approving actions from the browser are planned
+        Pleni 0.1 mostly watches. Sending work and approving actions from the browser are planned
         next; see "What comes next" in the
         [README](https://github.com/Seckcey/pleni#what-comes-next). For an open-ended idea, start a
         [discussion](https://github.com/Seckcey/pleni/discussions) instead.
