@@ -19,7 +19,7 @@ function repo(t, url, extra = '') {
   return dir;
 }
 
-const look = (dir, now = 1000) => githubRepo(dir, { now, platform: 'linux' });
+const look = (dir, now = 1000) => githubRepo(dir, { now });
 // A made-up login and token, as an address can hold them: https://<user>:<token>@github.com/...
 const LOGIN = 'ada:secret-token';
 
