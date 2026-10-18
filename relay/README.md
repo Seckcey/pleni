@@ -130,7 +130,7 @@ Run these in the mailbox folder.
 
 | Command               | What it does                                                                                   |
 | --------------------- | ---------------------------------------------------------------------------------------------- |
-| `-Status`             | Shows whether the relay runs, the enrolled session, what waits, and today's turns and costs.   |
+| `-Status`             | Shows whether the relay runs, the enrolled session, whether a window has it open, what waits, and today's turns and costs. |
 | `-DryRun`             | Shows what the relay would do now. It starts nothing and writes nothing.                       |
 | `-Once`               | Does one round, then stops.                                                                    |
 | `-Start`              | Keeps running and watches the mailbox. Stop it with `-Stop` from another window, or Ctrl+C.    |
@@ -209,6 +209,11 @@ commands.
   only moves on to a session that started after the one it wakes now.
 - **Between turns.** The relay switches only when no turn runs. A new coordinator session that is
   still open in a window gets its first turn after you close it.
+- **Windows it did not start.** The relay waits while any Claude Code window has the coordinator
+  open: one opened with `claude --resume <id>`, and also one started another way, such as
+  `claude --name <name>` or Pleni's Roll over button. It finds those in Claude Code's own list of
+  running sessions (`sessions\<number>.json` in the Claude Code folder). So you can keep a new
+  coordinator's window open to watch it; the relay keeps its messages until you close it.
 - **What stays:** model, effort and allowed checks carry over to the new coordinator session. A new
   planner thread runs in its own folder.
 - **To check:** `-Status` shows the name each one follows and the last switch, and `relay.log` has

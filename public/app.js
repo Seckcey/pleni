@@ -2215,7 +2215,7 @@ function rollStepsHtml(n, r) {
     `<li><h4>Check</h4>${check}<p class="help">${
       codex
         ? 'When the new thread says it is ready, keep working in its window, or type <code>/quit</code> and open the thread in the Codex app. You can archive the old thread there too.'
-        : 'When the new session says it is ready, type <code>/exit</code> in its window. A script such as the mailbox relay cannot see that window, and two programs writing one session would mix up its messages.'
+        : 'You can keep its window open to watch it and type to it. While it is open, the mailbox relay waits and keeps its messages. Type <code>/exit</code> when you want the relay to wake it again.'
     } Pleni and the relay find it by its name.</p></li>` +
     '</ol>'
   );

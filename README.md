@@ -235,9 +235,10 @@ The section shows four steps, and the exact message of each step before you clic
    Claude Code session gets the same name on its own. For Codex, type `/rename <name>` in the new
    window; the section shows the exact words.
 4. **Check.** Pleni shows the new session once it finds it, and says when the mailbox relay now
-   wakes it. Then type `/exit` in the new Claude Code window: a script such as the relay cannot see
-   that window, and two programs writing one session would mix up its messages. A new Codex thread
-   can stay open; Codex itself keeps a second program out.
+   wakes it. You can keep the new window open to watch it and type to it. While it is open, the
+   relay waits and keeps its messages; type `/exit` when you want the relay to wake it again. If you
+   use the relay, update its copy in your mailbox first (see "Update the relay in a mailbox" in
+   [relay/README.md](relay/README.md)).
 
 - **The session needs a name of its own.** Give it one with `/rename` first. The new session takes
   it, and the mailbox relay and chain-of-command rules find sessions by name.

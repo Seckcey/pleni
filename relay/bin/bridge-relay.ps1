@@ -11,7 +11,8 @@
     - Debounces write bursts. Every change is keyed by a stable path/task id plus a SHA-256 content revision.
     - Resumes the enrolled session: claude -p <notice> --resume <id> --output-format json ...
       One turn at a time; new revisions queue while busy. Never uses --continue, --fork-session or
-      --no-session-persistence, never resumes a session that looks open elsewhere, and never kills a process.
+      --no-session-persistence, never resumes a session that looks open elsewhere (its id on a process's command line,
+      or in Claude Code's own list of running sessions, <config>\sessions\<pid>.json), and never kills a process.
   Return direction (Claude -> Codex): lists unanswered BLOCKING questions and unreviewed IN_REVIEW handoffs in
     .relay\codex-attention.md. Optional CodexWake (off until -EnrollCodex): each new item wakes ONE enrolled Codex
     thread once, with codex exec --json --skip-git-repo-check resume <thread id> <notice>, in the thread's folder.
@@ -650,6 +651,43 @@ function Get-SessionProcesses([string]$Id) {
     } catch { return $null }
 }
 
+function Get-ClaudeListedProcesses([string]$Id) {
+    # Claude Code keeps one small file per running process: <config>\sessions\<pid>.json, naming the session it has open.
+    # A window started without the id on its command line (claude --name, such as a Pleni Roll over window) shows up only
+    # here. A file counts only while its process runs and started no later than the file last changed: a window closed
+    # with its X leaves its file behind, and Windows soon gives the number to another program. Objects with a ProcessId.
+    if ($Id -notmatch '^[0-9a-fA-F-]{36}$') { return , @() }
+    $dir = Join-Path $ClaudeConfigDir 'sessions'
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return , @() }
+    $found = New-Object System.Collections.ArrayList
+    $files = @(Get-ChildItem -LiteralPath $dir -File -Filter '*.json' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^\d{1,10}\.json$' -and $_.Length -le 65536 } | Select-Object -First 500)
+    foreach ($f in $files) {
+        $info = $null
+        try { $info = ConvertFrom-Json -InputObject (Read-SharedText $f.FullName) } catch { continue }
+        if (-not $info -or ([string]$info.sessionId).Trim().ToLowerInvariant() -ne $Id.ToLowerInvariant()) { continue }
+        $procId = 0
+        if (-not [int]::TryParse([string]$info.pid, [ref]$procId) -or $procId -le 0 -or $procId -eq $PID) { continue }
+        $p = Get-Process -Id $procId -ErrorAction SilentlyContinue
+        if (-not $p) { continue }
+        $started = $null
+        try { $started = $p.StartTime.ToUniversalTime() } catch { continue }
+        if ($started -gt $f.LastWriteTimeUtc.AddSeconds(2)) { continue }
+        [void]$found.Add([pscustomobject]@{ ProcessId = $procId; Kind = [string]$info.kind; Entrypoint = [string]$info.entrypoint })
+    }
+    return , $found.ToArray()
+}
+
+function Get-ClaudeOpenPids([string]$Id) {
+    # Every process that has this Claude Code session open: by the id on its command line, or in Claude Code's own list.
+    # $null when the process list cannot be read, which counts as open.
+    $procs = Get-SessionProcesses $Id
+    if ($null -eq $procs) { return $null }
+    $listed = Get-ClaudeListedProcesses $Id   # held first: piped straight from the call, its list would arrive as one item
+    $all = @(@($procs | ForEach-Object { [int]$_.ProcessId }) + @($listed | ForEach-Object { [int]$_.ProcessId }))
+    return , @($all | Select-Object -Unique)
+}
+
 function Test-TranscriptMarker([hashtable]$D) {
     # True when the dispatch marker is in the session transcript: the CLI accepted the notification into the session.
     $t = [string]$D.transcript
@@ -672,9 +710,9 @@ function Get-BusyReason([hashtable]$State, [hashtable]$Coord) {
     foreach ($d in @($State.dispatches.Values)) {
         if ($d.state -eq 'running' -or $d.state -eq 'launching') { return "relay dispatch $($d.id) is still running (pid $($d.pid))" }
     }
-    $procs = Get-SessionProcesses $Coord.session_id
-    if ($null -eq $procs) { return 'the process list could not be read to confirm the session is idle' }
-    if ($procs.Count -gt 0) { return ('session ' + $Coord.session_id + ' is open in pid ' + (($procs | ForEach-Object { $_.ProcessId }) -join ',')) }
+    $pids = Get-ClaudeOpenPids $Coord.session_id
+    if ($null -eq $pids) { return 'the process list could not be read to confirm the session is idle' }
+    if ($pids.Count -gt 0) { return ('session ' + $Coord.session_id + ' is open in pid ' + ($pids -join ',')) }
     if ($QuietSeconds -gt 0 -and $Coord.transcript_path -and (Test-Path -LiteralPath $Coord.transcript_path -PathType Leaf)) {
         $tw = ConvertTo-Unix (Get-Item -LiteralPath $Coord.transcript_path).LastWriteTimeUtc
         $now = Get-Now
@@ -2032,18 +2070,18 @@ function Invoke-Enroll {
         }
         Fail "No local session $sid found for working directory $cwd (looked for $transcript). Take the ID from the coordinator session itself; the relay never guesses it."
     }
-    $procs = Get-SessionProcesses $sid
-    if ($null -eq $procs) { Fail 'Could not read the process list to confirm the session is not running. Not enrolled.' }
-    $openNow = ($procs.Count -gt 0)
+    $pids = Get-ClaudeOpenPids $sid
+    if ($null -eq $pids) { Fail 'Could not read the process list to confirm the session is not running. Not enrolled.' }
+    $openNow = ($pids.Count -gt 0)
     # A fixed id must be closed and quiet now. A followed name may be open: the relay waits to wake it until it is closed.
     if ($openNow -and -not $SessionName) {
-        Fail ("Session $sid is open right now (pid " + (($procs | ForEach-Object { $_.ProcessId }) -join ',') + '). Exit that Claude session first: the relay must never resume a running session.')
+        Fail ("Session $sid is open right now (pid " + ($pids -join ',') + '). Exit that Claude session first: the relay must never resume a running session.')
     }
     if ($QuietSeconds -gt 0 -and -not $SessionName) {
         $age = (Get-Now) - (ConvertTo-Unix (Get-Item -LiteralPath $transcript).LastWriteTimeUtc)
         if ($age -lt $QuietSeconds) { Fail "Session $sid was written $age s ago; it may still be open. Exit it, wait $QuietSeconds s, then enroll again." }
     }
-    $verified = 'local transcript present for this working directory; no process had the session id on its command line; transcript quiet'
+    $verified = 'local transcript present for this working directory; no process had the session open; transcript quiet'
     if ($SessionName) { $verified = "newest local session named '$SessionName' for this working directory; a turn starts only while it is closed and quiet" }
     $coord = @{ session_id = $sid; cwd = $cwd; transcript_path = $transcript; enrolled_utc = (Get-Now); enrolled = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv);
         follow_name = [string]$SessionName; started_ms = (Get-ClaudeStarted $transcript);
@@ -2170,6 +2208,9 @@ function Show-Status {
             if ($coord.followed) { $sw = "; last switch $($coord.followed), from $($coord.previous_session_id)" }
             Write-Host "Coordinator follows the name '$($coord.follow_name)': the newest session with that name in that folder is woken$sw"
         }
+        $openPids = Get-ClaudeOpenPids ([string]$coord.session_id)
+        if ($null -eq $openPids) { Write-Host 'Coordinator open now: unknown (the process list could not be read)' }
+        elseif ($openPids.Count -gt 0) { Write-Host ("Coordinator open now in pid {0}: the relay waits until it is closed" -f ($openPids -join ',')) }
     } else {
         Write-Host 'Coordinator: NOT ENROLLED. One-time step: run bridge-relay.ps1 -Enroll -SessionName <its name>, or exit the'
         Write-Host '             coordinator session and run bridge-relay.ps1 -Enroll -SessionId <its uuid>. Nothing is sent until then.'
