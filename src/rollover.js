@@ -38,6 +38,11 @@ const OWN_NAME = { claude: new Set(['custom-title', 'agent-name']), codex: new S
 const NAME = /^[A-Za-z0-9*][A-Za-z0-9 ._#+*,-]*$/;
 const TEXT = /^[A-Za-z0-9 ._#+*,:-]+$/;
 export const MAX_NAME = 80;
+// What the new session keeps from the old one. Only these exact forms go on the command line.
+const MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+const EFFORTS = { claude: new Set(['low', 'medium', 'high', 'xhigh', 'max']), codex: new Set(['minimal', 'low', 'medium', 'high', 'xhigh']) };
+// The normal mode needs no flag (Claude Code calls it "manual" on its command line).
+const MODES = new Set(['acceptEdits', 'auto', 'bypassPermissions', 'dontAsk', 'plan']);
 const MAX_SLUG = 40;
 const TITLES = { claude: 'Claude Code', codex: 'Codex' };
 
@@ -88,22 +93,41 @@ export function handoffFile(name) {
 }
 
 export function askText(file) {
-  return `Pleni roll over: a new session will take over your work. Write a handoff note for it in ${file} in this folder. Say what work is open and where it stands, what waits on whom, and what else it must know. Do not commit the file. Then stop.`;
+  return `Pleni roll over: a new session will take over your work. Write a handoff note for it in ${file} in this folder. Say what work is open and where it stands, what waits on whom, and what else it must know. Copy in every standing instruction you were given and still follow, such as how to report, how to pick a model and effort, and what you may and may not do. Do not commit the file. Then stop.`;
 }
 
 export function startText(name, file) {
-  return `Pleni roll over: you take over from the last session named ${name}. First read ${file} in this folder. Then say in one line that you are ready.`;
+  return `Pleni roll over: you take over from the last session named ${name}. First read ${file} in this folder, and follow the standing instructions in it. Then say in one line that you are ready.`;
 }
 
-// What the page shows before either step: { name, problem, file, ask, start, rename }. `problem` is
-// a plain reason the session cannot be rolled over yet (no name, or one Pleni cannot pass on).
-// Codex has no way to name a new thread when it starts, so the person types `rename` in it.
+// The old session's model, effort and permission mode, for the new one to start with:
+// { model, effort, mode }, each null when unknown or not a plain value. Codex keeps its
+// permissions in its own settings, so only Claude Code gets a mode.
+export function carryOver(tool, session) {
+  const model = typeof session?.model === 'string' && MODEL.test(session.model) ? session.model : null;
+  const effort = EFFORTS[tool]?.has(session?.effort) ? session.effort : null;
+  const mode = tool === 'claude' && MODES.has(session?.mode) ? session.mode : null;
+  return { model, effort, mode };
+}
+
+// What the page shows before either step: { name, problem, file, ask, start, rename, carry }.
+// `problem` is a plain reason the session cannot be rolled over yet (no name, or one Pleni cannot
+// pass on). Codex has no way to name a new thread when it starts, so the person types `rename` in
+// it. `carry` is what the new session starts with (see carryOver).
 export function rolloverPlan(tool, session) {
   const name = ownName(tool, session);
   const problem = name ? nameProblem(name) : ROLL_MESSAGES.noName;
-  if (problem) return { name, problem, file: null, ask: null, start: null, rename: null };
+  if (problem) return { name, problem, file: null, ask: null, start: null, rename: null, carry: null };
   const file = handoffFile(name);
-  return { name, problem: null, file, ask: askText(file), start: startText(name, file), rename: tool === 'codex' ? `/rename ${name}` : null };
+  return {
+    name,
+    problem: null,
+    file,
+    ask: askText(file),
+    start: startText(name, file),
+    rename: tool === 'codex' ? `/rename ${name}` : null,
+    carry: carryOver(tool, session),
+  };
 }
 
 // What the page needs to show the steps: { ok: true, info: { name, problem, file, ask, start,
@@ -157,7 +181,7 @@ export async function rollover({
   const wait = limits.take(step === 'ask' ? key : `start:${key}`, now);
   if (wait) return refuse(429, wait);
   const text = step === 'ask' ? plan.ask : plan.start;
-  const { file, args } = rollCommand(tool, step, { id, name: plan.name, text }, env.SystemRoot ?? env.SYSTEMROOT);
+  const { file, args } = rollCommand(tool, step, { id, name: plan.name, text, carry: plan.carry }, env.SystemRoot ?? env.SYSTEMROOT);
   const options = {
     cwd: session.cwd,
     env: toolEnv(tool, env, root, home, platform),
@@ -196,19 +220,30 @@ export function codexRollProblem(step, session, locked) {
 
 // The same shape as Open in PowerShell's command, with the step's program and its one message:
 //   ask, Claude Code:  claude --resume '<id>' '<text>'      ask, Codex:  codex resume '<id>' '<text>'
-//   start, Claude Code: claude --name '<name>' '<text>'     start, Codex: codex '<text>'
-// The id, the name and the text are checked again here, so nothing else can reach the line.
-export function rollCommand(tool, step, { id, name, text }, systemRoot) {
+//   start, Claude Code: claude --name '<name>' [--model '<model>'] [--effort <effort>]
+//                       [--permission-mode <mode>] '<text>'
+//   start, Codex:       codex [-m '<model>'] [-c model_reasoning_effort=<effort>] '<text>'
+// The id, the name, the text and what is carried over are checked again here, so nothing else can
+// reach the line.
+export function rollCommand(tool, step, { id, name, text, carry = null }, systemRoot) {
   if (!Object.hasOwn(TITLES, tool)) throw new Error('Pleni can roll over only Claude Code and Codex sessions.');
   if (!STEPS.has(step)) throw new Error('That is not a roll over step.');
   if (!SESSION_ID.test(id)) throw new Error('That is not a session id.');
   if (typeof text !== 'string' || !TEXT.test(text)) throw new Error('That message cannot go on a command line.');
   if (nameProblem(name)) throw new Error('That name cannot go on a command line.');
+  const kept = carryOver(tool, carry);
+  if (carry && (carry.model !== kept.model || carry.effort !== kept.effort || (tool === 'claude' && carry.mode !== kept.mode))) {
+    throw new Error('That model, effort or mode cannot go on a command line.');
+  }
+  const flags = tool === 'claude'
+    ? [kept.model && `--model '${kept.model}'`, kept.effort && `--effort ${kept.effort}`, kept.mode && `--permission-mode ${kept.mode}`]
+    : [kept.model && `-m '${kept.model}'`, kept.effort && `-c model_reasoning_effort=${kept.effort}`];
+  const extra = flags.filter(Boolean).map((flag) => ` ${flag}`).join('');
   const run = {
     'claude:ask': `claude --resume '${id}' '${text}'`,
-    'claude:start': `claude --name '${name}' '${text}'`,
+    'claude:start': `claude --name '${name}'${extra} '${text}'`,
     'codex:ask': `codex resume '${id}' '${text}'`,
-    'codex:start': `codex '${text}'`,
+    'codex:start': `codex${extra} '${text}'`,
   }[`${tool}:${step}`];
   const windows = plainWindowsDir(systemRoot);
   const powershell = `${windows}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;

@@ -27,7 +27,9 @@ export const DEFAULTS = deepFreeze({
   projects: {},
   chain: [], // [{ match, reportsTo, role }] who reports to whom, by session name; first match wins
   remote: { hosts: [], tailscaleUsers: [] },
-  actions: { openTerminal: false, rollover: false, newAgent: false }, // Open in PowerShell, Roll over and New agent (Windows, this computer only)
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false }, // the window buttons (Windows, this computer only)
+  // Live pull request status through the GitHub CLI (gh), and the Merge button (this computer only).
+  github: { live: false, merge: false, mergeMethod: 'squash' },
   alerts: { stoppedMinutes: 15 }, // a watched tile counts as stopped after this long without work
   // "Roll over soon" when any limit is passed; 0 turns that limit off.
   rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 },
@@ -37,6 +39,7 @@ const TITLES = ['plain', 'military', 'company'];
 const CONTENT = ['snippets', 'none'];
 const GROUP_BY = ['project', 'none'];
 const ROLES = ['superintendent', 'coordinator', 'lead', 'worker', 'hidden'];
+const MERGE_METHODS = ['squash', 'merge', 'rebase'];
 const RANGES = {
   port: [1024, 65535],
   activeMinutes: [1, 240],
@@ -111,6 +114,7 @@ export function cleanSettings(raw) {
     chain: cleanChain(r.chain),
     remote: cleanRemote(r.remote),
     actions: cleanActions(r.actions),
+    github: cleanGithub(r.github),
     alerts: cleanAlerts(r.alerts),
     rollSoon: cleanRollSoon(r.rollSoon),
   };
@@ -247,6 +251,17 @@ function cleanActions(raw) {
     openTerminal: cleanBool(a.openTerminal, DEFAULTS.actions.openTerminal),
     rollover: cleanBool(a.rollover, DEFAULTS.actions.rollover),
     newAgent: cleanBool(a.newAgent, DEFAULTS.actions.newAgent),
+    teleport: cleanBool(a.teleport, DEFAULTS.actions.teleport),
+  };
+}
+
+function cleanGithub(raw) {
+  const g = isObject(raw) ? raw : {};
+  const d = DEFAULTS.github;
+  return {
+    live: cleanBool(g.live, d.live),
+    merge: cleanBool(g.merge, d.merge),
+    mergeMethod: oneOf(g.mergeMethod, MERGE_METHODS, d.mergeMethod),
   };
 }
 

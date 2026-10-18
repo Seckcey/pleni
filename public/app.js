@@ -63,7 +63,8 @@ const DEFAULTS = {
   projects: {},
   chain: [],
   remote: { hosts: [], tailscaleUsers: [] },
-  actions: { openTerminal: false, rollover: false, newAgent: false },
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false },
+  github: { live: false, merge: false, mergeMethod: 'squash' },
   alerts: { stoppedMinutes: 15 },
   rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 },
 };
@@ -107,6 +108,8 @@ const S = {
   said: '',
   saidAt: 0,
   sayTimer: 0,
+  // Live GitHub status: the newest answer, when the page last asked, and the Merge steps.
+  gh: { data: null, askedAt: 0, asking: false, error: '', confirm: null, merging: null, msg: null },
 };
 
 const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
@@ -251,7 +254,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-merge', 'data-merge-yes', 'data-merge-no', 'data-gh-again', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -1907,11 +1910,21 @@ function renderTasks() {
 // ---------------------------------------------------------------------------------------------
 
 // The GitHub repositories the sessions on the map work in (node.github, read from each folder's git
-// settings), with links to their pull requests. Pleni makes no calls to GitHub: the links open
-// github.com in the browser, and the agents open, review and merge with their own git and gh.
+// settings), with links to their pull requests. With live GitHub status on (Settings, Sources), the
+// server also asks GitHub about them through the GitHub CLI (gh) on its computer (GET /api/github),
+// about once a minute while this view is open, and may offer Merge there.
 const GITHUB_PATH = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 const LINK_BRANCH = /^[A-Za-z0-9._\/-]{1,200}$/;
 const MAIN_BRANCHES = new Set(['main', 'master', 'trunk', 'develop']);
+const GITHUB_EVERY_MS = 60 * 1000;
+const PULL_ID = /^([A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100})#(\d{1,9})$/;
+const COMMIT_ID = /^[0-9a-f]{40}$/;
+// [words, color] for the pills on a pull request.
+const PULL_STATES = { open: ['Open', 'gh-info'], draft: ['Draft', ''], merged: ['Merged', 'gh-info'], closed: ['Closed', ''] };
+const CHECK_WORDS = { passing: ['Checks pass', 'gh-ok'], failing: ['Checks fail', 'gh-bad'], running: ['Checks running', 'gh-wait'], none: ['No checks', ''] };
+const REVIEW_WORDS = { approved: ['Approved', 'gh-ok'], changes: ['Changes asked for', 'gh-bad'], needed: ['Needs a review', 'gh-wait'] };
+const MERGE_WORDS = { ready: ['Ready to merge', 'gh-ok'], conflict: ['Merge conflict', 'gh-bad'], behind: ['Behind its base branch', 'gh-wait'] };
+const METHOD_WORDS = { squash: 'Squash and merge', merge: 'Create a merge commit', rebase: 'Rebase and merge' };
 
 // [[repo, [[branch, sessions], ...]], ...], sorted. Main sessions first; a helper shows only on a
 // branch no main session of its repository works on.
@@ -1957,6 +1970,159 @@ function pullSessionHtml(n) {
   );
 }
 
+// ---- live GitHub status ----
+
+function askGithubSoon() {
+  if (!S.gh.asking && !document.hidden && Date.now() - S.gh.askedAt >= GITHUB_EVERY_MS) askGithub(false);
+}
+
+async function askGithub(fresh) {
+  if (S.gh.asking) return;
+  S.gh.asking = true;
+  S.gh.askedAt = Date.now();
+  try {
+    const data = await getJson(`/api/github${fresh ? '?fresh=1' : ''}`);
+    S.gh.data = data && typeof data === 'object' ? data : null;
+    S.gh.error = '';
+  } catch (err) {
+    S.gh.error = plainError(err);
+  } finally {
+    S.gh.asking = false;
+    S.gh.askedAt = Date.now();
+    if (S.view === 'pulls') renderPulls();
+  }
+}
+
+// What the newest answer says, checked: { on, merge, method, error, repos: Map(repo -> { at, error, pulls }) }.
+function githubView() {
+  const d = S.gh.data;
+  const on = !!(d && d.on === true);
+  const repos = new Map();
+  for (const r of on && Array.isArray(d.repos) ? d.repos : []) {
+    if (!r || typeof r.repo !== 'string' || !GITHUB_PATH.test(r.repo)) continue;
+    const pulls = Array.isArray(r.pulls) ? r.pulls.filter((p) => p && Number.isSafeInteger(p.number) && p.number > 0 && Object.hasOwn(PULL_STATES, p.state)) : [];
+    repos.set(r.repo, { at: isTime(r.at) ? r.at : null, error: typeof r.error === 'string' ? r.error : '', pulls });
+  }
+  return {
+    on,
+    merge: on && d.merge === true && LOCAL_PAGE,
+    method: on && Object.hasOwn(METHOD_WORDS, d.method) ? d.method : 'squash',
+    error: on && typeof d.error === 'string' ? d.error : '',
+    repos,
+  };
+}
+
+// The pull request of a branch: an open one first, else the newest.
+function pullFor(pulls, branch) {
+  const mine = pulls.filter((p) => p.branch === branch && p.fork !== true);
+  return mine.find((p) => p.state === 'open' || p.state === 'draft') || mine[0] || null;
+}
+
+const isOpenPull = (p) => p.state === 'open' || p.state === 'draft';
+
+// A pill from one of the maps above, or '' for a value it does not have.
+function ghPill(map, key) {
+  if (typeof key !== 'string' || !Object.hasOwn(map, key)) return '';
+  const [words, color] = map[key];
+  return `<span class="pill${color ? ` ${color}` : ''}">${esc(words)}</span>`;
+}
+
+function pullHtml(repo, p, gh) {
+  const pills = [ghPill(PULL_STATES, p.state)];
+  if (isOpenPull(p)) pills.push(ghPill(CHECK_WORDS, p.checks), ghPill(REVIEW_WORDS, p.review), ghPill(MERGE_WORDS, p.merge));
+  const failing = isOpenPull(p) && p.checks === 'failing' && Array.isArray(p.failing) && p.failing.length
+    ? `<span class="gh-fail">Failing: ${esc(p.failing.filter((x) => typeof x === 'string').join(', '))}</span>`
+    : '';
+  return (
+    `<div class="pull"><div class="pull-head">${githubLink(repo, `/pull/${p.number}`, `#${p.number} ${typeof p.title === 'string' && p.title ? p.title : 'Pull request'}`)}` +
+    `${isTime(p.updatedAt) ? `<span class="quiet">changed ${agoHtml(p.updatedAt)}</span>` : ''}</div>` +
+    `<div class="pull-pills">${pills.join('')}${failing}</div>${mergeHtml(repo, p, gh)}</div>`
+  );
+}
+
+// The Merge button, its confirm step, or why it cannot be merged yet. Only on this computer, when
+// the server allows it.
+function mergeHtml(repo, p, gh) {
+  const id = `${repo}#${p.number}`;
+  const msg = S.gh.msg && S.gh.msg.id === id
+    ? `<p class="roll-msg${S.gh.msg.bad ? ' bad' : ''}" id="gh-msg" tabindex="-1">${esc(S.gh.msg.text)}</p>`
+    : '';
+  if (!gh.merge || !isOpenPull(p)) return msg;
+  if (S.gh.merging === id) return `<p class="roll-msg">Merging #${p.number}…</p>`;
+  if (!p.canMerge || !COMMIT_ID.test(p.head || '')) {
+    return `<p class="quiet gh-why">Not ready to merge. ${esc(typeof p.why === 'string' ? p.why : '')}</p>${msg}`;
+  }
+  if (S.gh.confirm === id) {
+    const into = typeof p.base === 'string' && p.base ? `<code>${esc(p.base)}</code>` : 'its base branch';
+    return (
+      `<div class="merge-ask" role="group" aria-label="${esc(`Merge #${p.number}`)}"><p>Merge #${p.number} into ${into} with “${esc(METHOD_WORDS[gh.method])}”? This changes ${into} on GitHub.</p>` +
+      `<div class="merge-buttons"><button type="button" class="btn primary" data-merge-yes="${esc(id)}">Merge now</button>` +
+      `<button type="button" class="btn" data-merge-no="${esc(id)}">Cancel</button></div></div>${msg}`
+    );
+  }
+  return `<div class="merge-buttons"><button type="button" class="btn" data-merge="${esc(id)}">Merge</button></div>${msg}`;
+}
+
+function findPull(id) {
+  const m = PULL_ID.exec(id || '');
+  const info = m && githubView().repos.get(m[1]);
+  const pull = info && info.pulls.find((p) => p.number === Number(m[2]));
+  return pull ? { repo: m[1], pull } : null;
+}
+
+function mergeClick(id) {
+  if (!findPull(id)) return;
+  S.gh.confirm = id;
+  S.gh.msg = null;
+  renderPulls();
+  const yes = $(`[data-merge-yes="${CSS.escape(id)}"]`);
+  if (yes) yes.focus();
+}
+
+function mergeCancel(id) {
+  S.gh.confirm = null;
+  renderPulls();
+  const btn = $(`[data-merge="${CSS.escape(id)}"]`);
+  if (btn) btn.focus();
+}
+
+async function mergeNow(id) {
+  const found = findPull(id);
+  if (!found || S.gh.merging) return;
+  const { repo, pull } = found;
+  S.gh.merging = id;
+  S.gh.confirm = null;
+  S.gh.msg = null;
+  renderPulls();
+  try {
+    await postJson('/api/github/merge', { repo, number: pull.number, head: pull.head });
+    S.gh.msg = { id, text: `Merged #${pull.number} on GitHub.` };
+  } catch (err) {
+    S.gh.msg = { id, text: `Not merged. ${plainError(err)}`, bad: true };
+  } finally {
+    S.gh.merging = null;
+    S.gh.askedAt = 0;
+    say(S.gh.msg.text);
+    renderPulls();
+    const msg = $('#gh-msg');
+    if (msg) msg.focus();
+  }
+}
+
+function githubBarHtml(gh) {
+  if (!gh.on) return S.gh.error ? `<p class="note bad">GitHub status: ${esc(S.gh.error)}</p>` : '';
+  const ats = [...gh.repos.values()].map((r) => r.at).filter(isTime);
+  const when = ats.length ? `, checked ${agoHtml(Math.min(...ats))}` : '';
+  const errors = [...gh.repos.values()].map((r) => r.error);
+  const shared = gh.error || (errors.length && errors.every((e) => e && e === errors[0]) ? errors[0] : '');
+  return (
+    `<div class="gh-bar"><span>Live from GitHub${when}${S.gh.asking ? '. Asking GitHub…' : ''}</span>` +
+    '<button type="button" class="btn" data-gh-again="1">Look again</button></div>' +
+    (shared ? `<p class="note bad">${esc(shared)}</p>` : '') +
+    (S.gh.error ? `<p class="note bad">${esc(S.gh.error)}</p>` : '')
+  );
+}
+
 function renderPulls() {
   const groups = repoGroups();
   if (!groups.length) {
@@ -1967,6 +2133,10 @@ function renderPulls() {
     );
     return;
   }
+  askGithubSoon();
+  const gh = githubView();
+  const errors = [...gh.repos.values()].map((r) => r.error);
+  const sharedError = errors.length > 0 && errors.every((e) => e && e === errors[0]);
   const branchCount = groups.reduce((sum, [, branches]) => sum + branches.length, 0);
   const sessionCount = groups.reduce((sum, [, branches]) => sum + branches.reduce((n, [, list]) => n + list.length, 0), 0);
   setText(
@@ -1974,23 +2144,32 @@ function renderPulls() {
     `${plural(groups.length, 'GitHub repository', 'GitHub repositories')} · ${plural(branchCount, 'branch', 'branches')} · ${plural(sessionCount, 'session', 'sessions')}`,
   );
   const cards = groups.map(([repo, branches], i) => {
+    const info = gh.repos.get(repo) || { pulls: [], error: '' };
+    const shown = new Set();
     const rows = branches.map(([branch, list]) => {
       const name = branch ? `<code>${esc(branch)}</code>` : '<span class="quiet">No branch known</span>';
       const main = MAIN_BRANCHES.has(branch) ? ' <span class="quiet">(main branch)</span>' : '';
-      return `<li class="branch"><div class="branch-head"><span class="branch-name">${name}${main}</span><span class="links">${branchLinks(repo, branch)}</span></div>` +
-        `<ul class="branch-who">${list.map(pullSessionHtml).join('')}</ul></li>`;
+      const pull = branch && !MAIN_BRANCHES.has(branch) ? pullFor(info.pulls, branch) : null;
+      if (pull) shown.add(pull.number);
+      const links = pull && isOpenPull(pull) ? '' : branchLinks(repo, branch);
+      return `<li class="branch"><div class="branch-head"><span class="branch-name">${name}${main}</span><span class="links">${links}</span></div>` +
+        `${pull ? pullHtml(repo, pull, gh) : ''}<ul class="branch-who">${list.map(pullSessionHtml).join('')}</ul></li>`;
     });
+    // One merged from here stays until the next change, so its message can be read.
+    const others = info.pulls.filter((p) => (isOpenPull(p) || (S.gh.msg && S.gh.msg.id === `${repo}#${p.number}`)) && !shown.has(p.number));
     return (
       `<section class="repo" aria-labelledby="repo-${i}"><div class="repo-head"><h2 id="repo-${i}">${esc(repo)}</h2>` +
       `<span class="links">${githubLink(repo, '/pulls', 'Pull requests')}${githubLink(repo, '/branches', 'Branches')}${githubLink(repo, '/actions', 'Checks')}</span></div>` +
-      `<ul class="branches">${rows.join('')}</ul></section>`
+      (info.error && !sharedError ? `<p class="note bad">${esc(info.error)}</p>` : '') +
+      `<ul class="branches">${rows.join('')}</ul>` +
+      (others.length ? `<h3 class="gh-others">Other open pull requests</h3><ul class="pulls-more">${others.map((p) => `<li>${pullHtml(repo, p, gh)}</li>`).join('')}</ul>` : '') +
+      '</section>'
     );
   });
-  setHtml(
-    $('#pulls'),
-    cards.join('') +
-      '<p class="note">Pleni only links to GitHub; it sends nothing there. Your agents open, review and merge pull requests with their own git and gh commands.</p>',
-  );
+  const note = gh.on
+    ? 'Pleni asks GitHub through the GitHub CLI (gh) on the computer that runs it, about once a minute while this page is open. The links open GitHub in a new tab.'
+    : 'Pleni only links to GitHub; it sends nothing there. To see checks and reviews here, turn on Live GitHub status in Settings, under Sources.';
+  setHtml($('#pulls'), githubBarHtml(gh) + cards.join('') + `<p class="note">${esc(note)}</p>`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2256,6 +2435,7 @@ function sessionNowHtml(n, d) {
   out.push(openHtml(n));
   out.push(rollHtml(n, d));
   out.push(newHtml(n, d));
+  out.push(teleportHtml(n));
   out.push(hideHtml(n));
   if (isWorkerKey(d.key)) {
     out.push('<p class="empty">This worker keeps no session file.</p>');
@@ -2346,7 +2526,7 @@ function rollStepsHtml(n, r) {
       `<div class="roll-btns"><button type="button" class="btn" data-hide="${esc(n.key)}" data-title="${esc(titleOf(n))}">Hide the old session</button></div>`
     : '<p>Pleni has not found the new session yet.</p>';
   return (
-    `<p class="note">The new session gets the name <b>${esc(i.name)}</b> and works in the same folder. It starts by reading a handoff note that this session writes first.</p>` +
+    `<p class="note">The new session gets the name <b>${esc(i.name)}</b> and works in the same folder. It starts by reading a handoff note that this session writes first, with the open work and every standing instruction it follows.${carryHtml(i.carry)}</p>` +
     '<ol class="roll-steps">' +
     '<li><h4>Ask for a handoff note</h4>' +
     `<p>Pleni opens this session in a new PowerShell window and sends it this message:</p><blockquote class="roll-text">${esc(i.ask)}</blockquote>` +
@@ -2369,6 +2549,17 @@ function rollStepsHtml(n, r) {
     } Pleni and the relay find it by its name.</p></li>` +
     '</ol>'
   );
+}
+
+const MODE_WORDS = { acceptEdits: 'Accept edits', auto: 'Auto', bypassPermissions: 'Bypass permissions', dontAsk: "Don't ask", plan: 'Plan' };
+
+// " It starts with Opus 5.5, high effort, in Accept edits mode." from what Roll over carries over.
+function carryHtml(c) {
+  if (!c) return '';
+  const parts = [c.model ? prettyModel(c.model) : '', c.effort ? EFFORT_WORDS[c.effort] || `${c.effort} effort` : ''].filter(Boolean);
+  const mode = c.mode && MODE_WORDS[c.mode] ? `in ${MODE_WORDS[c.mode]} mode` : '';
+  if (!parts.length && !mode) return '';
+  return ` It starts with ${esc([...parts, mode].filter(Boolean).join(', '))}, like this one.`;
 }
 
 // The newest other session of the same tool with this name, started after this one.
@@ -2500,6 +2691,36 @@ async function newCopy() {
   }
   say(a.msg.text);
   if (S.drawer === d) renderDrawerParts();
+}
+
+// ---- Bring a cloud session here ----
+// A window in this Claude Code session's folder that runs claude --teleport, where the person picks
+// one of their claude.ai cloud sessions to go on with on this computer.
+
+const TELEPORT_FROM = /^claude:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function teleportHtml(n) {
+  if (!n || !LOCAL_PAGE || !(S.snap && S.snap.actions && S.snap.actions.teleport) || n.kind !== 'session' || !TELEPORT_FROM.test(n.key)) return '';
+  return (
+    `<div class="dnew"><button type="button" class="btn" data-teleport="${esc(n.key)}" aria-describedby="d-teleport-help">Bring a cloud session here</button>` +
+    '<p class="help" id="d-teleport-help">Opens a PowerShell window in this folder that runs <code>claude --teleport</code>. Pick one of your claude.ai cloud sessions there, and it goes on on this computer, where Pleni shows it.</p></div>'
+  );
+}
+
+async function teleportHere(btn) {
+  const key = btn.dataset.teleport;
+  const here = S.drawer ? S.drawer.key : key;
+  if (!key || opening.has(`teleport:${key}`)) return;
+  opening.add(`teleport:${key}`);
+  showMoved({ key: here, spot: 'note', text: 'Opening a PowerShell window…' });
+  try {
+    await postJson('/api/teleport', { from: key });
+    showMoved({ key: here, spot: 'note', text: 'A PowerShell window is opening with your cloud sessions. Pick one there. If Claude Code asks you to save or push your changes first, do that, then try again.' });
+  } catch (err) {
+    showMoved({ key: here, spot: 'note', bad: true, fadeMs: OPEN_ERROR_MS, text: `Not opened. ${plainError(err)}` });
+  } finally {
+    opening.delete(`teleport:${key}`);
+  }
 }
 
 // ---- Roll over soon ----
@@ -3796,6 +4017,11 @@ function renderSettingsForm() {
     </section>
     <section class="panel" aria-labelledby="s-h-mailbox" data-find="relay planner coordinator tasks notes folder"><h2 id="s-h-mailbox">Mailbox</h2>
       ${mailboxRows()}
+    </section>
+    <section class="panel" aria-labelledby="s-h-github" data-find="github gh pull requests checks reviews merge internet network live status"><h2 id="s-h-github">GitHub</h2>
+      ${checkRow('s-gh-live', 'Live GitHub status', 'github.live', 'Ask GitHub about pull requests', 'Shows checks, reviews, and whether each pull request can be merged, on the Pull requests page. Pleni runs the GitHub CLI (gh) on this computer to ask GitHub, with your own gh sign-in, about once a minute while that page is open. It asks only about the repositories your sessions work in. Needs gh: install it from cli.github.com, then run gh auth login.')}
+      ${checkRow('s-gh-merge', 'Merge button', 'github.merge', 'Show the Merge button', 'Lets you merge a pull request from the Pull requests page, after you confirm. Only on this computer, and only when every check passes and GitHub says it is ready.')}
+      ${selectRow('s-gh-method', 'How to merge', 'github.mergeMethod', [['squash', 'Squash and merge'], ['merge', 'Create a merge commit'], ['rebase', 'Rebase and merge']], 'The same choices as the Merge button on GitHub. Your repository must allow the one you pick.')}
     </section>`)}
     ${group('alerts', 'What Pleni points out to you.', `
     <section class="panel" aria-labelledby="s-h-alerts" data-find="alerts notifications pop-ups popups watch stopped questions errors"><h2 id="s-h-alerts">Needs you</h2>
@@ -3810,9 +4036,10 @@ function renderSettingsForm() {
       ${numberRow('s-roll-days', 'Older than', 'rollSoon.days', 0, 365, 'Days since the session started.')}
     </section>`)}
     ${group('buttons', 'Buttons that open and start sessions in PowerShell windows. Off until you turn them on.', `
-    <section class="panel" aria-labelledby="s-h-open" data-find="buttons powershell terminal window resume roll over windows new agent start team"><h2 id="s-h-open">Open sessions</h2>
+    <section class="panel" aria-labelledby="s-h-open" data-find="buttons powershell terminal window resume roll over windows new agent start team cloud teleport web"><h2 id="s-h-open">Open sessions</h2>
       ${checkRow('s-open', 'Open in PowerShell', 'actions.openTerminal', 'Show the Open in PowerShell button', 'Opens a session in a new PowerShell window, so you can see it and type to it. Pleni never types into it. Windows only, this computer only. It will not open a session that is already open in another window.')}
       ${checkRow('s-new', 'New agent', 'actions.newAgent', 'Show the New agent button', 'Starts a new Claude Code or Codex session in the folder of a session you pick, in a new PowerShell window. You type its first message there. Windows only, this computer only.')}
+      ${checkRow('s-teleport', 'Bring a cloud session here', 'actions.teleport', 'Show the Bring a cloud session here button', 'Opens a PowerShell window in a Claude Code session\'s folder that runs claude --teleport, so you can pick one of your claude.ai cloud sessions and go on with it on this computer, where Pleni shows it. That folder must hold the same repository with no unsaved changes, and the cloud session\'s branch must be pushed. Windows only, this computer only.')}
       ${checkRow('s-roll', 'Roll over', 'actions.rollover', 'Show the Roll over button', 'Starts a fresh session with the same name, from a handoff note the old one writes. Each step opens a window and sends one short message, which the side panel shows first. Windows only, this computer only, for sessions with a name of their own. It will not send to a session that is busy or open in another window.')}
       ${st.info.platform && st.info.platform !== 'win32' ? '<p class="note">This computer does not run Windows, so these buttons will not show here yet.</p>' : ''}
     </section>`)}
@@ -4188,6 +4415,8 @@ async function saveSettings() {
     S.etag = null;
     S.roots = null;
     S.rootsAsked = false;
+    S.gh.data = null;
+    S.gh.askedAt = 0;
     await loadSettings(true);
     poll();
   } catch (err) {
@@ -4253,6 +4482,14 @@ document.addEventListener('click', (ev) => {
   if (el.dataset.dismiss) return dismissNotice(el);
   if (el.id === 's-alerts-test') return testAlert();
   if (el.dataset.open) return openInWindow(el);
+  if (el.dataset.teleport) return teleportHere(el);
+  if (el.dataset.merge) return mergeClick(el.dataset.merge);
+  if (el.dataset.mergeYes) return mergeNow(el.dataset.mergeYes);
+  if (el.dataset.mergeNo) return mergeCancel(el.dataset.mergeNo);
+  if (el.dataset.ghAgain) {
+    askGithub(true);
+    return renderPulls();
+  }
   if (el.dataset.roll) return rollClick(el.dataset.roll);
   if (el.dataset.new) return newClick(el.dataset.new);
   if (el.dataset.hide) return hideNode(el.dataset.hide, el.dataset.title || keyName(el.dataset.hide));

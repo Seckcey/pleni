@@ -114,10 +114,12 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   and which ones need you.
 - **Pull requests** — shown when your sessions work in GitHub repositories. For each repository it
   lists the branches your agents work on, who is on each, and links to its pull request on GitHub,
-  or to open one. Pleni only links to GitHub; it sends nothing there.
+  or to open one. With [Live GitHub status](#live-github-status) on, it also shows each pull
+  request's checks and reviews, and a **Merge** button.
 - **Settings** — six short groups: **Basics** (your name, the look, which sessions show),
   **Team** (names, roles, who reports to whom), **Sources** (which folders to read, and the
-  mailbox), **Alerts**, **Buttons** (Open in PowerShell, New agent and Roll over), and **Devices**
+  mailbox, and GitHub), **Alerts**, **Buttons** (Open in PowerShell, New agent, Bring a cloud
+  session here and Roll over), and **Devices**
   (opening Pleni from another device). Type in **Find a setting** to find one by name, such as
   "port" or "folder".
 
@@ -255,7 +257,8 @@ The section shows four steps, and the exact message of each step before you clic
 2. **Close the old session.** Type `/exit` in that window (`/quit` for Codex).
 3. **Start the new session.** **Start in PowerShell** opens a new window in the same folder. A new
    Claude Code session gets the same name on its own. For Codex, type `/rename <name>` in the new
-   window; the section shows the exact words.
+   window; the section shows the exact words. The new session starts with the old one's model and
+   effort, and for Claude Code its permission mode too.
 4. **Check.** Pleni shows the new session once it finds it, and says when the mailbox relay now
    wakes it. You can keep the new window open to watch it and type to it. While it is open, the
    relay waits and keeps its messages; type `/exit` when you want the relay to wake it again. If you
@@ -264,6 +267,11 @@ The section shows four steps, and the exact message of each step before you clic
 
 - **The session needs a name of its own.** Give it one with `/rename` first. The new session takes
   it, and the mailbox relay and chain-of-command rules find sessions by name.
+- **Standing instructions go along.** The old session is asked to copy into the note every standing
+  instruction it follows, such as how to report, how to pick a model and effort, and what it may
+  and may not do, and the new one is told to follow them. Rules that every agent should always
+  follow are safest in the project's `CLAUDE.md` (Claude Code) or `AGENTS.md` (Codex): each new
+  session reads those by itself.
 - **Open in an app?** If the Codex app or the Claude desktop app has the session open, Pleni cannot
   send to it. Use **Copy the message** and paste it there, then start the new session from Pleni
   or in the app.
@@ -295,6 +303,46 @@ message.
   command rules find agents by name. To replace a session, use [Roll over](#roll-over-a-session).
 - **Only on this computer,** like the other buttons, and it uses your plan like any Claude Code or
   Codex window.
+
+## Bring a cloud session to this computer
+
+Sessions you run in Claude Code on the web (claude.ai/code) run on Anthropic's computers, so Pleni
+cannot see them. Claude Code can copy one onto your computer to go on with it here, and then Pleni
+shows it like any other session. On Windows, Pleni gives you a button for that:
+
+1. Open **Settings**, then **Buttons**. Tick **Show the Bring a cloud session here button**, then
+   choose **Save settings**.
+2. Click a Claude Code session that works in the same repository. In its side panel, choose **Bring
+   a cloud session here**.
+3. A PowerShell window opens in that folder and runs `claude --teleport`. Pick your cloud session
+   there.
+
+Claude Code needs the folder to hold the same repository with no unsaved changes, and the cloud
+session's branch pushed to GitHub. If one of those is missing, the window says what to do. The copy
+on your computer goes on by itself: new work there does not go back to the cloud session.
+
+## Live GitHub status
+
+Pleni can show each pull request's checks and reviews on the **Pull requests** page, and merge one
+for you. It is off until you turn it on, because this is the one time Pleni reaches the internet.
+Pleni does not talk to GitHub itself: it asks the GitHub CLI (`gh`) on your computer, which uses
+your own gh sign-in.
+
+1. Install gh from [cli.github.com](https://cli.github.com/). In PowerShell, run `gh auth login`
+   and follow its steps. If Pleni is running, stop it and start it again from a new PowerShell
+   window, so it can find gh.
+2. In Pleni, open **Settings**, then **Sources**. Under **GitHub**, tick **Ask GitHub about pull
+   requests**. To merge from Pleni too, tick **Show the Merge button** and pick **How to merge**.
+   Then choose **Save settings**.
+3. Open **Pull requests**. Each branch shows its pull request with pills such as **Checks pass**,
+   **Needs a review** and **Ready to merge**. **Look again** asks GitHub right away.
+
+Pleni asks about once a minute, and only while the Pull requests page is open. It asks only about
+the repositories your sessions work in.
+
+**Merge** works only on the computer that runs Pleni, and only when every check passes and GitHub
+says the pull request is ready. Pleni asks you first, then checks once more that nobody pushed
+since you looked. A merge changes your repository on GitHub, so read the pull request first.
 
 ## Where it looks
 
@@ -340,13 +388,16 @@ it. It is not part of the npm package.
 ## Privacy and safety
 
 - Pleni reads files. It writes only its own settings file.
-- It starts nothing unless you turn on **Open in PowerShell**, **Roll over** or **New agent** and
-  click a button. Then it opens one PowerShell window that runs `claude` or `codex`. Open in
-  PowerShell and New agent never type into a session. Roll over sends one short message, which it
-  shows you first.
+- It starts nothing unless you turn on **Open in PowerShell**, **Roll over**, **New agent** or
+  **Bring a cloud session here** and click a button. Then it opens one PowerShell window that runs
+  `claude` or `codex`. Open in PowerShell and New agent never type into a session. Roll over sends
+  one short message, which it shows you first.
 - Pop-ups are off until you turn them on. Your browser makes them on your own screen; nothing is
   sent over the internet.
-- It makes no network calls and sends no data about you or your work. There is no telemetry.
+- It makes no network calls of its own and sends no data about you or your work. There is no
+  telemetry. The one way out is **Live GitHub status**, off until you turn it on: then the GitHub
+  CLI (`gh`) on your computer asks GitHub about your pull requests (see
+  [Live GitHub status](#live-github-status)).
 - The page shows short bits of session text. If you would rather it did not, turn session text
   off in Settings (the `content` setting, set to `none`). Then you see only names, tools, and
   states.

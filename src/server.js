@@ -17,7 +17,9 @@ import {
 import { stripBom } from './jsonl.js';
 import { snapshotTag } from './model.js';
 import { openLimits, openSession } from './open.js';
-import { newAgent } from './newagent.js';
+import { newAgent, teleport } from './newagent.js';
+import { GITHUB_MESSAGES, createGithub } from './github.js';
+import { demoGithub } from './demo.js';
 import { rollover, rolloverInfo } from './rollover.js';
 
 const BIND_HOST = '127.0.0.1';
@@ -70,7 +72,7 @@ const BRAND_NAME = /^[a-z0-9][a-z0-9._-]*\.(png|svg|ico|webp)$/;
 // Names such as "nul.png" or "com1.svg" are devices, not files, on Windows.
 const WINDOWS_DEVICE = /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/;
 const BRAND_TYPES = { png: 'image/png', svg: 'image/svg+xml', ico: 'image/x-icon', webp: 'image/webp' };
-const API_GET = new Set(['/api/health', '/api/snapshot', '/api/session', '/api/devices']);
+const API_GET = new Set(['/api/health', '/api/snapshot', '/api/session', '/api/devices', '/api/github']);
 // Only the health check answers without the key: it says nothing but "Pleni is running".
 const OPEN_API = new Set(['/api/health']);
 const READ_ONLY = ['GET', 'HEAD'];
@@ -104,6 +106,8 @@ const MESSAGES = {
   openRemote: 'A session can be opened in a window only on the computer that runs Pleni, not from another device.',
   rollRemote: 'A session can be rolled over only on the computer that runs Pleni, not from another device.',
   newRemote: 'A new agent can be started only on the computer that runs Pleni, not from another device.',
+  teleportRemote: 'A cloud session can be brought here only on the computer that runs Pleni, not from another device.',
+  mergeRemote: 'A pull request can be merged from Pleni only on the computer that runs it, not from another device.',
   devicesRemote: "Pleni's key and the devices it turned away show only on the computer that runs Pleni.",
   hostPage: 'Pleni does not answer requests for this address yet.\n\nIf this is your own device: on the computer that runs Pleni, open Pleni, go to Settings, then Devices, and choose Allow next to this device. Then reload this page.\n',
 };
@@ -191,8 +195,9 @@ export function loadOrCreateKey(file, { renew = false, tries, pause } = {}) {
 // getSettings() -> { settings, file, roots }; saveSettings(clean) saves and returns the same shape.
 // Without them, settings are read from and saved to the usual settings file.
 // `key` is the secret every API request needs (see keyAllowed); a new one is made when it is left out.
-// `platform` and `spawnProcess` are for Open in PowerShell (see src/open.js); tests replace them.
-export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null }) {
+// `platform` and `spawnProcess` are for Open in PowerShell (see src/open.js), and `github` for live
+// GitHub status (see src/github.js); tests replace them.
+export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null, github = null }) {
   if (typeof key !== 'string' || !KEY_RE.test(key)) {
     throw new Error('The server key must be at least 16 letters, digits, "-" or "_".');
   }
@@ -209,6 +214,7 @@ export function createServer({ store, getSettings, saveSettings, publicDir = PUB
     platform,
     spawnProcess,
     opens: openLimits(),
+    github: github ?? createGithub(),
     knocks: new Map(),
   };
   return http.createServer((req, res) => {
@@ -277,6 +283,8 @@ async function handle(app, req, res) {
     if (pathname === '/api/open') return postOpen(app, req, res, host);
     if (pathname === '/api/rollover') return postRollover(app, req, res, host);
     if (pathname === '/api/new') return postNewAgent(app, req, res, host);
+    if (pathname === '/api/teleport') return postTeleport(app, req, res, host);
+    if (pathname === '/api/github/merge') return postMerge(app, req, res, host);
     return postSettings(app, req, res, host);
   }
   if (pathname.startsWith('/brand/')) return sendBrand(app, req, res, pathname.slice('/brand/'.length));
@@ -287,12 +295,13 @@ async function handle(app, req, res) {
   if (pathname === '/api/session') return sendSession(app, req, res, new URLSearchParams(query));
   if (pathname === '/api/rollover') return sendRollover(app, req, res, host, new URLSearchParams(query));
   if (pathname === '/api/devices') return sendDevices(app, req, res, host);
+  if (pathname === '/api/github') return sendGithub(app, req, res, host, new URLSearchParams(query));
   return sendJson(req, res, 200, await settingsPayload(app, app.readSettings()));
 }
 
 function allowedMethods(pathname) {
   if (pathname === '/api/settings' || pathname === '/api/rollover') return ['GET', 'HEAD', 'POST'];
-  if (['/api/placement', '/api/dismiss', '/api/watch', '/api/hide', '/api/open', '/api/new'].includes(pathname)) return ['POST'];
+  if (['/api/placement', '/api/dismiss', '/api/watch', '/api/hide', '/api/open', '/api/new', '/api/teleport', '/api/github/merge'].includes(pathname)) return ['POST'];
   if (PAGE_FILES.has(pathname) || API_GET.has(pathname)) return READ_ONLY;
   if (/^\/brand\/[^/]+$/.test(pathname)) return READ_ONLY;
   return null;
@@ -641,6 +650,68 @@ async function postNewAgent(app, req, res, host) {
   });
   if (result.ok) return sendJson(req, res, 200, { ok: true });
   return sendError(req, res, result.status, result.error);
+}
+
+// Bring a cloud session here: { from: '<Claude Code session key>' }. Only on this computer, like
+// Open in PowerShell; src/newagent.js makes the other checks.
+async function postTeleport(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.teleportRemote);
+  const state = app.readSettings();
+  const result = await teleport({
+    from: body.from,
+    settings: state.settings,
+    roots: state.roots ?? {},
+    store: app.store,
+    limits: app.opens,
+    platform: app.platform,
+    ...(app.spawnProcess ? { spawn: app.spawnProcess } : {}),
+  });
+  if (result.ok) return sendJson(req, res, 200, { ok: true });
+  return sendError(req, res, result.status, result.error);
+}
+
+// Live pull request status for the GitHub repositories on the map, when settings.github.live is on.
+// `merge` says whether this page may offer Merge: the setting is on and the request is from this
+// computer. `?fresh=1` is the Look again button.
+async function sendGithub(app, req, res, host, params) {
+  const { github } = app.readSettings().settings;
+  const base = { on: github.live, merge: github.live && github.merge && isLocalRequest(host, req), method: github.mergeMethod };
+  if (!github.live) return sendJson(req, res, 200, { ...base, error: null, repos: [] });
+  const repos = reposOnMap(app.store);
+  const answer = app.store.demo ? demoGithub(repos) : await app.github.status({ repos, fresh: params.get('fresh') === '1' });
+  return sendJson(req, res, 200, { ...base, ...answer });
+}
+
+// Merge: { repo: 'owner/name', number, head: '<commit id the page showed>' }. Only on this computer;
+// src/github.js looks again and makes the other checks.
+async function postMerge(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.mergeRemote);
+  const { github } = app.readSettings().settings;
+  if (!github.live) return sendError(req, res, 403, GITHUB_MESSAGES.off);
+  if (!github.merge) return sendError(req, res, 403, GITHUB_MESSAGES.mergeOff);
+  if (app.store.demo) return sendError(req, res, 409, GITHUB_MESSAGES.demo);
+  const result = await app.github.merge({
+    repo: body.repo,
+    number: body.number,
+    head: body.head,
+    method: github.mergeMethod,
+    known: new Set(reposOnMap(app.store)),
+  });
+  if (result.ok) return sendJson(req, res, 200, { ok: true });
+  return sendError(req, res, result.status, result.error);
+}
+
+// The GitHub repositories the sessions on the map work in (node.github), not counting reviewers.
+function reposOnMap(store) {
+  const repos = new Set();
+  for (const n of store.snapshot()?.nodes ?? []) {
+    if (n && typeof n.github === 'string' && n.kind !== 'reviewer') repos.add(n.github);
+  }
+  return [...repos];
 }
 
 // What Settings shows under Devices, only on this computer: the addresses for other devices, the

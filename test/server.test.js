@@ -5,6 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { cleanSettings } from '../src/config.js';
+import { GITHUB_MESSAGES } from '../src/github.js';
 import { NEW_MESSAGES } from '../src/newagent.js';
 import { OPEN_MESSAGES } from '../src/open.js';
 import { ROLL_MESSAGES } from '../src/rollover.js';
@@ -117,6 +118,7 @@ async function startServer(t, options = {}) {
     key: TEST_KEY,
     ...(options.platform ? { platform: options.platform } : {}),
     ...(options.spawnProcess ? { spawnProcess: options.spawnProcess } : {}),
+    ...(options.github ? { github: options.github } : {}),
     ...(options.useFileSettings
       ? {}
       : { getSettings: memory.getSettings, saveSettings: memory.saveSettings.bind(memory) }),
@@ -1184,6 +1186,151 @@ test('new agent needs the key, the page itself, this computer, and the switch', 
   assertPlainError(bad, 400);
   assert.equal(bad.json.error, NEW_MESSAGES.badName);
   assert.equal(spawnProcess.calls.length, 0);
+});
+
+// ---- Bring a cloud session here ----
+
+test('teleport opens claude --teleport for a Claude Code session, only on this computer', async (t) => {
+  const folder = tempDir(t);
+  const spawnProcess = recordSpawns();
+  const settings = { actions: { teleport: true }, remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } };
+  const { port } = await startServer(t, { store: rollStore(folder), settings, platform: 'win32', spawnProcess });
+  const send = (headers = {}) => request(port, {
+    method: 'POST',
+    path: '/api/teleport',
+    headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+    body: JSON.stringify({ from: SESSION_KEY }),
+  });
+  assertPlainError(await send({ cookie: undefined }), 401);
+  assertPlainError(await send({ 'x-pleni': undefined }), 403);
+  const remote = await send({ host: 'box.example.ts.net', 'tailscale-user-login': 'ada@example.com' });
+  assertPlainError(remote, 403);
+  assert.match(remote.json.error, /only on the computer that runs Pleni/);
+  assert.equal(spawnProcess.calls.length, 0);
+  const res = await send();
+  assert.equal(res.status, 200);
+  assert.equal(spawnProcess.calls.length, 1);
+  assert.equal(spawnProcess.calls[0].options.cwd, folder);
+  assert.ok(spawnProcess.calls[0].args.at(-1).includes('-Command "claude --teleport"'));
+  assertPlainError(await request(port, { path: '/api/teleport' }), 405);
+});
+
+// ---- live GitHub status and Merge ----
+
+// A stand-in for src/github.js that records what the server asks for.
+function fakeGithub() {
+  const fake = {
+    calls: [],
+    async status(args) {
+      fake.calls.push(['status', args]);
+      return { error: null, repos: [...args.repos].sort().map((repo) => ({ repo, at: 5, error: null, pulls: [] })) };
+    },
+    async merge(args) {
+      fake.calls.push(['merge', args]);
+      return args.number === 7 ? { ok: true } : { ok: false, status: 409, error: 'Checks are still running.' };
+    },
+  };
+  return fake;
+}
+
+// Sessions in two repositories, and a reviewer in a third that does not count.
+function githubStore(demo = false) {
+  const store = fakeStore();
+  store.demo = demo;
+  store.current.nodes[1].github = demo ? 'example/field-app' : 'ada/notes';
+  store.current.nodes.push(
+    { key: 'codex:019a3f2e-7c41-7d20-9b6e-5a1c2d3e4f50', title: 'Site', platform: 'codex', kind: 'session', status: 'idle', github: 'ada/site' },
+    { key: 'codex:019a3f33-8e66-7b43-a04f-8d4051627384', title: 'Review', platform: 'codex', kind: 'reviewer', status: 'idle', github: 'eve/other' },
+  );
+  return store;
+}
+
+const REMOTE = { remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } };
+const FROM_LAPTOP = { host: 'box.example.ts.net', 'tailscale-user-login': 'ada@example.com' };
+const HEAD = 'c'.repeat(40);
+
+test('GitHub status is off until it is turned on, and offers Merge only on this computer', async (t) => {
+  const github = fakeGithub();
+  const off = await startServer(t, { store: githubStore(), github, settings: REMOTE });
+  const quiet = await request(off.port, { path: '/api/github' });
+  assert.equal(quiet.status, 200);
+  assert.deepEqual(quiet.json, { on: false, merge: false, method: 'squash', error: null, repos: [] });
+  assert.equal(github.calls.length, 0, 'nothing asked GitHub');
+
+  const on = await startServer(t, { store: githubStore(), github, settings: { ...REMOTE, github: { live: true, merge: true, mergeMethod: 'rebase' } } });
+  const res = await request(on.port, { path: '/api/github' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json, {
+    on: true,
+    merge: true,
+    method: 'rebase',
+    error: null,
+    repos: [{ repo: 'ada/notes', at: 5, error: null, pulls: [] }, { repo: 'ada/site', at: 5, error: null, pulls: [] }],
+  });
+  assert.deepEqual(github.calls[0], ['status', { repos: ['ada/notes', 'ada/site'], fresh: false }], 'only the repositories on the map, no reviewers');
+  assert.equal((await request(on.port, { path: '/api/github?fresh=1' })).status, 200);
+  assert.equal(github.calls[1][1].fresh, true);
+  const laptop = await request(on.port, { path: '/api/github', headers: FROM_LAPTOP });
+  assert.equal(laptop.status, 200);
+  assert.equal(laptop.json.on, true);
+  assert.equal(laptop.json.merge, false, 'another device sees the status but not Merge');
+  assertPlainError(await request(on.port, { path: '/api/github', headers: { cookie: undefined } }), 401);
+  assertPlainError(await request(on.port, { method: 'POST', path: '/api/github' }), 405);
+  const noMerge = await startServer(t, { store: githubStore(), github, settings: { github: { live: true } } });
+  assert.equal((await request(noMerge.port, { path: '/api/github' })).json.merge, false);
+});
+
+test('GitHub status in the demo is made up, and asks nothing', async (t) => {
+  const github = fakeGithub();
+  const { port } = await startServer(t, { store: githubStore(true), github, settings: { github: { live: true } } });
+  const res = await request(port, { path: '/api/github' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json.repos.map((r) => r.repo), ['example/field-app']);
+  assert.ok(res.json.repos[0].pulls.some((p) => p.number === 17 && p.canMerge === true));
+  assert.equal(github.calls.length, 0);
+});
+
+test('merge runs only on this computer, with both switches on, for repositories on the map', async (t) => {
+  const github = fakeGithub();
+  const settings = { ...REMOTE, github: { live: true, merge: true, mergeMethod: 'merge' } };
+  const { port } = await startServer(t, { store: githubStore(), github, settings });
+  const send = (body, headers = {}, to = port) => request(to, {
+    method: 'POST',
+    path: '/api/github/merge',
+    headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+    body: JSON.stringify(body),
+  });
+  const body = { repo: 'ada/notes', number: 7, head: HEAD };
+  assertPlainError(await send(body, { cookie: undefined }), 401);
+  assertPlainError(await send(body, { 'x-pleni': undefined }), 403);
+  assertPlainError(await send(body, { origin: 'https://evil.example' }), 403);
+  const remote = await send(body, FROM_LAPTOP);
+  assertPlainError(remote, 403);
+  assert.match(remote.json.error, /only on the computer that runs it/);
+  assertPlainError(await request(port, { path: '/api/github/merge' }), 405);
+  assert.equal(github.calls.length, 0);
+
+  const ok = await send(body);
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.json, { ok: true });
+  const [kind, args] = github.calls[0];
+  assert.equal(kind, 'merge');
+  assert.deepEqual({ ...args, known: [...args.known].sort() }, { repo: 'ada/notes', number: 7, head: HEAD, method: 'merge', known: ['ada/notes', 'ada/site'] });
+  const notReady = await send({ ...body, number: 8 });
+  assertPlainError(notReady, 409);
+  assert.equal(notReady.json.error, 'Checks are still running.');
+
+  for (const [github2, error] of [[{ live: false, merge: true }, GITHUB_MESSAGES.off], [{ live: true, merge: false }, GITHUB_MESSAGES.mergeOff]]) {
+    const other = await startServer(t, { store: githubStore(), github, settings: { github: github2 } });
+    const res = await send(body, {}, other.port);
+    assertPlainError(res, 403);
+    assert.equal(res.json.error, error);
+  }
+  const demo = await startServer(t, { store: githubStore(true), github, settings });
+  const res = await send(body, {}, demo.port);
+  assertPlainError(res, 409);
+  assert.equal(res.json.error, GITHUB_MESSAGES.demo);
+  assert.equal(github.calls.length, 2, 'no merge ran for a refused request');
 });
 
 // ---- version ----

@@ -109,7 +109,12 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
     if (cache && t >= cache.at && t - cache.at < POLL_MS) return cache.snapshot;
     polled = pollAll();
     const windows = platform === 'win32';
-    const actions = { openTerminal: current.actions.openTerminal && windows, rollover: current.actions.rollover && windows, newAgent: current.actions.newAgent && windows };
+    const actions = {
+      openTerminal: current.actions.openTerminal && windows,
+      rollover: current.actions.rollover && windows,
+      newAgent: current.actions.newAgent && windows,
+      teleport: current.actions.teleport && windows,
+    };
     const snap = buildSnapshot({ now: t, settings: demo ? demoSettings(current) : current, dismissed, actions, ...polled });
     // Not enumerable, so they never show up in the JSON itself.
     Object.defineProperties(snap, { etag: { value: snapshotTag(snap) }, json: { value: JSON.stringify(snap) } });
@@ -153,6 +158,9 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
       kind: text(found.kind),
       title: text(found.title),
       titleSource: text(found.titleSource),
+      model: text(found.model),
+      effort: text(found.effort),
+      mode: text(found.mode),
     };
   }
 

@@ -681,6 +681,26 @@ a.ext::after { content: " \2197"; }
 .branch-who .open:hover { text-decoration: underline; }
 .branch-who .sub { color: var(--ui-text-muted); font-size: var(--ui-font-sm); }
 .gh-links { display: inline-flex; flex-wrap: wrap; gap: var(--ui-space-2) var(--ui-space-5); }
+/* Live GitHub status: a pull request line under its branch, its pills, and the Merge step. */
+.gh-ok { --pc: var(--ui-ok-text); --pd: var(--ui-ok); }
+.gh-bad { --pc: var(--ui-error-text); --pd: var(--ui-error); }
+.gh-wait { --pc: var(--ui-warn-text); --pd: var(--ui-warn); }
+.gh-info { --pc: var(--ui-accent-strong); --pd: var(--ui-accent); }
+.gh-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3) var(--ui-space-5); color: var(--ui-text-secondary); }
+.gh-bar .btn { padding: var(--ui-space-1) var(--ui-space-5); }
+.note.bad { color: var(--ui-error-text); }
+.pull { margin-top: var(--ui-space-3); padding: var(--ui-space-3) var(--ui-space-4); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-md); background: var(--ui-surface-sunken); }
+.pull-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--ui-space-2) var(--ui-space-4); }
+.pull-head a { font-weight: var(--ui-weight-semibold); overflow-wrap: anywhere; }
+.pull-head .quiet { font-size: var(--ui-font-sm); }
+.pull-pills { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-2) var(--ui-space-3); margin-top: var(--ui-space-2); }
+.gh-fail { font-size: var(--ui-font-sm); color: var(--ui-error-text); overflow-wrap: anywhere; }
+.gh-why { margin: var(--ui-space-2) 0 0; font-size: var(--ui-font-sm); }
+.merge-ask p { margin: var(--ui-space-3) 0 0; }
+.merge-buttons { display: flex; flex-wrap: wrap; gap: var(--ui-space-3); margin-top: var(--ui-space-3); }
+.merge-buttons .btn { padding: var(--ui-space-1) var(--ui-space-5); }
+.gh-others { margin: var(--ui-space-5) 0 0; font-size: var(--ui-font-md); }
+.pulls-more { list-style: none; margin: 0; padding: 0; }
 .task.needs { border-color: color-mix(in srgb, var(--ui-warn) 55%, var(--ui-border)); }
 .task-head { display: flex; flex-wrap: wrap; gap: var(--ui-space-3) var(--ui-space-5); align-items: baseline; }
 .task-title { font-weight: var(--ui-weight-semibold); overflow-wrap: anywhere; }

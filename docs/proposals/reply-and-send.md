@@ -2,7 +2,8 @@
 
 Status: proposal. Step 1 of the plan, the relay waking the planner's Codex thread, is built in
 `relay/`. **Roll over** and **New agent** (step 4) are built in Pleni (see below). **Send**
-(step 3) has a design below that waits for the owner's yes. The rest is not built yet.
+(step 3) is set aside: the owner would rather open sessions in command-line windows and type
+there. Its design stays below as a record. The rest is not built yet.
 
 ## What we want
 
@@ -150,9 +151,14 @@ sends nothing and the rule about free text does not come up.
   first message.
 - Off by default, Windows only, this computer only, with Open in PowerShell's limits.
 
-A first message typed in Pleni would be free text, so it waits for Send (step 3).
+A first message typed in Pleni would be free text, like Send (step 3), so it is not built: the
+person types it in the window.
 
-## Step 3: Send a message (design, waiting for the owner's yes)
+## Step 3: Send a message (set aside)
+
+The owner chose not to build this in October 2026. Sessions open in PowerShell windows instead
+(Open in PowerShell and New agent), where the person types. The design stays here in case that
+changes.
 
 Send is free text: whatever the person types goes to a session that can run commands. So it needs
 the owner's yes and a change to the rule in `CLAUDE.md` and `AGENTS.md` before it is built.
@@ -328,15 +334,15 @@ sessions can run commands on the computer. So:
 | --- | --- | --- | --- |
 | 1 | The relay wakes the planner's Codex thread (above) | Medium, outside Pleni | Built |
 | 2 | Tests on a spare computer: Claude hooks in the desktop app (HTTP hooks, secret header, what the app shows while a hook waits, the `ExitPlanMode` answer format), and the Codex app server questions above | Small | |
-| 3 | Send a message to idle sessions, Claude and Codex, with the safety checks | Medium | Design above, waiting for the owner's yes; Roll over's fixed handoff request is built |
-| 4 | **New agent:** choose Claude Code or Codex and a name; Pleni opens it in a PowerShell window in the folder of a session on the map, the same way as Open in PowerShell. The first message is typed there | Medium | Built; a first message typed in Pleni waits for step 3 |
+| 3 | Send a message to idle sessions, Claude and Codex, with the safety checks | Medium | Set aside: the owner prefers command-line windows. Roll over's fixed handoff request is built |
+| 4 | **New agent:** choose Claude Code or Codex and a name; Pleni opens it in a PowerShell window in the folder of a session on the map, the same way as Open in PowerShell. The first message is typed there | Medium | Built |
 | 5 | Claude questions, plans and permission prompts through hooks, with the "Connect" step, the switch per session, and the answer controls | Large | |
 | 6 | Codex answers and messages through the app server, with `codex exec resume` as the fallback | Large, depends on step 2 | |
-| 7 | Move other Codex threads from app messaging to mailboxes, each with a wake (a relay, or Pleni's Send) | Large, per team | |
+| 7 | Move other Codex threads from app messaging to mailboxes, each with a wake (a relay) | Large, per team | |
 | 8 | Actions from the phone: second confirmation | Medium | |
 | 9 | Mailbox owner notes, with the relay change | Small, outside Pleni | |
 
-Steps 3 and 4 work alone, so Pleni can send and start agents before it can answer questions.
+Step 4 works alone, so Pleni can start agents before it can answer questions.
 
 ## Sources
 

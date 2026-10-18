@@ -4,6 +4,10 @@
 // only for a request made on this computer. Pleni starts the window and sends nothing: the person
 // types the first message there. The name is held to Roll over's plain marks, so neither cmd.exe
 // nor PowerShell can read any of it as a command.
+//
+// "Bring a cloud session here" (settings.actions.teleport) works the same way: a window in the
+// folder of a Claude Code session that runs `claude --teleport`, where the person picks one of their
+// claude.ai cloud sessions to go on with on this computer.
 import { spawn as nodeSpawn } from 'node:child_process';
 import os from 'node:os';
 import { OPEN_MESSAGES, folderProblem, launch, plainWindowsDir, toolEnv } from './open.js';
@@ -12,6 +16,7 @@ import { MAX_NAME, nameFits } from './rollover.js';
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 // The session whose folder the new agent works in: a main Claude Code session or a Codex thread.
 const FROM_KEY = new RegExp(`^(claude|codex):${UUID}$`);
+const CLAUDE_KEY = new RegExp(`^claude:${UUID}$`);
 const TITLES = { claude: 'Claude Code', codex: 'Codex' };
 
 export const NEW_MESSAGES = {
@@ -26,6 +31,9 @@ export const NEW_MESSAGES = {
   longName: `Use ${MAX_NAME} letters or fewer for the name.`,
   badName: 'Use only letters, digits, spaces and . _ - # + * , signs in the name, and start it with a letter or a digit.',
   again: 'Pleni just started a new agent here. Look for the new window on your taskbar.',
+  teleportOff: 'Bringing cloud sessions here is turned off. Turn it on in Settings, under Buttons, first.',
+  teleportFrom: 'A cloud session can be brought only next to a Claude Code session, into its folder.',
+  teleportAgain: 'Pleni just opened a window for this. Look for it on your taskbar.',
 };
 
 // "  Sergeant   3 " -> "Sergeant 3". Anything else is checked by newNameProblem.
@@ -96,6 +104,57 @@ export async function newAgent({
   return (await launch(spawn, file, args, options)) ? { ok: true } : refuse(500, OPEN_MESSAGES.failed);
 }
 
+// Opens a PowerShell window in the folder of `from` (a main Claude Code session) that runs
+// `claude --teleport`. Claude Code then lists the person's claude.ai cloud sessions; the one they
+// pick goes on in that window, on this computer. Answers like newAgent.
+export async function teleport({
+  from,
+  settings,
+  roots,
+  store,
+  limits,
+  platform = process.platform,
+  env = process.env,
+  home = os.homedir(),
+  spawn = nodeSpawn,
+  now = Date.now(),
+}) {
+  if (settings?.actions?.teleport !== true) return refuse(403, NEW_MESSAGES.teleportOff);
+  if (platform !== 'win32') return refuse(409, NEW_MESSAGES.windowsOnly);
+  const key = typeof from === 'string' ? from : '';
+  if (!CLAUDE_KEY.test(key)) return refuse(400, NEW_MESSAGES.teleportFrom);
+  if (store.demo) return refuse(409, NEW_MESSAGES.demo);
+  const listed = (store.snapshot()?.nodes ?? []).some((n) => n?.key === key);
+  const session = listed ? store.session?.(key) : null;
+  if (!session) return refuse(404, NEW_MESSAGES.gone);
+  if (session.kind !== 'session') return refuse(400, NEW_MESSAGES.teleportFrom);
+  const folder = folderProblem(session.cwd, platform);
+  if (folder) return refuse(409, folder);
+  const wait = limits.take(`teleport:${key}`, now);
+  if (wait) return refuse(429, wait === OPEN_MESSAGES.again ? NEW_MESSAGES.teleportAgain : wait);
+  const { file, args } = teleportCommand(env.SystemRoot ?? env.SYSTEMROOT);
+  const options = {
+    cwd: session.cwd,
+    env: toolEnv('claude', env, roots?.claude ?? null, home, platform),
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false,
+    windowsVerbatimArguments: true,
+  };
+  return (await launch(spawn, file, args, options)) ? { ok: true } : refuse(500, OPEN_MESSAGES.failed);
+}
+
+export function teleportCommand(systemRoot) {
+  return windowCommand('Claude Code', 'claude --teleport', systemRoot);
+}
+
+function windowCommand(title, run, systemRoot) {
+  const windows = plainWindowsDir(systemRoot);
+  const powershell = `${windows}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+  const line = `start "${title}" "${powershell}" -NoExit -NoLogo -Command "${run}"`;
+  return { file: `${windows}\\System32\\cmd.exe`, args: ['/d', '/s', '/c', `"${line}"`] };
+}
+
 // The same shape as Open in PowerShell's command, with no message:
 //   Claude Code: claude --name '<name>'      Codex: codex
 // Codex has no way to take a name when it starts, so the person types /rename in it. The name is
@@ -103,11 +162,7 @@ export async function newAgent({
 export function newAgentCommand(tool, name, systemRoot) {
   if (!Object.hasOwn(TITLES, tool)) throw new Error('Pleni can start only Claude Code and Codex agents.');
   if (!nameFits(name) || name !== cleanName(name)) throw new Error('That name cannot go on a command line.');
-  const run = tool === 'claude' ? `claude --name '${name}'` : 'codex';
-  const windows = plainWindowsDir(systemRoot);
-  const powershell = `${windows}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
-  const line = `start "${TITLES[tool]}" "${powershell}" -NoExit -NoLogo -Command "${run}"`;
-  return { file: `${windows}\\System32\\cmd.exe`, args: ['/d', '/s', '/c', `"${line}"`] };
+  return windowCommand(TITLES[tool], tool === 'claude' ? `claude --name '${name}'` : 'codex', systemRoot);
 }
 
 function refuse(status, error) {

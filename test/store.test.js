@@ -294,14 +294,15 @@ test('dismissed notices hide until something newer happens, and are kept in the 
 
 // ---- Open in PowerShell ----
 
-test('the snapshot offers Open in PowerShell, Roll over and New agent only when turned on and Pleni runs on Windows', () => {
+test('the snapshot offers the window buttons only when turned on and Pleni runs on Windows', () => {
   const make = (settings, platform) => createStore({ settings: cleanSettings(settings), roots: ROOTS, now: clock(), factories: fakes().factories, platform });
-  const all = { actions: { openTerminal: true, rollover: true, newAgent: true } };
-  const off = { openTerminal: false, rollover: false, newAgent: false };
+  const all = { actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true } };
+  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false };
   assert.deepEqual(make({}, 'win32').snapshot().actions, off);
   assert.deepEqual(make({ actions: { openTerminal: true } }, 'win32').snapshot().actions, { ...off, openTerminal: true });
   assert.deepEqual(make({ actions: { rollover: true } }, 'win32').snapshot().actions, { ...off, rollover: true });
   assert.deepEqual(make({ actions: { newAgent: true } }, 'win32').snapshot().actions, { ...off, newAgent: true });
+  assert.deepEqual(make({ actions: { teleport: true } }, 'win32').snapshot().actions, { ...off, teleport: true });
   assert.deepEqual(make(all, 'win32').snapshot().actions, all.actions);
   assert.deepEqual(make(all, 'linux').snapshot().actions, off);
   assert.deepEqual(make(all, 'darwin').snapshot().actions, off);
@@ -317,11 +318,11 @@ test('turning Open in PowerShell on keeps the sources and shows at once', () => 
   assert.equal(f.made.length, 2);
 });
 
-test('session() gives the folder, state and name of a top-level Claude Code session or a Codex thread', () => {
+test('session() gives the folder, state, name, model, effort and permission mode of a top-level Claude Code session or a Codex thread', () => {
   const { store } = makeStore();
-  const rest = { cwd: '/home/ada/code/alpha', status: 'working', entrypoint: 'cli', kind: 'session', title: 'Billing API refactor', titleSource: null };
-  assert.deepEqual(store.session(CLAUDE_KEY), { id: CLAUDE_KEY.slice('claude:'.length), ...rest });
-  assert.deepEqual(store.session(CODEX_KEY), { id: CODEX_KEY.slice('codex:'.length), ...rest });
+  const rest = { cwd: '/home/ada/code/alpha', status: 'working', entrypoint: 'cli', kind: 'session', title: 'Billing API refactor', titleSource: null, effort: null, mode: null };
+  assert.deepEqual(store.session(CLAUDE_KEY), { id: CLAUDE_KEY.slice('claude:'.length), ...rest, model: 'claude-opus-5-5' });
+  assert.deepEqual(store.session(CODEX_KEY), { id: CODEX_KEY.slice('codex:'.length), ...rest, model: 'gpt-6.1-sol' });
   assert.equal(store.session(`${CLAUDE_KEY}/a1b2c3`), null);
   assert.equal(store.session('grok:cccccccc-0000-4000-8000-000000000001'), null);
   assert.equal(store.session('claude:aaaaaaaa-0000-4000-8000-00000000ffff'), null);

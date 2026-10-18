@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { NEW_MESSAGES, cleanName, newAgent, newAgentCommand, newNameProblem, takenMessage } from '../src/newagent.js';
+import { NEW_MESSAGES, cleanName, newAgent, newAgentCommand, newNameProblem, takenMessage, teleport, teleportCommand } from '../src/newagent.js';
 import { OPEN_MESSAGES, openLimits } from '../src/open.js';
 
 const ID = '0f8e2c4a-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
@@ -180,4 +180,50 @@ test('newAgentCommand checks every part again, so nothing else reaches the line'
   assert.throws(() => newAgentCommand('codex', ''), /cannot go on a command line/);
   const plain = newAgentCommand('claude', NAME, 'D:\\Win dows');
   assert.equal(plain.file, CMD, 'a Windows folder with a space is not used');
+});
+
+// ---- Bring a cloud session here ----
+
+async function bring(t, options = {}) {
+  const pick = (name, fallback) => (Object.hasOwn(options, name) ? options[name] : fallback);
+  const folder = options.folder ?? tempDir(t);
+  const spawn = options.spawn ?? fakeSpawn();
+  const from = pick('from', KEY);
+  const result = await teleport({
+    from,
+    settings: options.settings ?? { actions: { teleport: true } },
+    roots: options.roots ?? {},
+    store: options.store ?? fakeStore({ key: typeof from === 'string' && from ? from : KEY, cwd: folder }),
+    limits: options.limits ?? openLimits(),
+    platform: options.platform ?? 'win32',
+    env: { SystemRoot: 'C:\\Windows' },
+    home: 'C:\\Users\\ada',
+    spawn,
+    now: options.now ?? 1000,
+  });
+  return { result, spawn, folder };
+}
+
+test('Bring a cloud session here opens claude --teleport in the session\'s folder', async (t) => {
+  const claudeRoot = tempDir(t);
+  const { result, spawn, folder } = await bring(t, { roots: { claude: claudeRoot } });
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(spawn.calls[0].args, ['/d', '/s', '/c', line('Claude Code', 'claude --teleport')]);
+  assert.equal(spawn.calls[0].options.cwd, folder);
+  assert.equal(spawn.calls[0].options.env.CLAUDE_CONFIG_DIR, claudeRoot);
+  assert.deepEqual(teleportCommand('C:\\Windows').args.at(-1), line('Claude Code', 'claude --teleport'));
+});
+
+test('Bring a cloud session here has its own switch, Windows, a main Claude Code session and its folder', async (t) => {
+  const folder = tempDir(t);
+  assertRefused((await bring(t, { settings: { actions: { newAgent: true } } })).result, 403, NEW_MESSAGES.teleportOff);
+  assertRefused((await bring(t, { platform: 'linux' })).result, 409, NEW_MESSAGES.windowsOnly);
+  for (const from of [CODEX_KEY, `${KEY}/a1b2c3`, 'you', null]) assertRefused((await bring(t, { from, store: fakeStore({ cwd: folder }) })).result, 400, NEW_MESSAGES.teleportFrom);
+  assertRefused((await bring(t, { store: fakeStore({ cwd: folder, kind: 'agent' }) })).result, 400, NEW_MESSAGES.teleportFrom);
+  assertRefused((await bring(t, { store: fakeStore({ cwd: folder, listed: false }) })).result, 404, NEW_MESSAGES.gone);
+  assertRefused((await bring(t, { store: fakeStore({ cwd: folder, demo: true }) })).result, 409, NEW_MESSAGES.demo);
+  assertRefused((await bring(t, { store: fakeStore({ cwd: '\\\\server\\share\\work' }) })).result, 409, OPEN_MESSAGES.network);
+  const limits = openLimits();
+  assert.deepEqual((await bring(t, { folder, limits, now: 1000 })).result, { ok: true });
+  assertRefused((await bring(t, { folder, limits, now: 2000 })).result, 429, NEW_MESSAGES.teleportAgain);
 });

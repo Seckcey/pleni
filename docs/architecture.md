@@ -13,8 +13,13 @@ default), two buttons open such windows with one fixed message each, which the p
 a request to the old session to write a handoff note, and the first message of a new session with
 the same name (see `src/rollover.js` below). With **New agent** turned on (also off by default), a
 button opens a window that starts a new named session in the folder of a session on the map, and
-the person types its first message there (see `src/newagent.js` below). Sending other work and
-approving actions come later and will get their own design.
+the person types its first message there (see `src/newagent.js` below). With **Bring a cloud
+session here** turned on, a button opens a window in a Claude Code session's folder that runs
+`claude --teleport`, where the person picks a claude.ai cloud session to go on with on this
+computer. With **Live GitHub status** turned on (also off by default), Pleni runs the GitHub CLI
+(`gh`) to read the pull requests of the repositories its sessions work in, and with **Merge** on as
+well, it merges one on this computer after the person confirms (see `src/github.js` below).
+Sending other work and approving actions come later and will get their own design.
 
 ## Ground rules
 
@@ -25,12 +30,15 @@ approving actions come later and will get their own design.
   Tailscale logins you list in settings.
 - **Only the person who started it.** Every account on the computer can reach `127.0.0.1`, so the
   API also needs a random key made at each start and printed in Pleni's address (see Server).
-- **Read-only.** Pleni reads; it does not write anywhere except its own settings file. It starts no
-  program except the opt-in Open in PowerShell, Roll over and New agent windows, and only when the
-  person clicks for one. The only messages it sends are Roll over's two fixed ones.
-- **Private by default.** Nothing leaves the computer. No telemetry, no network calls. The page shows
-  short snippets of session text only when `content` is `"snippets"` (the default); `"none"` shows
-  only tool names and states.
+- **Read-only.** Pleni reads; it does not write anywhere on this computer except its own settings
+  file. It starts no program except the opt-in Open in PowerShell, Roll over, New agent and Bring a
+  cloud session here windows, only when the person clicks for one, and the GitHub CLI (`gh`) for
+  the opt-in Live GitHub status. The only messages it sends are Roll over's two fixed ones, and the
+  only change it makes elsewhere is a merge on GitHub that the person confirms.
+- **Private by default.** Nothing leaves the computer, except what the opt-in Live GitHub status
+  asks GitHub through `gh`. No telemetry, and no network calls of Pleni's own. The page shows short
+  snippets of session text only when `content` is `"snippets"` (the default); `"none"` shows only
+  tool names and states.
 - **Robust to big, live files.** Session files can be gigabytes and are appended while we read them.
   Pleni reads from the end, splits only on `\n` bytes, never parses a line that has no newline yet,
   and treats every field as optional.
@@ -53,6 +61,7 @@ src/store.js            owns the sources, polls them, caches the snapshot
 src/open.js             Open in PowerShell: a Claude Code session or Codex thread in a new window (opt-in, Windows)
 src/rollover.js         Roll over: a handoff note from a long session, then a new one with its name (opt-in, Windows)
 src/newagent.js         New agent: a new named session in the folder of one on the map (opt-in, Windows)
+src/github.js           Live GitHub status and Merge, through the GitHub CLI, gh (opt-in)
 src/demo.js             synthetic, moving demo data (no files needed)
 src/server.js           HTTP server, security gate, routes
 public/index.html       the page (no inline script or style)
@@ -92,7 +101,8 @@ export const DEFAULTS = {
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
-  actions: { openTerminal: false, rollover: false, newAgent: false }, // the Open in PowerShell, Roll over and New agent buttons; each true only when set to true
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false }, // the window buttons; each true only when set to true
+  github: { live: false, merge: false, mergeMethod: 'squash' }, // Live GitHub status, the Merge button, 'squash' | 'merge' | 'rebase'
   alerts: { stoppedMinutes: 15 },                      // a watched tile counts as stopped after this long without work
   rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 }, // "Roll over soon" limits (0-100, 0-100, 0-365); 0 turns one off
 }
@@ -106,7 +116,8 @@ Exports:
   replaced by defaults, strings trimmed and clipped, numbers clamped (`port` 1024–65535,
   `activeMinutes` 1–240, `recentHours` 1–720, `staleMinutes` 5–1440, `stoppedMinutes` 1–1440), arrays
   de-duplicated, node keys validated with `isNodeKey`, roots must be absolute paths or `null`.
-  `people[key].watch` is kept only when it is exactly `true`.
+  `people[key].watch` is kept only when it is exactly `true`, and so are `actions.*`, `github.live`
+  and `github.merge`.
 - `loadSettings(file)` returns `{ settings, file, error }` and never throws (a missing file gives
   defaults and no error; a broken file gives defaults and an `error` string).
 - `saveSettings(settings, file)` writes `cleanSettings(settings)` atomically (temp file, then rename),
@@ -173,6 +184,8 @@ Session = {
   entrypoint: string | null,// claude: 'claude-desktop' | 'claude-vscode' | 'cli' | 'sdk-cli'; codex: originator
   model: string | null,
   effort: string | null,
+  mode: string | null,      // claude main sessions: the newest turn's permissionMode
+                            // (default, acceptEdits, plan, auto, bypassPermissions, dontAsk); else null
   startedAt: number | null,
   lastAt: number | null,    // newest timestamp seen in a conversation record
   status: 'working' | 'ready' | 'idle' | 'done' | 'error',
@@ -221,7 +234,8 @@ export function createClaudeSource({ root, desktopRoot, settings, now = Date.now
   `started` records (`agentId`, `label`). A sub-agent's key is `claude:<sessionId>/<agentId>`; its
   parent is `claude:<sessionId>/<parentAgentId>` when nested, else `claude:<sessionId>`.
 - Conversation records are `user`, `assistant`, `attachment` and `system`. They carry `timestamp`
-  (ISO), `sessionId`, `cwd`, `gitBranch`, `entrypoint`, `version`. Metadata records (`custom-title`,
+  (ISO), `sessionId`, `cwd`, `gitBranch`, `entrypoint`, `version`, and on turns `effort` and
+  `permissionMode` (the newest known mode is the session's `mode`). Metadata records (`custom-title`,
   `agent-name`, `ai-title`, `last-prompt`, `cost-state`, `queue-operation`, …) have no timestamp and
   are re-appended often; the last one wins. Never use file mtime as `lastAt`.
 - Titles: last `custom-title`/`agent-name`, else last `ai-title`, else the Claude desktop app's
@@ -409,7 +423,7 @@ Snapshot = {
   attention: [{ id: '<key>|<kind>', key, kind, text, at }],  // at is 0 when unknown
   tasks: MailboxState['tasks'] | null,
   hiddenSessions: [{ key, title, platform, kind }],  // recent sessions with Role "Hide it": off the map, named in Settings
-  actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean },  // the page may show each button (setting on, Pleni on Windows)
+  actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean, teleport: boolean },  // the page may show each button (setting on, Pleni on Windows)
 }
 SourceInfo = { enabled, ok, error, count }
 Node = {
@@ -519,16 +533,16 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
 ```js
 export function createStore({ settings, roots, demo = false, now = Date.now, stateDir = null, platform = process.platform })
 // -> { snapshot(): Snapshot, detail(key, since), reload(settings, roots), close(), dismiss(id, at),
-//      session(key): { id, cwd, status, entrypoint, kind, title, titleSource } | null, demo: boolean }
+//      session(key): { id, cwd, status, entrypoint, kind, title, titleSource, model, effort, mode } | null, demo: boolean }
 ```
 
 Creates the enabled sources (or the demo source), polls at most every 2 s on demand, caches the
 snapshot with its JSON and its ETag, and rebuilds when settings change. `snapshot().actions.openTerminal`
-is `settings.actions.openTerminal` and `platform === 'win32'`, and `actions.rollover` and
-`actions.newAgent` the same for their settings. `session(key)` gives what the newest poll knows
+is `settings.actions.openTerminal` and `platform === 'win32'`, and `actions.rollover`,
+`actions.newAgent` and `actions.teleport` the same for their settings. `session(key)` gives what the newest poll knows
 about a top-level Claude Code session or a Codex thread (`{ id, cwd, status, entrypoint, kind,
-title, titleSource }`) for Open in PowerShell, Roll over and New agent, and `null` for anything else
-and in the demo. The ETag is
+title, titleSource, model, effort, mode }`) for Open in PowerShell, Roll over and New agent, and
+`null` for anything else and in the demo. The ETag is
 `snapshotTag(snapshot)` from `src/model.js`: `W/"<sha1 of the JSON with now set to 0>"`. `now`
 changes on every build, and the page needs it only to allow for a clock difference, so a snapshot
 that changed only its time keeps its ETag and the page's poll gets `304`.
@@ -615,7 +629,8 @@ window the person sees. Unlike Open in PowerShell, each window sends one message
 one that Pleni builds from the session's own name and that the page shows before the click.
 
 ```js
-export function rolloverPlan(tool, session)   // -> { name, problem, file, ask, start, rename }
+export function rolloverPlan(tool, session)   // -> { name, problem, file, ask, start, rename, carry }
+export function carryOver(tool, session)       // -> { model, effort, mode }, each null unless plain
 export function rolloverInfo({ key, settings, store, platform, stat }) // -> { ok: true, info: { ...plan, handoffAt } } | { ok: false, status, error }
 export async function rollover({ key, step, name, settings, roots, store, limits, platform, env, home, spawn, now, isAlive, isLocked, processStarts })
 // -> { ok: true } | { ok: false, status, error }   (error is a plain sentence)
@@ -643,15 +658,25 @@ export function rollCommand(tool, step, { id, name, text }, systemRoot) // -> { 
   `rollCommand`):
   - ask: `Pleni roll over: a new session will take over your work. Write a handoff note for it in
     <file> in this folder. Say what work is open and where it stands, what waits on whom, and what
-    else it must know. Do not commit the file. Then stop.`
+    else it must know. Copy in every standing instruction you were given and still follow, such as
+    how to report, how to pick a model and effort, and what you may and may not do. Do not commit
+    the file. Then stop.`
   - start: `Pleni roll over: you take over from the last session named <name>. First read <file>
-    in this folder. Then say in one line that you are ready.`
+    in this folder, and follow the standing instructions in it. Then say in one line that you are
+    ready.`
+- **What carries over** (`carryOver`): the old session's model (letters, digits and `. _ -`, at
+  most 80), its effort (Claude Code: low, medium, high, xhigh, max; Codex: minimal, low, medium,
+  high, xhigh), and for Claude Code its newest permission mode when it is acceptEdits, auto,
+  bypassPermissions, dontAsk or plan (the normal mode needs no flag). Anything else is left out.
+  Codex keeps its permissions in its own settings, which the new thread reads anyway.
 - **The commands**, in the same `cmd.exe /d /s /c "start "<title>" "<powershell.exe>" -NoExit
   -NoLogo -Command "<run>""` line as Open in PowerShell, spawned the same way in the session's
   folder with `toolEnv`:
   - ask: `claude --resume '<id>' '<ask>'`, or `codex resume '<id>' '<ask>'`;
-  - start: `claude --name '<name>' '<start>'`, or `codex '<start>'`. Codex cannot name a thread
-    when it starts, so the page shows `/rename <name>` for the person to type in the new window.
+  - start: `claude --name '<name>' [--model '<model>'] [--effort <effort>] [--permission-mode
+    <mode>] '<start>'`, or `codex [-m '<model>'] [-c model_reasoning_effort=<effort>] '<start>'`.
+    Codex cannot name a thread when it starts, so the page shows `/rename <name>` for the person to
+    type in the new window. The page's note says what the new session starts with.
 - **One writer.** Asking resumes the old session, so it follows Open in PowerShell's checks
   (`openProblem`, `codexProblem`), except that a live Claude Code background session is refused too:
   the message must not land in a turn that is already running. A Claude desktop app or VS Code
@@ -695,6 +720,75 @@ export function newAgentCommand(tool, name, systemRoot) // -> { file, args }
   starts, so the page shows `/rename <name>` for the person to type after the first message.
 - **Limits** are Open in PowerShell's (`openLimits`, shared), with the slot `new:<from>`: a second
   click from the same side panel within a few seconds starts nothing.
+- **Bring a cloud session here** (`teleport({ from, settings, roots, store, limits, platform, env,
+  home, spawn, now })`, `teleportCommand(systemRoot)`): off until `actions.teleport`. `from` must be
+  a main Claude Code session on the map (`claude:<session id>`, kind `session`), not in the demo,
+  with a folder `folderProblem` accepts. The window runs `claude --teleport` in that folder with
+  `toolEnv('claude', …)`; Claude Code lists the person's claude.ai cloud sessions there and checks
+  its own needs (the same repository, no unsaved changes, the session's branch pushed). Limits:
+  `openLimits`, slot `teleport:<from>`.
+
+## Live GitHub status (`src/github.js`)
+
+Off until `settings.github.live`. Pleni never talks to GitHub itself: it runs the GitHub CLI (`gh`)
+on the computer that runs Pleni, which uses the person's own gh login.
+
+```js
+export function createGithub({ execFile, env, platform, isFile, now })  // -> { status, merge }
+export function findGh(env, platform, isFile)            // -> the full path of gh, or null
+export function listArgs(repo)                           // -> gh pr list arguments
+export function mergeArgs(repo, number, method, head)    // -> gh pr merge arguments
+export function parsePulls(text, repo)                   // -> Pull[], or null when it is not a list
+export function ghOutcome(err, stdout, stderr)           // -> { ok, stdout, error }
+export function isRepoPath(value)                        // plain 'owner/name'
+export const GITHUB_MESSAGES, MAX_REPOS /* 12 */, MERGE_METHODS /* ['squash', 'merge', 'rebase'] */
+
+// Pull
+{
+  number, title,         // title: control and direction marks removed, at most 200 characters
+  url,                   // https://github.com/<repo>/pull/<number>, built by Pleni
+  state,                 // 'open' | 'draft' | 'merged' | 'closed'
+  branch, base, fork,    // head branch, base branch, whether it comes from another repository
+  head,                  // the head commit id (40 hex digits), or null
+  updatedAt,             // ms, or null
+  checks,                // 'passing' | 'failing' | 'running' | 'none'
+  failing,               // up to 3 names of failing checks
+  review,                // 'approved' | 'changes' | 'needed' | null
+  merge,                 // open ones: 'ready' | 'conflict' | 'behind' | 'blocked' | 'unstable' | 'draft' | 'checking'
+  why, canMerge,         // why Pleni will not merge it yet, in plain words (null when it will)
+}
+```
+
+- **Finding gh:** the first `gh.exe` (`gh` elsewhere) in an absolute, local folder on `PATH` (the
+  name `PATH` in any case on Windows). The current folder and network shares never count, so a
+  program named gh in a project never runs instead. Where gh is found is kept for a minute.
+- **Running gh:** `execFile` with that full path and no shell, in `os.tmpdir()` (away from any
+  repository), hidden, with a 30-second limit and at most 8 MB of output, and with
+  `GH_PROMPT_DISABLED`, `GH_NO_UPDATE_NOTIFIER`, `GH_NO_EXTENSION_UPDATE_NOTIFIER`,
+  `GH_SPINNER_DISABLED` and `NO_COLOR` set. The repository goes on the command line as
+  `github.com/<owner>/<name>`, so a `GH_HOST` setting cannot send it to another server.
+- **Asking:** `gh pr list --repo github.com/<repo> --state all --limit 30 --json
+  number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,updatedAt,reviewDecision,statusCheckRollup,mergeable,mergeStateStatus`.
+  `status({ repos, fresh })` asks about at most `MAX_REPOS` valid repositories, sorted, and answers
+  `{ error, repos: [{ repo, at, pulls, error }] }`; the outer `error` is set (and `repos` empty) when
+  gh cannot be found. Each answer, a failed one too, is kept for a minute; `fresh` asks again once
+  it is 10 seconds old. Two pages asking at once share one gh run.
+- **Checks:** a check run passes when it completed with `SUCCESS`, `NEUTRAL` or `SKIPPED`, and is
+  running until it completes; a commit status passes with `SUCCESS` and is running while `PENDING`
+  or `EXPECTED`. Anything else counts as failed, so Merge is never offered by mistake.
+- **Why not**, in this order: merged, closed, a draft, a merge conflict, failing checks (or GitHub's
+  `UNSTABLE`), running checks, changes asked for, behind its base branch, blocked, and GitHub still
+  checking (or no head commit). `canMerge` is true only when none applies, which needs GitHub's
+  `MERGEABLE` with `CLEAN` or `HAS_HOOKS`.
+- **Errors**, in plain words: gh missing, gh not signed in (exit code 4), too slow, else "GitHub
+  said: " with the first line gh wrote, or "GitHub did not answer".
+- **Merge:** `merge({ repo, number, head, method, known })`. The repository must be on the map
+  (`known`), `number` a whole number, and `head` a commit id. Three merges a minute in all, and one
+  at a time per pull request. Pleni asks GitHub again first and refuses unless the pull request is
+  still on `head` and `canMerge`. Then it runs `gh pr merge <number> --repo github.com/<repo>
+  --<method> --match-head-commit <head>`, so GitHub refuses too if anyone pushed since; never
+  `--admin`, `--auto` or `--delete-branch`. After a merge, the next look asks GitHub again. It
+  answers `{ ok: true }` or `{ ok: false, status, error }`.
 
 ## Server (`src/server.js`)
 
@@ -754,7 +848,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `GET /favicon.ico`, `GET /api/health`, `GET /api/snapshot` (weak ETag, `304` on match),
   `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`,
   `POST /api/placement`, `POST /api/dismiss`, `POST /api/watch`, `POST /api/open`,
-  `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`, `POST /api/new`, `GET /api/devices`.
+  `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`, `POST /api/new`, `POST /api/teleport`,
+  `GET /api/devices`, `GET /api/github`, `POST /api/github/merge`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
 - `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
   them the same way (`snapshotTag`) for a store that did not. Its answers, `304` included, carry
@@ -797,6 +892,19 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **POST /api/new** `{ from: nodeKey, tool: 'claude' | 'codex', name }` passes the same checks as
   `/api/open`, then `newAgent` in `src/newagent.js` makes the rest and opens the window. It answers
   `{ ok: true }` or `{ error }` with the status it gives, and shares the server's `openLimits`.
+- **POST /api/teleport** `{ from: nodeKey }` passes the same checks as `/api/open`, then `teleport`
+  in `src/newagent.js` makes the rest and opens the window.
+- **GET /api/github** (`?fresh=1` for Look again) needs the key cookie. It answers `{ on, merge,
+  method, error, repos }`. `on` is `settings.github.live`; `merge` is true when `live` and `merge`
+  are both on and the request is from this computer (like `/api/open`); `method` is
+  `settings.github.mergeMethod`. When `on` is false, `repos` is empty and nothing runs. Otherwise
+  `error` and `repos` come from `github.status` for the repositories on the map (`node.github`,
+  reviewers left out), or from `demoGithub` in the demo. Another device gets the same status, with
+  `merge: false`. `createServer({ github })` lets tests replace `createGithub()`.
+- **POST /api/github/merge** `{ repo, number, head }` passes the same checks as `/api/open` (this
+  computer only), needs `github.live` and `github.merge` (`403` otherwise), and is refused in the
+  demo (`409`). `github.merge` makes the rest, with `settings.github.mergeMethod` and the
+  repositories on the map, and its answer is sent with the status it gives.
 - **GET /api/devices** needs the key cookie and a request from this computer (like `/api/open`;
   `403` otherwise). It answers `{ addresses: ['https://<host>/' for each remote.hosts], key,
   knocks: [{ host, login, at, allowed }] }`, the turned-away devices newest first, where `allowed`
@@ -836,8 +944,19 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   works on. A branch that is not a main branch and whose name is only letters, digits and
   `. _ / -` links to **Its pull request** (`/pulls?q=is:pr head:<branch>`) and **Open a pull
   request** (`/compare/<branch>?expand=1`). Links open in a new tab with `rel="noopener
-  noreferrer"`; Pleni itself sends nothing to GitHub. A session's Details tab has a GitHub row with
-  the same links.
+  noreferrer"`. A session's Details tab has a GitHub row with the same links. With live GitHub
+  status on, the page asks `GET /api/github` when the view shows and then once a minute while it
+  stays open and visible; **Look again** asks with `?fresh=1`. A bar says "Live from GitHub, checked
+  <time>". Each branch shows its pull request (an open one first, else the newest; none for a main
+  branch or one from a fork): `#<number> <title>` linking to it, when it last changed, pills for its
+  state, checks, review and merge state, and up to three failing checks. An open one takes the place
+  of the branch's two links. Open pull requests on other branches show under **Other open pull
+  requests**. An error shows once at the top when every repository has the same one, else on each
+  card. When `merge` is true, on this computer, an open pull request that `canMerge` has **Merge**,
+  which asks first ("Merge #17 into main with “Squash and merge”? This changes main on GitHub.",
+  **Merge now**, **Cancel**) and posts `/api/github/merge` with the commit id the page showed. The
+  answer shows in the row, takes the focus, and is read out. One that cannot be merged yet says why.
+  Saving Settings drops the last answer, so the view asks again.
 - **Drawer:** clicking a tile opens the session's details and live recent events from
   `/api/session`. Esc closes it; focus is trapped while open and returned afterwards. When
   `snapshot.actions.openTerminal` is true and the page itself was opened on this computer
@@ -862,7 +981,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   same). The page checks the name with the server's rule first and marks the box when it is bad.
   For Codex it shows `/rename <name>` with a copy button. The answer shows under the button and is
   read out through the page's live region. A repaint keeps a text box's caret where it was, so
-  typing goes on while the panel updates.
+  typing goes on while the panel updates. When `snapshot.actions.teleport` is true, on this
+  computer, a main Claude Code session's Now tab has **Bring a cloud session here**, which posts
+  `/api/teleport`; its answer shows in the status line under the tabs, like Open in PowerShell.
   Sessions and the relay have a **Tell me if this stops working**
   box that posts `/api/watch`; Settings' own copy of the settings is updated too, so saving Settings
   later keeps it.
@@ -871,10 +992,11 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   split into six groups, shown as tabs (`role="tablist"`; arrow keys, Home and End move between
   them): **Basics** (You and the map; What the page shows, with Finished for, Call a turn stuck
   after and Reviewers folded under **More choices**), **Team** (Names and roles, Chain of command,
-  Projects, Ranks by model with its words folded), **Sources** (Where Pleni looks, Mailbox),
+  Projects, Ranks by model with its words folded), **Sources** (Where Pleni looks, Mailbox,
+  GitHub: Live GitHub status, Merge button, How to merge),
   **Alerts** (Needs you, with `alerts.stoppedMinutes` and the Pop-ups box; Roll over soon, with
-  the three `rollSoon` limits), **Buttons** (Open sessions: Open in PowerShell, New agent and Roll
-  over, and a line when the computer does not run Windows) and **Devices** (Open Pleni on another
+  the three `rollSoon` limits), **Buttons** (Open sessions: Open in PowerShell, New agent, Bring a
+  cloud session here and Roll over, and a line when the computer does not run Windows) and **Devices** (Open Pleni on another
   device; Other devices, the port, and where the settings file is). **Open Pleni on another
   device**, on this computer, asks `GET /api/devices` when the group opens and every 5 seconds while
   it shows. It shows this computer's address, the address for other devices with **Copy the
@@ -945,4 +1067,6 @@ A deterministic, time-driven cast: a person, two projects, a Codex planner with 
 Claude coordinator with three sub-agents (one working, one waiting, one done; the coordinator has a
 long session's numbers, so it shows "Roll over soon"), and a small mailbox
 with a note for the person, with hand-offs that light up every few seconds. It is used by `node bin/pleni.js --demo`, the screenshots and the
-tests, so that no real session data is ever needed to show Pleni.
+tests, so that no real session data is ever needed to show Pleni. With live GitHub status on, the
+demo shows made-up pull requests for its two repositories (`demoGithub(repos, now)`, in the shape
+`src/github.js` gives, run through `parsePulls`); merging them is refused.
