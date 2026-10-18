@@ -746,15 +746,16 @@ function workerRuns(workers, tree, pairs, ctx) {
   return events;
 }
 
-// Messages between tiles that are not joined by a tree line (two Sergeants, say) get a line of
-// their own, but only while they are moving, so the map does not fill up with old traffic.
+// Messages between tiles that are not joined by a tree line (two Sergeants, say, or mail between
+// the person and an agent) get a line of their own, but only while they are moving, so the map
+// does not fill up with old traffic.
 function messageEdges(tree, pairs, ctx) {
   const out = [];
   for (const [id, pair] of pairs) {
     const [from, to] = id.split('\n');
     const a = tree.nodes.get(from);
     const b = tree.nodes.get(to);
-    if (!a || !b || a.kind === 'person' || a.kind === 'project' || b.kind === 'person' || b.kind === 'project') continue;
+    if (!a || !b || a.kind === 'project' || b.kind === 'project') continue;
     if (b.parent === from || a.parent === to) continue;
     const line = edge(from, to, 'message', pair, ctx);
     if (line.active) out.push(line);
@@ -878,7 +879,8 @@ function treeEdges(tree, pairs, ctx) {
     if (!node.parent) continue;
     const parent = tree.nodes.get(node.parent);
     if (parent.kind === 'person' || parent.kind === 'project') {
-      edges.push(edge(parent.key, key, 'contains', null, ctx));
+      // Only mail between the person and a session right under them lights one of these.
+      edges.push(edge(parent.key, key, 'contains', pairs.get(`${parent.key}\n${key}`), ctx));
     } else {
       edges.push(edge(parent.key, key, 'spawn', pairs.get(`${parent.key}\n${key}`), ctx));
     }
@@ -986,7 +988,13 @@ function agentMailParts(mailbox, tree, all, pairs, ctx) {
     const fromName = text(m.fromName, MAX_LABEL * 2) || nameOf.get(m.from) || m.from;
     const toName = nameOf.get(m.to) || m.to;
     const words = ctx.snippets ? snippet(m.text, MAX_TEXT) : null;
-    if (from && to && from !== to && from !== 'you' && to !== 'you') lightMail(pairs, lineage, from, to, m.at, ctx.snippets ? snippet(m.text, MAX_TITLE) : null);
+    const label = ctx.snippets ? snippet(m.text, MAX_TITLE) : null;
+    if (from && to && from !== to) {
+      // Mail with the person runs on a line from the person's tile: down when they sent it.
+      if (from === 'you') lightNewer(pairs, 'you', to, { dir: 'down', at: m.at, label });
+      else if (to === 'you') lightNewer(pairs, 'you', from, { dir: 'up', at: m.at, label });
+      else lightMail(pairs, lineage, from, to, m.at, label);
+    }
     if (from || to) out.events.push({ at: m.at, kind: 'mail', from, to, text: words, fromName, toName });
     if (to === 'you' && m.unread === true) {
       const key = from && from !== 'you' ? from : 'you';
@@ -998,6 +1006,7 @@ function agentMailParts(mailbox, tree, all, pairs, ctx) {
       forYou.set(key, group);
     }
   }
+  out.events.push(...relayWakeParts(mailbox, tree, pairs, tileOf, lineage));
   for (const [key, group] of forYou) {
     const who = key === 'you' ? nameList(group.names) : snippet(tree.nodes.get(key).title, MAX_TITLE) || group.names[0];
     const what = group.count === 1 ? 'sent you mail' : `sent you ${group.count} messages`;
@@ -1005,6 +1014,27 @@ function agentMailParts(mailbox, tree, all, pairs, ctx) {
     out.attention.push({ key, kind: 'mail', text: group.text ? `${who} ${what}${newest}${group.text}` : `${who} ${what}.`, at: group.at });
   }
   return out;
+}
+
+// Each turn the relay started to wake an agent for its mail lights the line from the relay to that
+// agent, and goes in the feed: "Relay woke Sergeant Ada".
+function relayWakeParts(mailbox, tree, pairs, tileOf, lineage) {
+  const events = [];
+  const wakes = Array.isArray(mailbox.relay?.wakes) ? mailbox.relay.wakes : [];
+  if (!tree.nodes.has(RELAY)) return events;
+  for (const wake of [...wakes].filter((w) => isObject(w) && time(w.at) !== null && typeof w.key === 'string').sort((a, b) => a.at - b.at)) {
+    const tile = tileOf(wake.key);
+    const count = Number.isSafeInteger(wake.count) && wake.count > 0 ? wake.count : 0;
+    const what = count ? `to read ${count === 1 ? '1 new message' : `${count} new messages`}` : 'to read its mail';
+    if (tile && tile !== 'you') {
+      // Along the tree when the agent is above or below the relay, else a line of its own.
+      const label = `Woke it ${what}`;
+      if (lineage(tile).includes(RELAY) || lineage(RELAY).includes(tile)) lightMail(pairs, lineage, RELAY, tile, wake.at, label);
+      else lightNewer(pairs, RELAY, tile, { dir: 'down', at: wake.at, label });
+    }
+    events.push({ at: wake.at, kind: 'wake', from: RELAY, to: tile === 'you' ? null : tile, text: `${what[0].toUpperCase()}${what.slice(1)}.`, toName: text(wake.name, MAX_LABEL * 2) || wake.key });
+  }
+  return events;
 }
 
 // Which tile a mail name is: the person for the relay's owner_name, "Owner" or the name in

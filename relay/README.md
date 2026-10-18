@@ -280,8 +280,10 @@ Read messages stay in each agent's `read` folder. You may delete old ones whenev
 
 With the mailbox turned on in Pleni, Pleni reads the `mail` folder too. It never sends mail.
 
-- A line lights up between two tiles when mail goes from one to the other, and the Activity view
-  lists each message: "Colonel sent mail to Sergeant Lark".
+- A line lights up between two tiles when mail goes from one to the other, mail with you
+  included, and the Activity view lists each message: "Colonel sent mail to Sergeant Lark".
+- When the relay wakes an agent for its mail, the line from the relay's tile to the agent lights
+  up, and the Activity view says "Relay woke Sergeant Lark".
 - A tile with mail waiting says "2 new messages" on its bottom edge. Click it to see since when, and
   whether the relay wakes it for its mail.
 - Mail for you shows under **Needs you**. Your own side panel gives the command to read it, and the

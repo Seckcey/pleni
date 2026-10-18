@@ -70,7 +70,8 @@ Always:
 - Each session's state (Needs you, Working, Finished, Idle, Done, Error), the name of the tool it is
   using, and when it last did something.
 - Who started whom, and when work was handed down or reported back up.
-- With agent mail: who sent mail to whom and when, and how many messages wait for each agent.
+- With agent mail: who sent mail to whom and when, how many messages wait for each agent, and when
+  the relay woke an agent for its mail.
 - In the Tasks view: mailbox task ids and states.
 
 Only when the `content` setting is `snippets` (this is the default):

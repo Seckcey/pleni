@@ -352,6 +352,7 @@ test('relay: coordinator, pause, stop and a live lock', (t) => {
     pausedAt: OLD,
     haltReason: null,
     alerts: null,
+    wakes: [],
   });
 
   fs.rmSync(path.join(root, '.relay', 'PAUSE'));
@@ -366,6 +367,7 @@ test('relay: coordinator, pause, stop and a live lock', (t) => {
     pausedAt: null,
     haltReason: null,
     alerts: null,
+    wakes: [],
   });
 });
 
@@ -381,6 +383,7 @@ test('relay: state.json flags and an empty relay folder', (t) => {
     pausedAt: null,
     haltReason: null,
     alerts: null,
+    wakes: [],
   });
   write(root, '.relay/state.json', JSON.stringify({ paused: true, halted: true }));
   const relay = createMailboxSource({ root }).poll().relay;
@@ -763,4 +766,23 @@ test('agent mail: a read message moves at once even when the folder times stay t
   assert.equal(mail.agents[1].unread, 2, 'one read, one new');
   assert.equal(mail.messages.find((m) => m.text === '## Plan\nCheck the **build**.').unread, false);
   assert.equal(mail.messages.find((m) => m.text === 'Newer.').unread, true);
+});
+
+test('relay: the turns it started to wake an agent for its mail', (t) => {
+  const root = tempMailbox(t);
+  const at = Date.UTC(2026, 9, 18, 15, 40, 0) / 1000;
+  write(root, '.relay/state.json', JSON.stringify({
+    mail_dispatches: {
+      M1: { id: 'M1', agent: 'sergeant-ada', name: 'Sergeant Ada', state: 'completed', items: ['sergeant-ada/a.md', 'sergeant-ada/b.md'], started_utc: at, finished_utc: at + 90 },
+      M2: { id: 'M2', agent: 'sergeant-bo', name: 'Sergeant Bo', state: 'running', items: 'sergeant-bo/c.md', started_utc: at + 60, finished_utc: 0 },
+      M3: { id: 'M3', agent: '../escape', name: 'Nope', state: 'completed', items: [], started_utc: at },
+      M4: { id: 'M4', agent: 'sergeant-cy', state: 'launching', started_utc: 0 },
+    },
+  }));
+  assert.deepEqual(createMailboxSource({ root }).poll().relay.wakes, [
+    { key: 'sergeant-bo', name: 'Sergeant Bo', at: (at + 60) * 1000, endAt: null, running: true, count: 1 },
+    { key: 'sergeant-ada', name: 'Sergeant Ada', at: at * 1000, endAt: (at + 90) * 1000, running: false, count: 2 },
+  ]);
+  write(root, '.relay/state.json', JSON.stringify({ mail_dispatches: [1, 2] }));
+  assert.deepEqual(createMailboxSource({ root }).poll().relay.wakes, []);
 });

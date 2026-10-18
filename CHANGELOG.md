@@ -8,6 +8,10 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Fixed
 
+- Agent mail now lights lines on the map that it did not before: mail between you and an agent
+  lights the line between your tile and theirs, and when the relay wakes an agent for its mail, the
+  line from the relay to that agent lights up and the Activity view says "Relay woke <agent>". The
+  Working view shows the relay while one of its lines is lit.
 - The mailbox relay now waits while any Claude Code window has the coordinator open, also a window
   whose command line does not name the session, such as one started with `claude --name` or by
   Roll over. It finds those in Claude Code's own list of running sessions. Before, it could wake
