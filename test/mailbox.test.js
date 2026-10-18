@@ -743,3 +743,24 @@ test('agent mail: a renamed copy in read keeps its sender', (t) => {
   const mail = createMailboxSource({ root }).poll().mail;
   assert.deepEqual(mail.messages.map((m) => [m.from, m.fromName]), [['sergeant-abc123', null], ['sergeant-abc123', 'Sergeant abc123']]);
 });
+
+test('agent mail: a read message moves at once even when the folder times stay the same', (t) => {
+  const root = tempMailbox(t);
+  buildMail(root);
+  // Some disks keep a folder's times for a while after a change (Windows, for a few milliseconds).
+  const real = fs.statSync;
+  t.mock.method(fs, 'statSync', (file, options) => {
+    const st = real(file, options);
+    if (st?.isDirectory()) Object.assign(st, { mtimeMs: 1, ctimeMs: 1 });
+    return st;
+  });
+  const source = createMailboxSource({ root });
+  assert.equal(source.poll().mail.agents[1].unread, 2);
+  const name = '20261018-101500-123-colonel-a1b2c3.md';
+  fs.renameSync(path.join(root, 'mail', 'sergeant-ada', 'new', name), path.join(root, 'mail', 'sergeant-ada', 'read', name));
+  mailFile(root, 'mail/sergeant-ada/new/20261018-102000-000-colonel-d1d2d3.md', 'Colonel', 'Sergeant Ada', 'x', 'Newer.');
+  const mail = source.poll().mail;
+  assert.equal(mail.agents[1].unread, 2, 'one read, one new');
+  assert.equal(mail.messages.find((m) => m.text === '## Plan\nCheck the **build**.').unread, false);
+  assert.equal(mail.messages.find((m) => m.text === 'Newer.').unread, true);
+});

@@ -544,8 +544,8 @@ function shortText(value, max) {
 // ---- agent mail ----
 
 // Reads mail/ for the page: { owner, agents, messages }, or null when the mailbox has no mail folder.
-// A message file never changes, so each one is read once; a folder is listed again when its own
-// times move, and at least every LIST_MS in case a disk does not move them.
+// A message file never changes, so each one is read once. Each agent's new/ is listed on every poll;
+// other folders when their own times move, when a message left new/, and at least every LIST_MS.
 function createMailReader(root, now) {
   const dir = path.join(root, 'mail');
   const settingsFiles = createFileCache();
@@ -562,9 +562,9 @@ function createMailReader(root, now) {
     const t = now();
     const seenFolders = new Set();
     const seenFiles = new Set();
-    const list = (folder, kind) => {
+    const list = (folder, kind, force = false) => {
       seenFolders.add(folder);
-      return listFolder(folder, kind, t);
+      return listFolder(folder, kind, t, force);
     };
     const enrolled = enrolledAgents(settingsFiles.get(path.join(root, '.relay', 'agents.json'), readJson));
     const owner = shortText(settingsFiles.get(path.join(root, 'bin', 'relay-settings.json'), readJson)?.owner_name, MAX_MAIL_NAME);
@@ -575,8 +575,13 @@ function createMailReader(root, now) {
     const done = [];
     for (const key of [...keys].sort(ORDER.compare).slice(0, MAX_MAIL_AGENTS)) {
       const base = path.join(dir, key);
-      const fresh = list(path.join(base, 'new'), 'mail');
-      const old = list(path.join(base, 'read'), 'mail');
+      // new/ is small and is listed on every poll. A message that left it was read, so read/ is
+      // listed again too: a folder's times can stay the same for a while after a change (Windows).
+      const newDir = path.join(base, 'new');
+      const before = listings.get(newDir)?.entries ?? [];
+      const fresh = list(newDir, 'mail', true);
+      const still = new Set(fresh);
+      const old = list(path.join(base, 'read'), 'mail', before.some((file) => !still.has(file)));
       const nameFile = path.join(base, 'name.txt');
       seenFiles.add(nameFile);
       const wakes = enrolled.get(key);
@@ -608,8 +613,9 @@ function createMailReader(root, now) {
     return { owner, agents, messages: kept };
   }
 
-  // The names in a folder, by name (so mail is oldest first). `kind` is 'dirs' or 'mail'.
-  function listFolder(folder, kind, t) {
+  // The names in a folder, by name (so mail is oldest first). `kind` is 'dirs' or 'mail'; `force`
+  // lists it again even when its times did not move.
+  function listFolder(folder, kind, t, force) {
     let st;
     try {
       st = fs.statSync(folder, { throwIfNoEntry: false });
@@ -619,7 +625,7 @@ function createMailReader(root, now) {
     if (!st?.isDirectory()) return [];
     const sig = `${st.mtimeMs}:${st.ctimeMs}:${st.ino}`;
     const old = listings.get(folder);
-    if (old && old.sig === sig && t - old.at < LIST_MS && t >= old.at) return old.entries;
+    if (!force && old && old.sig === sig && t - old.at < LIST_MS && t >= old.at) return old.entries;
     const entries = kind === 'dirs' ? listDirs(folder).sort(ORDER.compare) : listMail(folder);
     listings.set(folder, { sig, at: t, entries });
     return entries;

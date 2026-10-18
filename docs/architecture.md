@@ -426,8 +426,9 @@ MailboxState = {
   A message is one file, `<yyyyMMdd-HHmmss-fff UTC>-<sender's key>-<6 hex>.md` (a copy moved to
   `read/` under a taken name gets `-<4 hex>` more), holding `From:`, `To:` and `Sent:` lines, a
   blank line, then the text. A message never changes once it is there; reading it only moves it
-  from `new/` to `read/`. So each message file is read once (its first 80 KB), and a folder is
-  listed again when its own times move, and at least every 10 s. `agents` are the mail folders
+  from `new/` to `read/`. So each message file is read once (its first 80 KB). Each agent's `new/`
+  is listed on every poll; `read/` and `mail/` again when their own times move, when a message left
+  `new/`, and at least every 10 s (a folder's times can stay the same for a while after a change). `agents` are the mail folders
   plus the agents in `.relay/agents.json`: `name` from `name.txt` (≤1 KB), else from
   `agents.json`; `unread` counts every file in `new/`, `since` is the oldest one's time; `wakes` is
   true when the relay wakes it, and `threadId` is the Codex thread it wakes (from `thread_id`, kept
