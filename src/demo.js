@@ -29,6 +29,8 @@ const OFFLINE = 'codex:019a3e10-2f77-7c54-b15a-9e5162738495';
 const TILES = 'claude:3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f';
 const RATES = 'grok:01a13b20-5c6d-7e8f-9a0b-1c2d3e4f5a6b';
 const ROUNDING = 'kimi:7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+// Made-up GitHub repositories for the Pull requests view.
+const GITHUB = { billing: 'example/billing-service', field: 'example/field-app' };
 const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
 const ROOTS = { claude: '.claude', codex: '.codex', grok: '.grok', kimi: '.kimi-code' };
 
@@ -273,6 +275,7 @@ function session(member, clock, handoffs) {
     titleSource: 'demo',
     cwd: member.cwd,
     branch: member.branch,
+    github: GITHUB[member.cwd.startsWith(FIELD) || member.cwd.includes('field-app') ? 'field' : 'billing'],
     entrypoint: member.entrypoint,
     model: member.model,
     effort: member.effort,

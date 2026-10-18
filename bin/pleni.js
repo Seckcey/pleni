@@ -60,7 +60,8 @@ async function main(argv, env) {
   // Pleni at once, and that must still be a clean stop.
   stopOnSignal(app);
   if (options.demo) process.stdout.write('Showing made-up demo data.\n');
-  process.stdout.write(`Pleni is running at ${app.url}\n${openNote(app, options)}\n` +
+  const remote = (app.remote ?? []).map((address) => `From your other devices: ${address}\n`).join('');
+  process.stdout.write(`Pleni is running at ${app.url}\n${remote}${openNote(app, options)}\n` +
     `${keyNote(app, options)}\nPress Ctrl+C to stop.\n`);
   return undefined;
 }

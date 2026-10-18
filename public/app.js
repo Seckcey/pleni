@@ -11,8 +11,8 @@ const FEED_PAGE = 150;
 const FL = { W: 268, H: 128, GX: 96, GY: 22, PAD: 48 };
 const ZOOM_MIN = 0.3;
 const ZOOM_MAX = 1.6;
-const VIEWS = ['map', 'list', 'activity', 'tasks', 'settings'];
-const VIEW_NAMES = { map: 'Map', list: 'List', activity: 'Activity', tasks: 'Tasks', settings: 'Settings' };
+const VIEWS = ['map', 'list', 'activity', 'tasks', 'pulls', 'settings'];
+const VIEW_NAMES = { map: 'Map', list: 'List', activity: 'Activity', tasks: 'Tasks', pulls: 'Pull requests', settings: 'Settings' };
 const STATUS_WORDS = { needs: 'Needs you', working: 'Working', ready: 'Finished', idle: 'Idle', done: 'Done', error: 'Error' };
 const FILTERS = [['all', 'All'], ['needs', 'Needs you'], ['working', 'Working'], ['ready', 'Finished'], ['error', 'Error'], ['idle', 'Idle'], ['done', 'Done']];
 const FEED_FILTERS = [['all', 'Everything'], ['down', 'Work handed out'], ['up', 'Reports back'], ['error', 'Errors']];
@@ -251,7 +251,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-roll', 'data-copy', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -751,13 +751,18 @@ function render() {
   renderVersion();
   renderSignIn();
   $('#nav-tasks').hidden = !(S.snap && Array.isArray(S.snap.tasks));
+  $('#nav-pulls').hidden = !repoGroups().length;
   const asking = (S.snap && S.snap.counts && S.snap.counts.needs) || 0;
   document.title = `${asking ? `(${asking}) ` : ''}${VIEW_NAMES[S.view]} · Pleni`;
   if (S.view === 'map') renderMap();
   else if (S.view === 'list') renderList();
   else if (S.view === 'activity') renderActivity();
   else if (S.view === 'tasks') renderTasks();
-  else if (S.view === 'settings') paintModels();
+  else if (S.view === 'pulls') renderPulls();
+  else if (S.view === 'settings') {
+    paintModels();
+    loadDevices(false);
+  }
   if (S.drawer) renderDrawerParts();
   announce();
 }
@@ -1898,6 +1903,97 @@ function renderTasks() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// pull requests
+// ---------------------------------------------------------------------------------------------
+
+// The GitHub repositories the sessions on the map work in (node.github, read from each folder's git
+// settings), with links to their pull requests. Pleni makes no calls to GitHub: the links open
+// github.com in the browser, and the agents open, review and merge with their own git and gh.
+const GITHUB_PATH = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
+const LINK_BRANCH = /^[A-Za-z0-9._\/-]{1,200}$/;
+const MAIN_BRANCHES = new Set(['main', 'master', 'trunk', 'develop']);
+
+// [[repo, [[branch, sessions], ...]], ...], sorted. Main sessions first; a helper shows only on a
+// branch no main session of its repository works on.
+function repoGroups() {
+  const repos = new Map();
+  const nodes = S.index ? S.index.nodes.filter((n) => isSession(n) && n.kind !== 'reviewer' && typeof n.github === 'string' && GITHUB_PATH.test(n.github)) : [];
+  for (const pass of ['session', 'agent']) {
+    const before = new Map([...repos].map(([repo, branches]) => [repo, new Set(branches.keys())]));
+    for (const n of nodes) {
+      if ((n.kind === 'session') !== (pass === 'session')) continue;
+      const branch = typeof n.subtitle === 'string' ? n.subtitle : '';
+      if (pass === 'agent' && before.get(n.github)?.has(branch)) continue;
+      if (!repos.has(n.github)) repos.set(n.github, new Map());
+      const branches = repos.get(n.github);
+      if (!branches.has(branch)) branches.set(branch, []);
+      branches.get(branch).push(n);
+    }
+  }
+  const order = (a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' });
+  return [...repos]
+    .sort((a, b) => order(a[0], b[0]))
+    .map(([repo, branches]) => [repo, [...branches].sort((a, b) => Number(MAIN_BRANCHES.has(b[0])) - Number(MAIN_BRANCHES.has(a[0])) || order(a[0], b[0]))]);
+}
+
+function githubLink(repo, rest, text) {
+  return `<a class="ext" href="${esc(`https://github.com/${repo}${rest}`)}" target="_blank" rel="noopener noreferrer">${esc(text)}<span class="sr-only"> (opens GitHub in a new tab)</span></a>`;
+}
+
+// Links for one branch: its pull request (if any) and a page to open one. None for a main branch or
+// a name that is not safe in an address.
+function branchLinks(repo, branch) {
+  if (!branch || MAIN_BRANCHES.has(branch) || !LINK_BRANCH.test(branch)) return '';
+  const path = branch.split('/').map(encodeURIComponent).join('/');
+  return githubLink(repo, `/pulls?q=${encodeURIComponent(`is:pr head:${branch}`)}`, 'Its pull request') +
+    githubLink(repo, `/compare/${path}?expand=1`, 'Open a pull request');
+}
+
+function pullSessionHtml(n) {
+  const status = statusOf(n);
+  return (
+    `<li><span class="who">${markHtml(n, 'small')}<button type="button" class="open" data-node="${esc(n.key)}">${esc(titleOf(n))}</button></span>` +
+    `<span class="sub">${esc(rankLine(n))}</span><span class="pill">${esc(STATUS_WORDS[status] || 'Unknown')}</span></li>`
+  );
+}
+
+function renderPulls() {
+  const groups = repoGroups();
+  if (!groups.length) {
+    setText($('#pulls-meta'), '');
+    setHtml(
+      $('#pulls'),
+      '<p class="empty">No session on the map works in a GitHub repository. Pleni finds a repository from the git settings in a session\'s folder: the address of its origin remote, on github.com.</p>',
+    );
+    return;
+  }
+  const branchCount = groups.reduce((sum, [, branches]) => sum + branches.length, 0);
+  const sessionCount = groups.reduce((sum, [, branches]) => sum + branches.reduce((n, [, list]) => n + list.length, 0), 0);
+  setText(
+    $('#pulls-meta'),
+    `${plural(groups.length, 'GitHub repository', 'GitHub repositories')} · ${plural(branchCount, 'branch', 'branches')} · ${plural(sessionCount, 'session', 'sessions')}`,
+  );
+  const cards = groups.map(([repo, branches], i) => {
+    const rows = branches.map(([branch, list]) => {
+      const name = branch ? `<code>${esc(branch)}</code>` : '<span class="quiet">No branch known</span>';
+      const main = MAIN_BRANCHES.has(branch) ? ' <span class="quiet">(main branch)</span>' : '';
+      return `<li class="branch"><div class="branch-head"><span class="branch-name">${name}${main}</span><span class="links">${branchLinks(repo, branch)}</span></div>` +
+        `<ul class="branch-who">${list.map(pullSessionHtml).join('')}</ul></li>`;
+    });
+    return (
+      `<section class="repo" aria-labelledby="repo-${i}"><div class="repo-head"><h2 id="repo-${i}">${esc(repo)}</h2>` +
+      `<span class="links">${githubLink(repo, '/pulls', 'Pull requests')}${githubLink(repo, '/branches', 'Branches')}${githubLink(repo, '/actions', 'Checks')}</span></div>` +
+      `<ul class="branches">${rows.join('')}</ul></section>`
+    );
+  });
+  setHtml(
+    $('#pulls'),
+    cards.join('') +
+      '<p class="note">Pleni only links to GitHub; it sends nothing there. Your agents open, review and merge pull requests with their own git and gh commands.</p>',
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
 // drawer
 // ---------------------------------------------------------------------------------------------
 
@@ -2511,6 +2607,9 @@ function detailsHtml(n) {
   add('Rank', esc(n.rank || ''));
   add('Role', esc(cap(n.role || '')));
   add('Project', esc(n.project ? projectLabel(n.project) : ''));
+  if (isSession(n) && typeof n.github === 'string' && GITHUB_PATH.test(n.github)) {
+    add('GitHub', `<span class="gh-links">${githubLink(n.github, '', n.github)}${branchLinks(n.github, n.subtitle)}</span>`);
+  }
   if (isSession(n)) {
     add('Model', esc([n.modelLabel || prettyModel(n.model), n.model && n.modelLabel !== n.model ? `(${n.model})` : ''].filter(Boolean).join(' ')));
     add('Effort', esc(EFFORT_WORDS[n.effort] || n.effort || ''));
@@ -3108,6 +3207,131 @@ function settingsState() {
   return S.set;
 }
 
+// ---- other devices ----
+// On this computer, Settings shows the addresses for other devices, copies the key or a sign-in
+// link, and lists devices Pleni turned away lately, with Allow. It asks again every few seconds
+// while the Devices group is open, so a device that just tried shows up.
+const DEVICES_REFRESH_MS = 5000;
+
+async function loadDevices(force) {
+  const st = S.set;
+  if (!LOCAL_PAGE || !st || !st.info) return;
+  const shown = S.view === 'settings' && (st.group === 'devices' || !!st.find);
+  if (!force && (!shown || st.devicesBusy || Date.now() - (st.devicesAt || 0) < DEVICES_REFRESH_MS)) return;
+  st.devicesBusy = true;
+  try {
+    st.devices = await getJson('/api/devices');
+    st.devicesError = '';
+  } catch (err) {
+    st.devicesError = plainError(err);
+  } finally {
+    st.devicesBusy = false;
+    st.devicesAt = Date.now();
+  }
+  paintDevices();
+}
+
+function paintDevices() {
+  setHtml($('#devices-box'), devicesHtml());
+}
+
+function devicesHtml() {
+  const st = S.set;
+  const here = `${location.origin}/`;
+  if (!LOCAL_PAGE) {
+    return `<p>You are using Pleni at <code>${esc(here)}</code>. Bookmark this page to come back: in Chrome, press Ctrl+D.</p>` +
+      '<p class="help">The key and the list of devices show only on the computer that runs Pleni.</p>';
+  }
+  const d = st && st.devices;
+  if (!d) return `<p class="help">${esc(st && st.devicesError ? `Could not read this. ${st.devicesError}` : 'Loading…')}</p>`;
+  const addresses = Array.isArray(d.addresses) ? d.addresses : [];
+  const waiting = (Array.isArray(d.knocks) ? d.knocks : []).filter((k) => k && !k.allowed);
+  const out = [`<p>On this computer: <code>${esc(here)}</code></p>`];
+  if (addresses.length) {
+    out.push(
+      '<p>On your other devices, open this address and bookmark it:</p><ul class="addr-list">' +
+        addresses.map((a, i) => `<li><code>${esc(a)}</code><button type="button" class="btn" data-copy-addr="${i}">Copy the address</button></li>`).join('') +
+        '</ul>',
+    );
+  } else {
+    out.push(
+      '<p>No other device is set up yet. To set one up:</p><ol class="steps">' +
+        `<li>On this computer, in PowerShell, run <code>tailscale serve --bg ${esc(location.port || String(getPath(st.draft, 'port', 8790)))}</code>. It shows an address such as <code>https://my-pc.tail1234.ts.net</code>.</li>` +
+        '<li>Open that address on your other device, with Tailscale on. Pleni turns it away the first time, and it shows up here.</li>' +
+        '<li>Choose <b>Allow</b> next to it. Then reload the page there.</li></ol>',
+    );
+  }
+  if (waiting.length) {
+    out.push(
+      '<h3 class="sub-h">Turned away lately</h3><ul class="knocks">' +
+        waiting.map((k, i) =>
+          `<li><span><code>${esc(k.host)}</code> as <b>${esc(k.login)}</b>, ${agoHtml(k.at)}</span>` +
+          `<button type="button" class="btn primary" data-allow="${i}">Allow</button></li>`).join('') +
+        '</ul><p class="help">Allow only your own devices, or people you trust with your work: they see everything you see here.</p>',
+    );
+  }
+  out.push(
+    '<p>The first time, Pleni on the other device asks for its key.</p>' +
+      '<div class="roll-btns"><button type="button" class="btn" id="s-key-copy">Copy the key</button>' +
+      (addresses.length ? '<button type="button" class="btn" id="s-link-copy">Copy a sign-in link</button>' : '') +
+      '</div><p class="help">Paste the key there. A sign-in link holds the key: open it once on the other device and it signs in by itself. Keep both private, like a password.</p>' +
+      `<p class="roll-msg${st.devicesMsg && st.devicesMsg.bad ? ' bad' : ''}">${st.devicesMsg ? esc(st.devicesMsg.text) : ''}</p>`,
+  );
+  return out.join('');
+}
+
+async function copyDevices(what, index) {
+  const st = S.set;
+  const d = st && st.devices;
+  if (!d) return;
+  const addresses = Array.isArray(d.addresses) ? d.addresses : [];
+  const texts = {
+    addr: [addresses[index], 'Copied the address.'],
+    key: [d.key, 'Copied the key.'],
+    link: [addresses[0] && d.key ? `${addresses[0]}?t=${encodeURIComponent(d.key)}` : '', 'Copied a sign-in link.'],
+  };
+  const [text, done] = texts[what] || [];
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    st.devicesMsg = { text: done };
+  } catch {
+    st.devicesMsg = { text: 'The browser did not allow copying. Run "node bin/pleni.js --url" in PowerShell to see the address and the key.', bad: true };
+  }
+  say(st.devicesMsg.text);
+  paintDevices();
+}
+
+// Allow fills in the host name and the login, and saves at once when nothing else waits to be
+// saved; otherwise it leaves Save to the person, so other changes are not saved by surprise.
+function allowDevice(index) {
+  const st = S.set;
+  const waiting = st && st.devices && Array.isArray(st.devices.knocks) ? st.devices.knocks.filter((k) => k && !k.allowed) : [];
+  const k = waiting[index];
+  if (!k) return;
+  const clean = same(st.draft, st.info.settings);
+  if (!st.draft.remote || typeof st.draft.remote !== 'object') st.draft.remote = {};
+  for (const [field, value] of [['hosts', k.host], ['tailscaleUsers', k.login]]) {
+    const list = Array.isArray(st.draft.remote[field]) ? st.draft.remote[field] : [];
+    if (!list.some((v) => String(v).toLowerCase() === value)) list.push(value);
+    st.draft.remote[field] = list;
+  }
+  for (const [id, path] of [['s-hosts', 'remote.hosts'], ['s-users', 'remote.tailscaleUsers']]) {
+    const field = $(`#${id}`);
+    if (field) field.value = getPath(st.draft, path, []).join(', ');
+  }
+  if (clean) {
+    st.devicesMsg = { text: `Allowing ${k.host} for ${k.login}…` };
+    paintDevices();
+    saveSettings().then(() => loadDevices(true));
+  } else {
+    st.devicesMsg = { text: 'Added to the lists below. Choose Save settings to keep it.' };
+    say(st.devicesMsg.text);
+    paintDevices();
+    updateSettingsMsg();
+  }
+}
+
 async function loadSettings(force) {
   const st = settingsState();
   if (st.info && !force) {
@@ -3127,6 +3351,7 @@ async function loadSettings(force) {
     st.error = plainError(err);
   }
   if (S.view === 'settings') renderSettingsForm();
+  loadDevices(true);
 }
 
 function getPath(obj, path, fallback) {
@@ -3592,8 +3817,11 @@ function renderSettingsForm() {
       ${st.info.platform && st.info.platform !== 'win32' ? '<p class="note">This computer does not run Windows, so these buttons will not show here yet.</p>' : ''}
     </section>`)}
     ${group('devices', 'Opening Pleni from another device, and where its settings are kept.', `
+    <section class="panel" aria-labelledby="s-h-link" data-find="address url link bookmark key sign in phone laptop chrome allow"><h2 id="s-h-link">Open Pleni on another device</h2>
+      <div id="devices-box">${devicesHtml()}</div>
+    </section>
     <section class="panel" aria-labelledby="s-h-remote" data-find="phone tablet laptop remote tailscale proxy port host login"><h2 id="s-h-remote">Other devices</h2>
-      <p class="note">Pleni only listens on this computer. To open it from another device, put a private proxy such as <code>tailscale serve</code> in front of it, then list the host name and the Tailscale logins that may use it. The other device also needs Pleni's key: open the address Pleni printed when it started, with your Tailscale address in place of the part before <code>/?t=</code>.</p>
+      <p class="note">Pleni only lets in the host names and Tailscale logins listed here. <b>Allow</b> above fills both in for you.</p>
       ${textRow('s-hosts', 'Allowed host names', 'remote.hosts', { kind: 'words', placeholder: 'pleni.example.ts.net', help: 'Separate names with commas. Up to 20.' })}
       ${textRow('s-users', 'Allowed Tailscale logins', 'remote.tailscaleUsers', { kind: 'words', placeholder: 'ada@example.com', help: 'Separate logins with commas. Up to 20.' })}
       ${numberRow('s-port', 'Port', 'port', 1024, 65535, 'Pleni uses a new port the next time it starts.')}
@@ -3638,6 +3866,7 @@ function selectSettingsGroup(id, focus) {
   if (find) find.value = '';
   history.replaceState(null, '', `#/settings/${id}`);
   applySettingsView();
+  if (id === 'devices') loadDevices(true);
   if (focus) $(`#stab-${id}`).focus();
 }
 
@@ -4048,6 +4277,10 @@ document.addEventListener('click', (ev) => {
   }
   if (el.id === 's-retry') return loadSettings(true);
   if (el.dataset.stab) return selectSettingsGroup(el.dataset.stab, false);
+  if (el.dataset.copyAddr) return copyDevices('addr', Number(el.dataset.copyAddr));
+  if (el.id === 's-key-copy') return copyDevices('key');
+  if (el.id === 's-link-copy') return copyDevices('link');
+  if (el.dataset.allow) return allowDevice(Number(el.dataset.allow));
   if (el.id === 's-chain-add') return addChainRule();
   if (el.dataset.chainRemove) return removeChainRule(Number(el.dataset.chainRemove));
   if (el.id === 's-undo' && S.set && S.set.info) {

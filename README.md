@@ -112,6 +112,9 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
 - **Activity** — every hand-off, newest first.
 - **Tasks** — shown only when you turn on a mailbox (see below). It lists each task, its state,
   and which ones need you.
+- **Pull requests** — shown when your sessions work in GitHub repositories. For each repository it
+  lists the branches your agents work on, who is on each, and links to its pull request on GitHub,
+  or to open one. Pleni only links to GitHub; it sends nothing there.
 - **Settings** — six short groups: **Basics** (your name, the look, which sessions show),
   **Team** (names, roles, who reports to whom), **Sources** (which folders to read, and the
   mailbox), **Alerts**, **Buttons** (Open in PowerShell, New agent and Roll over), and **Devices**
@@ -359,7 +362,8 @@ never does. To report a security problem, read [SECURITY.md](SECURITY.md) first.
 Pleni opens only on your own computer. To see it on your phone, you can use
 [Tailscale](https://tailscale.com/), which links your own devices together privately.
 
-1. Install Tailscale on your computer and your phone, and sign in to the same account on both.
+1. Install Tailscale on your computer and your phone (or laptop), and sign in to the same account
+   on both.
 2. Start Pleni on your computer.
 3. On your computer, run:
 
@@ -368,13 +372,18 @@ Pleni opens only on your own computer. To see it on your phone, you can use
    ```
 
    Tailscale prints a web address for your computer, such as `https://my-pc.tail1234.ts.net`.
-4. In Pleni's **Settings → Devices**, add two things to the remote access lists: the host name
-   from that address (`my-pc.tail1234.ts.net`) and your Tailscale login name (the Tailscale app
-   shows it). Save.
-5. Open the web address on your phone and bookmark it, for example
-   `https://my-pc.tail1234.ts.net/`. Pleni asks for its key the first time. Paste the key that
-   `npx pleni --url` shows on your computer. You only need the key once per device, and the
+4. Open that address on your phone. The first time, Pleni says it does not answer for it yet.
+5. On your computer, open Pleni's **Settings → Devices**. Under **Turned away lately**, choose
+   **Allow** next to your phone's visit. Pleni adds the address and your Tailscale login to its
+   lists and saves.
+6. Reload the page on your phone. Pleni asks for its key: on your computer, choose **Copy the
+   key** in Settings → Devices and paste it there. (Or choose **Copy a sign-in link** and open that
+   link once on the phone.) Then bookmark the page. You only need the key once per device, and the
    address keeps working after restarts.
+
+Lost the address? **Settings → Devices** on your computer shows it with a **Copy** button, and
+Pleni prints it when it starts (`From your other devices:`). `npx pleni --url` shows it too, with
+the key.
 
 In `settings.json`, the same thing looks like this:
 
@@ -388,7 +397,7 @@ In `settings.json`, the same thing looks like this:
 ```
 
 Pleni lets a request in only when both the host name and the Tailscale login are on these
-lists, and the browser has Pleni's key. Please keep these points in mind:
+lists, and the browser has Pleni's key. **Allow** fills in both lists for you. Please keep these points in mind:
 
 - **Never use `tailscale funnel` for Pleni.** Funnel puts a page on the open internet.
 - Anyone you add can see everything you can see in Pleni, and can change its settings too. Add

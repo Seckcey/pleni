@@ -373,10 +373,23 @@ test('nodes carry tier, model label and session fields', () => {
   assert.deepEqual(Object.keys(lead), [
     'key', 'parent', 'platform', 'kind', 'title', 'subtitle', 'rank', 'role', 'tier', 'model', 'modelLabel',
     'effort', 'status', 'startedAt', 'lastAt', 'activity', 'lastText', 'needs', 'project', 'projectLabel', 'entrypoint',
-    'hidden', 'archived', 'named', 'placement', 'memory', 'rollSoon', 'watched',
+    'hidden', 'archived', 'named', 'placement', 'memory', 'rollSoon', 'github', 'watched',
   ]);
   assert.deepEqual(Object.keys(node(s, 'you')), Object.keys(lead));
   assert.deepEqual(Object.keys(node(s, 'project:alpha')), Object.keys(lead));
+});
+
+test('a session in a GitHub repository carries owner/name; a named one is kept; other tiles have none', (t) => {
+  const dir = tempDir(t);
+  fs.mkdirSync(path.join(dir, '.git'));
+  fs.writeFileSync(path.join(dir, '.git', 'config'), '[remote "origin"]\n\turl = git@github.com:ada/billing.git\n');
+  const s = snap({
+    claude: [session(LEAD, { cwd: dir }), session(OTHER, { github: 'ada/field-app' }), session(HELPER, { parentKey: LEAD, kind: 'agent', cwd: dir, github: 'not a repo' })],
+  });
+  assert.equal(node(s, LEAD).github, 'ada/billing');
+  assert.equal(node(s, OTHER).github, 'ada/field-app');
+  assert.equal(node(s, HELPER).github, 'ada/billing', 'a bad name is dropped and the folder is read');
+  assert.equal(node(s, 'you').github, null);
 });
 
 test('links become spawn, message and report events and light the spawn edge', () => {
