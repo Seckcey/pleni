@@ -211,8 +211,8 @@ Sergeant wakes up and answers. Those tools stop working when you quit the app. A
 same job with files in the mailbox and with the relay:
 
 - An agent sends a message by name, for example
-  `agent-mail.ps1 -Send -From 'Colonel' -To 'Sergeant Milepost' -Text 'Start T-12.'`. It waits in
-  `mail\sergeant-milepost\new`.
+  `agent-mail.ps1 -Send -From 'Colonel' -To 'Sergeant Lark' -Text 'Start T-12.'`. It waits in
+  `mail\sergeant-lark\new`.
 - If the relay wakes that agent (step 2 below), it resumes the agent's Codex thread with a short
   note, the same way it wakes the planner. The agent reads its mail with `-Read`, does the work, and
   answers with `-Send`.
@@ -229,8 +229,8 @@ same job with files in the mailbox and with the relay:
 
    ```powershell
    .\bin\bridge-relay.ps1 -Stop
-   .\bin\bridge-relay.ps1 -EnrollAgent -AgentName 'Sergeant Milepost'
-   .\bin\bridge-relay.ps1 -EnrollAgent -AgentName 'Sergeant Coastmark'
+   .\bin\bridge-relay.ps1 -EnrollAgent -AgentName 'Sergeant Lark'
+   .\bin\bridge-relay.ps1 -EnrollAgent -AgentName 'Sergeant Wren'
    .\bin\bridge-relay.ps1 -Start
    ```
 
@@ -260,7 +260,7 @@ same job with files in the mailbox and with the relay:
 ### Agent mail commands
 
 Run them in the mailbox folder: `.\bin\agent-mail.ps1 <command>`. Names compare without case and
-extra spaces, so `sergeant milepost` is Sergeant Milepost.
+extra spaces, so `sergeant lark` is Sergeant Lark.
 
 | Command                                         | What it does                                                                   |
 | ----------------------------------------------- | ------------------------------------------------------------------------------ |
@@ -271,9 +271,23 @@ extra spaces, so `sergeant milepost` is Sergeant Milepost.
 
 You can use it too. To send the Colonel a note:
 `.\bin\agent-mail.ps1 -Send -From 'Ada' -To 'Colonel' -Text 'Please pause the website work.'`
-Mail to you waits in `mail\<your name>\new`; read it with `-Read -Me '<your name>'`.
+Mail to you waits in `mail\<your name>\new`; read it with `-Read -Me '<your name>'`. Put the same
+name in `owner_name` in `bin\relay-settings.json`, so Pleni knows that this mail is yours.
 
 Read messages stay in each agent's `read` folder. You may delete old ones whenever you like.
+
+### What Pleni shows
+
+With the mailbox turned on in Pleni, Pleni reads the `mail` folder too. It never sends mail.
+
+- A line lights up between two tiles when mail goes from one to the other, and the Activity view
+  lists each message: "Colonel sent mail to Sergeant Lark".
+- A tile with mail waiting says "2 new messages" on its bottom edge. Click it to see since when, and
+  whether the relay wakes it for its mail.
+- Mail for you shows under **Needs you**. Your own side panel gives the command to read it, and the
+  sender's side panel also gives the command to answer it.
+- Pleni matches a mail name to a tile by the Codex thread the relay wakes for it, else by the
+  session's name. Mail for `owner_name`, for `Owner`, or for your name in Pleni's Settings is yours.
 
 ## Roll sessions over
 

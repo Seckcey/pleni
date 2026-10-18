@@ -364,6 +364,10 @@ work and a **coordinator** reports back.
 <root>/.relay/codex.json              optional: { thread_id, follow_name?, ... } of the planner's Codex thread, if the relay wakes it (Pleni does not read it)
 <root>/.relay/state.json, relay.lock, PAUSE, STOP   optional relay state
 <root>/.relay/alerts.md               optional: the relay's alerts for the person
+<root>/.relay/agents.json             optional: the agents the relay wakes for their mail, by name key: { name, thread_id, ... }
+<root>/mail/<name key>/name.txt       optional agent mail (relay/bin/agent-mail.ps1): the agent's name
+<root>/mail/<name key>/new/*.md       its unread messages; read/*.md the ones it has read
+<root>/bin/relay-settings.json        the relay's settings; Pleni reads only owner_name, the person's mail name
 ```
 
 The relay that writes `.relay/` and starts the worker runs is the separate program in `relay/`
@@ -381,6 +385,11 @@ MailboxState = {
     running, paused, halted, coordinatorKey,                     // coordinatorKey = 'claude:<session_id>'
     lastAt, pausedAt, haltReason,                                // times are null when unknown
     alerts: null | { count, at, text },                          // from .relay/alerts.md
+  },
+  mail: null | {                                                 // null without a mail folder
+    owner,                                                       // owner_name from bin/relay-settings.json, else null
+    agents: [{ key, name, unread, since, wakes, threadId }],     // by key, at most 50
+    messages: [{ to, from, fromName, at, unread, text }],        // newest first, at most 300
   },
 }
 ```
@@ -411,6 +420,22 @@ MailboxState = {
   (`**` marks before it are fine) is one note; nested items and code blocks are skipped. `count` is
   the number of notes, `at` the newest note's time, and `text` that note without the stamp and `**`
   marks (≤300 chars, only with snippets, else `null`).
+- Agent mail: agents send each other messages by name with the relay's `agent-mail.ps1`
+  (`relay/README.md`). A name's **key** is its folder name: the name in small letters, each run of
+  other marks one `-` (`Sergeant Ada` → `sergeant-ada`); keys match `/^[a-z0-9][a-z0-9-]{0,99}$/`.
+  A message is one file, `<yyyyMMdd-HHmmss-fff UTC>-<sender's key>-<6 hex>.md` (a copy moved to
+  `read/` under a taken name gets `-<4 hex>` more), holding `From:`, `To:` and `Sent:` lines, a
+  blank line, then the text. A message never changes once it is there; reading it only moves it
+  from `new/` to `read/`. So each message file is read once (its first 80 KB), and a folder is
+  listed again when its own times move, and at least every 10 s. `agents` are the mail folders
+  plus the agents in `.relay/agents.json`: `name` from `name.txt` (≤1 KB), else from
+  `agents.json`; `unread` counts every file in `new/`, `since` is the oldest one's time; `wakes` is
+  true when the relay wakes it, and `threadId` is the Codex thread it wakes (from `thread_id`, kept
+  current when the relay follows a newer thread with the same name). `messages` are the newest 100
+  unread and the newest 30 read for each agent, unread ones first when there are more than 300:
+  `to` is the folder's key, `from` the sender's key (from the file name), `fromName` the `From:`
+  line (≤80 chars), `at` the time in the file name, `text` the message after the head (≤1000
+  chars, line breaks kept, only with snippets, else `null`). A file without a head is all text.
 
 ## Snapshot (`src/model.js`)
 
@@ -435,10 +460,12 @@ Node = {
   memory,   // main Claude Code session or Codex thread: { used, size, percent, squeezes, squeezesAtLeast, squeezedAt }, else null
   rollSoon, // plain reasons it is due for a roll over ('Memory 87% full', 'Squeezed 3 times', '9 days old'), else null
   github,   // 'owner/name' of the GitHub repository the session works in (src/repos.js), else null
+  mail,     // agent mail: { name, unread, since, wakes, toYou } for a tile with a mail name, else null
   watched,  // true for a session or the relay whose people[key].watch is true
 }
-Edge = { from, to, kind: 'spawn' | 'mailbox' | 'contains', lastDown, lastUp, downLabel, upLabel, active: 'down' | 'up' | 'both' | null }
-Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, to, text }
+Edge = { from, to, kind: 'spawn' | 'mailbox' | 'message' | 'contains', lastDown, lastUp, downLabel, upLabel, active: 'down' | 'up' | 'both' | null }
+Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'error', from, to, text }
+        // a 'mail' event also has fromName and toName, the mail names, for a side that is not on the map
 ```
 
 - Tree: `you` (the person, `displayName`) → projects (when `groupBy` is `project`) → top-level
@@ -501,10 +528,22 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
   chain rule names it or a listed session hangs under it in the session files; the Codex source keeps
   following registered coordinators however old their files are. Chain rules never move a helper a
   session started itself (`spawned`).
-- Edges: `contains` (person → project → session), `spawn` (parent → sub-agent, from links), and
+- Edges: `contains` (person → project → session), `spawn` (parent → sub-agent, from links),
   `mailbox` (planner → coordinator, from mailbox events, when both nodes are listed; the coordinator
-  defaults to `relay.coordinatorKey`). `active` is set when `lastDown`/`lastUp` is within
-  `PULSE_MS = 120000`.
+  defaults to `relay.coordinatorKey`), and `message` (between tiles that no tree line joins, only
+  while active). `active` is set when `lastDown`/`lastUp` is within `PULSE_MS = 120000`.
+- Agent mail: each mail name (an agent's key) is matched to a tile: the person (`you`) for the
+  key of `mail.owner`, `owner`, or the key of `displayName`; else the Codex thread the relay wakes
+  for it (`codex:<threadId>`), when listed; else the newest listed session (by `lastAt`) whose
+  title, or the name the person gave it, has that same key. A tile with a mail name gets
+  `mail = { name, unread, since, wakes, toYou }`: `toYou` counts the unread messages it sent the
+  person; a tile with two names adds them up. Every message whose sender and receiver are both
+  session tiles lights the line between them like a hand-off: along the tree lines, down when the
+  receiver is below the sender and up when it is above; otherwise one `message` line for the two
+  tiles (from the one whose key sorts first, `down` when that one sent it). A message never dims a
+  line something newer lit. The label is the message as a snippet (≤120 chars, only with
+  snippets). Each message with a side on the map is a `mail` event (`text` ≤280 chars, only with
+  snippets); a side not on the map is `null`, and `fromName` and `toName` still name it.
 - Ranks: `plain` — the person shows only `displayName`, session "Lead", sub-agent "Agent",
   reviewer "Reviewer", and a session with the role superintendent or coordinator "Superintendent"
   or "Coordinator"; `military` — person "General", superintendent "Colonel", coordinator and lead
@@ -521,7 +560,10 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
   mailbox, `note` (the newest `NEEDS-<NAME>.md` note, on the coordinator's tile, or the person's
   when the coordinator is not listed), and on the relay tile `alert` (the newest relay alert),
   `halted` (instead of `alert`, with the reason and what to run) and `paused` (`at` is when it
-  paused). `note` and `alert` count only within `recentHours`. `stopped` is for a watched tile: a
+  paused). `note` and `alert` count only within `recentHours`. `mail` is unread agent mail for the
+  person, one notice for each sender tile ("Sergeant Ada sent you 2 messages. The newest: …", the
+  newest message only with snippets); senders not on the map share one notice on `you`. It stays,
+  however old, until the person reads the mail (it moves to `read/`) or dismisses it. `stopped` is for a watched tile: a
   session that is not working, not asking and not in error, whose own `lastAt` is at least
   `alerts.stoppedMinutes` old, or a relay whose `state.json` is that old. A tile's `lastAt` also
   counts the work of the tiles below it, so the session's own time is used. Mailbox worker runs
@@ -1021,6 +1063,15 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   its tooltip adds the commit). The page keeps the first `X-Pleni-Version` and `X-Pleni-Build` it
   gets; when a later snapshot answer carries others, Pleni was updated and started again, and a
   notice says "Pleni was updated. It now runs version …. Reload this page to use it."
+- **Agent mail:** a tile whose `mail.unread` is above 0, the person's included, gets "N new
+  messages" on its bottom edge (and in its label for screen readers). The Now tab of a tile with
+  `mail` says what waits for it and since when, and whether the relay wakes it for mail ("Nothing
+  wakes it for mail. It sees mail only when it checks." otherwise). The person's tab says how to
+  read their mail in PowerShell, in the mailbox's `bin` folder: `.\agent-mail.ps1 -Read -Me
+  '<name>'`. A tile with `mail.toYou` also gives that command and the one to answer it:
+  `.\agent-mail.ps1 -Send -From '<your name>' -To '<its name>' -Text 'your answer'`. Pleni sends
+  no mail. Feed lines read "<sender> sent mail to <receiver>", up when the receiver is above the
+  sender on the map, else down; a side that is not on the map shows its mail name.
 - **Roll over soon:** a session whose node has `rollSoon` gets a "Roll over soon" badge on the top
   edge of its tile (the reasons are in the tile's label for screen readers), a "Roll over soon" pill
   in its List row, and a line at the top of its side panel's Now tab: "Roll over soon: Memory 87%
@@ -1066,7 +1117,9 @@ export function createDemoSource({ now = Date.now })  // -> { poll(): { claude, 
 A deterministic, time-driven cast: a person, two projects, a Codex planner with two sub-agents, a
 Claude coordinator with three sub-agents (one working, one waiting, one done; the coordinator has a
 long session's numbers, so it shows "Roll over soon"), and a small mailbox
-with a note for the person, with hand-offs that light up every few seconds. It is used by `node bin/pleni.js --demo`, the screenshots and the
+with a note for the person, with hand-offs that light up every few seconds. In its agent mail, the
+planner (which the relay wakes) and "Sales tax research" write to each other every loop, and
+"Sales tax research" has sent the person ("Ada") a question that waits. It is used by `node bin/pleni.js --demo`, the screenshots and the
 tests, so that no real session data is ever needed to show Pleni. With live GitHub status on, the
 demo shows made-up pull requests for its two repositories (`demoGithub(repos, now)`, in the shape
 `src/github.js` gives, run through `parsePulls`); merging them is refused.

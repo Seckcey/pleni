@@ -30,6 +30,22 @@ const TASK_FILES = [
 const CLOSED = /^(DONE|CANCELL?ED|COMPLETED?|NO_CLAUDE_DISPATCH)(_|$)/;
 const ORDER = new Intl.Collator('en', { numeric: true });
 
+// Agent mail (relay/bin/agent-mail.ps1): mail/<name key>/new/ holds an agent's unread messages and
+// mail/<name key>/read/ the ones it has read. A message is one file, <UTC time>-<sender's key>-<6 hex>.md,
+// that never changes once it is there; reading it only moves it to read/ (with "-<4 hex>" added when
+// the name is taken). The sender's key is the sender's name in small letters, other marks as '-'.
+const MAIL_AGENT = /^[a-z0-9][a-z0-9-]{0,99}$/;
+const MAIL_FILE = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-(\d{3})-([a-z0-9-]{1,100}?)-[0-9a-f]{6}(?:-[0-9a-f]{4})?\.md$/;
+const HEAD_LINE = /^([A-Za-z][A-Za-z-]{0,30}):[ \t]*(.*)$/;
+const MAX_MAIL_AGENTS = 50;
+const MAX_MAIL_NEW = 100;      // unread messages read for each agent; all of them are counted
+const MAX_MAIL_READ = 30;      // the newest read messages kept for each agent
+const MAX_MAIL_MESSAGES = 300;
+const MAX_MAIL_BYTES = 80 * 1024; // agent-mail.ps1 sends at most 64 KB of text
+const MAX_MAIL_TEXT = 1000;    // the model makes a short snippet of it
+const MAX_MAIL_NAME = 80;
+const MAX_NAME_BYTES = 1024;
+
 // The `s` flag lets a heading or state line hold U+2028 or U+2029 (lines are already split on \n).
 const HEADING = /^ {0,3}(#{1,6})[ \t]+(.+)$/s;
 // A note is a heading or a top-level list item; an item indented two or more spaces belongs to the one above.
@@ -59,6 +75,7 @@ const STAMP = new RegExp(
 export function createMailboxSource({ root = null, settings = null, now = Date.now } = {}) {
   const files = createFileCache();
   const relayFiles = createFileCache();
+  const mail = typeof root === 'string' && root ? createMailReader(root, now) : null;
   // A folder at a drive root has no base name; use the whole path then.
   const name = typeof root === 'string' && root ? path.basename(root) || root : null;
   let listing = null;
@@ -78,7 +95,7 @@ export function createMailboxSource({ root = null, settings = null, now = Date.n
   }
 
   function failure(error) {
-    return { ok: false, error, root, name, tasks: [], events: [], notes: [], relay: null };
+    return { ok: false, error, root, name, tasks: [], events: [], notes: [], relay: null, mail: null };
   }
 
   function scan() {
@@ -115,7 +132,10 @@ export function createMailboxSource({ root = null, settings = null, now = Date.n
       const doc = files.get(path.join(root, file), readNotes);
       if (doc) notes.push({ file, count: doc.count, at: doc.at, text: hide ? null : doc.text });
     }
-    return { ok: true, error: null, root, name, tasks: built.tasks, events: built.events, notes, relay: readRelay(hide) };
+    return {
+      ok: true, error: null, root, name, tasks: built.tasks, events: built.events, notes,
+      relay: readRelay(hide), mail: mail.read(hide),
+    };
   }
 
   function readTask({ id, workers }) {
@@ -519,6 +539,182 @@ function coordinatorKeyOf(coordinator) {
 function shortText(value, max) {
   if (typeof value !== 'string') return null;
   return clip(value, max) || null;
+}
+
+// ---- agent mail ----
+
+// Reads mail/ for the page: { owner, agents, messages }, or null when the mailbox has no mail folder.
+// A message file never changes, so each one is read once; a folder is listed again when its own
+// times move, and at least every LIST_MS in case a disk does not move them.
+function createMailReader(root, now) {
+  const dir = path.join(root, 'mail');
+  const settingsFiles = createFileCache();
+  const names = createFileCache();
+  const listings = new Map(); // folder -> { sig, at, entries }
+  const messages = new Map(); // file -> message
+
+  function read(hide) {
+    if (!isDir(dir)) {
+      listings.clear();
+      messages.clear();
+      return null;
+    }
+    const t = now();
+    const seenFolders = new Set();
+    const seenFiles = new Set();
+    const list = (folder, kind) => {
+      seenFolders.add(folder);
+      return listFolder(folder, kind, t);
+    };
+    const enrolled = enrolledAgents(settingsFiles.get(path.join(root, '.relay', 'agents.json'), readJson));
+    const owner = shortText(settingsFiles.get(path.join(root, 'bin', 'relay-settings.json'), readJson)?.owner_name, MAX_MAIL_NAME);
+    const keys = new Set(list(dir, 'dirs').filter((key) => MAIL_AGENT.test(key)));
+    for (const key of enrolled.keys()) keys.add(key);
+    const agents = [];
+    const unread = [];
+    const done = [];
+    for (const key of [...keys].sort(ORDER.compare).slice(0, MAX_MAIL_AGENTS)) {
+      const base = path.join(dir, key);
+      const fresh = list(path.join(base, 'new'), 'mail');
+      const old = list(path.join(base, 'read'), 'mail');
+      const nameFile = path.join(base, 'name.txt');
+      seenFiles.add(nameFile);
+      const wakes = enrolled.get(key);
+      agents.push({
+        key,
+        name: names.get(nameFile, readName) ?? wakes?.name ?? null,
+        unread: fresh.length,
+        since: fresh.length ? fileTime(fresh[0]) : null,
+        wakes: Boolean(wakes),
+        threadId: wakes?.threadId ?? null,
+      });
+      const take = (files, folder, isNew, into) => {
+        for (const file of files) {
+          const full = path.join(base, folder, file);
+          seenFiles.add(full);
+          const msg = readMessage(full, file);
+          if (msg) into.push({ ...msg, to: key, unread: isNew, text: hide ? null : msg.text });
+        }
+      };
+      take(fresh.slice(-MAX_MAIL_NEW), 'new', true, unread);
+      take(old.slice(-MAX_MAIL_READ), 'read', false, done);
+    }
+    for (const folder of listings.keys()) if (!seenFolders.has(folder)) listings.delete(folder);
+    for (const file of messages.keys()) if (!seenFiles.has(file)) messages.delete(file);
+    names.prune(seenFiles);
+    // Unread mail comes first, so old read mail never pushes it out.
+    const newestFirst = (a, b) => b.at - a.at || ORDER.compare(a.to, b.to);
+    const kept = [...unread.sort(newestFirst), ...done.sort(newestFirst)].slice(0, MAX_MAIL_MESSAGES).sort(newestFirst);
+    return { owner, agents, messages: kept };
+  }
+
+  // The names in a folder, by name (so mail is oldest first). `kind` is 'dirs' or 'mail'.
+  function listFolder(folder, kind, t) {
+    let st;
+    try {
+      st = fs.statSync(folder, { throwIfNoEntry: false });
+    } catch {
+      st = undefined;
+    }
+    if (!st?.isDirectory()) return [];
+    const sig = `${st.mtimeMs}:${st.ctimeMs}:${st.ino}`;
+    const old = listings.get(folder);
+    if (old && old.sig === sig && t - old.at < LIST_MS && t >= old.at) return old.entries;
+    const entries = kind === 'dirs' ? listDirs(folder).sort(ORDER.compare) : listMail(folder);
+    listings.set(folder, { sig, at: t, entries });
+    return entries;
+  }
+
+  // A message, read once: { from, fromName, at, text }. A file that is gone (an agent just read it)
+  // is tried again next time.
+  function readMessage(full, file) {
+    if (messages.has(full)) return messages.get(full);
+    const text = readHead(full, MAX_MAIL_BYTES);
+    if (text === null) return null;
+    const msg = { ...parseMail(text), from: MAIL_FILE.exec(file)[8], at: fileTime(file) };
+    messages.set(full, msg);
+    return msg;
+  }
+
+  return { read };
+}
+
+function listMail(folder) {
+  let entries;
+  try {
+    entries = fs.readdirSync(folder, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((e) => e.isFile() && fileTime(e.name) !== null)
+    .map((e) => e.name)
+    .sort();
+}
+
+// The time in a message's file name (UTC), or null.
+function fileTime(file) {
+  const m = MAIL_FILE.exec(file);
+  if (!m) return null;
+  const [y, mo, d, h, mi, s, ms] = m.slice(1, 8).map(Number);
+  return toTime(y, mo, d, h, mi, s, ms, 0);
+}
+
+// "From: <name>", "To: <names>" and "Sent: <time>" lines, a blank line, then the message.
+function parseMail(text) {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  let fromName = null;
+  let body = 0;
+  for (let i = 0; i < lines.length && i < 20; i++) {
+    if (lines[i].trim() === '') {
+      body = i + 1;
+      break;
+    }
+    const m = HEAD_LINE.exec(lines[i]);
+    if (!m) break; // no head: it is all message
+    if (m[1].toLowerCase() === 'from') fromName = shortText(m[2], MAX_MAIL_NAME);
+  }
+  const rest = lines.slice(body).join('\n').trim().replace(/(?![\n\t])\p{Cc}/gu, ' ');
+  const chars = Array.from(rest);
+  return { fromName, text: (chars.length > MAX_MAIL_TEXT ? chars.slice(0, MAX_MAIL_TEXT).join('') : rest) || null };
+}
+
+// .relay/agents.json: the agents the relay wakes for their mail, each with the Codex thread it wakes.
+function enrolledAgents(json) {
+  const out = new Map();
+  if (json === null || typeof json !== 'object' || Array.isArray(json)) return out;
+  for (const [key, agent] of Object.entries(json)) {
+    if (!MAIL_AGENT.test(key) || agent === null || typeof agent !== 'object') continue;
+    const id = typeof agent.thread_id === 'string' ? agent.thread_id.trim().toLowerCase() : '';
+    out.set(key, { name: shortText(agent.name, MAX_MAIL_NAME), threadId: SESSION_ID.test(id) ? id : null });
+  }
+  return out;
+}
+
+function readName(file, st) {
+  if (st.size > MAX_NAME_BYTES) return null;
+  const text = readText(file, st.size, MAX_NAME_BYTES);
+  return text === null ? undefined : shortText(text, MAX_MAIL_NAME);
+}
+
+// The first `max` bytes of a file, or null when it cannot be read.
+function readHead(file, max) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(max);
+    let got = 0;
+    while (got < max) {
+      const n = fs.readSync(fd, buf, got, max - got, got);
+      if (n <= 0) break;
+      got += n;
+    }
+    return stripBom(buf.toString('utf8', 0, got));
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
 }
 
 // ---- folders and files ----

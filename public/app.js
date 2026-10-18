@@ -30,6 +30,7 @@ const MOVED_MS = 8000; // how long "Moved ... under ..." stays
 const ATTN_WORDS = {
   needs: 'Needs you', error: 'Error', question: 'Question', review: 'Ready for review',
   alert: 'Relay alert', paused: 'Relay paused', halted: 'Relay halted', note: 'Note for you', stopped: 'Stopped working',
+  mail: 'Mail for you',
 };
 const EVENT_KIND_WORDS = { user: 'Prompt', assistant: 'Said', thinking: 'Thinking', tool: 'Tool', result: 'Result', error: 'Error' };
 const ROLE_OPTIONS = [['', 'Automatic'], ['superintendent', 'Superintendent'], ['coordinator', 'Coordinator'], ['lead', 'Lead'], ['worker', 'Worker'], ['hidden', 'Hide it']];
@@ -166,6 +167,7 @@ const safeClass = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9-]/g, ''
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const f1 = (v) => (Math.round(v * 10) / 10).toString();
 const num = (v) => (Number.isFinite(v) ? v : 0);
+const str = (v) => (typeof v === 'string' ? v : '');
 // Dates past 8.64e15 ms make toISOString() throw, which would stop the whole page from drawing.
 const isTime = (ms) => Number.isFinite(ms) && ms > 0 && ms < 8.64e15;
 const toTime = (v) => (isTime(v) ? v : v && isTime(v.at) ? v.at : null);
@@ -1212,6 +1214,8 @@ function tileHtml(p, L, ix, i) {
     label = [title, rank, countsPlain(c)].filter(Boolean).join(', ');
   }
   if (quiet) label += `, ${quiet} quiet not shown`;
+  const mail = mailText(n);
+  if (mail) label += `, ${mail}`;
   return (
     `<button type="button" class="${cls.join(' ')}" data-node="${esc(n.key)}" style="left:${f1(p.x)}px;top:${f1(p.y)}px" aria-label="${esc(label)}"${described}>` +
     (p.parent ? '<span class="hd l" aria-hidden="true"></span>' : '') +
@@ -1221,6 +1225,7 @@ function tileHtml(p, L, ix, i) {
     body +
     (quiet ? `<span class="tile-quiet" aria-hidden="true">+${quiet} quiet</span>` : '') +
     (isSession(n) && n.rollSoon ? '<span class="tile-roll" aria-hidden="true">Roll over soon</span>' : '') +
+    (mail ? `<span class="tile-mail" aria-hidden="true">${esc(mail)}</span>` : '') +
     '</button>'
   );
 }
@@ -1760,9 +1765,25 @@ function renderList() {
 // activity
 // ---------------------------------------------------------------------------------------------
 
-function nameHtml(key) {
-  if (key && S.index.byKey.has(key)) return `<button type="button" class="name" data-node="${esc(key)}">${esc(keyName(key))}</button>`;
-  return `<b>${esc(keyName(key))}</b>`;
+// `name` is for a key that is not on the map, such as an agent that only has a mail name. The
+// person is "you" in a sentence (bossName), "You" when it starts one (`first`).
+function nameHtml(key, name = '', first = false) {
+  if (key && S.index.byKey.has(key)) {
+    const words = key !== 'you' ? keyName(key) : first ? cap(bossName(key)) : bossName(key);
+    return `<button type="button" class="name" data-node="${esc(key)}">${esc(words)}</button>`;
+  }
+  return `<b>${esc(!key && name ? name : keyName(key))}</b>`;
+}
+
+// True when tile `upper` is above tile `lower` on the map (its boss, its boss's boss, ...).
+function isAbove(upper, lower) {
+  const byKey = S.index.byKey;
+  let n = byKey.get(lower);
+  for (let i = 0; n && n.parent && i < 64; i++) {
+    if (n.parent === upper) return true;
+    n = byKey.get(n.parent);
+  }
+  return false;
 }
 
 // Direction and wording of a feed event. A report is always told child-to-parent, whichever way
@@ -1783,6 +1804,8 @@ function describeEvent(ev) {
       return { dir: 'up', from, to, verb: 'reported back to' };
     case 'mailbox':
       return back && !fwd ? { dir: 'up', from, to, verb: 'wrote back through the mailbox to' } : { dir: 'down', from, to, verb: 'wrote through the mailbox to' };
+    case 'mail':
+      return { dir: from && to && isAbove(to, from) ? 'up' : 'down', from, to, verb: 'sent mail to', fromName: str(ev.fromName), toName: str(ev.toName) };
     case 'error':
       return { dir: 'error', from, to: null, verb: 'ran into an error' };
     default:
@@ -1794,7 +1817,7 @@ function eventHtml(ev) {
   const d = describeEvent(ev);
   const arrow = { down: '↓', up: '↑', error: '!' }[d.dir] || '·';
   const dirWords = { down: 'Work going down.', up: 'Report coming up.', error: 'Error.' }[d.dir] || '';
-  const sentence = `${nameHtml(d.from)} ${esc(d.verb)}${d.to ? ' ' + nameHtml(d.to) : ''}`;
+  const sentence = `${nameHtml(d.from, d.fromName, true)} ${esc(d.verb)}${d.to || d.toName ? ' ' + nameHtml(d.to, d.toName) : ''}`;
   return (
     `<li class="ev dir-${d.dir || 'none'}">${timeHtml(ev.at, clock(ev.at))}` +
     `<span class="dir" aria-hidden="true">${arrow}</span>` +
@@ -2432,6 +2455,7 @@ function sessionNowHtml(n, d) {
     out.push(`<p class="dnow"><b>${esc(now.label)}:</b> ${doingHtml(now)}</p>`);
   }
   if (n && n.rollSoon) out.push(`<p class="dnow roll-soon"><b>Roll over soon:</b> ${esc(sentence(n.rollSoon))}</p>`);
+  out.push(mailHtml(n));
   out.push(openHtml(n));
   out.push(rollHtml(n, d));
   out.push(newHtml(n, d));
@@ -2730,6 +2754,49 @@ function rollSoonText(n) {
   return n && Array.isArray(n.rollSoon) && n.rollSoon.length ? `roll over soon: ${n.rollSoon.join(', ').toLowerCase()}` : '';
 }
 
+// ---- agent mail ----
+// Agents send each other mail by name with the relay's agent-mail.ps1 (relay/README.md). Pleni only
+// shows it; reading and answering happen in PowerShell, in the mailbox's bin folder.
+
+// "2 new messages" when mail waits for a tile, else ''.
+function mailText(n) {
+  const unread = n && n.mail ? num(n.mail.unread) : 0;
+  return unread > 0 ? plural(unread, 'new message', 'new messages') : '';
+}
+
+// The drawer's mail lines: what waits for this tile and what wakes it to read it, or for the
+// person, how to read their mail; and mail this tile sent the person that they have not read.
+function mailHtml(n) {
+  const m = n && n.mail;
+  if (!m) return '';
+  const you = n.kind === 'person';
+  const who = you ? 'you' : 'it';
+  const unread = num(m.unread);
+  const name = str(m.name);
+  const parts = [unread > 0 ? `${esc(plural(unread, 'new message waits', 'new messages wait'))} for ${who}.` : `No new mail for ${who}.`];
+  if (unread > 0 && isTime(m.since)) parts.push(`The first came ${agoHtml(m.since)}.`);
+  if (you && unread > 0 && name) parts.push(`To read ${unread === 1 ? 'it' : 'them'}, run this in PowerShell in the mailbox's bin folder: <code>${esc(mailCommand('Read', name))}</code>`);
+  if (!you) parts.push(m.wakes ? 'The relay wakes it when mail comes.' : 'Nothing wakes it for mail. It sees mail only when it checks.');
+  const out = [`<p class="dnow mail"><b>Mail${name ? ` for ${esc(name)}` : ''}:</b> ${parts.join(' ')}</p>`];
+  const me = S.index && S.index.byKey.get('you');
+  const myName = me && me.mail ? str(me.mail.name) : '';
+  const toYou = num(m.toYou);
+  if (!you && toYou > 0 && myName && name) {
+    out.push(
+      `<p class="dnow mail"><b>Mail for you:</b> ${esc(`It sent you ${plural(toYou, 'message', 'messages')} you have not read.`)} ` +
+        `In PowerShell in the mailbox's bin folder, to read: <code>${esc(mailCommand('Read', myName))}</code> To answer: <code>${esc(mailCommand('Send', myName, name))}</code></p>`,
+    );
+  }
+  return out.join('');
+}
+
+// An agent-mail.ps1 command line. PowerShell writes a ' inside '...' as ''.
+function mailCommand(mode, me, to = '') {
+  const q = (s) => `'${s.replace(/'/g, "''")}'`;
+  if (mode === 'Read') return `.\\agent-mail.ps1 -Read -Me ${q(me)}`;
+  return `.\\agent-mail.ps1 -Send -From ${q(me)} -To ${q(to)} -Text 'your answer'`;
+}
+
 // ['Memory 87% full', 'Squeezed 3 times'] -> 'Memory 87% full, squeezed 3 times.'
 function sentence(parts) {
   return `${parts.map((p, i) => (i ? p.charAt(0).toLowerCase() + p.slice(1) : p)).join(', ')}.`;
@@ -2814,7 +2881,7 @@ function groupNowHtml(n) {
     })
     .join('');
   const heading = n.kind === 'person' ? 'Under you' : isRelay(n) ? 'Under the relay' : 'In this project';
-  return `<p class="dnow">${esc(cap(countsPlain(c)))}.</p><h3>${heading}</h3>${list ? `<ul class="kids">${list}</ul>` : '<p class="empty">Nothing listed right now.</p>'}`;
+  return `<p class="dnow">${esc(cap(countsPlain(c)))}.</p>${mailHtml(n)}<h3>${heading}</h3>${list ? `<ul class="kids">${list}</ul>` : '<p class="empty">Nothing listed right now.</p>'}`;
 }
 
 function detailsHtml(n) {

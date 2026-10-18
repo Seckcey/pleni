@@ -49,8 +49,8 @@
   .\bridge-relay.ps1 -EnrollCodex -ThreadId 01234567-89ab-4def-8123-456789abcdef   (optional: wake that Codex thread)
   .\bridge-relay.ps1 -EnrollCodex -ThreadName 'Planner'   (or follow a name: a newer thread named Planner takes over)
   .\bridge-relay.ps1 -UnenrollCodex          (turn the Codex wake off again)
-  .\bridge-relay.ps1 -EnrollAgent -AgentName 'Sergeant Milepost'   (wake that agent's Codex thread when mail waits for it)
-  .\bridge-relay.ps1 -UnenrollAgent -AgentName 'Sergeant Milepost' (stop waking it for its mail)
+  .\bridge-relay.ps1 -EnrollAgent -AgentName 'Sergeant Lark'   (wake that agent's Codex thread when mail waits for it)
+  .\bridge-relay.ps1 -UnenrollAgent -AgentName 'Sergeant Lark' (stop waking it for its mail)
   .\bridge-relay.ps1 -Once
   .\bridge-relay.ps1 -Start        (foreground; stop with -Stop from another window, or Ctrl+C)
   .\bridge-relay.ps1 -Stop

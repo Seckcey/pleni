@@ -373,7 +373,7 @@ test('nodes carry tier, model label and session fields', () => {
   assert.deepEqual(Object.keys(lead), [
     'key', 'parent', 'platform', 'kind', 'title', 'subtitle', 'rank', 'role', 'tier', 'model', 'modelLabel',
     'effort', 'status', 'startedAt', 'lastAt', 'activity', 'lastText', 'needs', 'project', 'projectLabel', 'entrypoint',
-    'hidden', 'archived', 'named', 'placement', 'memory', 'rollSoon', 'github', 'watched',
+    'hidden', 'archived', 'named', 'placement', 'memory', 'rollSoon', 'github', 'mail', 'watched',
   ]);
   assert.deepEqual(Object.keys(node(s, 'you')), Object.keys(lead));
   assert.deepEqual(Object.keys(node(s, 'project:alpha')), Object.keys(lead));
@@ -1002,7 +1002,7 @@ function army(extra = {}) {
     codex: [
       session(COLONEL_OLD, { title: '***Colonel - Suite', lastAt: NOW - 5 * HOUR }),
       session(COLONEL, { title: '***Colonel - Suite', lastAt: NOW - MIN }),
-      session(SGT_A, { title: '**Sergeant Milepost' }),
+      session(SGT_A, { title: '**Sergeant Lark' }),
       session(SGT_CLAUDE, { title: '**Sergeant Claude', parentKey: COLONEL, kind: 'agent' }),
       session(WORKER, { title: 'Fix the updater', parentKey: SGT_A, kind: 'agent' }),
     ],
@@ -1042,7 +1042,7 @@ test('a rule whose boss is missing, or that would make a loop, does no harm', ()
   const lonely = snap({ ...army(), settings: { groupBy: 'none', chain: [{ match: 'Sergeant', reportsTo: 'Nobody here', role: null }] } });
   assert.equal(node(lonely, SGT_A).parent, 'you');
   assert.equal(node(lonely, SGT_CLAUDE).parent, COLONEL, 'keeps its source parent');
-  const loop = snap({ ...army(), settings: { groupBy: 'none', chain: [{ match: 'Colonel', reportsTo: 'Sergeant Milepost' }, { match: 'Sergeant Milepost', reportsTo: 'Colonel' }] } });
+  const loop = snap({ ...army(), settings: { groupBy: 'none', chain: [{ match: 'Colonel', reportsTo: 'Sergeant Lark' }, { match: 'Sergeant Lark', reportsTo: 'Colonel' }] } });
   const keys = loop.nodes.map((n) => n.key);
   for (const k of [COLONEL, SGT_A]) assert.ok(keys.includes(k));
   // Every node still reaches the person.
@@ -1277,4 +1277,150 @@ test('rollSoon gives plain reasons when a main session passes a limit, and memor
   assert.equal(node(off, full).rollSoon, null);
   assert.equal(node(off, thread).rollSoon, null);
   assert.equal(node(snap({ claude: [session(fresh)] }), fresh).memory, null, 'a source without numbers');
+});
+
+// ---- agent mail ----
+
+const BOSS = 'codex:eeeeeeee-0000-4000-8000-000000000001';
+const SERGEANT = 'codex:eeeeeeee-0000-4000-8000-000000000002';
+const SERGEANT_TWO = 'codex:eeeeeeee-0000-4000-8000-000000000003';
+
+function mailTeam() {
+  return [
+    session(BOSS, { title: 'Colonel', model: 'gpt-5.5' }),
+    session(SERGEANT, { title: 'Sergeant Ada', model: 'gpt-5.5' }),
+    session(SERGEANT_TWO, { title: '**Sergeant Bo**', model: 'gpt-5.5' }),
+  ];
+}
+
+// A mailbox with agent mail, as the mailbox source reports it.
+function mailState(mail = {}) {
+  return { ok: true, error: null, root: '/home/ada/mailbox', name: 'mailbox', tasks: [], events: [], notes: [], relay: null, mail: { owner: 'Ada', agents: [], messages: [], ...mail } };
+}
+
+function agent(key, name, extra = {}) {
+  return { key, name, unread: 0, since: null, wakes: false, threadId: null, ...extra };
+}
+
+test('agent mail: each tile shows what waits for it and whether the relay wakes it', () => {
+  const box = mailState({
+    agents: [
+      agent('sergeant-ada', 'Sergeant Ada', { unread: 2, since: NOW - 5 * MIN, wakes: true, threadId: SERGEANT.slice(6) }),
+      agent('colonel', 'Colonel'),
+      agent('sergeant-bo', 'Sergeant Bo', { unread: 1, since: NOW - MIN }),
+      agent('sergeant', 'Sergeant', { unread: 4, since: NOW - MIN }),
+      agent('ada', 'Ada', { unread: 1, since: NOW - 2 * MIN }),
+    ],
+  });
+  const s = snap({ codex: mailTeam(), mailbox: box });
+  assert.deepEqual(node(s, SERGEANT).mail, { name: 'Sergeant Ada', unread: 2, since: NOW - 5 * MIN, wakes: true, toYou: 0 });
+  assert.deepEqual(node(s, BOSS).mail, { name: 'Colonel', unread: 0, since: null, wakes: false, toYou: 0 });
+  assert.deepEqual(node(s, SERGEANT_TWO).mail, { name: 'Sergeant Bo', unread: 1, since: NOW - MIN, wakes: false, toYou: 0 }, 'the marks around a name do not count');
+  assert.deepEqual(node(s, 'you').mail, { name: 'Ada', unread: 1, since: NOW - 2 * MIN, wakes: false, toYou: 0 }, "the relay's owner_name is the person");
+  assert.equal(node(s, 'project:alpha').mail, null);
+  assert.ok(s.nodes.every((n) => n.mail === null || n.mail.unread !== 4), 'a name must match a whole title');
+
+  const named = snap({ codex: mailTeam(), mailbox: mailState({ owner: null, agents: [agent('owner', 'Owner', { unread: 1 }), agent('commander-ada', 'Commander Ada', { unread: 2 })] }), settings: { displayName: 'Commander Ada' } });
+  assert.equal(node(named, 'you').mail.unread, 3, "'Owner' and the name in Settings are the person too");
+  assert.equal(snap({ codex: mailTeam() }).nodes.every((n) => n.mail === null), true, 'no mailbox, no mail');
+});
+
+test('agent mail: the thread the relay wakes beats the newest tile with that name', () => {
+  const OLD_ONE = 'codex:eeeeeeee-0000-4000-8000-000000000009';
+  const codex = [...mailTeam(), session(OLD_ONE, { title: 'Sergeant Ada', lastAt: NOW - 20 * MIN })];
+  const byName = snap({ codex, mailbox: mailState({ agents: [agent('sergeant-ada', 'Sergeant Ada', { unread: 1 })] }) });
+  assert.equal(node(byName, SERGEANT).mail.unread, 1, 'the newest tile with the name');
+  assert.equal(node(byName, OLD_ONE).mail, null);
+  const byThread = snap({ codex, mailbox: mailState({ agents: [agent('sergeant-ada', 'Sergeant Ada', { unread: 1, wakes: true, threadId: OLD_ONE.slice(6) })] }) });
+  assert.equal(node(byThread, OLD_ONE).mail.unread, 1);
+  assert.equal(node(byThread, SERGEANT).mail, null);
+});
+
+test('agent mail lights the line between sender and receiver and goes in the feed', () => {
+  const box = mailState({
+    agents: [agent('colonel', 'Colonel'), agent('sergeant-ada', 'Sergeant Ada', { unread: 1 })],
+    messages: [
+      { to: 'colonel', from: 'sergeant-bo', fromName: 'Sergeant Bo', at: NOW - 30000, unread: false, text: 'Done.' },
+      { to: 'sergeant-ada', from: 'colonel', fromName: 'Colonel', at: NOW - MIN, unread: true, text: '## Plan\nCheck the **build**.' },
+      { to: 'colonel', from: 'sergeant-ada', fromName: 'Sergeant Ada', at: NOW - 3 * HOUR, unread: false, text: 'Old report.' },
+      { to: 'nobody', from: 'stranger', fromName: 'Stranger', at: NOW - MIN, unread: true, text: 'Not on the map.' },
+    ],
+  });
+  const settings = { people: { [SERGEANT]: { reportsTo: BOSS } } };
+  const s = snap({ codex: mailTeam(), mailbox: box, settings });
+  const down = s.edges.find((e) => e.from === BOSS && e.to === SERGEANT);
+  assert.deepEqual(down, {
+    from: BOSS, to: SERGEANT, kind: 'spawn', lastDown: NOW - MIN, lastUp: NOW - 3 * HOUR, downLabel: 'Plan Check the build.', upLabel: 'Old report.', active: 'down',
+  });
+  const across = s.edges.find((e) => e.kind === 'message');
+  assert.deepEqual(across, {
+    from: BOSS, to: SERGEANT_TWO, kind: 'message', lastDown: null, lastUp: NOW - 30000, downLabel: null, upLabel: 'Done.', active: 'up',
+  }, 'tiles side by side get a line of their own while mail moves');
+  assert.deepEqual(s.events.filter((e) => e.kind === 'mail'), [
+    { at: NOW - 30000, kind: 'mail', from: SERGEANT_TWO, to: BOSS, text: 'Done.', fromName: 'Sergeant Bo', toName: 'Colonel' },
+    { at: NOW - MIN, kind: 'mail', from: BOSS, to: SERGEANT, text: 'Plan Check the build.', fromName: 'Colonel', toName: 'Sergeant Ada' },
+    { at: NOW - 3 * HOUR, kind: 'mail', from: SERGEANT, to: BOSS, text: 'Old report.', fromName: 'Sergeant Ada', toName: 'Colonel' },
+  ]);
+
+  const later = snap({ codex: mailTeam(), mailbox: box, settings, now: NOW + PULSE_MS });
+  assert.equal(later.edges.some((e) => e.kind === 'message'), false, 'the line across goes once the mail stops moving');
+  const none = snap({ codex: mailTeam(), mailbox: box, settings: { ...settings, content: 'none' } });
+  assert.ok(none.events.filter((e) => e.kind === 'mail').every((e) => e.text === null));
+  assert.equal(none.edges.find((e) => e.from === BOSS && e.to === SERGEANT).downLabel, null);
+});
+
+test('agent mail: an older message does not dim a line a newer hand-off lit', () => {
+  const lead = session(BOSS, { title: 'Colonel', links: [{ other: SERGEANT, dir: 'down', at: NOW - MIN, label: 'Newer hand-off' }] });
+  const box = mailState({ messages: [{ to: 'sergeant-ada', from: 'colonel', fromName: 'Colonel', at: NOW - 10 * MIN, unread: false, text: 'Older mail' }] });
+  const s = snap({ codex: [lead, session(SERGEANT, { title: 'Sergeant Ada', parentKey: BOSS, kind: 'agent' })], mailbox: box });
+  const e = s.edges.find((x) => x.from === BOSS && x.to === SERGEANT);
+  assert.equal(e.lastDown, NOW - MIN);
+  assert.equal(e.downLabel, 'Newer hand-off');
+});
+
+test('mail for the person goes under Needs you, one notice for each tile that sent some', () => {
+  const box = mailState({
+    agents: [agent('ada', 'Ada', { unread: 4, since: NOW - 4 * MIN })],
+    messages: [
+      { to: 'ada', from: 'sergeant-ada', fromName: 'Sergeant Ada', at: NOW - 2 * MIN, unread: true, text: 'First.' },
+      { to: 'ada', from: 'sergeant-ada', fromName: 'Sergeant Ada', at: NOW - MIN, unread: true, text: 'Merge **PR 4**?' },
+      { to: 'ada', from: 'stranger', fromName: 'Stranger', at: NOW - 3 * MIN, unread: true, text: 'Hello' },
+      { to: 'ada', from: 'other', fromName: 'Other One', at: NOW - 4 * MIN, unread: true, text: 'Hi' },
+      { to: 'ada', from: 'colonel', fromName: 'Colonel', at: NOW - 5 * MIN, unread: false, text: 'Read already.' },
+    ],
+  });
+  const mailItems = (s) => s.attention.filter((a) => a.kind === 'mail');
+  const s = snap({ codex: mailTeam(), mailbox: box });
+  assert.deepEqual(mailItems(s), [
+    { key: SERGEANT, kind: 'mail', text: 'Sergeant Ada sent you 2 messages. The newest: Merge PR 4?', at: NOW - MIN, id: `${SERGEANT}|mail` },
+    { key: 'you', kind: 'mail', text: 'Stranger and Other One sent you 2 messages. The newest: Hello', at: NOW - 3 * MIN, id: 'you|mail' },
+  ]);
+  assert.equal(node(s, SERGEANT).mail.toYou, 2);
+  assert.equal(node(s, SERGEANT).mail.unread, 0);
+  assert.deepEqual(s.events.find((e) => e.fromName === 'Stranger'), { at: NOW - 3 * MIN, kind: 'mail', from: null, to: 'you', text: 'Hello', fromName: 'Stranger', toName: 'Ada' });
+
+  const none = snap({ codex: mailTeam(), mailbox: box, settings: { content: 'none' } });
+  assert.deepEqual(mailItems(none).map((a) => a.text), ['Sergeant Ada sent you 2 messages.', 'Stranger and Other One sent you 2 messages.']);
+  const one = snap({ codex: mailTeam(), mailbox: mailState({ messages: [box.mail.messages[1]] }) });
+  assert.equal(mailItems(one)[0].text, 'Sergeant Ada sent you mail: Merge PR 4?');
+
+  const dismissed = snap({ codex: mailTeam(), mailbox: box, dismissed: { [`${SERGEANT}|mail`]: NOW - MIN } });
+  assert.deepEqual(mailItems(dismissed).map((a) => a.key), ['you'], 'a dismissed notice stays hidden');
+  const newer = mailState({ messages: [...box.mail.messages, { to: 'ada', from: 'sergeant-ada', fromName: 'Sergeant Ada', at: NOW - 1000, unread: true, text: 'Again.' }] });
+  assert.equal(mailItems(snap({ codex: mailTeam(), mailbox: newer, dismissed: { [`${SERGEANT}|mail`]: NOW - MIN } })).length, 2, 'until newer mail comes');
+});
+
+test('odd agent mail is skipped', () => {
+  const odd = [
+    mailState({ agents: 'nonsense', messages: 'nonsense' }),
+    mailState({ agents: [null, { key: 'Bad Key', unread: 3 }, { key: '', unread: 1 }, { key: 'ada', unread: -1 }, { key: 'ada', unread: 'two' }], messages: [null, { to: 1, from: 'x', at: NOW }, { to: 'ada', from: 'x', at: 'soon' }, { to: 'ada', from: null, at: NOW }] }),
+    { ...mailState(), mail: 'nonsense' },
+    { ...mailState(), mail: null },
+  ];
+  for (const box of odd) {
+    const s = snap({ codex: mailTeam(), mailbox: box });
+    assert.equal(s.events.some((e) => e.kind === 'mail'), false);
+    assert.equal(s.attention.some((a) => a.kind === 'mail'), false);
+    assert.ok(s.nodes.every((n) => n.mail === null || n.mail.unread === 0));
+  }
 });

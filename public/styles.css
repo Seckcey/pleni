@@ -532,6 +532,13 @@ main:focus { outline: none; }
 }
 .pill.roll-soon { color: var(--ui-warn-text); background: var(--ui-warn-soft); }
 .dnow.roll-soon { background: var(--ui-warn-soft); }
+/* Agent mail that waits for a tile, on its bottom edge. */
+.tile-mail {
+  position: absolute; left: 50px; bottom: -10px; padding: 0 var(--ui-space-4); border-radius: var(--ui-radius-pill);
+  background: var(--ui-map-canvas); border: 1px solid color-mix(in srgb, var(--ui-accent) 55%, transparent);
+  color: var(--ui-accent-strong); font-size: var(--ui-font-xs); line-height: 18px; white-space: nowrap;
+}
+.dnow.mail { background: var(--ui-accent-soft); }
 .tile-quiet {
   position: absolute; right: 10px; top: -10px; padding: 0 var(--ui-space-4);
   border: 1px dashed var(--ui-border-strong); border-radius: var(--ui-radius-pill);

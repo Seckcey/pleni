@@ -490,6 +490,7 @@ test('poll never throws', (t) => {
     assert.deepEqual(state.tasks, []);
     assert.deepEqual(state.events, []);
     assert.equal(state.relay, null);
+    assert.equal(state.mail, null);
   };
 
   expectFailure(createMailboxSource({ root: null }).poll());
@@ -638,4 +639,107 @@ test('relay run files with started, finished and models are read', (t) => {
   assert.equal(w1.worktree, '/home/ada/work/T-1/app');
   assert.equal(w2.model, 'claude-sonnet-5-5');
   assert.equal(w2.finishedAt, null);
+});
+
+// ---- agent mail ----
+
+const SERGEANT_THREAD = '0199aaaa-0000-4000-8000-00000000000a';
+
+// A message the way the relay's agent-mail.ps1 writes it.
+function mailFile(root, rel, from, to, sent, body) {
+  return write(root, rel, `From: ${from}\r\nTo: ${to}\r\nSent: ${sent}\r\n\r\n${body}\r\n`, Date.now());
+}
+
+function buildMail(root) {
+  write(root, 'mail/sergeant-ada/name.txt', 'Sergeant Ada');
+  mailFile(root, 'mail/sergeant-ada/new/20261018-101500-123-colonel-a1b2c3.md', 'Colonel', 'Sergeant Ada, Sergeant Bo', '2026-10-18T10:15:00Z', '## Plan\nCheck the **build**.');
+  mailFile(root, 'mail/sergeant-ada/new/20261018-101700-000-colonel-b1b2c3.md', 'Colonel', 'Sergeant Ada', '2026-10-18T10:17:00Z', 'And the tests.');
+  mailFile(root, 'mail/sergeant-ada/read/20261018-090000-000-colonel-0f0f0f-9a9a.md', 'Colonel', 'Sergeant Ada', '2026-10-18T09:00:00Z', 'Old one.');
+  write(root, 'mail/sergeant-ada/new/20261018-101800-000-colonel-c1c2c3.md.part', 'From: Colonel\r\n\r\nhalf a message');
+  write(root, 'mail/sergeant-ada/new/notes.md', 'not a message');
+  write(root, 'mail/colonel/name.txt', 'Colonel\r\n');
+  fs.mkdirSync(path.join(root, 'mail', 'colonel', 'new'), { recursive: true });
+  mailFile(root, 'mail/Not A Key/new/20261018-101500-123-colonel-a1b2c3.md', 'Colonel', 'Not A Key', '2026-10-18T10:15:00Z', 'skipped');
+  write(root, '.relay/agents.json', JSON.stringify({
+    'sergeant-ada': { name: 'Sergeant Ada', thread_id: SERGEANT_THREAD.toUpperCase() },
+    'sergeant-bo': { name: 'Sergeant Bo', thread_id: 'not a thread' },
+    '../escape': { name: 'Nope', thread_id: SERGEANT_THREAD },
+  }));
+  write(root, 'bin/relay-settings.json', '﻿' + JSON.stringify({ owner_name: 'Ada', projects_dir: '/home/ada/code' }));
+}
+
+test('agent mail: names, what waits for each agent, its messages, and who the relay wakes', (t) => {
+  const root = tempMailbox(t);
+  buildMail(root);
+  const mail = createMailboxSource({ root }).poll().mail;
+  assert.equal(mail.owner, 'Ada');
+  assert.deepEqual(mail.agents, [
+    { key: 'colonel', name: 'Colonel', unread: 0, since: null, wakes: false, threadId: null },
+    { key: 'sergeant-ada', name: 'Sergeant Ada', unread: 2, since: Date.UTC(2026, 9, 18, 10, 15, 0, 123), wakes: true, threadId: SERGEANT_THREAD },
+    { key: 'sergeant-bo', name: 'Sergeant Bo', unread: 0, since: null, wakes: true, threadId: null },
+  ]);
+  assert.deepEqual(mail.messages, [
+    { from: 'colonel', fromName: 'Colonel', at: Date.UTC(2026, 9, 18, 10, 17), to: 'sergeant-ada', unread: true, text: 'And the tests.' },
+    { from: 'colonel', fromName: 'Colonel', at: Date.UTC(2026, 9, 18, 10, 15, 0, 123), to: 'sergeant-ada', unread: true, text: '## Plan\nCheck the **build**.' },
+    { from: 'colonel', fromName: 'Colonel', at: Date.UTC(2026, 9, 18, 9, 0), to: 'sergeant-ada', unread: false, text: 'Old one.' },
+  ]);
+
+  const hidden = createMailboxSource({ root, settings: { content: 'none' } }).poll().mail;
+  assert.deepEqual(hidden.messages.map((m) => m.text), [null, null, null], 'no message text when snippets are off');
+  assert.equal(hidden.messages[0].fromName, 'Colonel', 'names still show');
+});
+
+test('agent mail: a message an agent reads moves to read at once', (t) => {
+  const root = tempMailbox(t);
+  buildMail(root);
+  const source = createMailboxSource({ root });
+  assert.equal(source.poll().mail.agents[1].unread, 2);
+  const name = '20261018-101500-123-colonel-a1b2c3.md';
+  fs.renameSync(path.join(root, 'mail', 'sergeant-ada', 'new', name), path.join(root, 'mail', 'sergeant-ada', 'read', name));
+  const mail = source.poll().mail;
+  assert.equal(mail.agents[1].unread, 1);
+  assert.equal(mail.agents[1].since, Date.UTC(2026, 9, 18, 10, 17));
+  const moved = mail.messages.find((m) => m.at === Date.UTC(2026, 9, 18, 10, 15, 0, 123));
+  assert.equal(moved.unread, false);
+  assert.equal(moved.text, '## Plan\nCheck the **build**.');
+  assert.equal(mail.messages.length, 3, 'the message is not counted twice');
+
+  fs.rmSync(path.join(root, 'mail'), { recursive: true });
+  assert.equal(source.poll().mail, null, 'no mail folder, no mail');
+});
+
+test('agent mail: a message without a head, odd files and big folders', (t) => {
+  const root = tempMailbox(t);
+  assert.equal(createMailboxSource({ root }).poll().mail, null);
+  write(root, 'mail/ada/new/20261018-101500-000-sergeant-ada-123456.md', 'Just a line.\nFrom: not a head\n', Date.now());
+  write(root, 'mail/ada/new/20261340-101500-000-sergeant-ada-123456.md', 'a month that does not exist', Date.now());
+  write(root, 'mail/ada/new/20261018-101600-000-sergeant-ada-abcdef.md', Buffer.from([0xff, 0xfe, 0x00, 0x0a, 0x80]), Date.now());
+  fs.mkdirSync(path.join(root, 'mail', 'ada', 'new', '20261018-101700-000-sergeant-ada-abcdef.md'));
+  write(root, 'mail/ada/name.txt', 'x'.repeat(2000));
+  write(root, '.relay/agents.json', '[1, 2]');
+  write(root, 'bin/relay-settings.json', 'not json');
+  for (let i = 0; i < 35; i++) {
+    const s = String(i).padStart(2, '0');
+    mailFile(root, `mail/bo/read/20261018-0900${s}-000-ada-${String(i).padStart(6, '0')}.md`, 'Ada', 'Bo', 'x', `Read ${i}`);
+  }
+  const mail = createMailboxSource({ root }).poll().mail;
+  assert.equal(mail.owner, null);
+  assert.deepEqual(mail.agents.map((a) => [a.key, a.name, a.unread, a.wakes]), [['ada', null, 2, false], ['bo', null, 0, false]]);
+  const toAda = mail.messages.filter((m) => m.to === 'ada');
+  assert.deepEqual(toAda.find((m) => m.text === 'Just a line.\nFrom: not a head'), {
+    from: 'sergeant-ada', fromName: null, at: Date.UTC(2026, 9, 18, 10, 15), to: 'ada', unread: true, text: 'Just a line.\nFrom: not a head',
+  }, 'a file without a head is all message; the sender comes from its name');
+  assert.equal(toAda.length, 2);
+  const toBo = mail.messages.filter((m) => m.to === 'bo');
+  assert.equal(toBo.length, 30, 'the newest 30 read messages for each agent');
+  assert.equal(toBo[0].text, 'Read 34');
+  assert.equal(toBo.at(-1).text, 'Read 5');
+});
+
+test('agent mail: a renamed copy in read keeps its sender', (t) => {
+  const root = tempMailbox(t);
+  mailFile(root, 'mail/bo/read/20261018-101500-123-sergeant-abc123-a1b2c3-9f8e.md', 'Sergeant abc123', 'Bo', 'x', 'one');
+  write(root, 'mail/bo/read/20261018-101600-000-sergeant-abc123-a1b2c3.md', 'no head', Date.now());
+  const mail = createMailboxSource({ root }).poll().mail;
+  assert.deepEqual(mail.messages.map((m) => [m.from, m.fromName]), [['sergeant-abc123', null], ['sergeant-abc123', 'Sergeant abc123']]);
 });

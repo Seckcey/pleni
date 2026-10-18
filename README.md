@@ -174,6 +174,7 @@ The **Needs you** strip at the top of the map and the list shows what waits on y
 - with a mailbox: a task with a blocking question, a task ready for review, a new note for you in
   a `NEEDS-<NAME>.md` file, and the relay's alerts. It also says when the relay is paused or
   halted, and what to do about it;
+- with agent mail: mail an agent sent you that you have not read yet;
 - a tile you watch that stopped working (see below).
 
 Click a notice to open its tile. Click its **×** to hide it until something newer happens.
@@ -384,6 +385,13 @@ Markdown files: one hands out tasks, the other reports back. If you do not use o
 repository. It wakes the Claude Code coordinator when the Codex planner writes to the mailbox, and
 the coordinator uses it to start worker sessions. Pleni shows the relay on the map, but never runs
 it. It is not part of the npm package.
+
+**Agent mail** lets your agents write to each other, and to you, by name, through the same
+mailbox folder (see "Agent mail" in the [relay README](relay/README.md)). Pleni shows it: a line
+lights up between two tiles when mail goes from one to the other, a tile says how many new
+messages wait for it, and mail for you shows under **Needs you**. Click a tile to see whether the
+relay wakes it for its mail, and the PowerShell commands to read your mail and answer it. Pleni
+never sends mail itself.
 
 ## Privacy and safety
 

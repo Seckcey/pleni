@@ -195,6 +195,23 @@ const MAIL_HISTORY = [
   { ago: 20, dir: 'up', taskId: 'T-103', file: 'questions.md', title: 'Q1: Which tax year should the table use?' },
 ];
 
+// Agent mail (relay/bin/agent-mail.ps1): sessions and the person write to each other by name. The
+// relay wakes the planner when mail waits for it. `read` is how many beats a message waits.
+const MAIL_AGENTS = [
+  { key: 'q4-billing-plan', name: 'Q4 billing plan', thread: PLANNER },
+  { key: 'sales-tax-research', name: 'Sales tax research', thread: null },
+  { key: 'ada', name: 'Ada', thread: null },
+];
+const MAIL_NAMES = new Map(MAIL_AGENTS.map((a) => [a.key, a.name]));
+const LETTERS = [
+  { ago: 34, from: 'q4-billing-plan', to: 'sales-tax-research', text: 'Find the sales tax changes coming next year in our three states.' },
+  { ago: 6, from: 'sales-tax-research', to: 'ada', unread: true, text: 'Two states change their rates next year. Should I update the tax table now, or wait for T-103?' },
+];
+const LETTER_SCRIPT = [
+  { beat: 6, from: 'q4-billing-plan', to: 'sales-tax-research', read: 4, text: 'Which of the rate changes start in January?' },
+  { beat: 10, from: 'sales-tax-research', to: 'q4-billing-plan', read: 2, text: 'Both of them. The dates are in docs/tax-rates.md.' },
+];
+
 const TASKS = [
   { id: 'T-100', title: 'Ledger cleanup', state: 'DONE', attention: [], worker: { model: 'claude-haiku-5-5', start: 80, end: 56 } },
   { id: 'T-101', title: 'Split the invoice service', state: 'IN_PROGRESS', attention: [], worker: { model: 'claude-sonnet-5-5', start: 30 } },
@@ -206,10 +223,10 @@ export function createDemoSource({ now = Date.now } = {}) {
   return {
     poll() {
       const clock = clockAt(now());
-      const { handoffs, mail } = history(clock);
+      const { handoffs, mail, letters } = history(clock);
       const sessions = CAST.map((member) => session(member, clock, handoffs));
       const read = (name) => ({ ok: true, error: null, root: `${HOME}/${ROOTS[name]}`, sessions: sessions.filter((s) => s.platform === name) });
-      return { ...Object.fromEntries(TOOLS.map((name) => [name, read(name)])), mailbox: mailbox(clock, mail) };
+      return { ...Object.fromEntries(TOOLS.map((name) => [name, read(name)])), mailbox: mailbox(clock, mail, letters) };
     },
     detail(key, since) {
       const member = BY_KEY.get(key);
@@ -288,6 +305,13 @@ function endOf(member, clock) {
 function history(clock) {
   const handoffs = [];
   const mail = MAIL_HISTORY.map(({ ago, ...rest }) => ({ at: clock.mark - ago * MIN, ...rest }));
+  const letters = LETTERS.map(({ ago, unread = false, ...rest }) => ({ ...rest, at: clock.mark - ago * MIN, unread }));
+  for (let beat = Math.max(0, clock.beat - HISTORY_BEATS); beat <= clock.beat; beat++) {
+    for (const step of LETTER_SCRIPT) {
+      if (step.beat !== beat % LOOP_BEATS) continue;
+      letters.push({ from: step.from, to: step.to, text: step.text, at: beat * BEAT_MS, unread: clock.beat - beat < step.read });
+    }
+  }
   for (const member of CAST) {
     if (!member.parent) continue;
     const started = startOf(member, clock);
@@ -304,7 +328,7 @@ function history(clock) {
       else handoffs.push({ at, parent: step.parent, child: step.child, dir: step.dir, label: step.label });
     }
   }
-  return { handoffs, mail };
+  return { handoffs, mail, letters };
 }
 
 function session(member, clock, handoffs) {
@@ -344,7 +368,7 @@ function session(member, clock, handoffs) {
   };
 }
 
-function mailbox(clock, mail) {
+function mailbox(clock, mail, letters) {
   const events = mail.sort((a, b) => b.at - a.at).slice(0, 300);
   const tasks = TASKS.map((task) => {
     const newest = events.find((event) => event.taskId === task.id);
@@ -377,7 +401,27 @@ function mailbox(clock, mail) {
       running: true, paused: false, halted: false, coordinatorKey: COORDINATOR,
       lastAt: clock.beatAt, pausedAt: null, haltReason: null, alerts: null,
     },
+    mail: agentMail(letters),
   };
+}
+
+// The mail part of the mailbox, in the shape src/sources/mailbox.js gives it.
+function agentMail(letters) {
+  const messages = letters
+    .map((m) => ({ to: m.to, from: m.from, fromName: MAIL_NAMES.get(m.from), at: m.at, unread: m.unread, text: m.text }))
+    .sort((a, b) => b.at - a.at);
+  const agents = MAIL_AGENTS.map((a) => {
+    const waiting = messages.filter((m) => m.to === a.key && m.unread);
+    return {
+      key: a.key,
+      name: a.name,
+      unread: waiting.length,
+      since: waiting.length ? Math.min(...waiting.map((m) => m.at)) : null,
+      wakes: a.thread !== null,
+      threadId: a.thread ? a.thread.slice(a.thread.indexOf(':') + 1) : null,
+    };
+  });
+  return { owner: 'Ada', agents, messages };
 }
 
 // The side drawer's recent events, oldest first.

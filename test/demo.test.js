@@ -125,7 +125,11 @@ test('the demo snapshot shows two projects, ranks and a live mailbox line', () =
   assert.ok(s.events.some((e) => e.kind === 'report'));
   assert.ok(s.events.some((e) => e.kind === 'message'));
   assert.ok(s.events.some((e) => e.kind === 'error'));
-  assert.deepEqual(new Set(s.attention.map((a) => a.kind)), new Set(['needs', 'error', 'question', 'review', 'note']));
+  assert.deepEqual(new Set(s.attention.map((a) => a.kind)), new Set(['needs', 'error', 'question', 'review', 'note', 'mail']));
+  // Agent mail: the planner and a session write to each other, and one asks the person something.
+  assert.ok(s.events.some((e) => e.kind === 'mail' && e.from === DEMO_KEYS.planner));
+  assert.equal(s.nodes.find((n) => n.key === 'you').mail.unread, 1);
+  assert.equal(s.nodes.find((n) => n.key === DEMO_KEYS.planner).mail.wakes, true);
   // The automatic reviewer only shows when asked for.
   assert.equal(s.nodes.some((n) => n.kind === 'reviewer'), false);
   assert.ok(demoSnapshot(NOW, { showReviewers: true }).nodes.some((n) => n.kind === 'reviewer'));

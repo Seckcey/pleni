@@ -17,9 +17,9 @@
   It writes only under <mailbox>\mail. Windows PowerShell 5.1 compatible. ASCII only.
 
 .EXAMPLE
-  .\bin\agent-mail.ps1 -Send -From 'Colonel' -To 'Sergeant Milepost' -Text 'Start T-12. Report when done.'
-  .\bin\agent-mail.ps1 -Send -From 'Colonel' -To 'Sergeant Milepost,Sergeant Coastmark' -TextFile C:\Users\ada\order.md
-  .\bin\agent-mail.ps1 -Read -Me 'Sergeant Milepost'
+  .\bin\agent-mail.ps1 -Send -From 'Colonel' -To 'Sergeant Lark' -Text 'Start T-12. Report when done.'
+  .\bin\agent-mail.ps1 -Send -From 'Colonel' -To 'Sergeant Lark,Sergeant Wren' -TextFile C:\Users\ada\order.md
+  .\bin\agent-mail.ps1 -Read -Me 'Sergeant Lark'
   .\bin\agent-mail.ps1 -Wait -Me 'Colonel' -Seconds 50
   .\bin\agent-mail.ps1 -List
 #>
