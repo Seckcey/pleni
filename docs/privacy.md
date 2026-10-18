@@ -97,12 +97,12 @@ recent pop-ups in its notification list until you clear them.
   file safely: it writes a temporary file in the same folder, then renames it.
 - It never stops a session. It sends nothing to one, except Roll over's two short messages when you
   click its buttons (see below).
-- It starts nothing unless you turn on **Open in PowerShell** (Settings → Open sessions, off until
+- It starts nothing unless you turn on **Open in PowerShell** (Settings → Buttons, off until
   you turn it on, Windows only) and click the button on this computer. Then it opens one
   PowerShell window that runs `claude --resume` or `codex resume` for that session. Whatever is typed there comes
   from you. It does not open a session that is already open in another window, and it refuses the
   button from another device.
-- **Roll over** (Settings → Open sessions, off until you turn it on, Windows only, this computer
+- **Roll over** (Settings → Buttons, off until you turn it on, Windows only, this computer
   only) works the same way, with one message per window. **Ask in PowerShell** runs
   `claude --resume` or `codex resume` with a request to write a handoff note. **Start in
   PowerShell** runs `claude --name <name>` or `codex` in the session's folder with a request to read

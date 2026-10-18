@@ -112,8 +112,11 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
 - **Activity** — every hand-off, newest first.
 - **Tasks** — shown only when you turn on a mailbox (see below). It lists each task, its state,
   and which ones need you.
-- **Settings** — your name, the titles to use, how much text to show, which folders to read,
-  and who may open Pleni from another device.
+- **Settings** — six short groups: **Basics** (your name, the look, which sessions show),
+  **Team** (names, roles, who reports to whom), **Sources** (which folders to read, and the
+  mailbox), **Alerts**, **Buttons** (Open in PowerShell and Roll over), and **Devices** (opening
+  Pleni from another device). Type in **Find a setting** to find one by name, such as "port" or
+  "folder".
 
 Click any tile to see more about that session, with its recent steps. Press Esc to close it.
 
@@ -137,14 +140,15 @@ menu in its side panel. Pick **Automatic** to undo.
 
 **Hide a session.** An old or test session can leave the map: click it, then choose **Hide from the
 map** in its side panel. Nothing is deleted, and **Undo** brings it back. To show it again later,
-go to **Settings → Names and roles** and set its Role back to **Automatic**. The counts under the
-title say how many are hidden.
+go to **Settings → Team → Names and roles** and set its Role back to **Automatic**. The counts
+under the title say how many are hidden.
 
 **Roll over soon.** A long session gets slow, and each time its history is squeezed into a summary
 it forgets details. Pleni marks a main Claude Code session or Codex thread **Roll over soon** when
 its memory is nearly full, its history was squeezed often, or it is old. The side panel says why,
 and its Details tab shows the numbers. Pleni reads only numbers for this, never what was said. Set
-the limits in **Settings → Roll over soon**; 0 turns one off. Then use [Roll over](#roll-over-a-session).
+the limits in **Settings → Alerts → Roll over soon**; 0 turns one off. Then use
+[Roll over](#roll-over-a-session).
 
 **Which Pleni is this?** The version shows beside the name at the top of the page, and Settings
 says which version and git commit you run. After you update Pleni and start it again, an open page
@@ -152,9 +156,9 @@ says so; reload it to use the new version. `node bin/pleni.js --version` prints 
 
 **Chain of command.** Pleni draws each helper under the session that started it. Codex workers
 started by a coordinator hang under that coordinator. If your sessions report to each other in
-another way, say so in **Settings → Chain of command**: for example, "a session whose name contains
-*Sergeant* reports to the newest session whose name contains *Colonel*". Rules match names, so they
-keep working when a session is replaced by a new one.
+another way, say so in **Settings → Team → Chain of command**: for example, "a session whose name
+contains *Sergeant* reports to the newest session whose name contains *Colonel*". Rules match names,
+so they keep working when a session is replaced by a new one.
 
 ## Needs you and alerts
 
@@ -192,7 +196,7 @@ On Windows, Pleni can open a Claude Code session or a Codex thread in a PowerShe
 can watch it and type to it. You do not need Claude Code or Codex open first: the window starts
 it. This is off until you turn it on:
 
-1. Open **Settings**. Under **Open sessions**, tick **Show the Open in PowerShell button**, then
+1. Open **Settings**, then **Buttons**. Tick **Show the Open in PowerShell button**, then
    choose **Save settings**.
 2. Click a Claude Code or Codex session on the map. In its side panel, choose **Open in
    PowerShell**.
@@ -237,7 +241,7 @@ A session that has run for days gets slow, and each turn costs more: the model r
 history again every time. Rolling it over starts a fresh session with the same name that picks up
 from a handoff note. On Windows, Pleni walks you through it. This is off until you turn it on:
 
-1. Open **Settings**. Under **Open sessions**, tick **Show the Roll over button**, then choose
+1. Open **Settings**, then **Buttons**. Tick **Show the Roll over button**, then choose
    **Save settings**.
 2. Click the session on the map. In its side panel, choose **Roll over…**.
 
@@ -267,7 +271,7 @@ The section shows four steps, and the exact message of each step before you clic
 
 ## Where it looks
 
-Pleni finds the usual folders on its own. You can change any of them in Settings.
+Pleni finds the usual folders on its own. You can change any of them in **Settings → Sources**.
 
 | What it reads                       | Usual folder                                                                                                       | Change it with      |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------- |
@@ -278,7 +282,7 @@ Pleni finds the usual folders on its own. You can change any of them in Settings
 | Kimi Code sessions and helpers      | `~/.kimi-code` (on Windows, `C:\Users\<you>\.kimi-code`)                                                           | `KIMI_CODE_HOME`    |
 | A coordination mailbox (optional)   | Off until you choose a folder                                                                                      | Settings            |
 
-Pleni shows sessions that were active in the last 24 hours. You can change that in Settings.
+Pleni shows sessions that were active in the last 24 hours. You can change that in **Settings → Basics**.
 
 Pleni keeps its own settings in one file, `settings.json`:
 
@@ -339,9 +343,9 @@ Pleni opens only on your own computer. To see it on your phone, you can use
    ```
 
    Tailscale prints a web address for your computer, such as `https://my-pc.tail1234.ts.net`.
-4. In Pleni's **Settings**, add two things to the remote access lists: the host name from that
-   address (`my-pc.tail1234.ts.net`) and your Tailscale login name (the Tailscale app shows it).
-   Save.
+4. In Pleni's **Settings → Devices**, add two things to the remote access lists: the host name
+   from that address (`my-pc.tail1234.ts.net`) and your Tailscale login name (the Tailscale app
+   shows it). Save.
 5. Open the web address on your phone and bookmark it, for example
    `https://my-pc.tail1234.ts.net/`. Pleni asks for its key the first time. Paste the key that
    `npx pleni --url` shows on your computer. You only need the key once per device, and the

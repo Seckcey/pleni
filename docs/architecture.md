@@ -753,7 +753,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 ## Page (`public/`)
 
 - Hash routes: `#/` map (default), `#/list`, `#/activity`, `#/tasks` (only with a mailbox),
-  `#/settings`.
+  `#/settings`, and `#/settings/<group>` for one group of settings (`basics`, `team`, `sources`,
+  `alerts`, `buttons` or `devices`).
 - **Map:** a left-to-right tidy tree of tiles (`W 268 × H 128`, gaps 96 × 22, padding 48) joined by
   rounded orthogonal lines. A line glows while its edge is `active`; three small packets travel down
   (planner/parent → child, teal) or up (child → parent, purple). Pan with drag, zoom with Ctrl+wheel,
@@ -791,11 +792,27 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   Sessions and the relay have a **Tell me if this stops working**
   box that posts `/api/watch`; Settings' own copy of the settings is updated too, so saving Settings
   later keeps it.
-- **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. The Open sessions
-  section turns Open in PowerShell and Roll over on and says when the computer does not run Windows. The Roll
-  over soon section sets the three `rollSoon` limits. The Alerts
-  section sets `alerts.stoppedMinutes` and holds the Pop-ups box. Under the Settings title, the page
-  says which version runs ("This is Pleni 0.1.0 (commit 0c5808a).").
+- **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. Under the Settings
+  title, the page says which version runs ("This is Pleni 0.1.0 (commit 0c5808a)."). The form is
+  split into six groups, shown as tabs (`role="tablist"`; arrow keys, Home and End move between
+  them): **Basics** (You and the map; What the page shows, with Finished for, Call a turn stuck
+  after and Reviewers folded under **More choices**), **Team** (Names and roles, Chain of command,
+  Projects, Ranks by model with its words folded), **Sources** (Where Pleni looks, Mailbox),
+  **Alerts** (Needs you, with `alerts.stoppedMinutes` and the Pop-ups box; Roll over soon, with
+  the three `rollSoon` limits), **Buttons** (Open sessions: Open in PowerShell and Roll over, and
+  a line when the computer does not run Windows) and **Devices** (Other devices, the port, and
+  where the settings file is). `#/settings/<group>` opens a group, and choosing a tab puts its
+  group in the address. **Find a setting** shows, from every group, the sections whose group
+  name, heading, notes, rows, or a few extra words (`data-find`) have each typed word at the start
+  of a word. It marks the matching rows, opens a fold that holds a match, hides the tabs, and says
+  how many sections match; Esc clears it. All groups are one form, so Save sends every field.
+  Before saving, the page checks the form: whole numbers within the server's limits, full folder
+  paths, host names, and Tailscale logins (`name@domain`), at most 20 of each. A bad field gets
+  `aria-invalid="true"` and a plain message tied to it with `aria-describedby`, and its tab gets a
+  red dot. The message under the form names the groups that hold bad fields. Focus moves to the
+  first bad field in the open group, or else the first one, after opening its group and fold.
+  Nothing is sent. After a save, the page compares what the server saved with what it sent and
+  names any value the server had to change; the port message uses the saved port.
 - **Version:** the app bar shows the version beside the name (hidden at phone width, like the name;
   its tooltip adds the commit). The page keeps the first `X-Pleni-Version` and `X-Pleni-Build` it
   gets; when a later snapshot answer carries others, Pleni was updated and started again, and a
@@ -810,12 +827,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   gone, and the notice at the bottom of the page offers Undo, which puts back the role it had.
   Settings' own copy gets the role too. Roll over's Check step offers **Hide the old session** once
   the new one is found. The counts line under the Map and List titles adds "N hidden (Settings,
-  Names and roles)". Before saving, the page
-  checks the form: whole numbers within the server's limits, full folder paths, host names, and
-  Tailscale logins (`name@domain`), at most 20 of each. A bad field gets `aria-invalid="true"` and
-  a plain message tied to it with `aria-describedby`, focus moves to the first one, and nothing is
-  sent. After a save, the page compares what the server saved with what it sent and names any
-  value the server had to change; the port message uses the saved port.
+  Team)".
 - **Missing key:** a `401` from the API shows the sign-in box (`#signin`) instead of "Cannot reach
   Pleni", and the page keeps polling. The box is a form with a hidden `username` field ("Pleni") and
   a `current-password` field, so browsers can save the key like a password. Sign in takes the key,

@@ -679,7 +679,31 @@ details.fold > summary { cursor: pointer; color: var(--ui-text-secondary); }
 /* ---------- settings ---------- */
 
 .settings { display: grid; gap: var(--ui-space-6); max-width: 980px; margin-top: var(--ui-space-5); }
-.settings .lead { color: var(--ui-text-secondary); margin: var(--ui-space-3) 0 0; max-width: 85ch; }
+/* Find a setting, the group tabs, and one group of short sections at a time. */
+.sfind { max-width: 560px; }
+.sfind label { display: block; margin-bottom: var(--ui-space-2); font-weight: var(--ui-weight-semibold); }
+.sfind-msg { margin: 0; font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+.sfind-msg:not(:empty) { margin-top: var(--ui-space-2); }
+.settings .stabs { margin: 0; }
+.stabs [role="tab"].bad::after {
+  content: ''; display: inline-block; width: 8px; height: 8px; margin-left: var(--ui-space-2);
+  border-radius: 50%; background: var(--ui-error); vertical-align: middle;
+}
+.sgroup { display: grid; gap: var(--ui-space-6); }
+.sgroup-intro { margin: 0; color: var(--ui-text-secondary); }
+/* While finding, each group's name sits over its matching sections. */
+.settings.finding .sgroup-intro { display: none; }
+.settings.finding .sgroup::before {
+  content: attr(data-name); font-size: var(--ui-font-sm); font-weight: var(--ui-weight-semibold);
+  color: var(--ui-text-muted); text-transform: uppercase; letter-spacing: 0.04em;
+}
+.settings.finding .srow.found {
+  margin: 0 calc(-1 * var(--ui-space-4)); padding-left: var(--ui-space-4); padding-right: var(--ui-space-4);
+  background: var(--ui-accent-soft); border-radius: var(--ui-radius-md);
+}
+details.smore { margin-top: var(--ui-space-4); padding-top: var(--ui-space-4); border-top: 1px solid var(--ui-border); }
+details.smore > summary { cursor: pointer; color: var(--ui-text-secondary); font-weight: var(--ui-weight-medium); }
+details.smore[open] > summary { margin-bottom: var(--ui-space-2); }
 .settings h2 { margin: 0 0 var(--ui-space-4); font-size: var(--ui-font-lg); }
 .settings fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 .srow { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: var(--ui-space-2) var(--ui-space-6); padding: var(--ui-space-5) 0; border-top: 1px solid var(--ui-border); align-items: start; }
@@ -705,8 +729,7 @@ table.edit td { padding: var(--ui-space-3) var(--ui-space-4) var(--ui-space-3) 0
 table.edit td .field { min-height: 28px; padding: var(--ui-space-2) var(--ui-space-4); }
 table.edit .who { display: flex; align-items: center; gap: var(--ui-space-4); min-width: 0; }
 table.edit .key { display: block; color: var(--ui-text-muted); font-family: var(--ui-font-mono); font-size: var(--ui-font-xs); overflow-wrap: anywhere; }
-/* Ranks by model, and the smaller heading over the words that set a rank. */
-.settings h3 { margin: var(--ui-space-7) 0 0; font-size: var(--ui-font-md); color: var(--ui-text-secondary); }
+/* Ranks by model. */
 table.models .mname { font-weight: var(--ui-weight-semibold); overflow-wrap: anywhere; }
 table.models td.n { font-variant-numeric: tabular-nums; color: var(--ui-text-secondary); }
 table.models select.field { max-width: 15rem; }
@@ -868,6 +891,7 @@ ul.kids .t { font-weight: var(--ui-weight-semibold); overflow: hidden; text-over
   .welcome img { width: var(--ui-pip-md); height: var(--ui-pip-md); }
   .srow { grid-template-columns: minmax(0, 1fr); }
   .srow .help { grid-column: 1; }
+  .settings .stabs { gap: var(--ui-space-3) var(--ui-space-5); }
   .rule-head { display: none; }
   .rule { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .rule .btn { align-self: end; }
