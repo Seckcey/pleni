@@ -26,6 +26,17 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- Hide a session with one click: **Hide from the map** in a session's side panel, with Undo. Roll
+  over's last step offers **Hide the old session**. The counts under the Map and List titles say
+  how many are hidden, and Settings → Names and roles now names them, so one can be shown again.
+  (#13)
+- Roll over soon: a main Claude Code session or Codex thread whose memory is nearly full, whose
+  history was squeezed into a summary often, or that is old gets a **Roll over soon** mark on its
+  tile and in the List, with the reasons in its side panel and the numbers in its Details tab. The
+  limits are in Settings → Roll over soon. Pleni reads only token numbers and squeeze records for
+  this, never message text. (#14)
+- The version shows beside Pleni's name at the top of the page, and Settings says which version
+  and git commit run. When Pleni was updated and started again, an open page says to reload. (#17)
 - Roll over (Windows, off until you turn it on in Settings → Open sessions): a session's side panel
   gets **Roll over…**, which starts a fresh session with the same name that picks up from a handoff
   note. **Ask in PowerShell** opens the old session and asks it to write `HANDOFF-<name>.md` in its

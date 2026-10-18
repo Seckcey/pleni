@@ -373,7 +373,7 @@ test('nodes carry tier, model label and session fields', () => {
   assert.deepEqual(Object.keys(lead), [
     'key', 'parent', 'platform', 'kind', 'title', 'subtitle', 'rank', 'role', 'tier', 'model', 'modelLabel',
     'effort', 'status', 'startedAt', 'lastAt', 'activity', 'lastText', 'needs', 'project', 'projectLabel', 'entrypoint',
-    'hidden', 'archived', 'named', 'placement', 'watched',
+    'hidden', 'archived', 'named', 'placement', 'memory', 'rollSoon', 'watched',
   ]);
   assert.deepEqual(Object.keys(node(s, 'you')), Object.keys(lead));
   assert.deepEqual(Object.keys(node(s, 'project:alpha')), Object.keys(lead));
@@ -1213,4 +1213,52 @@ test('the snapshot says whether the page may offer Open in PowerShell and Roll o
   assert.deepEqual(build({ openTerminal: true }), { openTerminal: true, rollover: false });
   assert.deepEqual(build({ rollover: true }), { openTerminal: false, rollover: true });
   assert.deepEqual(build({ openTerminal: 'yes', rollover: 1 }), { openTerminal: false, rollover: false });
+});
+
+test('hiddenSessions names the recent sessions the person hid, which are not on the map', () => {
+  const shown = 'claude:dddddddd-0000-4000-8000-000000000101';
+  const hid = 'claude:dddddddd-0000-4000-8000-000000000102';
+  const old = 'claude:dddddddd-0000-4000-8000-000000000103';
+  const archived = 'codex:dddddddd-0000-4000-8000-000000000104';
+  const labelled = 'codex:dddddddd-0000-4000-8000-000000000105';
+  const claude = [
+    session(shown, { title: 'Still here' }),
+    session(hid, { title: 'Test run' }),
+    session(old, { title: 'Long gone', startedAt: NOW - 50 * HOUR, lastAt: NOW - 49 * HOUR }),
+  ];
+  const codex = [session(archived, { title: 'Archived', archived: true }), session(labelled, { title: 'Planner' })];
+  const people = { [hid]: { role: 'hidden' }, [old]: { role: 'hidden' }, [archived]: { role: 'hidden' }, [labelled]: { role: 'hidden', label: 'Old planner' } };
+  const s = snap({ claude, codex, settings: { people } });
+  assert.deepEqual(s.hiddenSessions, [
+    { key: labelled, title: 'Old planner', platform: 'codex', kind: 'session' },
+    { key: hid, title: 'Test run', platform: 'claude', kind: 'session' },
+  ]);
+  assert.equal(node(s, hid), undefined);
+  assert.ok(node(s, shown));
+  assert.deepEqual(snap({ claude }).hiddenSessions, []);
+});
+
+test('rollSoon gives plain reasons when a main session passes a limit, and memory gives the numbers', () => {
+  const day = 24 * HOUR;
+  const full = 'claude:dddddddd-0000-4000-8000-000000000201';
+  const fresh = 'claude:dddddddd-0000-4000-8000-000000000202';
+  const thread = 'codex:dddddddd-0000-4000-8000-000000000203';
+  const claude = [
+    session(full, { startedAt: NOW - 9 * day, context: { used: 680000, size: 780000, squeezes: 3, squeezesAtLeast: false, squeezedAt: NOW - HOUR } }),
+    session(fresh, { context: { used: 40000, size: null, squeezes: 0, squeezesAtLeast: false, squeezedAt: null } }),
+    session(`${full}/a1b2c3d4e5f60001`, { parentKey: full, kind: 'agent', context: { used: 1, size: 2, squeezes: 9 } }),
+  ];
+  const codex = [session(thread, { context: { used: 200000, size: 272000, squeezes: 2, squeezesAtLeast: true, squeezedAt: null } })];
+  const s = snap({ claude, codex });
+  assert.deepEqual(node(s, full).rollSoon, ['Memory 87% full', 'Squeezed 3 times', '9 days old']);
+  assert.deepEqual(node(s, full).memory, { used: 680000, size: 780000, percent: 87, squeezes: 3, squeezesAtLeast: false, squeezedAt: NOW - HOUR });
+  assert.equal(node(s, fresh).rollSoon, null);
+  assert.equal(node(s, fresh).memory.percent, null, 'no size known yet');
+  assert.equal(node(s, `${full}/a1b2c3d4e5f60001`).memory, null, 'helpers are not rolled over');
+  assert.deepEqual(node(s, thread).rollSoon, ['Memory 74% full', 'Squeezed twice or more']);
+  // Each limit can be changed or turned off with 0.
+  const off = snap({ claude, codex, settings: { rollSoon: { memoryPercent: 0, squeezes: 4, days: 10 } } });
+  assert.equal(node(off, full).rollSoon, null);
+  assert.equal(node(off, thread).rollSoon, null);
+  assert.equal(node(snap({ claude: [session(fresh)] }), fresh).memory, null, 'a source without numbers');
 });

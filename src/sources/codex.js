@@ -177,6 +177,8 @@ export function createCodexSource({ root, settings, now = Date.now } = {}) {
       needs: needsOf(s),
       links: linksOf(thread, ctx, snippets),
       archived: thread.archived || registry.imported.has(thread.id),
+      // A file read from its middle may hold squeezes before the part Pleni read.
+      context: { used: s.used, size: s.size, squeezes: s.squeezes, squeezesAtLeast: thread.partial, squeezedAt: s.squeezedAt },
     };
   }
 
@@ -307,6 +309,10 @@ function newState() {
     paths: new Map(), // agent path -> thread id, from SubAgentActivity items
     completed: new Map(), // child thread id -> time its completion was recorded here
     received: [], // { at, from, label } for messages other threads sent here, oldest first
+    used: null, // tokens in the context (memory) after the newest model call
+    size: null, // how many tokens the model's context holds
+    squeezes: 0, // "compacted" records Pleni has read; a long file is read from its end, so maybe more
+    squeezedAt: null,
   };
 }
 
@@ -352,6 +358,10 @@ function restart(thread) {
     paths: old.paths,
     completed: old.completed,
     received: old.received,
+    used: old.used,
+    size: old.size,
+    squeezes: old.squeezes,
+    squeezedAt: old.squeezedAt,
   };
   thread.tail = new JsonlTail(thread.file, { maxInitialBytes: TAIL_BYTES });
   thread.started = false;
@@ -438,6 +448,8 @@ function apply(thread, rec, snippets) {
       return;
     case 'compacted':
       touch(s, at);
+      s.squeezes++;
+      if (at !== null) s.squeezedAt = at;
       return;
   }
 }
@@ -461,7 +473,22 @@ function onEvent(s, p, at) {
     case 'item_completed':
       if (isObject(p.item) && p.item.type === 'SubAgentActivity') onSubAgent(s, p.item, at);
       return;
+    case 'token_count':
+      onTokens(s, p.info);
+      return;
   }
+}
+
+// How full the context is: the newest model call's tokens, out of what the model holds.
+function onTokens(s, info) {
+  if (!isObject(info)) return;
+  const last = isObject(info.last_token_usage) ? info.last_token_usage : {};
+  if (tokens(last.total_tokens) > 0) s.used = tokens(last.total_tokens);
+  if (tokens(info.model_context_window) > 0) s.size = tokens(info.model_context_window);
+}
+
+function tokens(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
 function closeTurn(s, turnId, at, error) {

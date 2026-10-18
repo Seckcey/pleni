@@ -952,3 +952,35 @@ test('with content none a blocked summary keeps its kind but no text', (t) => {
   writeDesktop(env.desktopRoot, SID, { cliSessionId: SID, postTurnSummary: { status_category: 'blocked', needs_action: 'secret', summarizes_uuid: 'u1' } });
   assert.deepEqual(env.get(keyOf(SID)).needs, { kind: 'blocked', text: null, at: env.ago(4 * MIN) });
 });
+
+// ---- how full the context is ----
+
+test('reads how full the context is, and counts squeezes from the running total of the newest one', (t) => {
+  const env = setup(t);
+  const file = sessionPath(env.root);
+  const at = (m) => env.ago(m * MIN);
+  const said = (m, usage) => {
+    const r = assistant(at(m), [text('Working.')]);
+    r.message.usage = usage;
+    return r;
+  };
+  const squeeze = (m, compactMetadata) => ({ type: 'system', subtype: 'compact_boundary', ...common(at(m)), content: 'Conversation compacted', compactMetadata });
+  write(file, [user(at(60), 'Start'), said(59, { input_tokens: 10, cache_creation_input_tokens: 2000, cache_read_input_tokens: 40000, output_tokens: 50 })]);
+  assert.deepEqual(env.get(keyOf(SID)).context, { used: 42010, size: null, squeezes: 0, squeezesAtLeast: false, squeezedAt: null });
+
+  // The third squeeze of a long history: its running total of dropped tokens says how many came before.
+  append(file, [
+    squeeze(30, { trigger: 'auto', preTokens: 780000, postTokens: 20000, cumulativeDroppedTokens: 2280000 }),
+    said(29, { input_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 30000, output_tokens: 9 }),
+  ]);
+  let c = env.get(keyOf(SID)).context;
+  assert.deepEqual(c, { used: 30005, size: 780000, squeezes: 3, squeezesAtLeast: false, squeezedAt: at(30) });
+
+  // A squeeze by hand with no running total (an older Claude Code) counts once more, and does not
+  // move where the next automatic one comes.
+  append(file, [squeeze(10, { trigger: 'manual', preTokens: 100000, postTokens: 9000 })]);
+  c = env.get(keyOf(SID)).context;
+  assert.equal(c.squeezes, 4);
+  assert.equal(c.size, 780000);
+  assert.equal(c.used, 9000);
+});

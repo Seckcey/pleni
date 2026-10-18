@@ -72,6 +72,7 @@ test('cleanSettings keeps good values', () => {
     remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] },
     actions: { openTerminal: true, rollover: true },
     alerts: { stoppedMinutes: 20 },
+    rollSoon: { memoryPercent: 80, squeezes: 0, days: 10 },
   };
   assert.deepEqual(cleanSettings(raw), raw);
 });
@@ -477,4 +478,11 @@ test('Grok and Kimi Code have their own folders, environment variables and node 
   assert.deepEqual(cleanSettings({}).sources.grok, { enabled: true, root: null });
   for (const key of [`grok:${UUID}`, `kimi:${UUID}`, `kimi:${UUID}/agent-0`]) assert.equal(isNodeKey(key), true, key);
   assert.equal(isNodeKey(`gemini:${UUID}`), false);
+});
+
+test('rollSoon limits are whole numbers in range, and 0 turns one off', () => {
+  assert.deepEqual(cleanSettings({}).rollSoon, { memoryPercent: 70, squeezes: 2, days: 7 });
+  assert.deepEqual(cleanSettings({ rollSoon: { memoryPercent: 150, squeezes: -3, days: 3.6 } }).rollSoon, { memoryPercent: 100, squeezes: 0, days: 4 });
+  assert.deepEqual(cleanSettings({ rollSoon: { memoryPercent: '80', squeezes: null } }).rollSoon, { memoryPercent: 70, squeezes: 2, days: 7 });
+  assert.deepEqual(cleanSettings({ rollSoon: 'soon' }).rollSoon, { memoryPercent: 70, squeezes: 2, days: 7 });
 });

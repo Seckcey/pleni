@@ -24,6 +24,10 @@ const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 const MAX_BODY_BYTES = 64 * 1024;
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const PACKAGE_FILE = new URL('../package.json', import.meta.url);
+const APP_DIR = fileURLToPath(new URL('../', import.meta.url));
+// A branch name in .git/HEAD: plain path parts, none starting with a dot (so never "..").
+const GIT_REF = /^ref: (refs\/(?:(?!\.)[A-Za-z0-9._-]+\/)*(?!\.)[A-Za-z0-9._-]+)$/;
+const GIT_SHA = /^[0-9a-f]{40}$/;
 
 const CSP = [
   "default-src 'none'",
@@ -89,6 +93,8 @@ const MESSAGES = {
   loopMove: 'A session cannot report to one of its own helpers.',
   badDismiss: 'Pleni could not read which notice to dismiss.',
   badWatch: 'Pleni could not read that. Only a session or the relay can be watched.',
+  badHide: 'Pleni could not read that. Only a Claude Code, Codex, Grok or Kimi Code session can be hidden.',
+  goneHide: 'That session is not on the map any more, so there is nothing to hide.',
   goneWatch: 'That tile is not on the map any more.',
   openRemote: 'A session can be opened in a window only on the computer that runs Pleni, not from another device.',
   rollRemote: 'A session can be rolled over only on the computer that runs Pleni, not from another device.',
@@ -178,7 +184,7 @@ export function loadOrCreateKey(file, { renew = false, tries, pause } = {}) {
 // Without them, settings are read from and saved to the usual settings file.
 // `key` is the secret every API request needs (see keyAllowed); a new one is made when it is left out.
 // `platform` and `spawnProcess` are for Open in PowerShell (see src/open.js); tests replace them.
-export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), key = newKey(), platform = process.platform, spawnProcess = null }) {
+export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null }) {
   if (typeof key !== 'string' || !KEY_RE.test(key)) {
     throw new Error('The server key must be at least 16 letters, digits, "-" or "_".');
   }
@@ -187,6 +193,7 @@ export function createServer({ store, getSettings, saveSettings, publicDir = PUB
     store,
     publicDir,
     version,
+    build,
     key,
     keyHash: hashKey(key),
     readSettings: getSettings ?? fallback.get,
@@ -256,6 +263,7 @@ async function handle(app, req, res) {
     if (pathname === '/api/placement') return postPlacement(app, req, res, host);
     if (pathname === '/api/dismiss') return postDismiss(app, req, res, host);
     if (pathname === '/api/watch') return postWatch(app, req, res, host);
+    if (pathname === '/api/hide') return postHide(app, req, res, host);
     if (pathname === '/api/open') return postOpen(app, req, res, host);
     if (pathname === '/api/rollover') return postRollover(app, req, res, host);
     return postSettings(app, req, res, host);
@@ -272,7 +280,7 @@ async function handle(app, req, res) {
 
 function allowedMethods(pathname) {
   if (pathname === '/api/settings' || pathname === '/api/rollover') return ['GET', 'HEAD', 'POST'];
-  if (['/api/placement', '/api/dismiss', '/api/watch', '/api/open'].includes(pathname)) return ['POST'];
+  if (['/api/placement', '/api/dismiss', '/api/watch', '/api/hide', '/api/open'].includes(pathname)) return ['POST'];
   if (PAGE_FILES.has(pathname) || API_GET.has(pathname)) return READ_ONLY;
   if (/^\/brand\/[^/]+$/.test(pathname)) return READ_ONLY;
   return null;
@@ -396,8 +404,10 @@ async function sendSnapshot(app, req, res) {
   const snap = await app.store.snapshot();
   const body = typeof snap?.json === 'string' ? snap.json : JSON.stringify(snap ?? null);
   const etag = typeof snap?.etag === 'string' ? snap.etag : snapshotTag(snap);
-  if (etagMatches(req.headers['if-none-match'], etag)) return send(req, res, 304, { ETag: etag });
-  return send(req, res, 200, { 'Content-Type': JSON_TYPE, ETag: etag }, body);
+  // The page shows which Pleni answers, and notices when an update has restarted it.
+  const about = { 'X-Pleni-Version': app.version, ...(app.build ? { 'X-Pleni-Build': app.build } : {}) };
+  if (etagMatches(req.headers['if-none-match'], etag)) return send(req, res, 304, { ETag: etag, ...about });
+  return send(req, res, 200, { 'Content-Type': JSON_TYPE, ETag: etag, ...about }, body);
 }
 
 function etagMatches(header, etag) {
@@ -422,9 +432,9 @@ async function sendSession(app, req, res, params) {
 
 async function settingsPayload(app, state) {
   const snapshot = await app.store.snapshot();
-  const nodes = Array.isArray(snapshot?.nodes)
-    ? snapshot.nodes.map(({ key, title, platform, kind }) => ({ key, title, platform, kind }))
-    : [];
+  // Hidden sessions are not on the map, but Settings still names them.
+  const all = [...(Array.isArray(snapshot?.nodes) ? snapshot.nodes : []), ...(Array.isArray(snapshot?.hiddenSessions) ? snapshot.hiddenSessions : [])];
+  const nodes = all.map(({ key, title, platform, kind }) => ({ key, title, platform, kind }));
   return { settings: state.settings, file: state.file, roots: state.roots, nodes, platform: app.platform };
 }
 
@@ -459,6 +469,37 @@ async function postPlacement(app, req, res, host) {
   if (Object.keys(own).length) next.people[key] = own;
   else delete next.people[key];
   return saveAndReload(app, req, res, cleanSettings(next), () => ({ ok: true }));
+}
+
+// "Hide from the map" from a session's side panel: { key, hide: true } saves people[key].role =
+// 'hidden', the same as Settings' Role "Hide it", and answers { ok: true, role } with the role it
+// had before (null for none). Undo sends { key, hide: false, role } to put that role back. Hiding
+// only changes Pleni's settings: no session file is touched.
+const HIDE_KEY = /^(claude|codex|grok|kimi):/;
+const UNHIDE_ROLES = new Set(['superintendent', 'coordinator', 'lead', 'worker']);
+async function postHide(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  const key = typeof body.key === 'string' ? body.key : '';
+  const role = body.role ?? null;
+  if (!isNodeKey(key) || !HIDE_KEY.test(key) || typeof body.hide !== 'boolean' || (role !== null && !UNHIDE_ROLES.has(role))) {
+    return sendError(req, res, 400, MESSAGES.badHide);
+  }
+  const next = structuredClone(app.readSettings().settings);
+  const own = { ...(next.people[key] ?? {}) };
+  const before = own.role ?? null;
+  if (body.hide) {
+    const node = (app.store.snapshot()?.nodes ?? []).find((n) => n.key === key);
+    if (!node) return sendError(req, res, 404, MESSAGES.goneHide);
+    if (!['session', 'agent', 'reviewer'].includes(node.kind)) return sendError(req, res, 400, MESSAGES.badHide);
+    own.role = 'hidden';
+  } else if (before === 'hidden') {
+    if (role) own.role = role;
+    else delete own.role;
+  }
+  if (Object.keys(own).length) next.people[key] = own;
+  else delete next.people[key];
+  return saveAndReload(app, req, res, cleanSettings(next), () => ({ ok: true, role: body.hide && before !== 'hidden' ? before : null }));
 }
 
 // "Tell me if this stops working" from a tile's side panel: { key, watch: true | false }. Only a
@@ -724,6 +765,40 @@ function readVersion() {
   } catch {
     return '0.0.0';
   }
+}
+
+// The short id of the git commit Pleni runs from, when it runs from a git copy, so a person can tell
+// one update from the next while the version number stays the same. Null otherwise (for example an
+// npm install). It reads only .git/HEAD and the branch it names, in Pleni's own folder.
+export function readBuild(dir = APP_DIR) {
+  const git = path.join(dir, '.git');
+  let head;
+  try {
+    head = fs.readFileSync(path.join(git, 'HEAD'), 'utf8').trim();
+  } catch {
+    return null;
+  }
+  const ref = GIT_REF.exec(head);
+  const sha = ref ? refSha(git, ref[1]) : head;
+  return typeof sha === 'string' && GIT_SHA.test(sha) ? sha.slice(0, 7) : null;
+}
+
+// A branch's commit: its own file under refs/, else its line in packed-refs.
+function refSha(git, ref) {
+  try {
+    return fs.readFileSync(path.join(git, ...ref.split('/')), 'utf8').trim();
+  } catch {
+    // Not a loose ref: look in packed-refs.
+  }
+  try {
+    for (const line of fs.readFileSync(path.join(git, 'packed-refs'), 'utf8').split(/\r?\n/)) {
+      const [sha, name] = line.trim().split(' ');
+      if (name === ref) return sha;
+    }
+  } catch {
+    // No packed-refs.
+  }
+  return null;
 }
 
 function isPlainObject(value) {

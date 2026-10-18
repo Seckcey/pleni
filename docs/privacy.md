@@ -42,10 +42,13 @@ read the start of a file once, to find a session's name and where it started.
 | The same two folders, when you click Roll over's buttons | The same small files as for Open in PowerShell, for the same reason |
 | A session's own folder, only while its Roll over section is open | Only whether the handoff note (`HANDOFF-<name>.md`) is there, and when it last changed. Pleni never reads what is in it |
 | Pleni's own folder                      | `settings.json`, `key`, and `dismissed.json` (which notices you dismissed, and when) in Pleni's settings folder |
+| Pleni's own program folder, if it is a git copy | Only `.git/HEAD` and the one branch file it names (or `packed-refs`), to show which commit runs |
 
 From the session files it uses: when each step happened, the working folder, the git branch, the
 model and effort, which tool was used, short parts of the tool's input (see below), the
-assistant's text, and which session started which helper.
+assistant's text, which session started which helper, and for "Roll over soon" only numbers: how
+many tokens the newest step used, how big the model's memory is (Codex), and when the history was
+squeezed into a summary and by how much.
 
 Pleni also reads a few settings from your environment: `PLENI_PORT`, `PLENI_HOME`,
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and the usual system folders (`APPDATA` on Windows,

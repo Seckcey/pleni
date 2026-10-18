@@ -135,6 +135,21 @@ activity, so things stay where you left them.
 **Move anything.** Drag a tile onto another to say who it reports to, or use the **Reports to**
 menu in its side panel. Pick **Automatic** to undo.
 
+**Hide a session.** An old or test session can leave the map: click it, then choose **Hide from the
+map** in its side panel. Nothing is deleted, and **Undo** brings it back. To show it again later,
+go to **Settings → Names and roles** and set its Role back to **Automatic**. The counts under the
+title say how many are hidden.
+
+**Roll over soon.** A long session gets slow, and each time its history is squeezed into a summary
+it forgets details. Pleni marks a main Claude Code session or Codex thread **Roll over soon** when
+its memory is nearly full, its history was squeezed often, or it is old. The side panel says why,
+and its Details tab shows the numbers. Pleni reads only numbers for this, never what was said. Set
+the limits in **Settings → Roll over soon**; 0 turns one off. Then use [Roll over](#roll-over-a-session).
+
+**Which Pleni is this?** The version shows beside the name at the top of the page, and Settings
+says which version and git commit you run. After you update Pleni and start it again, an open page
+says so; reload it to use the new version. `node bin/pleni.js --version` prints the version too.
+
 **Chain of command.** Pleni draws each helper under the session that started it. Codex workers
 started by a coordinator hang under that coordinator. If your sessions report to each other in
 another way, say so in **Settings → Chain of command**: for example, "a session whose name contains

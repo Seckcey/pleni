@@ -65,6 +65,7 @@ const DEFAULTS = {
   remote: { hosts: [], tailscaleUsers: [] },
   actions: { openTerminal: false, rollover: false },
   alerts: { stoppedMinutes: 15 },
+  rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 },
 };
 
 const ICONS = {
@@ -88,6 +89,8 @@ const S = {
   conn: 'starting',
   connError: '',
   lastOk: 0,
+  about: null, // { version, build } of the Pleni this page came with
+  aboutNow: null, // the same, from the newest answer
   mapMode: readStore('pleni.mapMode') === 'all' ? 'all' : 'working',
   fv: { x: 0, y: 0, k: 1, user: false, sig: '' },
   layout: null,
@@ -248,7 +251,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-roll', 'data-copy', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-roll', 'data-copy', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -524,6 +527,8 @@ function countsLine() {
   const c = (S.snap && S.snap.counts) || {};
   const parts = [plural(c.total || 0, 'session', 'sessions'), `${c.working || 0} working`, needYou(c.needs)];
   if (c.error) parts.push(plural(c.error, 'error', 'errors'));
+  const hidden = S.snap && Array.isArray(S.snap.hiddenSessions) ? S.snap.hiddenSessions.length : 0;
+  if (hidden) parts.push(`${hidden} hidden (Settings, Names and roles)`);
   return parts.join(' · ');
 }
 
@@ -566,6 +571,7 @@ async function pollOnce() {
       checkAlerts();
       if (isTime(body.now)) S.skew = Date.now() - body.now;
     }
+    noteVersion(res.headers.get('X-Pleni-Version'), res.headers.get('X-Pleni-Build'));
     S.conn = 'live';
     S.connError = '';
     S.lastOk = Date.now();
@@ -736,6 +742,7 @@ function render() {
   }
   renderFacts();
   renderNotices();
+  renderVersion();
   renderSignIn();
   $('#nav-tasks').hidden = !(S.snap && Array.isArray(S.snap.tasks));
   const asking = (S.snap && S.snap.counts && S.snap.counts.needs) || 0;
@@ -771,8 +778,40 @@ function notice(bad, title, text) {
   return `<div class="notice${bad ? ' bad' : ''}"><span class="k">${esc(title)}</span><span class="v">${esc(text)}</span></div>`;
 }
 
+// ---- version ----
+// The first answer says which Pleni this page came with. A later answer from another version means
+// Pleni was updated and started again, while this page still runs the old code.
+const VERSION_TEXT = /^[0-9A-Za-z.+-]{1,40}$/;
+
+function noteVersion(version, build) {
+  if (typeof version !== 'string' || !VERSION_TEXT.test(version)) return;
+  const now = { version, build: typeof build === 'string' && /^[0-9a-f]{7,40}$/.test(build) ? build : null };
+  if (!S.about) S.about = now;
+  S.aboutNow = now;
+}
+
+function versionText(about, long) {
+  if (!about) return '';
+  return about.build ? `${about.version} (${long ? 'commit ' : ''}${about.build})` : about.version;
+}
+
+function renderVersion() {
+  const el = $('#brand-version');
+  setText(el, S.about ? S.about.version : '');
+  if (S.about) el.title = `Pleni ${versionText(S.about, true)}`;
+  setText($('#settings-version'), S.about ? `This is Pleni ${versionText(S.about, true)}.` : '');
+}
+
+function updatedTo() {
+  const a = S.about;
+  const b = S.aboutNow;
+  return a && b && (a.version !== b.version || a.build !== b.build) ? b : null;
+}
+
 function renderNotices() {
   const out = [];
+  const newer = updatedTo();
+  if (newer) out.push(notice(false, 'Pleni was updated.', `It now runs version ${versionText(newer, true)}. Reload this page to use it.`));
   if (S.conn === 'error') out.push(notice(true, 'Cannot reach Pleni.', `${S.connError} The page keeps trying every few seconds.`));
   const src = (S.snap && S.snap.sources) || {};
   for (const [name, label] of [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code'], ['mailbox', 'The mailbox']]) {
@@ -1147,7 +1186,7 @@ function tileHtml(p, L, ix, i) {
       `<span class="tile-meta"><span class="pill">${esc(STATUS_WORDS[status] || 'Unknown')}</span>` +
       `<span class="tile-model">${esc(model)}</span>${when || '<span class="tile-ago"></span>'}</span>` +
       (d ? `<span class="tile-text">${doingHtml(d)}</span>` : '');
-    label = [title, rank, STATUS_WORDS[status], model].filter(Boolean).join(', ');
+    label = [title, rank, STATUS_WORDS[status], model, rollSoonText(n)].filter(Boolean).join(', ');
   } else if (isRelay(n)) {
     const c = ix.counts.get(n.key) || { total: 0 };
     const words = STATUS_WORDS[status] || 'Unknown';
@@ -1167,6 +1206,7 @@ function tileHtml(p, L, ix, i) {
     `<span class="tile-title">${esc(title)}</span><span class="tile-rank">${esc(rank)}</span>` +
     body +
     (quiet ? `<span class="tile-quiet" aria-hidden="true">+${quiet} quiet</span>` : '') +
+    (isSession(n) && n.rollSoon ? '<span class="tile-roll" aria-hidden="true">Roll over soon</span>' : '') +
     '</button>'
   );
 }
@@ -1639,7 +1679,8 @@ function rowHtml(n, depth) {
     `<td><div class="who" style="--depth:${depth}">${markHtml(n, 'small')}<span class="tx">` +
     `<button type="button" class="open" data-node="${esc(n.key)}">${esc(titleOf(n))}</button>` +
     `<span class="sub">${esc(rankLine(n))}</span></span></div></td>` +
-    `<td><span class="pill">${esc(STATUS_WORDS[status] || 'Unknown')}</span></td>` +
+    `<td><span class="pill">${esc(STATUS_WORDS[status] || 'Unknown')}</span>` +
+    `${n.rollSoon ? ` <span class="pill roll-soon" title="${esc(n.rollSoon.join(', '))}">Roll over soon<span class="sr-only">: ${esc(n.rollSoon.join(', '))}</span></span>` : ''}</td>` +
     `<td class="doing">${d ? `<span class="quiet">${esc(d.label)}:</span> ${doingHtml(d)}` : ''}</td>` +
     `<td class="model">${esc(modelText(n))}</td>` +
     `<td class="when">${agoHtml(n.lastAt)}</td></tr>`
@@ -2106,8 +2147,10 @@ function sessionNowHtml(n, d) {
   } else if (now) {
     out.push(`<p class="dnow"><b>${esc(now.label)}:</b> ${doingHtml(now)}</p>`);
   }
+  if (n && n.rollSoon) out.push(`<p class="dnow roll-soon"><b>Roll over soon:</b> ${esc(sentence(n.rollSoon))}</p>`);
   out.push(openHtml(n));
   out.push(rollHtml(n, d));
+  out.push(hideHtml(n));
   if (isWorkerKey(d.key)) {
     out.push('<p class="empty">This worker keeps no session file.</p>');
     return out.join('');
@@ -2193,7 +2236,8 @@ function rollStepsHtml(n, r) {
   const copy = (which, what) => `<button type="button" class="btn" data-copy="${which}">Copy ${what}</button>`;
   const check = found
     ? `<p>New session found: <button type="button" class="linkish" data-node="${esc(found.key)}">${esc(titleOf(found))}</button>, started ${agoHtml(found.startedAt)}.` +
-      `${found.parent === 'relay' ? ' The relay now wakes it.' : ''}</p>`
+      `${found.parent === 'relay' ? ' The relay now wakes it.' : ''}</p>` +
+      `<div class="roll-btns"><button type="button" class="btn" data-hide="${esc(n.key)}" data-title="${esc(titleOf(n))}">Hide the old session</button></div>`
     : '<p>Pleni has not found the new session yet.</p>';
   return (
     `<p class="note">The new session gets the name <b>${esc(i.name)}</b> and works in the same folder. It starts by reading a handoff note that this session writes first.</p>` +
@@ -2233,6 +2277,85 @@ function rollFound(n, name) {
   return best;
 }
 
+// ---- Roll over soon ----
+// The reasons come from Pleni (settings.rollSoon): memory nearly full, squeezed often, or old.
+
+function rollSoonText(n) {
+  return n && Array.isArray(n.rollSoon) && n.rollSoon.length ? `roll over soon: ${n.rollSoon.join(', ').toLowerCase()}` : '';
+}
+
+// ['Memory 87% full', 'Squeezed 3 times'] -> 'Memory 87% full, squeezed 3 times.'
+function sentence(parts) {
+  return `${parts.map((p, i) => (i ? p.charAt(0).toLowerCase() + p.slice(1) : p)).join(', ')}.`;
+}
+
+function tokensText(count) {
+  if (count >= 1e6) return `${(count / 1e6).toFixed(count >= 1e7 ? 0 : 1).replace(/\.0$/, '')}M`;
+  if (count >= 1e3) return `${Math.round(count / 1e3)}k`;
+  return String(count);
+}
+
+// How full the context (the model's memory of the conversation) is.
+function memoryWords(m) {
+  if (m.used === null || m.used === undefined) return '';
+  if (!m.size) return `${tokensText(m.used)} tokens in use`;
+  return `${tokensText(m.used)} of ${tokensText(m.size)} tokens (${m.percent}% full)`;
+}
+
+// How often the history was squeezed into a summary (compacted), and when last.
+function squeezedHtml(m) {
+  if (!m.squeezes) return m.squeezesAtLeast ? 'Not in the part Pleni read' : 'Never';
+  const times = m.squeezes === 1 ? 'Once' : m.squeezes === 2 ? 'Twice' : `${m.squeezes} times`;
+  const more = m.squeezesAtLeast ? ' or more' : '';
+  return `${esc(times + more)}${isTime(m.squeezedAt) ? `, last ${agoHtml(m.squeezedAt)}` : ''}`;
+}
+
+// ---- Hide from the map ----
+
+const HIDE_KEY = /^(claude|codex|grok|kimi):/;
+const hiding = new Set(); // tiles whose Hide is on its way to Pleni
+
+function hideHtml(n) {
+  if (!n || !isSession(n) || !HIDE_KEY.test(n.key)) return '';
+  return (
+    `<div class="dhide"><button type="button" class="btn" data-hide="${esc(n.key)}" data-title="${esc(titleOf(n))}" aria-describedby="d-hide-help">Hide from the map</button>` +
+    '<p class="help" id="d-hide-help">For an old or test session. Nothing is deleted. To show it again, go to Settings, Names and roles.</p></div>'
+  );
+}
+
+// Hides a session (Role: Hide it). The side panel closes, since its tile is gone, and the notice at
+// the bottom of the page offers Undo, which puts back the role it had before.
+async function hideNode(key, title) {
+  if (!key || hiding.has(key)) return;
+  hiding.add(key);
+  let before = null;
+  try {
+    const answer = await postJson('/api/hide', { key, hide: true });
+    before = answer && typeof answer.role === 'string' ? answer.role : null;
+  } catch (err) {
+    hiding.delete(key);
+    showMoved({ key, spot: 'note', bad: true, text: `Not hidden. ${plainError(err)}` });
+    return;
+  }
+  keepPersonField(key, 'role', 'hidden'); // so saving Settings later keeps it
+  hiding.delete(key);
+  if (S.drawer && S.drawer.key === key) closeDrawer();
+  await pollNow().catch(() => {});
+  showMoved({ key, spot: 'note', text: `Hidden from the map: "${title}". To show it again later, go to Settings, Names and roles.`, undo: () => unhideNode(key, title, before) });
+}
+
+async function unhideNode(key, title, role) {
+  try {
+    await postJson('/api/hide', { key, hide: false, role });
+  } catch (err) {
+    showMoved({ key, spot: 'note', bad: true, text: `Not undone. ${plainError(err)}` });
+    return;
+  }
+  keepPersonField(key, 'role', role || undefined);
+  await pollNow().catch(() => {});
+  showMoved({ key, spot: 'note', text: `"${title}" is on the map again.` });
+}
+
 function groupNowHtml(n) {
   const ix = S.index;
   const c = ix.counts.get(n.key) || { total: 0 };
@@ -2263,6 +2386,10 @@ function detailsHtml(n) {
     add('Model', esc([n.modelLabel || prettyModel(n.model), n.model && n.modelLabel !== n.model ? `(${n.model})` : ''].filter(Boolean).join(' ')));
     add('Effort', esc(EFFORT_WORDS[n.effort] || n.effort || ''));
     add('Tier', esc(n.tier === 'senior' ? 'Senior' : n.tier === 'junior' ? 'Junior' : ''));
+    if (n.memory) {
+      add('Memory', esc(memoryWords(n.memory)));
+      add('Squeezed', squeezedHtml(n.memory));
+    }
     add('Started', isTime(n.startedAt) ? timeHtml(n.startedAt, stamp(n.startedAt)) : '');
     add('Last active', isTime(n.lastAt) ? `${timeHtml(n.lastAt, stamp(n.lastAt))} (${agoHtml(n.lastAt)})` : '');
     add('Archived', n.archived ? 'Yes' : '');
@@ -3267,6 +3394,12 @@ function renderSettingsForm() {
     <section class="panel" aria-labelledby="s-h-projects"><h2 id="s-h-projects">Projects</h2>
       <div id="project-rows">${projectsHtml()}</div>
     </section>
+    <section class="panel" aria-labelledby="s-h-roll"><h2 id="s-h-roll">Roll over soon</h2>
+      <p class="note">A long session gets slow, and it forgets details each time its history is squeezed into a summary. Pleni marks a main session "Roll over soon" when it passes any of these limits. Set one to 0 to turn it off.</p>
+      ${numberRow('s-roll-memory', 'Memory full to', 'rollSoon.memoryPercent', 0, 100, 'Percent. For Claude Code, full means the size where it last squeezed the history.')}
+      ${numberRow('s-roll-squeezes', 'Squeezed at least', 'rollSoon.squeezes', 0, 100, 'Times its history was squeezed into a summary.')}
+      ${numberRow('s-roll-days', 'Older than', 'rollSoon.days', 0, 365, 'Days since the session started.')}
+    </section>
     <section class="panel" aria-labelledby="s-h-alerts"><h2 id="s-h-alerts">Alerts</h2>
       <p class="note">What needs you shows under Needs you on the map and the list: questions, errors, notes for you in the mailbox, the relay's alerts, and tiles you watch that stop working. To watch a tile, open it and tick Tell me if this stops working.</p>
       ${numberRow('s-stopped', 'Call a watched tile stopped after', 'alerts.stoppedMinutes', 1, 1440, 'Minutes without any work.')}
@@ -3583,6 +3716,7 @@ document.addEventListener('click', (ev) => {
   if (el.id === 's-alerts-test') return testAlert();
   if (el.dataset.open) return openInWindow(el);
   if (el.dataset.roll) return rollClick(el.dataset.roll);
+  if (el.dataset.hide) return hideNode(el.dataset.hide, el.dataset.title || keyName(el.dataset.hide));
   if (el.dataset.copy) return rollCopy(el.dataset.copy);
   if (el.dataset.node) return openDrawer(el.dataset.node, el);
   if (el.dataset.listFilter) {

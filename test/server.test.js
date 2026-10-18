@@ -7,7 +7,7 @@ import path from 'node:path';
 import { cleanSettings } from '../src/config.js';
 import { OPEN_MESSAGES } from '../src/open.js';
 import { ROLL_MESSAGES } from '../src/rollover.js';
-import { browserCommand, createServer, keyFile, loadOrCreateKey, newKey, readKeyFile } from '../src/server.js';
+import { browserCommand, createServer, keyFile, loadOrCreateKey, newKey, readBuild, readKeyFile } from '../src/server.js';
 
 const CSP = "default-src 'none'; script-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; " +
   "img-src 'self' data:; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; " +
@@ -112,6 +112,7 @@ async function startServer(t, options = {}) {
     store,
     publicDir,
     version: '9.9.9-test',
+    build: options.build ?? null,
     key: TEST_KEY,
     ...(options.platform ? { platform: options.platform } : {}),
     ...(options.spawnProcess ? { spawnProcess: options.spawnProcess } : {}),
@@ -1081,4 +1082,102 @@ test('open is off until it is turned on, and says why in plain words', async (t)
   assertPlainError(sub, 400);
   assert.equal(sub.json.error, OPEN_MESSAGES.helper);
   assert.equal(spawnProcess.calls.length, 0);
+});
+
+// ---- version ----
+
+test('snapshot answers say which Pleni sent them, also when nothing changed', async (t) => {
+  const { port } = await startServer(t, { build: '0c5808a' });
+  const first = await request(port, { path: '/api/snapshot' });
+  assert.equal(first.status, 200);
+  assert.equal(first.headers['x-pleni-version'], '9.9.9-test');
+  assert.equal(first.headers['x-pleni-build'], '0c5808a');
+  const again = await request(port, { path: '/api/snapshot', headers: { 'if-none-match': first.headers.etag } });
+  assert.equal(again.status, 304);
+  assert.equal(again.headers['x-pleni-version'], '9.9.9-test');
+  assert.equal(again.headers['x-pleni-build'], '0c5808a');
+  const plain = await startServer(t);
+  assert.equal((await request(plain.port, { path: '/api/snapshot' })).headers['x-pleni-build'], undefined, 'no build header without a git copy');
+});
+
+test('readBuild finds the commit of a git copy from its branch, packed refs or a detached head', (t) => {
+  const sha = '0c5808a1b2c3d4e5f60718293a4b5c6d7e8f9012';
+  const other = 'ffeeddccbbaa99887766554433221100ffeeddcc';
+  const make = (files) => {
+    const dir = tempDir(t, 'pleni-build-');
+    for (const [name, text] of Object.entries(files)) {
+      const file = path.join(dir, '.git', ...name.split('/'));
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, text);
+    }
+    return dir;
+  };
+  assert.equal(readBuild(make({ HEAD: 'ref: refs/heads/main\n', 'refs/heads/main': `${sha}\n` })), '0c5808a');
+  assert.equal(readBuild(make({ HEAD: 'ref: refs/heads/claude/work\n', 'packed-refs': `# pack-refs with: peeled\n${other} refs/heads/main\n${sha} refs/heads/claude/work\n` })), '0c5808a');
+  assert.equal(readBuild(make({ HEAD: `${sha}\n` })), '0c5808a', 'a detached head names its commit itself');
+  assert.equal(readBuild(make({ HEAD: 'ref: refs/heads/gone\n' })), null, 'a branch with no commit yet');
+  const climb = make({ HEAD: 'ref: refs/../../secret\n' });
+  fs.writeFileSync(path.join(climb, 'secret'), `${sha}\n`);
+  assert.equal(readBuild(climb), null, 'a ref that climbs out of .git is not read');
+  assert.equal(readBuild(make({ HEAD: 'not a ref\n' })), null);
+  assert.equal(readBuild(tempDir(t, 'pleni-build-')), null, 'no .git folder (an npm install)');
+});
+
+// ---- hide from the map ----
+
+const hide = (port, body, headers = {}) => request(port, {
+  method: 'POST',
+  path: '/api/hide',
+  headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+  body: JSON.stringify(body),
+});
+
+test('hide saves Role "Hide it" for a session, says the role it had, and Undo puts that role back', async (t) => {
+  const store = treeStore();
+  const { port, memory } = await startServer(t, { store, settings: { people: { [SESSION_KEY]: { label: 'Builder', role: 'coordinator' } } } });
+  let res = await hide(port, { key: SESSION_KEY, hide: true });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json, { ok: true, role: 'coordinator' });
+  assert.deepEqual(memory.state.settings.people[SESSION_KEY], { label: 'Builder', role: 'hidden' });
+  // Undo: the tile is off the map now, so it does not need to be on the map to come back.
+  store.current = { ...store.current, nodes: store.current.nodes.filter((n) => n.key !== SESSION_KEY) };
+  res = await hide(port, { key: SESSION_KEY, hide: false, role: 'coordinator' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(memory.state.settings.people[SESSION_KEY], { label: 'Builder', role: 'coordinator' });
+  // A helper with no entry: hiding makes one, and showing it again removes it.
+  assert.deepEqual((await hide(port, { key: AGENT_KEY, hide: true })).json, { ok: true, role: null });
+  assert.deepEqual(memory.state.settings.people[AGENT_KEY], { role: 'hidden' });
+  assert.equal((await hide(port, { key: AGENT_KEY, hide: false, role: null })).status, 200);
+  assert.equal(memory.state.settings.people[AGENT_KEY], undefined);
+  // Showing a session that is not hidden changes nothing.
+  assert.equal((await hide(port, { key: BOSS_KEY, hide: false, role: 'worker' })).status, 200);
+  assert.equal(memory.state.settings.people[BOSS_KEY], undefined);
+});
+
+test('hide refuses the person, groups, the relay, worker runs, bad roles, unknown tiles and cross-site requests', async (t) => {
+  const store = treeStore();
+  store.current.nodes.push({ key: 'relay', title: 'Relay', kind: 'relay', parent: 'you' });
+  store.current.nodes.push({ key: 'mailbox:T-1/W1', title: 'W1', kind: 'agent', parent: SESSION_KEY });
+  const { port, memory } = await startServer(t, { store });
+  for (const key of ['you', 'project:alpha', 'relay', 'mailbox:T-1/W1', 'nonsense']) {
+    assert.equal((await hide(port, { key, hide: true })).status, 400, key);
+  }
+  assert.equal((await hide(port, { key: SESSION_KEY, hide: 'yes' })).status, 400);
+  assert.equal((await hide(port, { key: SESSION_KEY, hide: false, role: 'hidden' })).status, 400);
+  assert.equal((await hide(port, { key: SESSION_KEY, hide: false, role: 'boss' })).status, 400);
+  assert.equal((await hide(port, { key: 'codex:0f8e2c4a-1b3d-4e5f-8a9b-00000000dead', hide: true })).status, 404);
+  assert.equal((await hide(port, { key: SESSION_KEY, hide: true }, { 'x-pleni': undefined })).status, 403);
+  assert.equal((await hide(port, { key: SESSION_KEY, hide: true }, { origin: 'https://evil.example' })).status, 403);
+  assert.equal((await hide(port, { key: SESSION_KEY, hide: true }, { cookie: undefined })).status, 401);
+  assert.equal((await request(port, { path: '/api/hide' })).status, 405);
+  assert.deepEqual(memory.state.settings.people, {}, 'nothing was saved');
+});
+
+test('settings name hidden sessions, which are not on the map', async (t) => {
+  const store = fakeStore();
+  store.current = { ...store.current, hiddenSessions: [{ key: 'codex:0f8e2c4a-1b3d-4e5f-8a9b-00000000beef', title: 'Old helper', platform: 'codex', kind: 'session' }] };
+  const { port } = await startServer(t, { store });
+  const res = await request(port, { path: '/api/settings' });
+  assert.equal(res.status, 200);
+  assert.ok(res.json.nodes.some((n) => n.key === 'codex:0f8e2c4a-1b3d-4e5f-8a9b-00000000beef' && n.title === 'Old helper'));
 });

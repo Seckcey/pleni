@@ -90,6 +90,7 @@ export const DEFAULTS = {
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
   actions: { openTerminal: false, rollover: false },   // the Open in PowerShell and Roll over buttons; each true only when set to true
   alerts: { stoppedMinutes: 15 },                      // a watched tile counts as stopped after this long without work
+  rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 }, // "Roll over soon" limits (0-100, 0-100, 0-365); 0 turns one off
 }
 // Role = 'superintendent' | 'coordinator' | 'lead' | 'worker' | 'hidden'
 ```
@@ -176,7 +177,11 @@ Session = {
   lastText: string | null,  // last assistant text, whitespace collapsed, ≤280 chars; null when content = 'none'
   links: Link[],            // hand-offs this session took part in, newest last, max 50
   archived: boolean,
+  context: Context | null,  // main Claude Code sessions and Codex threads; null elsewhere
 }
+// How full the context (the model's memory of the conversation) is, and how often its history was
+// squeezed into a summary (compacted). Numbers only, so they show with content = 'none' too.
+Context = { used: number | null, size: number | null, squeezes: number, squeezesAtLeast: boolean, squeezedAt: number | null }
 Link = { at: number, dir: 'down' | 'up', other: string /* node key, or 'path:<agentPath>' for codex */, label: string | null }
 ```
 
@@ -224,6 +229,16 @@ export function createClaudeSource({ root, desktopRoot, settings, now = Date.now
   refresh the listing every 30 s; ignore every error. Archived sessions get `archived: true`.
 - One API message can be split across several `assistant` lines (same `message.id`); treat them as
   one. Synthetic error turns have `message.model` `"<synthetic>"` and `isApiErrorMessage`.
+- Context (main sessions only): `used` is the newest assistant message's `message.usage`
+  `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`. A squeeze is a `system`
+  record with `subtype: 'compact_boundary'` and `compactMetadata` (`trigger` `auto` or `manual`,
+  `preTokens`, `postTokens`, `cumulativeDroppedTokens`). The transcript does not say how much the
+  model holds, so `size` is the newest automatic squeeze's `preTokens`: where the next one comes.
+  After a squeeze, `used` is its `postTokens` until the next answer. Pleni reads only the end of a
+  long file, so `squeezes` comes from the newest record's running total:
+  `round(cumulativeDroppedTokens / (preTokens - postTokens))`, or one more than before when the
+  record has no total. `squeezesAtLeast` is true when the file was read from its middle and no
+  record had a total.
 - Status: **working** if the last conversation record is a `user` record, an assistant record with
   `stop_reason` `tool_use`, or an assistant `tool_use` with no later `tool_result` for its id, and
   `lastAt` is within `staleMinutes`. **error** if the last assistant record is a synthetic error.
@@ -287,6 +302,9 @@ export function createCodexSource({ root, settings, now = Date.now })
   `imported_thread_id`) are copies of another tool's sessions and get `archived: true`.
 - Titles: `<root>/session_index.jsonl` `{ id, thread_name, updated_at }`, last line per id wins.
   Sub-agents are not in the index: use `agent_nickname`.
+- Context: an `event_msg` of type `token_count` holds `info.last_token_usage.total_tokens` (`used`)
+  and `info.model_context_window` (`size`); a `compacted` record is a squeeze. A file read from its
+  middle may hold squeezes before that part, so `squeezesAtLeast` is true for it.
 - Links: `function_call` `spawn_agent` is a **down** link (label: `task_name` when snippets);
   `send_message`/`followup_task` are **down** links to the named agent; an `item_completed` item of
   type `SubAgentActivity` with `kind: 'completed'` (`agent_thread_id`) is an **up** link from that
@@ -386,6 +404,7 @@ Snapshot = {
   nodes: Node[], edges: Edge[], events: Event[], counts: { working, ready, idle, done, error, total },
   attention: [{ id: '<key>|<kind>', key, kind, text, at }],  // at is 0 when unknown
   tasks: MailboxState['tasks'] | null,
+  hiddenSessions: [{ key, title, platform, kind }],  // recent sessions with Role "Hide it": off the map, named in Settings
   actions: { openTerminal: boolean, rollover: boolean },  // the page may show each button (setting on, Pleni on Windows)
 }
 SourceInfo = { enabled, ok, error, count }
@@ -395,6 +414,8 @@ Node = {
   title, subtitle, rank, role, tier: 'senior' | 'junior' | null,
   model, modelLabel, effort, status, startedAt, lastAt, activity, lastText,
   project, entrypoint, hidden, archived,
+  memory,   // main Claude Code session or Codex thread: { used, size, percent, squeezes, squeezesAtLeast, squeezedAt }, else null
+  rollSoon, // plain reasons it is due for a roll over ('Memory 87% full', 'Squeezed 3 times', '9 days old'), else null
   watched,  // true for a session or the relay whose people[key].watch is true
 }
 Edge = { from, to, kind: 'spawn' | 'mailbox' | 'contains', lastDown, lastUp, downLabel, upLabel, active: 'down' | 'up' | 'both' | null }
@@ -412,6 +433,15 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
   and opened like any session. Other runs (older ones kept no session file) become a session-like
   node `mailbox:<task id>/W<n>` (platform `claude`, kind `agent`, status from the run, project from
   its worktree).
+- Roll over soon: `memory.percent` is `round(used / size × 100)` (at most 100), null while `size` is
+  unknown. `rollSoon` lists, in this order, `Memory N% full` when `percent ≥ rollSoon.memoryPercent`,
+  `Squeezed once`, `twice` or `N times` (`… or more` when `squeezesAtLeast`) when
+  `squeezes ≥ rollSoon.squeezes`, and `N days old` when whole days since `startedAt` reach
+  `rollSoon.days`; a limit of 0 is off. Only main sessions (kind `session`) with a `context` get
+  `memory` and `rollSoon`; other nodes get null.
+- Hidden sessions: a session whose `people[key].role` is `hidden` is left off the map. The ones that
+  would otherwise be listed (recent, not archived) are in `hiddenSessions`, by title, so the page
+  can count them and Settings can name them.
 - Who reports to whom, strongest first: the person's choice (`people[key].reportsTo`, set by the
   Reports to menu or by dragging a tile), the mailbox (planner → relay → coordinator → its workers:
   fixed links, like a helper under the session that started it), a chain rule, and last the parent
@@ -677,7 +707,11 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
 - `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
-  them the same way (`snapshotTag`) for a store that did not.
+  them the same way (`snapshotTag`) for a store that did not. Its answers, `304` included, carry
+  `X-Pleni-Version` (from package.json) and, when Pleni runs from a git copy, `X-Pleni-Build`: the
+  short commit id from `readBuild()`, which reads only `.git/HEAD` and the branch it names (its file
+  under `refs/`, else its line in `packed-refs`) in Pleni's own folder. A branch name with a part
+  that starts with a dot is not read. `createServer({ version, build })` can set both for tests.
 - **POST /api/settings** requires the key cookie, `X-Pleni: settings`, `Content-Type:
   application/json`, a body of at most 64 KB, and an `Origin` (when present) whose host equals the
   request host. The body is cleaned with `cleanSettings`, saved, and the store reloaded.
@@ -692,6 +726,12 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **POST /api/watch** `{ key, watch: boolean }` passes the same checks and saves
   `people[key].watch` (`false` removes it). Only a session on the map or the relay can be watched:
   other keys get `400`, a tile that is not on the map `404`. It answers `{ ok: true }`.
+- **POST /api/hide** `{ key, hide: true }` passes the same checks and saves `people[key].role =
+  'hidden'` for a Claude Code, Codex, Grok or Kimi Code session or helper on the map (kind session,
+  agent or reviewer; other keys `400`, a tile not on the map `404`). It answers
+  `{ ok: true, role }` with the role it had before (null for none). `{ key, hide: false, role }` puts
+  that role back (one of `superintendent`, `coordinator`, `lead`, `worker`, or null to remove it),
+  only when the session is hidden now; the session need not be on the map.
 - **POST /api/open** `{ key }` passes the same checks, then refuses (`403`) a request that is not
   from this computer: a host other than the loopback names, or one carrying `Tailscale-User-Login`
   or `X-Forwarded-For` (a proxy such as `tailscale serve` passed it on). `openSession` in
@@ -705,7 +745,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `/api/open`, then `rollover` in `src/rollover.js` makes the rest and opens the window. It answers
   `{ ok: true }` or `{ error }` with the status it gives. Both share the server's `openLimits`.
 - `GET /api/settings` returns `{ settings, file, roots, nodes: [{ key, title, platform, kind }], platform }`,
-  where the last `platform` is the server's `process.platform`.
+  where the last `platform` is the server's `process.platform`. `nodes` holds the snapshot's nodes
+  and its `hiddenSessions`, so Settings can name hidden sessions.
 - JSON responses use `Content-Type: application/json; charset=utf-8`. Errors are `{ error }` with a
   plain-words message and never include stack traces or file contents.
 
@@ -751,8 +792,25 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   box that posts `/api/watch`; Settings' own copy of the settings is updated too, so saving Settings
   later keeps it.
 - **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. The Open sessions
-  section turns Open in PowerShell and Roll over on and says when the computer does not run Windows. The Alerts
-  section sets `alerts.stoppedMinutes` and holds the Pop-ups box. Before saving, the page
+  section turns Open in PowerShell and Roll over on and says when the computer does not run Windows. The Roll
+  over soon section sets the three `rollSoon` limits. The Alerts
+  section sets `alerts.stoppedMinutes` and holds the Pop-ups box. Under the Settings title, the page
+  says which version runs ("This is Pleni 0.1.0 (commit 0c5808a).").
+- **Version:** the app bar shows the version beside the name (hidden at phone width, like the name;
+  its tooltip adds the commit). The page keeps the first `X-Pleni-Version` and `X-Pleni-Build` it
+  gets; when a later snapshot answer carries others, Pleni was updated and started again, and a
+  notice says "Pleni was updated. It now runs version …. Reload this page to use it."
+- **Roll over soon:** a session whose node has `rollSoon` gets a "Roll over soon" badge on the top
+  edge of its tile (the reasons are in the tile's label for screen readers), a "Roll over soon" pill
+  in its List row, and a line at the top of its side panel's Now tab: "Roll over soon: Memory 87%
+  full, squeezed 3 times." Its Details tab shows Memory ("680k of 780k tokens (87% full)", or
+  "40k tokens in use" while the size is unknown) and Squeezed ("3 times, last 2 hours ago").
+- **Hide from the map:** the Now tab of a Claude Code, Codex, Grok or Kimi Code session or helper
+  has **Hide from the map**, which posts `/api/hide`. The side panel closes, since the tile is
+  gone, and the notice at the bottom of the page offers Undo, which puts back the role it had.
+  Settings' own copy gets the role too. Roll over's Check step offers **Hide the old session** once
+  the new one is found. The counts line under the Map and List titles adds "N hidden (Settings,
+  Names and roles)". Before saving, the page
   checks the form: whole numbers within the server's limits, full folder paths, host names, and
   Tailscale logins (`name@domain`), at most 20 of each. A bad field gets `aria-invalid="true"` and
   a plain message tied to it with `aria-describedby`, focus moves to the first one, and nothing is
@@ -790,6 +848,7 @@ export function createDemoSource({ now = Date.now })  // -> { poll(): { claude, 
 ```
 
 A deterministic, time-driven cast: a person, two projects, a Codex planner with two sub-agents, a
-Claude coordinator with three sub-agents (one working, one waiting, one done), and a small mailbox
+Claude coordinator with three sub-agents (one working, one waiting, one done; the coordinator has a
+long session's numbers, so it shows "Roll over soon"), and a small mailbox
 with a note for the person, with hand-offs that light up every few seconds. It is used by `node bin/pleni.js --demo`, the screenshots and the
 tests, so that no real session data is ever needed to show Pleni.

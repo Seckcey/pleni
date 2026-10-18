@@ -78,6 +78,8 @@ const CAST = [
       ['Agent', 'Refund endpoint tests', 'Started a helper.'],
     ],
     texts: ['The invoice service is split in two. Refunds are next.', 'Tests pass. Moving the PDF code into its own module.'],
+    // A long session, so the demo shows "Roll over soon".
+    context: { used: 690000, size: 780000, squeezes: 3, squeezedAgo: 140 },
   },
   {
     key: TESTS, parent: COORDINATOR, kind: 'agent', title: 'Refund endpoint tests', cwd: BILLING,
@@ -282,6 +284,9 @@ function session(member, clock, handoffs) {
     needs: member.ask ? { ...member.ask, at: endOf(member, clock) } : null,
     links,
     archived: false,
+    context: member.context
+      ? { used: member.context.used, size: member.context.size, squeezes: member.context.squeezes, squeezesAtLeast: false, squeezedAt: clock.mark - member.context.squeezedAgo * MIN }
+      : null,
   };
 }
 
