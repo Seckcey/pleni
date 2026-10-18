@@ -3,6 +3,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { cleanSettings, isNodeKey } from './config.js';
+import { githubRepo } from './repos.js';
 
 export const PULSE_MS = 120000;
 
@@ -19,6 +20,7 @@ const STATUSES = ['working', 'ready', 'idle', 'done', 'error'];
 const KINDS = ['session', 'agent', 'reviewer'];
 const NO_PROJECT = 'Other';
 const GIT_CACHE_MAX = 500;
+const GITHUB_PATH = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 
 const RANKS = {
   plain: { superintendent: 'Superintendent', coordinator: 'Coordinator', lead: 'Lead', worker: 'Agent' },
@@ -267,6 +269,8 @@ function cleanSession(raw) {
     title: text(raw.title, MAX_TITLE),
     cwd: typeof raw.cwd === 'string' && raw.cwd.trim() ? raw.cwd.trim() : null,
     branch: text(raw.branch, MAX_TITLE),
+    // Only the demo names a repository itself; real sessions are looked up from their folder.
+    github: typeof raw.github === 'string' && GITHUB_PATH.test(raw.github) ? raw.github : null,
     entrypoint: text(raw.entrypoint, 80),
     model: text(raw.model, 120),
     effort: text(raw.effort, 40),
@@ -580,6 +584,7 @@ function sessionNode(session, project, ctx, rule = null) {
     placement: 'auto',
     memory: memoryOf(session),
     rollSoon: rollSoonOf(session, ctx),
+    github: session.github ?? githubRepo(session.cwd),
   };
 }
 
@@ -645,7 +650,7 @@ function groupNode({ key, parent, platform, kind, title, rank, project = null })
     key, parent, platform, kind, title, subtitle: null, rank, role: null, tier: null,
     model: null, modelLabel: null, effort: null, status: null, startedAt: null, lastAt: null,
     activity: null, lastText: null, needs: null, project, projectLabel: project, entrypoint: null, hidden: false, archived: false,
-    named: false, placement: null, memory: null, rollSoon: null,
+    named: false, placement: null, memory: null, rollSoon: null, github: null,
   };
 }
 

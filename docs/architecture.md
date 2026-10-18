@@ -48,6 +48,7 @@ src/sources/grok.js     Grok sessions
 src/sources/kimi.js     Kimi Code sessions and sub-agents
 src/sources/mailbox.js  optional coordination mailbox (task folders of Markdown files)
 src/model.js            builds the snapshot the page draws (nodes, edges, events)
+src/repos.js            the GitHub repository of a session's folder, from its git settings (remote address only)
 src/store.js            owns the sources, polls them, caches the snapshot
 src/open.js             Open in PowerShell: a Claude Code session or Codex thread in a new window (opt-in, Windows)
 src/rollover.js         Roll over: a handoff note from a long session, then a new one with its name (opt-in, Windows)
@@ -419,6 +420,7 @@ Node = {
   project, entrypoint, hidden, archived,
   memory,   // main Claude Code session or Codex thread: { used, size, percent, squeezes, squeezesAtLeast, squeezedAt }, else null
   rollSoon, // plain reasons it is due for a roll over ('Memory 87% full', 'Squeezed 3 times', '9 days old'), else null
+  github,   // 'owner/name' of the GitHub repository the session works in (src/repos.js), else null
   watched,  // true for a session or the relay whose people[key].watch is true
 }
 Edge = { from, to, kind: 'spawn' | 'mailbox' | 'contains', lastDown, lastUp, downLabel, upLabel, active: 'down' | 'up' | 'both' | null }
@@ -468,9 +470,18 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
 - Project name: the last segment of `cwd`, except inside a worktrees folder (`/_worktrees/`,
   `/.codex/worktrees/<id>/`, `/.claude/worktrees/`) where it is the repository folder name. For
   `/_worktrees/<name>`, Pleni reads that worktree's `.git` pointer file (only on a local drive, only
-  when it is a file of at most 4 KB; cached) and takes the repository name from its `gitdir:` line. This is the only
-  file Pleni reads inside a project folder, and `docs/privacy.md` lists it. Settings
-  `projects[name].label` renames, `hidden` hides.
+  when it is a file of at most 4 KB; cached) and takes the repository name from its `gitdir:` line.
+  Settings `projects[name].label` renames, `hidden` hides.
+- GitHub repository (`github`): `githubRepo(cwd)` in `src/repos.js` climbs from the session's
+  folder (at most 16 folders, local drives only) to the first `.git`. A folder's git settings are
+  `.git/config`; a worktree's `.git` file (at most 4 KB) points to its git folder, whose
+  `commondir` file (at most 4 KB) points to the shared one. From the config file (at most 64 KB)
+  Pleni takes only the `url` of `[remote "origin"]`, else of the first remote. `parseRemote` reads
+  `https://`, `http://`, `ssh://`, `git://` and `user@host:owner/name` forms and keeps only the host,
+  owner and name, never a login or token. Only github.com (also `www.` and `ssh.`) counts. Answers
+  are kept for a minute (at most 500). The demo names its repositories itself (`raw.github`, only
+  `owner/name`). These and the `_worktrees` pointer above are the only files Pleni reads inside a
+  project folder, and `docs/privacy.md` lists them.
 - Listed sessions: active within `recentHours`, not archived, role not `hidden`, reviewers only with
   `showReviewers`. A quiet coordinator or superintendent (a Codex registry role) stays listed while a
   chain rule names it or a listed session hangs under it in the session files; the Codex source keeps
