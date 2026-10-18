@@ -210,6 +210,7 @@ const LETTERS = [
 const LETTER_SCRIPT = [
   { beat: 6, from: 'q4-billing-plan', to: 'sales-tax-research', read: 4, text: 'Which of the rate changes start in January?' },
   { beat: 10, from: 'sales-tax-research', to: 'q4-billing-plan', read: 2, text: 'Both of them. The dates are in docs/tax-rates.md.' },
+  { beat: 18, from: 'ada', to: 'sales-tax-research', read: 3, text: 'Thanks. Wait for T-103 before you change the table.' },
 ];
 
 const TASKS = [
@@ -400,9 +401,19 @@ function mailbox(clock, mail, letters) {
     relay: {
       running: true, paused: false, halted: false, coordinatorKey: COORDINATOR,
       lastAt: clock.beatAt, pausedAt: null, haltReason: null, alerts: null,
+      wakes: relayWakes(letters),
     },
     mail: agentMail(letters),
   };
+}
+
+// The relay wakes each agent it knows, a moment after mail comes for it.
+function relayWakes(letters) {
+  const woken = new Map(MAIL_AGENTS.filter((a) => a.thread).map((a) => [a.key, a.name]));
+  return letters
+    .filter((m) => woken.has(m.to))
+    .map((m) => ({ key: m.to, name: woken.get(m.to), at: m.at + 1000, endAt: m.unread ? null : m.at + 6000, running: m.unread, count: 1 }))
+    .sort((a, b) => b.at - a.at);
 }
 
 // The mail part of the mailbox, in the shape src/sources/mailbox.js gives it.

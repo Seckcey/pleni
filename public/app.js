@@ -1806,6 +1806,8 @@ function describeEvent(ev) {
       return back && !fwd ? { dir: 'up', from, to, verb: 'wrote back through the mailbox to' } : { dir: 'down', from, to, verb: 'wrote through the mailbox to' };
     case 'mail':
       return { dir: from && to && isAbove(to, from) ? 'up' : 'down', from, to, verb: 'sent mail to', fromName: str(ev.fromName), toName: str(ev.toName) };
+    case 'wake':
+      return { dir: 'down', from, to, verb: 'woke', toName: str(ev.toName) };
     case 'error':
       return { dir: 'error', from, to: null, verb: 'ran into an error' };
     default:

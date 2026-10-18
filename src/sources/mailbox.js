@@ -45,6 +45,7 @@ const MAX_MAIL_BYTES = 80 * 1024; // agent-mail.ps1 sends at most 64 KB of text
 const MAX_MAIL_TEXT = 1000;    // the model makes a short snippet of it
 const MAX_MAIL_NAME = 80;
 const MAX_NAME_BYTES = 1024;
+const MAX_WAKES = 30;          // the relay keeps its last 50 mail wakes
 
 // The `s` flag lets a heading or state line hold U+2028 or U+2029 (lines are already split on \n).
 const HEADING = /^ {0,3}(#{1,6})[ \t]+(.+)$/s;
@@ -169,6 +170,7 @@ export function createMailboxSource({ root = null, settings = null, now = Date.n
       pausedAt: statFile(path.join(dir, 'PAUSE'))?.mtimeMs ?? null,
       haltReason: hide ? null : shortText(halt, MAX_NOTE),
       alerts: alerts ? { count: alerts.count, at: alerts.at, text: hide ? null : alerts.text } : null,
+      wakes: relayWakes(state?.mail_dispatches),
     };
   }
 
@@ -683,6 +685,33 @@ function parseMail(text) {
   const rest = lines.slice(body).join('\n').trim().replace(/(?![\n\t])\p{Cc}/gu, ' ');
   const chars = Array.from(rest);
   return { fromName, text: (chars.length > MAX_MAIL_TEXT ? chars.slice(0, MAX_MAIL_TEXT).join('') : rest) || null };
+}
+
+// The turns the relay started to wake an agent for its mail (state.json "mail_dispatches"), newest
+// first: { key, name, at, endAt, running, count }. Times are in milliseconds.
+function relayWakes(dispatches) {
+  if (dispatches === null || typeof dispatches !== 'object' || Array.isArray(dispatches)) return [];
+  const out = [];
+  for (const d of Object.values(dispatches)) {
+    if (d === null || typeof d !== 'object' || typeof d.agent !== 'string' || !MAIL_AGENT.test(d.agent)) continue;
+    const at = unixMs(d.started_utc);
+    if (at === null) continue;
+    const count = Array.isArray(d.items) ? d.items.length : typeof d.items === 'string' ? 1 : 0;
+    out.push({
+      key: d.agent,
+      name: shortText(d.name, MAX_MAIL_NAME),
+      at,
+      endAt: unixMs(d.finished_utc),
+      running: d.state === 'running' || d.state === 'launching',
+      count,
+    });
+  }
+  return out.sort((a, b) => b.at - a.at || ORDER.compare(a.key, b.key)).slice(0, MAX_WAKES);
+}
+
+// The relay keeps times as whole seconds since 1970; 0 means not yet.
+function unixMs(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value * 1000 : null;
 }
 
 // .relay/agents.json: the agents the relay wakes for their mail, each with the Codex thread it wakes.

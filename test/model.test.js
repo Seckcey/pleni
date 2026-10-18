@@ -1424,3 +1424,53 @@ test('odd agent mail is skipped', () => {
     assert.ok(s.nodes.every((n) => n.mail === null || n.mail.unread === 0));
   }
 });
+
+test('mail with the person lights a line from the person, down when they sent it', () => {
+  const box = mailState({
+    agents: [agent('ada', 'Ada'), agent('sergeant-ada', 'Sergeant Ada')],
+    messages: [
+      { to: 'sergeant-ada', from: 'ada', fromName: 'Ada', at: NOW - 60000, unread: false, text: 'Test of agent mail.' },
+      { to: 'ada', from: 'sergeant-ada', fromName: 'Sergeant Ada', at: NOW - 30000, unread: true, text: 'Got it.' },
+    ],
+  });
+  const s = snap({ codex: mailTeam(), mailbox: box });
+  assert.deepEqual(s.edges.find((e) => e.from === 'you' && e.kind === 'message'), {
+    from: 'you', to: SERGEANT, kind: 'message', lastDown: NOW - 60000, lastUp: NOW - 30000, downLabel: 'Test of agent mail.', upLabel: 'Got it.', active: 'both',
+  });
+  // A session right under the person: the tree line itself lights.
+  const flat = snap({ codex: mailTeam(), mailbox: box, settings: { groupBy: 'none' } });
+  const line = flat.edges.find((e) => e.from === 'you' && e.to === SERGEANT);
+  assert.equal(line.kind, 'contains');
+  assert.equal(line.active, 'both');
+  assert.ok(flat.edges.filter((e) => e.kind === 'contains' && e.to !== SERGEANT).every((e) => e.active === null), 'other tree lines stay dark');
+});
+
+test('a relay wake lights the line from the relay to the agent and goes in the feed', () => {
+  const relay = { running: true, paused: false, halted: false, coordinatorKey: null, lastAt: NOW - 5000, pausedAt: null, haltReason: null, alerts: null };
+  const box = {
+    ...mailState({ agents: [agent('sergeant-ada', 'Sergeant Ada', { wakes: true, threadId: SERGEANT.slice(6) })] }),
+    relay: {
+      ...relay,
+      wakes: [
+        { key: 'sergeant-ada', name: 'Sergeant Ada', at: NOW - 20000, endAt: null, running: true, count: 2 },
+        { key: 'sergeant-zed', name: 'Sergeant Zed', at: NOW - 3 * HOUR, endAt: NOW - 3 * HOUR + 60000, running: false, count: 1 },
+      ],
+    },
+  };
+  const s = snap({ codex: mailTeam(), mailbox: box });
+  assert.deepEqual(s.edges.find((e) => e.from === 'relay' && e.to === SERGEANT), {
+    from: 'relay', to: SERGEANT, kind: 'message', lastDown: NOW - 20000, lastUp: null, downLabel: 'Woke it to read 2 new messages', upLabel: null, active: 'down',
+  });
+  assert.deepEqual(s.events.filter((e) => e.kind === 'wake'), [
+    { at: NOW - 20000, kind: 'wake', from: 'relay', to: SERGEANT, text: 'To read 2 new messages.', toName: 'Sergeant Ada' },
+    { at: NOW - 3 * HOUR, kind: 'wake', from: 'relay', to: null, text: 'To read 1 new message.', toName: 'Sergeant Zed' },
+  ]);
+  const later = snap({ codex: mailTeam(), mailbox: box, now: NOW + PULSE_MS });
+  assert.equal(later.edges.find((e) => e.from === 'relay' && e.to === SERGEANT), undefined, 'the line goes once the wake is old');
+  // The relay hangs under the agent it wakes (a planner, say): their tree line lights.
+  const under = snap({ codex: mailTeam(), mailbox: box, settings: { people: { relay: { reportsTo: SERGEANT } } } });
+  const tree = under.edges.find((e) => e.from === SERGEANT && e.to === 'relay');
+  assert.equal(tree.active, 'up');
+  assert.equal(tree.upLabel, 'Woke it to read 2 new messages');
+  assert.equal(snap({ codex: mailTeam(), mailbox: { ...box, relay: null } }).events.some((e) => e.kind === 'wake'), false, 'no relay tile, no wakes');
+});

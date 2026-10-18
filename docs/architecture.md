@@ -385,6 +385,7 @@ MailboxState = {
     running, paused, halted, coordinatorKey,                     // coordinatorKey = 'claude:<session_id>'
     lastAt, pausedAt, haltReason,                                // times are null when unknown
     alerts: null | { count, at, text },                          // from .relay/alerts.md
+    wakes: [{ key, name, at, endAt, running, count }],           // its mail wakes, newest first, at most 30
   },
   mail: null | {                                                 // null without a mail folder
     owner,                                                       // owner_name from bin/relay-settings.json, else null
@@ -465,8 +466,9 @@ Node = {
   watched,  // true for a session or the relay whose people[key].watch is true
 }
 Edge = { from, to, kind: 'spawn' | 'mailbox' | 'message' | 'contains', lastDown, lastUp, downLabel, upLabel, active: 'down' | 'up' | 'both' | null }
-Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'error', from, to, text }
-        // a 'mail' event also has fromName and toName, the mail names, for a side that is not on the map
+Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake' | 'error', from, to, text }
+        // a 'mail' event also has fromName and toName, the mail names, for a side that is not on the map;
+        // a 'wake' event (from 'relay') has toName
 ```
 
 - Tree: `you` (the person, `displayName`) → projects (when `groupBy` is `project`) → top-level
@@ -541,8 +543,16 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'error
   person; a tile with two names adds them up. Every message whose sender and receiver are both
   session tiles lights the line between them like a hand-off: along the tree lines, down when the
   receiver is below the sender and up when it is above; otherwise one `message` line for the two
-  tiles (from the one whose key sorts first, `down` when that one sent it). A message never dims a
-  line something newer lit. The label is the message as a snippet (≤120 chars, only with
+  tiles (from the one whose key sorts first, `down` when that one sent it). Mail between the
+  person and a session tile lights a line from `you` to that tile, `down` when the person sent it
+  (the tree line itself, a `contains` edge, when the session hangs right under the person). A
+  message never dims a line something newer lit.
+- Relay wakes: `relay.wakes` comes from the relay's `state.json` (`mail_dispatches`: `agent`,
+  `name`, `state`, `items`, `started_utc` and `finished_utc` in seconds). Each wake of an agent on
+  the map lights the line from the relay to it, labelled "Woke it to read N new messages": along
+  the tree when one is above the other, else a `message` line from the relay. Each wake is a
+  `wake` event ("To read N new messages."); an agent not on the map has `to: null` and its
+  `toName`. The label is the message as a snippet (≤120 chars, only with
   snippets). Each message with a side on the map is a `mail` event (`text` ≤280 chars, only with
   snippets); a side not on the map is `null`, and `fromName` and `toName` still name it.
 - Ranks: `plain` — the person shows only `displayName`, session "Lead", sub-agent "Agent",
@@ -1072,7 +1082,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   '<name>'`. A tile with `mail.toYou` also gives that command and the one to answer it:
   `.\agent-mail.ps1 -Send -From '<your name>' -To '<its name>' -Text 'your answer'`. Pleni sends
   no mail. Feed lines read "<sender> sent mail to <receiver>", up when the receiver is above the
-  sender on the map, else down; a side that is not on the map shows its mail name.
+  sender on the map, else down; a side that is not on the map shows its mail name. A relay wake
+  reads "Relay woke <agent>". Working mode shows the relay while one of its lines is lit.
 - **Roll over soon:** a session whose node has `rollSoon` gets a "Roll over soon" badge on the top
   edge of its tile (the reasons are in the tile's label for screen readers), a "Roll over soon" pill
   in its List row, and a line at the top of its side panel's Now tab: "Roll over soon: Memory 87%
@@ -1119,8 +1130,9 @@ A deterministic, time-driven cast: a person, two projects, a Codex planner with 
 Claude coordinator with three sub-agents (one working, one waiting, one done; the coordinator has a
 long session's numbers, so it shows "Roll over soon"), and a small mailbox
 with a note for the person, with hand-offs that light up every few seconds. In its agent mail, the
-planner (which the relay wakes) and "Sales tax research" write to each other every loop, and
-"Sales tax research" has sent the person ("Ada") a question that waits. It is used by `node bin/pleni.js --demo`, the screenshots and the
+planner (which the relay wakes) and "Sales tax research" write to each other every loop, the
+person writes to "Sales tax research", and "Sales tax research" has sent the person ("Ada") a
+question that waits. It is used by `node bin/pleni.js --demo`, the screenshots and the
 tests, so that no real session data is ever needed to show Pleni. With live GitHub status on, the
 demo shows made-up pull requests for its two repositories (`demoGithub(repos, now)`, in the shape
 `src/github.js` gives, run through `parsePulls`); merging them is refused.
