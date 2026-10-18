@@ -34,6 +34,7 @@ makes it safe for everyone to work at the same time.
 | `tasks/<TASK-ID>/workers/W<n>.log`, `W<n>.run.json`, `runs.md` | The worker launcher (machine-written) |
 | `README.md`, `CLAUDE.md`, `templates/`                 | Coordinator (changes asked for by the planner in `CODEX-QUEUE.md`) |
 | `bin/`, `tests/`, `.relay/`                            | The owner and the relay; sessions never edit them |
+| `mail/<agent>/new/`, `mail/<agent>/read/`              | `bin/agent-mail.ps1` only; never edit a message by hand |
 
 Add new entries at the **bottom** of a file, with a time stamp (`YYYY-MM-DD HH:MM`, local time).
 Never rewrite someone else's history.
@@ -57,13 +58,29 @@ tasks/
     workers/
       W1-brief.md    coordinator -> worker: exact scope and rules
       W1-report.md   worker -> coordinator: what it did, a diff summary, check output
-bin/                 the relay and the worker launcher
+mail/                agent mail (optional): one folder per agent
+  <agent>/
+    new/             messages the agent has not read yet
+    read/            messages it has read
+bin/                 the relay, the worker launcher and agent mail
 tests/               the relay test's fake Claude
 .relay/              the relay's own state and notes
 ```
 
 Worktrees for workers live **outside** this folder, under the worktrees folder from
 `bin/relay-settings.json`: `<worktrees folder>\<TASK-ID>\<repo folder>`, on branch `claude/<TASK-ID>`.
+
+## Agent mail
+
+Agents that do not use the task files, such as a Colonel and the Sergeants under it, send each other
+messages by name with `bin/agent-mail.ps1`:
+
+- `-Send -From <your name> -To <name> -Text <message>` (or `-TextFile <file>` for a long one).
+- `-Read -Me <your name>` prints your new mail and files it.
+- `-Wait -Me <your name> -Seconds <n>` waits for new mail, then reads it.
+
+The relay wakes an agent it knows when mail waits for it. Never write or move a mail file yourself:
+always use the script, so nobody reads half a message.
 
 ## Task lifecycle
 

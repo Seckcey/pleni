@@ -39,7 +39,7 @@ read the start of a file once, to find a session's name and where it started.
 | Grok folder (usually `~/.grok`)          | Each session's summary and its event, chat and update logs in `sessions/` |
 | Kimi Code folder (usually `~/.kimi-code`) | Each session's `state.json` and its agents' `wire.jsonl` logs in `sessions/` |
 | Codex coordinator list, if present      | `coordinators/registry.sqlite3` (opened read-only) and `coordinators/superintendent.json`, only to learn which coordinator started which worker |
-| A mailbox folder, if you turn one on    | The Markdown files of the queue, the status board, and each task (with any worker run notes), the notes for you (`NEEDS-<NAME>.md`), plus the small relay files in `.relay/`, its alerts (`alerts.md`) among them |
+| A mailbox folder, if you turn one on    | The Markdown files of the queue, the status board, and each task (with any worker run notes), the notes for you (`NEEDS-<NAME>.md`), plus the small relay files in `.relay/`, its alerts (`alerts.md`) and the list of agents it wakes for mail (`agents.json`) among them. With agent mail, also the `mail/` folder: each agent's name (`name.txt`) and its messages, the newest 100 unread and the newest 30 read (the first 80 KB of each). From the relay's settings (`bin/relay-settings.json`) Pleni reads only `owner_name`, the name agents use to write to you |
 | A session's project folder, only when it is inside a `_worktrees` folder on a local drive | Only the small `.git` pointer file (at most 4 KB) of that worktree, to learn the name of the repository it belongs to |
 | A session's project folder, on a local drive | Only the git settings file (`.git/config`, at most 64 KB) of the repository it is in, and in a worktree the small `.git` and `commondir` files that lead there. Pleni keeps only the address of the `origin` remote, and from it only the owner and name of a GitHub repository, to link to its pull requests. It never keeps a login or token that the address may hold. Nothing else in your project is read |
 | Claude Code folder, only when you click Open in PowerShell | The small files in `sessions/` that Claude Code keeps for each running process. Pleni reads only which session each one has open, whether it runs in the background or in a terminal, and its process number, to be sure no other window has that session open. To tell a live Claude Code from a leftover file, it then asks Windows (through a hidden PowerShell) only when the program with that number started |
@@ -70,6 +70,7 @@ Always:
 - Each session's state (Needs you, Working, Finished, Idle, Done, Error), the name of the tool it is
   using, and when it last did something.
 - Who started whom, and when work was handed down or reported back up.
+- With agent mail: who sent mail to whom and when, and how many messages wait for each agent.
 - In the Tasks view: mailbox task ids and states.
 
 Only when the `content` setting is `snippets` (this is the default):
@@ -80,8 +81,10 @@ Only when the `content` setting is `snippets` (this is the default):
 - The last thing the assistant said, at most 280 characters.
 - In the side panel: up to 200 recent steps, each with at most 2,000 characters of text.
 - Mailbox task titles and the headings of mailbox entries.
-- Under Needs you: the newest note for you from the mailbox, the relay's newest alert, and why the
-  relay halted, each at most 280 characters.
+- Under Needs you: the newest note for you from the mailbox, the relay's newest alert, why the
+  relay halted, and the newest agent mail for you, each at most 280 characters.
+- Agent mail between your agents: the start of each message, at most 280 characters in the feed
+  and 120 on a map line.
 
 When `content` is `none`, none of the text in that second list is shown. Pleni never shows what
 a model was "thinking", in either setting. It shows only that the model was thinking.

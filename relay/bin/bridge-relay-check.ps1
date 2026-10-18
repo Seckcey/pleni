@@ -15,9 +15,12 @@
   errors back off and stop only the Codex direction, a different thread id stops it, ChatGPT sign-in only);
   15 rollovers (-Enroll -SessionName and -EnrollCodex -ThreadName follow the newest session with the name, forward
   only and between turns); 16 a window whose command line does not name the session (Claude Code's own list of
-  running sessions) holds the coordinator turn, and files left behind by closed windows do not.
-  It runs only the bridge-relay.ps1 beside it, ..\tests\stub-claude.js and ..\tests\stub-codex.js; other
-  -RelayScript/-StubCli values are refused.
+  running sessions) holds the coordinator turn, and files left behind by closed windows do not; 17 agent mail
+  (agent-mail.ps1: send, read and wait by name, with names, sizes and unknown agents checked); 18 agent mail wakes
+  (-EnrollAgent by name, one wake per new message, none for mail already read, waits while the thread is open, two
+  agents at once, and -MaxAgentTurnsAtOnce).
+  It runs only the bridge-relay.ps1 and agent-mail.ps1 beside it, ..\tests\stub-claude.js and
+  ..\tests\stub-codex.js; other -RelayScript/-StubCli values are refused.
   Prints one PASS/FAIL line per check, then a summary. Exit 0 only when every check passes (2 = could not set up).
   No network, no API key, no real claude.exe. It removes its temp folder and stops any process it started
   (only processes whose command line names this run's temp folder). Takes about 2-4 minutes.
@@ -46,9 +49,10 @@ if (-not $HereDir) { $HereDir = Split-Path -Parent $MyInvocation.MyCommand.Path 
 $OwnRelay = Join-Path $HereDir 'bridge-relay.ps1'
 $OwnStub = Join-Path (Split-Path -Parent $HereDir) 'tests\stub-claude.js'
 $StubCodex = Join-Path (Split-Path -Parent $HereDir) 'tests\stub-codex.js'
+$AgentMail = Join-Path $HereDir 'agent-mail.ps1'
 if (-not $RelayScript) { $RelayScript = $OwnRelay }
 if (-not $StubCli) { $StubCli = $OwnStub }
-foreach ($f in @($RelayScript, $StubCli, $StubCodex, $PsExe)) { if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Stop-Setup "not found: $f" } }
+foreach ($f in @($RelayScript, $StubCli, $StubCodex, $AgentMail, $PsExe)) { if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Stop-Setup "not found: $f" } }
 if (-not (Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue)) { Stop-Setup 'node.exe not found (the stub CLI needs it)' }
 $RelayScript = (Resolve-Path -LiteralPath $RelayScript).Path
 $StubCli = (Resolve-Path -LiteralPath $StubCli).Path
@@ -153,6 +157,35 @@ function Stop-Loop([hashtable]$Fx, [hashtable]$Loop) {
     return $ok
 }
 
+function Start-Mail([hashtable]$Fx, [string[]]$MailArgs) {
+    # bin\agent-mail.ps1 on this fixture's mailbox, as an agent runs it.
+    if (-not ([string]$Fx.mb).StartsWith($Base + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "refusing: mailbox outside $Base" }
+    $script:RunNo++
+    $o = Join-Path $Fx.dir ('mail-{0:d2}.out.txt' -f $script:RunNo)
+    $e = Join-Path $Fx.dir ('mail-{0:d2}.err.txt' -f $script:RunNo)
+    $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $AgentMail, '-MailboxRoot', $Fx.mb) + @($MailArgs)
+    $p = Start-Process -FilePath $PsExe -ArgumentList (($a | ForEach-Object { ConvertTo-Token $_ }) -join ' ') -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput $o -RedirectStandardError $e
+    $null = $p.Handle
+    [void]$script:Spawned.Add($p)
+    return @{ proc = $p; out = $o; err = $e }
+}
+
+function Invoke-Mail([hashtable]$Fx, [string[]]$MailArgs) {
+    $r = Start-Mail $Fx $MailArgs
+    if (-not $r.proc.WaitForExit(60000)) {
+        try { Stop-Process -Id $r.proc.Id -Force } catch { }
+        throw 'agent-mail.ps1 did not exit within 60 s'
+    }
+    $out = Read-RelayOutput $r
+    $script:LastOut = "[agent-mail exit $($r.proc.ExitCode)] $out"
+    return @{ code = $r.proc.ExitCode; out = $out }
+}
+
+function Get-MailFiles([hashtable]$Fx, [string]$Key, [string]$Box) {
+    return , @(Get-ChildItem -LiteralPath (Join-Path $Fx.mb "mail\$Key\$Box") -File -Filter '*.md' -ErrorAction SilentlyContinue)
+}
+
 function Set-StubMode([hashtable]$Fx, [string]$Mode) { [IO.File]::WriteAllText((Join-Path $Fx.stub 'mode.txt'), $Mode, $Utf8) }
 function Set-CodexStubMode([hashtable]$Fx, [string]$Mode) { [IO.File]::WriteAllText((Join-Path $Fx.stub 'codex-mode.txt'), $Mode, $Utf8) }
 
@@ -221,6 +254,12 @@ function Get-CodexDispatches([hashtable]$Fx) {
     $st = Get-RelayState $Fx
     if (-not $st) { return @() }
     return @(Get-Values $st.codex_dispatches | Sort-Object { [int64]$_.seq })
+}
+
+function Get-MailDispatches([hashtable]$Fx) {
+    $st = Get-RelayState $Fx
+    if (-not $st) { return @() }
+    return @(Get-Values $st.mail_dispatches | Sort-Object { [int64]$_.seq })
 }
 
 function Get-Dispatches([hashtable]$Fx) {
@@ -977,6 +1016,131 @@ try {
         $r = Invoke-Relay $fx 'Once' $null
         Check (@(Get-Calls $fx 'start').Count -eq 1) 'files left behind by closed windows still held the turn'
         Check (-not (Test-Pending $fx 'tasks/T-NEW/assignment.md')) 'the notification stayed pending after the window closed'
+    }
+    Invoke-Scenario '17 agent mail: send, read and wait by name; names, sizes and unknown agents are checked' {
+        $fx = New-Fixture 'am1'
+        $r = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Test', '-Text', 'Start T-12.')
+        Check ($r.code -ne 0 -and $r.out -match 'No agent named') 'mail to an unknown name was sent without -NewAgent'
+        $r = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Test', '-Text', 'Start T-12. Report when done.', '-NewAgent')
+        Check ($r.code -eq 0 -and $r.out -match 'Sent to Sergeant Test') "-Send exit code $($r.code): $(Get-Tail $r.out)"
+        $m = Get-MailFiles $fx 'sergeant-test' 'new'
+        Check ($m.Count -eq 1) "expected 1 new message, got $($m.Count)"
+        if ($m.Count -eq 1) {
+            $t = Read-Shared $m[0].FullName
+            Check ($t -match '(?m)^From: Colonel\r?$' -and $t -match '(?m)^To: Sergeant Test\r?$' -and $t -match '(?m)^Sent: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\r?$' -and
+                $t -match 'Report when done') 'the message file does not hold From, To, Sent and the text'
+        }
+        foreach ($bad in @('Bad;Name', 'con', 'Colonel')) {
+            $r = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', $bad, '-Text', 'x', '-NewAgent')
+            Check ($r.code -ne 0) "a bad recipient was accepted: '$bad'"
+        }
+        $big = Join-Path $fx.dir 'big.txt'
+        Write-Text $big ('x' * 70000)
+        $r = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Test', '-TextFile', $big)
+        Check ($r.code -ne 0 -and $r.out -match '64 KB') 'a message over 64 KB was sent'
+        Check ((Get-MailFiles $fx 'sergeant-test' 'new').Count -eq 1) 'a refused message left a file'
+        # Read: printed, then moved to read\. Case and extra spaces in the name do not count.
+        $r = Invoke-Mail $fx @('-Read', '-Me', 'sergeant   test')
+        Check ($r.code -eq 0 -and $r.out -match 'for Sergeant Test' -and $r.out -match 'From: Colonel' -and $r.out -match 'Report when done') '-Read did not print the message'
+        Check ((Get-MailFiles $fx 'sergeant-test' 'new').Count -eq 0 -and (Get-MailFiles $fx 'sergeant-test' 'read').Count -eq 1) '-Read did not move the message to read'
+        $r = Invoke-Mail $fx @('-Read', '-Me', 'Sergeant Test')
+        Check ($r.out -match 'No new mail for Sergeant Test') 'a second -Read did not say that no new mail waits'
+        # Wait: ends after -Seconds without mail, and as soon as mail comes.
+        $t0 = Get-Date
+        $r = Invoke-Mail $fx @('-Wait', '-Me', 'Sergeant Test', '-Seconds', '2')
+        Check ($r.out -match 'No new mail for Sergeant Test after 2 seconds' -and ((Get-Date) - $t0).TotalSeconds -lt 30) '-Wait did not end after 2 seconds without mail'
+        $w = Start-Mail $fx @('-Wait', '-Me', 'Sergeant Test', '-Seconds', '90')
+        Start-Sleep -Seconds 3
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Test,Sergeant Two', '-Text', 'Both of you: stand by.', '-NewAgent')
+        Check ($w.proc.WaitForExit(30000)) '-Wait did not end when mail came'
+        Check ((Read-RelayOutput $w) -match 'stand by') '-Wait did not print the mail that came'
+        $two = Get-MailFiles $fx 'sergeant-two' 'new'
+        Check ($two.Count -eq 1 -and (Read-Shared $two[0].FullName) -match '(?m)^To: Sergeant Test, Sergeant Two\r?$') 'a message to two agents did not reach both, with both names on its To line'
+        $r = Invoke-Mail $fx @('-List')
+        Check ($r.out -match 'Sergeant Two\s+1 new') '-List does not show the new message for Sergeant Two'
+    }
+
+    Invoke-Scenario '18 agent mail wakes: enrolled by name, one wake per new message, none for mail already read, waits while the thread is open, a few at once' {
+        $fx = New-Fixture 'am2'
+        Initialize-Fixture $fx
+        $w1 = Join-Path $fx.dir 'sergeant1'
+        $w2 = Join-Path $fx.dir 'sergeant2'
+        foreach ($d in @($w1, $w2)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+        $t1 = [guid]::NewGuid().ToString()
+        $t2 = [guid]::NewGuid().ToString()
+        Write-Thread $fx $t1 '2026-10-09T06:00:00Z' $w1 '**Sergeant One'
+        Write-Thread $fx $t2 '2026-10-09T06:00:00Z' $w2 'Sergeant Two'
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Nobody' }
+        Check ($r.code -ne 0 -and $r.out -match 'No live Codex thread named') '-EnrollAgent accepted a name that no Codex thread has'
+        # Mail that waits when the agent is enrolled counts as known: enrolling wakes nothing.
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant One', '-Text', 'Old order.', '-NewAgent')
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'sergeant one' }
+        Check ($r.code -eq 0) "-EnrollAgent exit code $($r.code): $(Get-Tail $r.out)"
+        $aj = Get-RelayJson $fx 'agents.json'
+        Check ($aj -and $aj.'sergeant-one'.thread_id -eq $t1 -and $aj.'sergeant-one'.name -eq 'Sergeant One') 'agents.json does not hold Sergeant One, named as its thread is, with its thread'
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 0) 'enrolling woke the agent for mail that was already waiting'
+        # New mail: the dry run shows the command; -Once wakes the thread once, in its own folder.
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant One', '-Text', 'New order.')
+        $r = Invoke-Relay $fx 'DryRun' $null
+        Check ($r.out -match 'would wake Sergeant One' -and $r.out -match ('exec --json --skip-git-repo-check resume ' + $t1)) 'the dry run did not show the wake for Sergeant One'
+        $r1 = Invoke-Relay $fx 'Once' $null
+        $r2 = Invoke-Relay $fx 'Once' $null
+        Check ($r1.code -eq 0 -and $r2.code -eq 0) "-Once exit codes $($r1.code)/$($r2.code)"
+        $s = @(Get-CodexCalls $fx 'start')
+        Check ($s.Count -eq 1) "expected 1 Codex call, got $($s.Count)"
+        if ($s.Count -ge 1) {
+            $c = $s[0]
+            Check ($c.thread -eq $t1) "woke thread '$($c.thread)' instead of the thread of Sergeant One"
+            Check ($c.exec -and $c.json -and $c.skip_git -and -not $c.last -and -not $c.bypass) 'unsafe or missing Codex options (want exec --json --skip-git-repo-check; never --last or a sandbox bypass)'
+            Check ($c.prompt -match '\[bridge-relay M' -and $c.prompt -match "-Read -Me 'Sergeant One'" -and $c.prompt -match 'from Colonel') 'the notice does not say who wrote and how to read the mail'
+            Check ($c.prompt -notmatch 'Old order') 'the notice repeats mail text'
+            Check ([bool]$c.key_absent) 'the agent turn inherited an OpenAI or Codex API key'
+            Check ([string]$c.cwd -like '*\am2\sergeant1') "the agent turn ran in '$($c.cwd)', not in its thread's folder"
+        }
+        $md = @(Get-MailDispatches $fx)
+        Check ($md.Count -eq 1 -and $md[0].outcome -eq 'success') 'the mail wake is not recorded once with outcome success'
+        # Mail the agent read by itself needs no wake.
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant One', '-Text', 'Third order.')
+        $null = Invoke-Mail $fx @('-Read', '-Me', 'Sergeant One')
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 1) 'the relay woke the agent for mail it had already read'
+        # Another program holds the thread: the mail waits until it lets go.
+        $lock = Join-Path $fx.codex ('thread-writer-locks\' + $t1 + '.lock')
+        Write-Text $lock ''
+        $held = [IO.File]::Open($lock, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try {
+            $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant One', '-Text', 'Fourth order.')
+            $r = Invoke-Relay $fx 'Once' $null
+            Check ($r.out -match 'another Codex program has thread') 'the relay did not say that another program has the thread open'
+            Check (@(Get-CodexCalls $fx 'start').Count -eq 1) 'the agent was woken while another program held its thread'
+        } finally { $held.Dispose() }
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 2) 'the agent was not woken after the other program let go of its thread'
+        # Two agents run at once; with at most one at once, the other waits for it.
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Two' }
+        Check ($r.code -eq 0) "-EnrollAgent Sergeant Two exit code $($r.code): $(Get-Tail $r.out)"
+        Set-CodexStubMode $fx 'sleep:10'
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant One,Sergeant Two', '-Text', 'Fifth order.')
+        $null = Invoke-Relay $fx 'Once' @{ NoWait = $true }
+        Check (Wait-Until { (Get-RunningCodexStubs $fx) -eq 2 } 20) 'the two agents did not run at the same time'
+        Check (Wait-Until { (Get-RunningCodexStubs $fx) -eq 0 } 40) 'the two agent turns did not end'
+        $null = Invoke-Relay $fx 'Once' $null
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant One,Sergeant Two', '-Text', 'Sixth order.')
+        $r = Invoke-Relay $fx 'Once' @{ NoWait = $true; MaxAgentTurnsAtOnce = 1 }
+        Check (Wait-Until { (Get-RunningCodexStubs $fx) -eq 1 } 20) 'no agent turn started'
+        if ((Get-RunningCodexStubs $fx) -ne 1) { throw 'timing: the 10 s agent turn ended before the check; re-run on a less loaded machine' }
+        Check ($r.out -match 'at most 1 at once') 'the relay did not hold the second agent back (at most 1 at once)'
+        Check (Wait-Until { (Get-RunningCodexStubs $fx) -eq 0 } 40) 'the agent turn did not end'
+        Set-CodexStubMode $fx 'ok'
+        $null = Invoke-Relay $fx 'Once' @{ MaxAgentTurnsAtOnce = 1 }
+        $n = @(Get-CodexCalls $fx 'start').Count
+        Check ($n -eq 6) "expected 6 Codex calls in total, got $n"
+        $r = Invoke-Relay $fx 'Status' $null
+        Check ($r.out -match 'Agent mail: ON for 2 agent' -and $r.out -match 'Sergeant One: Codex thread') 'status does not show the two agents'
+        $r = Invoke-Relay $fx 'UnenrollAgent' @{ AgentName = 'Sergeant Two' }
+        Check ($r.code -eq 0 -and -not (Get-RelayJson $fx 'agents.json').'sergeant-two') '-UnenrollAgent did not remove Sergeant Two'
+        Check (@(Get-Calls $fx 'start').Count -eq 0) 'agent mail woke the coordinator'
     }
 } catch {
     $script:Fail++

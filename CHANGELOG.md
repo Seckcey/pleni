@@ -26,6 +26,16 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- Agent mail, in the mailbox relay: agents send each other messages by name with
+  `bin\agent-mail.ps1` (`-Send`, `-Read`, `-Wait`, `-List`), and `bridge-relay.ps1 -EnrollAgent`
+  wakes an agent's Codex thread when mail waits for it. This does the job of the Codex app's
+  messages between threads (`send_message_to_thread` and `wait_threads`), so a Colonel and its
+  Sergeants can work with the app closed. Off until you enroll an agent. Update the relay copy in
+  your mailbox to get it.
+- Pleni shows agent mail: a line lights up between two tiles when mail goes from one to the other,
+  a tile says "N new messages" when mail waits for it, the Activity view lists each message, and
+  mail for you shows under Needs you. A tile's side panel says whether the relay wakes it for mail,
+  and gives the PowerShell commands to read your mail and answer it. Pleni sends no mail.
 - Live GitHub status (off until you turn it on in Settings → Sources): the Pull requests page shows
   each pull request's checks, reviews, and whether it can be merged, and lists other open pull
   requests. Pleni asks through the GitHub CLI (`gh`) on your computer, with your own gh sign-in,

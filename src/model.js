@@ -49,6 +49,7 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
   const links = linkParts(tree, all, ctx);
   const runs = workerRuns(workers, tree, links.pairs, ctx);
   const mail = mailboxParts(box, tree, ctx);
+  const agentMail = agentMailParts(box, tree, all, links.pairs, ctx);
   const nodes = tree.order.map((key) => tree.nodes.get(key));
   markWatched(nodes, ctx);
   const sessionNodes = nodes.filter((node) => KINDS.includes(node.kind));
@@ -70,9 +71,9 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
     },
     nodes,
     edges: mergeEdges([...treeEdges(tree, links.pairs, ctx), ...messageEdges(tree, links.pairs, ctx)], mail.edges, ctx),
-    events: sortEvents([...links.events, ...runs, ...mail.events, ...errorEvents(sessionNodes, ctx)]),
+    events: sortEvents([...links.events, ...runs, ...mail.events, ...agentMail.events, ...errorEvents(sessionNodes, ctx)]),
     counts: countStatuses(sessionNodes),
-    attention: attentionList(sessionNodes, tasks ?? [], [...mailboxAttention(box, tree, ctx), ...watchAttention(nodes, all, box, ctx)])
+    attention: attentionList(sessionNodes, tasks ?? [], [...mailboxAttention(box, tree, ctx), ...agentMail.attention, ...watchAttention(nodes, all, box, ctx)])
       .filter((item) => !(hidden(item.id) >= item.at)),
     tasks,
     hiddenSessions: hiddenSessions(all, ctx),
@@ -590,6 +591,7 @@ function sessionNode(session, project, ctx, rule = null) {
     memory: memoryOf(session),
     rollSoon: rollSoonOf(session, ctx),
     github: session.github ?? githubRepo(session.cwd),
+    mail: null,
   };
 }
 
@@ -655,7 +657,7 @@ function groupNode({ key, parent, platform, kind, title, rank, project = null })
     key, parent, platform, kind, title, subtitle: null, rank, role: null, tier: null,
     model: null, modelLabel: null, effort: null, status: null, startedAt: null, lastAt: null,
     activity: null, lastText: null, needs: null, project, projectLabel: project, entrypoint: null, hidden: false, archived: false,
-    named: false, placement: null, memory: null, rollSoon: null, github: null,
+    named: false, placement: null, memory: null, rollSoon: null, github: null, mail: null,
   };
 }
 
@@ -954,6 +956,132 @@ function taskText(item, ctx) {
   const title = ctx.snippets ? snippet(item.title, MAX_TITLE) : null;
   if (id && title) return `${id}: ${title}`;
   return id || title;
+}
+
+// ---- agent mail ----
+
+// Agents send each other mail by name with the relay's agent-mail.ps1, so the mailbox keeps it by
+// name (its key: see mailKey). Each name is matched to a tile. Every message lights the line
+// between sender and receiver and goes in the feed; a tile shows how much mail waits for it; mail
+// that waits for the person goes under Needs you, one notice for each tile that sent some.
+function agentMailParts(mailbox, tree, all, pairs, ctx) {
+  const out = { events: [], attention: [] };
+  const mail = isObject(mailbox?.mail) ? mailbox.mail : null;
+  if (!mail) return out;
+  const agents = (Array.isArray(mail.agents) ? mail.agents : []).filter((a) => isObject(a) && a.key && mailKey(a.key) === a.key);
+  const messages = (Array.isArray(mail.messages) ? mail.messages : [])
+    .filter((m) => isObject(m) && time(m.at) !== null && typeof m.to === 'string' && typeof m.from === 'string')
+    .sort((a, b) => a.at - b.at || cmp(a.to, b.to) || cmp(a.from, b.from));
+  const tileOf = mailTiles(mail, agents, tree, all, ctx);
+  const nameOf = new Map(agents.map((a) => [a.key, text(a.name, MAX_LABEL * 2)]));
+  for (const agent of agents) {
+    const tile = tileOf(agent.key);
+    if (tile) addMailBox(tree.nodes.get(tile), agent, nameOf.get(agent.key) || agent.key);
+  }
+  const lineage = ancestry(tree.parentOf);
+  const forYou = new Map();
+  for (const m of messages) {
+    const from = tileOf(m.from);
+    const to = tileOf(m.to);
+    const fromName = text(m.fromName, MAX_LABEL * 2) || nameOf.get(m.from) || m.from;
+    const toName = nameOf.get(m.to) || m.to;
+    const words = ctx.snippets ? snippet(m.text, MAX_TEXT) : null;
+    if (from && to && from !== to && from !== 'you' && to !== 'you') lightMail(pairs, lineage, from, to, m.at, ctx.snippets ? snippet(m.text, MAX_TITLE) : null);
+    if (from || to) out.events.push({ at: m.at, kind: 'mail', from, to, text: words, fromName, toName });
+    if (to === 'you' && m.unread === true) {
+      const key = from && from !== 'you' ? from : 'you';
+      if (key !== 'you') addMailBox(tree.nodes.get(key), { toYou: 1 }, fromName);
+      const group = forYou.get(key) ?? { count: 0, at: 0, text: null, names: [] };
+      group.count++;
+      if (m.at >= group.at) Object.assign(group, { at: m.at, text: words });
+      group.names = [fromName, ...group.names.filter((n) => n !== fromName)]; // the newest sender first
+      forYou.set(key, group);
+    }
+  }
+  for (const [key, group] of forYou) {
+    const who = key === 'you' ? nameList(group.names) : snippet(tree.nodes.get(key).title, MAX_TITLE) || group.names[0];
+    const what = group.count === 1 ? 'sent you mail' : `sent you ${group.count} messages`;
+    const newest = group.count === 1 ? ': ' : '. The newest: ';
+    out.attention.push({ key, kind: 'mail', text: group.text ? `${who} ${what}${newest}${group.text}` : `${who} ${what}.`, at: group.at });
+  }
+  return out;
+}
+
+// Which tile a mail name is: the person for the relay's owner_name, "Owner" or the name in
+// Settings; the Codex thread the relay wakes for it; else the newest session tile with that whole
+// name (its own title or the name the person gave it). Null when no tile is that name.
+function mailTiles(mail, agents, tree, all, ctx) {
+  const person = new Set(['owner', mailKey(ctx.settings.displayName), mailKey(mail.owner)].filter(Boolean));
+  const byName = new Map();
+  for (const [key, node] of tree.nodes) {
+    if (!KINDS.includes(node.kind) || key.startsWith('mailbox:')) continue;
+    for (const title of new Set([node.title, all.get(key)?.title])) {
+      const name = mailKey(title);
+      if (!name) continue;
+      const best = byName.get(name);
+      const at = node.lastAt ?? -Infinity;
+      if (!best || at > best.at || (at === best.at && key < best.key)) byName.set(name, { key, at });
+    }
+  }
+  const threads = new Map();
+  for (const agent of agents) {
+    const key = typeof agent.threadId === 'string' ? `codex:${agent.threadId}` : null;
+    if (key && KINDS.includes(tree.nodes.get(key)?.kind)) threads.set(agent.key, key);
+  }
+  return (name) => (person.has(name) ? 'you' : threads.get(name) ?? byName.get(name)?.key ?? null);
+}
+
+// node.mail: { name, unread, since, wakes, toYou }: the tile's mail name, how many messages wait for
+// it and since when, whether the relay wakes it for them, and how many it sent the person that the
+// person has not read. A tile with two mail names adds them up.
+function addMailBox(node, agent, name) {
+  const unread = Number.isSafeInteger(agent.unread) && agent.unread > 0 ? agent.unread : 0;
+  const since = unread ? time(agent.since) : null;
+  const box = node.mail ?? { name, unread: 0, since: null, wakes: false, toYou: 0 };
+  if (unread && !box.unread) box.name = name;
+  box.unread += unread;
+  if (since !== null && (box.since === null || since < box.since)) box.since = since;
+  box.wakes ||= agent.wakes === true;
+  box.toYou += agent.toYou ?? 0;
+  node.mail = box;
+}
+
+// A message lights the tree lines from sender to receiver when one is above the other on the map,
+// else a line of its own across the map, one for each two tiles, whichever of them sent it.
+function lightMail(pairs, lineage, from, to, at, label) {
+  const below = lineage(to).indexOf(from);
+  if (below !== -1) {
+    for (const [upper, lower] of hops([to, ...lineage(to).slice(0, below + 1)])) lightNewer(pairs, upper, lower, { dir: 'down', at, label });
+    return;
+  }
+  const above = lineage(from).indexOf(to);
+  if (above !== -1) {
+    for (const [upper, lower] of hops([from, ...lineage(from).slice(0, above + 1)])) lightNewer(pairs, upper, lower, { dir: 'up', at, label });
+    return;
+  }
+  const [upper, lower] = from < to ? [from, to] : [to, from];
+  lightNewer(pairs, upper, lower, { dir: from === upper ? 'down' : 'up', at, label });
+}
+
+// lightPair for records that are not sorted with what already lit the line: an older one changes nothing.
+function lightNewer(pairs, upper, lower, record) {
+  const pair = pairs.get(`${upper}\n${lower}`);
+  const last = record.dir === 'down' ? pair?.lastDown : pair?.lastUp;
+  if (last != null && last > record.at) return;
+  lightPair(pairs, upper, lower, record);
+}
+
+// The folder name agent-mail.ps1 makes from a name: small letters, each run of other marks one '-'.
+function mailKey(name) {
+  if (typeof name !== 'string') return '';
+  const clean = name.replace(/\s+/g, ' ').trim().replace(/^[*_`"' ]+|[*_`"' ]+$/g, '');
+  return clean.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+function nameList(names) {
+  if (names.length <= 1) return names[0] ?? 'Someone';
+  if (names.length > 3) return `${names.slice(0, 3).join(', ')} and others`;
+  return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
 }
 
 function errorEvents(sessionNodes, ctx) {
