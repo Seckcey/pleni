@@ -114,11 +114,12 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   and which ones need you.
 - **Pull requests** — shown when your sessions work in GitHub repositories. For each repository it
   lists the branches your agents work on, who is on each, and links to its pull request on GitHub,
-  or to open one. Pleni only links to GitHub; it sends nothing there.
+  or to open one. With [Live GitHub status](#live-github-status) on, it also shows each pull
+  request's checks and reviews, and a **Merge** button.
 - **Settings** — six short groups: **Basics** (your name, the look, which sessions show),
   **Team** (names, roles, who reports to whom), **Sources** (which folders to read, and the
-  mailbox), **Alerts**, **Buttons** (Open in PowerShell, New agent, Bring a cloud session here and Roll
-  over), and **Devices**
+  mailbox, and GitHub), **Alerts**, **Buttons** (Open in PowerShell, New agent, Bring a cloud
+  session here and Roll over), and **Devices**
   (opening Pleni from another device). Type in **Find a setting** to find one by name, such as
   "port" or "folder".
 
@@ -320,6 +321,29 @@ Claude Code needs the folder to hold the same repository with no unsaved changes
 session's branch pushed to GitHub. If one of those is missing, the window says what to do. The copy
 on your computer goes on by itself: new work there does not go back to the cloud session.
 
+## Live GitHub status
+
+Pleni can show each pull request's checks and reviews on the **Pull requests** page, and merge one
+for you. It is off until you turn it on, because this is the one time Pleni reaches the internet.
+Pleni does not talk to GitHub itself: it asks the GitHub CLI (`gh`) on your computer, which uses
+your own gh sign-in.
+
+1. Install gh from [cli.github.com](https://cli.github.com/). In PowerShell, run `gh auth login`
+   and follow its steps. If Pleni is running, stop it and start it again from a new PowerShell
+   window, so it can find gh.
+2. In Pleni, open **Settings**, then **Sources**. Under **GitHub**, tick **Ask GitHub about pull
+   requests**. To merge from Pleni too, tick **Show the Merge button** and pick **How to merge**.
+   Then choose **Save settings**.
+3. Open **Pull requests**. Each branch shows its pull request with pills such as **Checks pass**,
+   **Needs a review** and **Ready to merge**. **Look again** asks GitHub right away.
+
+Pleni asks about once a minute, and only while the Pull requests page is open. It asks only about
+the repositories your sessions work in.
+
+**Merge** works only on the computer that runs Pleni, and only when every check passes and GitHub
+says the pull request is ready. Pleni asks you first, then checks once more that nobody pushed
+since you looked. A merge changes your repository on GitHub, so read the pull request first.
+
 ## Where it looks
 
 Pleni finds the usual folders on its own. You can change any of them in **Settings → Sources**.
@@ -365,12 +389,15 @@ it. It is not part of the npm package.
 
 - Pleni reads files. It writes only its own settings file.
 - It starts nothing unless you turn on **Open in PowerShell**, **Roll over**, **New agent** or
-  **Bring a cloud session here** and click a button. Then it opens one PowerShell window that runs `claude` or `codex`. Open in
-  PowerShell and New agent never type into a session. Roll over sends one short message, which it
-  shows you first.
+  **Bring a cloud session here** and click a button. Then it opens one PowerShell window that runs
+  `claude` or `codex`. Open in PowerShell and New agent never type into a session. Roll over sends
+  one short message, which it shows you first.
 - Pop-ups are off until you turn them on. Your browser makes them on your own screen; nothing is
   sent over the internet.
-- It makes no network calls and sends no data about you or your work. There is no telemetry.
+- It makes no network calls of its own and sends no data about you or your work. There is no
+  telemetry. The one way out is **Live GitHub status**, off until you turn it on: then the GitHub
+  CLI (`gh`) on your computer asks GitHub about your pull requests (see
+  [Live GitHub status](#live-github-status)).
 - The page shows short bits of session text. If you would rather it did not, turn session text
   off in Settings (the `content` setting, set to `none`). Then you see only names, tools, and
   states.

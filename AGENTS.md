@@ -9,15 +9,18 @@ before you change code, and follow its names, shapes, and file paths.
   use a technical word, say what it means right after it.
 - **Zero dependencies.** Node.js 22.12 or newer, ES modules, `node:` built-ins only. Never add an
   npm package, not even a dev one. No build step.
-- **Read-only by design.** Pleni writes nowhere except its own settings file. It never stops a
-  session, and never writes into Claude Code's, Codex's, or a mailbox's folders. It sends nothing
-  to a session except Roll over's two fixed messages (`src/rollover.js`), each in a window the
-  person sees, after a click. The only programs it may start are for the opt-in Open in PowerShell,
-  Roll over, New agent and Bring a cloud session here buttons (`src/open.js`, `src/rollover.js`,
-  `src/newagent.js`, Windows only, this computer only): a window that runs `claude --resume`,
-  `codex resume`, `claude --name`, `claude --teleport` or `codex` for the person to type into, and
-  a hidden PowerShell that only asks when a process started.
-  Sending other work, free text, and approvals need their own design first.
+- **Read-only by design.** Pleni writes nowhere on this computer except its own settings file. It
+  never stops a session, and never writes into Claude Code's, Codex's, or a mailbox's folders. It
+  sends nothing to a session except Roll over's two fixed messages (`src/rollover.js`), each in a
+  window the person sees, after a click. The only programs it may start are for the opt-in Open in
+  PowerShell, Roll over, New agent and Bring a cloud session here buttons (`src/open.js`,
+  `src/rollover.js`, `src/newagent.js`, Windows only, this computer only): a window that runs
+  `claude --resume`, `codex resume`, `claude --name`, `claude --teleport` or `codex` for the person
+  to type into, and a hidden PowerShell that only asks when a process started. The one other
+  program is the GitHub CLI for opt-in Live GitHub status (`src/github.js`): `gh pr list`, and
+  `gh pr merge` after the person confirms on this computer, run by full path with fixed words and
+  checked values, never through a shell. Sending other work, free text, and approvals need their
+  own design first.
 - **The relay is separate.** The `relay/` folder holds the mailbox relay: a Windows PowerShell
   program that writes into a mailbox and starts Claude Code sessions. It is not part of Pleni.
   Pleni never runs it, and it is not in the npm package. Read `relay/README.md` before you change
@@ -26,8 +29,10 @@ before you change code, and follow its names, shapes, and file paths.
   or `AGENTS.md` inside `relay/`: agents working on Pleni would read it as their own orders. The
   coordinator's orders live in `relay/COORDINATOR.md` instead. Never commit a real mailbox, its
   `.relay` folder, or its `relay-settings.json` or `cost-limits.json`.
-- **Private by default.** No network calls, no telemetry, nothing loaded from the internet. Show
-  session text only when `content` is `snippets`, and never show thinking text.
+- **Private by default.** No telemetry, and nothing loaded from the internet. Pleni makes no
+  network calls of its own: only opt-in Live GitHub status reaches GitHub, through `gh` and the
+  person's own gh login. Show session text only when `content` is `snippets`, and never show
+  thinking text.
 - **Public repo privacy.** Never put personal names, e-mail addresses, user names, computer names,
   session ids, absolute paths from your computer, or real session content in any file, test,
   commit message, or screenshot. Use made-up examples such as `/home/ada/project` or

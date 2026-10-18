@@ -23,7 +23,7 @@
       paths from my computer, or real session content in code, tests, docs, or screenshots.
 - [ ] **Zero dependencies:** no npm packages added; only `node:` built-ins.
 - [ ] **Read-only:** Pleni still writes nowhere except its own settings file, and makes no network
-      calls.
+      calls of its own (only opt-in Live GitHub status reaches GitHub, through `gh`).
 - [ ] **Spec:** if I changed a file layout, setting, route, or data shape, I updated
       [`docs/architecture.md`](https://github.com/Seckcey/pleni/blob/main/docs/architecture.md).
 - [ ] **Tests:** new behavior has tests that make their own data in a temporary folder.

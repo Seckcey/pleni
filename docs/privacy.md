@@ -9,10 +9,14 @@ what it never does.
 - Pleni **reads** session files. It **writes** only in its own folder: its settings, its key, and
   the list of notices you dismissed.
 - Pleni **starts** nothing, unless you turn on **Open in PowerShell**, **Roll over**, **New
-  agent** or **Bring a cloud session here** and click a button. Then it opens one PowerShell window. You do the typing, except for
-  Roll over's one short message, which the page shows you before you click.
-- Pleni makes **no network calls**. It has no telemetry, no tracking, and no account. Its only
-  sign-in is its own key, which it keeps on your computer.
+  agent** or **Bring a cloud session here** and click a button. Then it opens one PowerShell
+  window. You do the typing, except for Roll over's one short message, which the page shows you
+  before you click.
+- Pleni makes **no network calls** of its own. It has no telemetry, no tracking, and no account.
+  Its only sign-in is its own key, which it keeps on your computer.
+- The one way out is **Live GitHub status**, off until you turn it on. Then the GitHub CLI (`gh`)
+  on your computer asks GitHub about your pull requests for Pleni (see
+  [below](#live-github-status-and-merge)).
 - Pleni opens only on your own computer (`127.0.0.1`), unless you set up remote access yourself,
   and only for a browser that has the key Pleni prints when it starts.
 - You can turn session text off. Then the page shows only names, tools, and states.
@@ -53,7 +57,7 @@ squeezed into a summary and by how much.
 
 Pleni also reads a few settings from your environment: `PLENI_PORT`, `PLENI_HOME`,
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and the usual system folders (`APPDATA` on Windows,
-`XDG_CONFIG_HOME` on Linux).
+`XDG_CONFIG_HOME` on Linux). With Live GitHub status on, it also reads `PATH`, to find gh.
 
 The [README](../README.md#where-it-looks) lists the usual folders for each system.
 
@@ -120,11 +124,33 @@ recent pop-ups in its notification list until you clear them.
   opens one PowerShell window in the folder of a session you pick and runs `claude --name <name>`
   or `codex` there. The name you type is held to the same plain marks. Pleni sends the new agent
   nothing: you type its first message.
-- It makes no network calls. It sends no telemetry, usage counts, or crash reports.
+- It makes no network calls of its own. It sends no telemetry, usage counts, or crash reports.
+  Only Live GitHub status reaches the internet, through gh, and only when you turn it on.
 - The page loads nothing from the internet. Its scripts, styles, and pictures all come from Pleni
   itself, and the page's security rules block anything else.
 - It never puts stack traces or file contents in error messages.
 - It asks the browser not to keep copies of its pages and data (`Cache-Control: no-store`).
+
+## Live GitHub status and Merge
+
+Live GitHub status is off until you turn it on in **Settings → Sources**. Then:
+
+- Pleni runs the GitHub CLI (`gh`) on the computer that runs Pleni. gh signs in to GitHub with
+  your own gh login. Pleni never sees your GitHub password or token.
+- It asks only while a page shows the Pull requests view, about once a minute, and only about the
+  GitHub repositories your sessions work in (at most 12). Each time, gh sends GitHub the owner and
+  name of each repository. It gets back the 30 newest pull requests of each one: number, title,
+  branches, state, checks, reviews, and whether it can be merged.
+- Pleni keeps that answer in memory for a minute and shows it on the Pull requests page, to every
+  device that may open Pleni. It writes none of it to a file.
+- **Merge** is off until you turn it on too. It works only on the computer that runs Pleni, after
+  you confirm, and only when every check passes and GitHub says the pull request is ready. Pleni
+  then runs `gh pr merge` the way you picked in Settings, and tells GitHub to refuse if anyone
+  pushed since you looked. A merge changes your repository on GitHub. Pleni never deletes a branch.
+- Pleni finds gh in the folders on your `PATH`, never in the current folder. It runs gh with fixed
+  words and checked values, never through a shell (a program that reads commands), and in your
+  temporary folder, away from your projects.
+- What GitHub does with what it receives is covered by GitHub's own privacy rules.
 
 ## Who can open the page
 

@@ -26,6 +26,14 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- Live GitHub status (off until you turn it on in Settings → Sources): the Pull requests page shows
+  each pull request's checks, reviews, and whether it can be merged, and lists other open pull
+  requests. Pleni asks through the GitHub CLI (`gh`) on your computer, with your own gh sign-in,
+  about once a minute while that page is open. With **Show the Merge button** on as well, an open
+  pull request whose checks all pass and that GitHub calls ready gets a **Merge** button, on the
+  computer that runs Pleni only. It asks you first, and GitHub refuses the merge if anyone pushed
+  since you looked. This is the first time Pleni can reach the internet, so the rules in
+  `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`, `SECURITY.md` and the privacy page now say so.
 - Bring a cloud session here (Windows, off until you turn it on in Settings → Buttons): a Claude
   Code session's side panel opens a PowerShell window in its folder that runs `claude --teleport`.
   Pick one of your claude.ai cloud sessions there, and it goes on on this computer, where Pleni

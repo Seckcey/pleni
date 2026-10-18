@@ -1,6 +1,7 @@
 // A made-up cast that moves on its own, for `node bin/pleni.js --demo`, screenshots and tests.
 // Everything is worked out from the clock passed in: the same time always gives the same data.
 import { cleanSettings } from './config.js';
+import { parsePulls } from './github.js';
 
 export const BEAT_MS = 4000;
 
@@ -35,6 +36,21 @@ const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
 const ROOTS = { claude: '.claude', codex: '.codex', grok: '.grok', kimi: '.kimi-code' };
 
 export const DEMO_KEYS = Object.freeze({ planner: PLANNER, coordinator: COORDINATOR });
+
+// Made-up pull requests, shown when live GitHub status is turned on in the demo. `age` is minutes
+// since the last change; `checks` are the results of the checks below, in order.
+const PULLS = {
+  [GITHUB.billing]: [
+    { number: 42, title: 'Split the billing API into invoices and refunds', branch: 'refactor/billing-api', age: 3, checks: ['SUCCESS', 'SUCCESS', 'IN_PROGRESS'], review: 'REVIEW_REQUIRED', status: 'BLOCKED' },
+    { number: 41, title: 'Add the 2027 sales tax table', branch: 'tax-table-2027', age: 50, checks: ['SUCCESS', 'SUCCESS', 'SUCCESS'], review: 'APPROVED', status: 'CLEAN' },
+    { number: 40, title: 'Fix rounding in refund totals', branch: 'fix/refund-rounding', age: 300, state: 'MERGED', checks: ['SUCCESS', 'SUCCESS', 'SUCCESS'], review: 'APPROVED', status: 'UNKNOWN' },
+  ],
+  [GITHUB.field]: [
+    { number: 17, title: 'Polish the login screen', branch: 'login-polish', age: 12, checks: ['SUCCESS', 'SUCCESS', 'SUCCESS'], review: 'APPROVED', status: 'CLEAN' },
+    { number: 16, title: 'Try offline sync', branch: 'spike/offline-sync', age: 30, draft: true, checks: ['SUCCESS', 'FAILURE', 'SUCCESS'], review: '', status: 'DRAFT' },
+  ],
+};
+const CHECK_NAMES = ['Test (ubuntu-latest, Node 22)', 'Test (windows-latest, Node 22)', 'Lint'];
 
 // `start` and `end` are minutes before the current ten-minute mark; working sessions have no end.
 const CAST = [
@@ -205,6 +221,41 @@ export function createDemoSource({ now = Date.now } = {}) {
         .slice(-MAX_DETAIL);
       return { events, next: events.length ? events[events.length - 1].at : cursor };
     },
+  };
+}
+
+// The answer GET /api/github gives in the demo, in the same shape as src/github.js gives it.
+export function demoGithub(repos, now = Date.now()) {
+  return {
+    error: null,
+    repos: repos
+      .filter((repo) => Object.hasOwn(PULLS, repo))
+      .sort()
+      .map((repo) => ({ repo, at: now, error: null, pulls: parsePulls(JSON.stringify(PULLS[repo].map((p) => ghPull(p, now))), repo) })),
+  };
+}
+
+// One made-up pull request as `gh pr list --json` gives it.
+function ghPull(p, now) {
+  return {
+    number: p.number,
+    title: p.title,
+    state: p.state ?? 'OPEN',
+    isDraft: p.draft === true,
+    headRefName: p.branch,
+    headRefOid: String(p.number).padStart(4, '0').repeat(10),
+    baseRefName: 'main',
+    isCrossRepository: false,
+    updatedAt: new Date(now - p.age * MIN).toISOString(),
+    reviewDecision: p.review,
+    mergeable: p.state ? 'UNKNOWN' : 'MERGEABLE',
+    mergeStateStatus: p.status,
+    statusCheckRollup: p.checks.map((result, i) => ({
+      __typename: 'CheckRun',
+      name: CHECK_NAMES[i],
+      status: result === 'IN_PROGRESS' ? 'IN_PROGRESS' : 'COMPLETED',
+      conclusion: result === 'IN_PROGRESS' ? '' : result,
+    })),
   };
 }
 

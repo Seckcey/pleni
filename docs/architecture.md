@@ -16,7 +16,10 @@ button opens a window that starts a new named session in the folder of a session
 the person types its first message there (see `src/newagent.js` below). With **Bring a cloud
 session here** turned on, a button opens a window in a Claude Code session's folder that runs
 `claude --teleport`, where the person picks a claude.ai cloud session to go on with on this
-computer. Sending other work and approving actions come later and will get their own design.
+computer. With **Live GitHub status** turned on (also off by default), Pleni runs the GitHub CLI
+(`gh`) to read the pull requests of the repositories its sessions work in, and with **Merge** on as
+well, it merges one on this computer after the person confirms (see `src/github.js` below).
+Sending other work and approving actions come later and will get their own design.
 
 ## Ground rules
 
@@ -27,12 +30,15 @@ computer. Sending other work and approving actions come later and will get their
   Tailscale logins you list in settings.
 - **Only the person who started it.** Every account on the computer can reach `127.0.0.1`, so the
   API also needs a random key made at each start and printed in Pleni's address (see Server).
-- **Read-only.** Pleni reads; it does not write anywhere except its own settings file. It starts no
-  program except the opt-in Open in PowerShell, Roll over, New agent and Bring a cloud session here
-  windows, and only when the person clicks for one. The only messages it sends are Roll over's two fixed ones.
-- **Private by default.** Nothing leaves the computer. No telemetry, no network calls. The page shows
-  short snippets of session text only when `content` is `"snippets"` (the default); `"none"` shows
-  only tool names and states.
+- **Read-only.** Pleni reads; it does not write anywhere on this computer except its own settings
+  file. It starts no program except the opt-in Open in PowerShell, Roll over, New agent and Bring a
+  cloud session here windows, only when the person clicks for one, and the GitHub CLI (`gh`) for
+  the opt-in Live GitHub status. The only messages it sends are Roll over's two fixed ones, and the
+  only change it makes elsewhere is a merge on GitHub that the person confirms.
+- **Private by default.** Nothing leaves the computer, except what the opt-in Live GitHub status
+  asks GitHub through `gh`. No telemetry, and no network calls of Pleni's own. The page shows short
+  snippets of session text only when `content` is `"snippets"` (the default); `"none"` shows only
+  tool names and states.
 - **Robust to big, live files.** Session files can be gigabytes and are appended while we read them.
   Pleni reads from the end, splits only on `\n` bytes, never parses a line that has no newline yet,
   and treats every field as optional.
@@ -55,6 +61,7 @@ src/store.js            owns the sources, polls them, caches the snapshot
 src/open.js             Open in PowerShell: a Claude Code session or Codex thread in a new window (opt-in, Windows)
 src/rollover.js         Roll over: a handoff note from a long session, then a new one with its name (opt-in, Windows)
 src/newagent.js         New agent: a new named session in the folder of one on the map (opt-in, Windows)
+src/github.js           Live GitHub status and Merge, through the GitHub CLI, gh (opt-in)
 src/demo.js             synthetic, moving demo data (no files needed)
 src/server.js           HTTP server, security gate, routes
 public/index.html       the page (no inline script or style)
@@ -95,6 +102,7 @@ export const DEFAULTS = {
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
   actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false }, // the window buttons; each true only when set to true
+  github: { live: false, merge: false, mergeMethod: 'squash' }, // Live GitHub status, the Merge button, 'squash' | 'merge' | 'rebase'
   alerts: { stoppedMinutes: 15 },                      // a watched tile counts as stopped after this long without work
   rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 }, // "Roll over soon" limits (0-100, 0-100, 0-365); 0 turns one off
 }
@@ -108,7 +116,8 @@ Exports:
   replaced by defaults, strings trimmed and clipped, numbers clamped (`port` 1024–65535,
   `activeMinutes` 1–240, `recentHours` 1–720, `staleMinutes` 5–1440, `stoppedMinutes` 1–1440), arrays
   de-duplicated, node keys validated with `isNodeKey`, roots must be absolute paths or `null`.
-  `people[key].watch` is kept only when it is exactly `true`.
+  `people[key].watch` is kept only when it is exactly `true`, and so are `actions.*`, `github.live`
+  and `github.merge`.
 - `loadSettings(file)` returns `{ settings, file, error }` and never throws (a missing file gives
   defaults and no error; a broken file gives defaults and an `error` string).
 - `saveSettings(settings, file)` writes `cleanSettings(settings)` atomically (temp file, then rename),
@@ -719,6 +728,68 @@ export function newAgentCommand(tool, name, systemRoot) // -> { file, args }
   its own needs (the same repository, no unsaved changes, the session's branch pushed). Limits:
   `openLimits`, slot `teleport:<from>`.
 
+## Live GitHub status (`src/github.js`)
+
+Off until `settings.github.live`. Pleni never talks to GitHub itself: it runs the GitHub CLI (`gh`)
+on the computer that runs Pleni, which uses the person's own gh login.
+
+```js
+export function createGithub({ execFile, env, platform, isFile, now })  // -> { status, merge }
+export function findGh(env, platform, isFile)            // -> the full path of gh, or null
+export function listArgs(repo)                           // -> gh pr list arguments
+export function mergeArgs(repo, number, method, head)    // -> gh pr merge arguments
+export function parsePulls(text, repo)                   // -> Pull[], or null when it is not a list
+export function ghOutcome(err, stdout, stderr)           // -> { ok, stdout, error }
+export function isRepoPath(value)                        // plain 'owner/name'
+export const GITHUB_MESSAGES, MAX_REPOS /* 12 */, MERGE_METHODS /* ['squash', 'merge', 'rebase'] */
+
+// Pull
+{
+  number, title,         // title: control and direction marks removed, at most 200 characters
+  url,                   // https://github.com/<repo>/pull/<number>, built by Pleni
+  state,                 // 'open' | 'draft' | 'merged' | 'closed'
+  branch, base, fork,    // head branch, base branch, whether it comes from another repository
+  head,                  // the head commit id (40 hex digits), or null
+  updatedAt,             // ms, or null
+  checks,                // 'passing' | 'failing' | 'running' | 'none'
+  failing,               // up to 3 names of failing checks
+  review,                // 'approved' | 'changes' | 'needed' | null
+  merge,                 // open ones: 'ready' | 'conflict' | 'behind' | 'blocked' | 'unstable' | 'draft' | 'checking'
+  why, canMerge,         // why Pleni will not merge it yet, in plain words (null when it will)
+}
+```
+
+- **Finding gh:** the first `gh.exe` (`gh` elsewhere) in an absolute, local folder on `PATH` (the
+  name `PATH` in any case on Windows). The current folder and network shares never count, so a
+  program named gh in a project never runs instead. Where gh is found is kept for a minute.
+- **Running gh:** `execFile` with that full path and no shell, in `os.tmpdir()` (away from any
+  repository), hidden, with a 30-second limit and at most 8 MB of output, and with
+  `GH_PROMPT_DISABLED`, `GH_NO_UPDATE_NOTIFIER`, `GH_NO_EXTENSION_UPDATE_NOTIFIER`,
+  `GH_SPINNER_DISABLED` and `NO_COLOR` set. The repository goes on the command line as
+  `github.com/<owner>/<name>`, so a `GH_HOST` setting cannot send it to another server.
+- **Asking:** `gh pr list --repo github.com/<repo> --state all --limit 30 --json
+  number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,updatedAt,reviewDecision,statusCheckRollup,mergeable,mergeStateStatus`.
+  `status({ repos, fresh })` asks about at most `MAX_REPOS` valid repositories, sorted, and answers
+  `{ error, repos: [{ repo, at, pulls, error }] }`; the outer `error` is set (and `repos` empty) when
+  gh cannot be found. Each answer, a failed one too, is kept for a minute; `fresh` asks again once
+  it is 10 seconds old. Two pages asking at once share one gh run.
+- **Checks:** a check run passes when it completed with `SUCCESS`, `NEUTRAL` or `SKIPPED`, and is
+  running until it completes; a commit status passes with `SUCCESS` and is running while `PENDING`
+  or `EXPECTED`. Anything else counts as failed, so Merge is never offered by mistake.
+- **Why not**, in this order: merged, closed, a draft, a merge conflict, failing checks (or GitHub's
+  `UNSTABLE`), running checks, changes asked for, behind its base branch, blocked, and GitHub still
+  checking (or no head commit). `canMerge` is true only when none applies, which needs GitHub's
+  `MERGEABLE` with `CLEAN` or `HAS_HOOKS`.
+- **Errors**, in plain words: gh missing, gh not signed in (exit code 4), too slow, else "GitHub
+  said: " with the first line gh wrote, or "GitHub did not answer".
+- **Merge:** `merge({ repo, number, head, method, known })`. The repository must be on the map
+  (`known`), `number` a whole number, and `head` a commit id. Three merges a minute in all, and one
+  at a time per pull request. Pleni asks GitHub again first and refuses unless the pull request is
+  still on `head` and `canMerge`. Then it runs `gh pr merge <number> --repo github.com/<repo>
+  --<method> --match-head-commit <head>`, so GitHub refuses too if anyone pushed since; never
+  `--admin`, `--auto` or `--delete-branch`. After a merge, the next look asks GitHub again. It
+  answers `{ ok: true }` or `{ ok: false, status, error }`.
+
 ## Server (`src/server.js`)
 
 ```js
@@ -778,7 +849,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`,
   `POST /api/placement`, `POST /api/dismiss`, `POST /api/watch`, `POST /api/open`,
   `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`, `POST /api/new`, `POST /api/teleport`,
-  `GET /api/devices`.
+  `GET /api/devices`, `GET /api/github`, `POST /api/github/merge`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
 - `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
   them the same way (`snapshotTag`) for a store that did not. Its answers, `304` included, carry
@@ -823,6 +894,17 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `{ ok: true }` or `{ error }` with the status it gives, and shares the server's `openLimits`.
 - **POST /api/teleport** `{ from: nodeKey }` passes the same checks as `/api/open`, then `teleport`
   in `src/newagent.js` makes the rest and opens the window.
+- **GET /api/github** (`?fresh=1` for Look again) needs the key cookie. It answers `{ on, merge,
+  method, error, repos }`. `on` is `settings.github.live`; `merge` is true when `live` and `merge`
+  are both on and the request is from this computer (like `/api/open`); `method` is
+  `settings.github.mergeMethod`. When `on` is false, `repos` is empty and nothing runs. Otherwise
+  `error` and `repos` come from `github.status` for the repositories on the map (`node.github`,
+  reviewers left out), or from `demoGithub` in the demo. Another device gets the same status, with
+  `merge: false`. `createServer({ github })` lets tests replace `createGithub()`.
+- **POST /api/github/merge** `{ repo, number, head }` passes the same checks as `/api/open` (this
+  computer only), needs `github.live` and `github.merge` (`403` otherwise), and is refused in the
+  demo (`409`). `github.merge` makes the rest, with `settings.github.mergeMethod` and the
+  repositories on the map, and its answer is sent with the status it gives.
 - **GET /api/devices** needs the key cookie and a request from this computer (like `/api/open`;
   `403` otherwise). It answers `{ addresses: ['https://<host>/' for each remote.hosts], key,
   knocks: [{ host, login, at, allowed }] }`, the turned-away devices newest first, where `allowed`
@@ -862,8 +944,19 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   works on. A branch that is not a main branch and whose name is only letters, digits and
   `. _ / -` links to **Its pull request** (`/pulls?q=is:pr head:<branch>`) and **Open a pull
   request** (`/compare/<branch>?expand=1`). Links open in a new tab with `rel="noopener
-  noreferrer"`; Pleni itself sends nothing to GitHub. A session's Details tab has a GitHub row with
-  the same links.
+  noreferrer"`. A session's Details tab has a GitHub row with the same links. With live GitHub
+  status on, the page asks `GET /api/github` when the view shows and then once a minute while it
+  stays open and visible; **Look again** asks with `?fresh=1`. A bar says "Live from GitHub, checked
+  <time>". Each branch shows its pull request (an open one first, else the newest; none for a main
+  branch or one from a fork): `#<number> <title>` linking to it, when it last changed, pills for its
+  state, checks, review and merge state, and up to three failing checks. An open one takes the place
+  of the branch's two links. Open pull requests on other branches show under **Other open pull
+  requests**. An error shows once at the top when every repository has the same one, else on each
+  card. When `merge` is true, on this computer, an open pull request that `canMerge` has **Merge**,
+  which asks first ("Merge #17 into main with “Squash and merge”? This changes main on GitHub.",
+  **Merge now**, **Cancel**) and posts `/api/github/merge` with the commit id the page showed. The
+  answer shows in the row, takes the focus, and is read out. One that cannot be merged yet says why.
+  Saving Settings drops the last answer, so the view asks again.
 - **Drawer:** clicking a tile opens the session's details and live recent events from
   `/api/session`. Esc closes it; focus is trapped while open and returned afterwards. When
   `snapshot.actions.openTerminal` is true and the page itself was opened on this computer
@@ -899,7 +992,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   split into six groups, shown as tabs (`role="tablist"`; arrow keys, Home and End move between
   them): **Basics** (You and the map; What the page shows, with Finished for, Call a turn stuck
   after and Reviewers folded under **More choices**), **Team** (Names and roles, Chain of command,
-  Projects, Ranks by model with its words folded), **Sources** (Where Pleni looks, Mailbox),
+  Projects, Ranks by model with its words folded), **Sources** (Where Pleni looks, Mailbox,
+  GitHub: Live GitHub status, Merge button, How to merge),
   **Alerts** (Needs you, with `alerts.stoppedMinutes` and the Pop-ups box; Roll over soon, with
   the three `rollSoon` limits), **Buttons** (Open sessions: Open in PowerShell, New agent, Bring a
   cloud session here and Roll over, and a line when the computer does not run Windows) and **Devices** (Open Pleni on another
@@ -973,4 +1067,6 @@ A deterministic, time-driven cast: a person, two projects, a Codex planner with 
 Claude coordinator with three sub-agents (one working, one waiting, one done; the coordinator has a
 long session's numbers, so it shows "Roll over soon"), and a small mailbox
 with a note for the person, with hand-offs that light up every few seconds. It is used by `node bin/pleni.js --demo`, the screenshots and the
-tests, so that no real session data is ever needed to show Pleni.
+tests, so that no real session data is ever needed to show Pleni. With live GitHub status on, the
+demo shows made-up pull requests for its two repositories (`demoGithub(repos, now)`, in the shape
+`src/github.js` gives, run through `parsePulls`); merging them is refused.

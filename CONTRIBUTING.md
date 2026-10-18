@@ -68,11 +68,13 @@ as passing.
 2. **Zero dependencies.** Use only Node.js and its built-in `node:` modules. Do not add npm
    packages, not even for development or tests. There is no build step: the files in `public/`
    are served as they are.
-3. **Read-only by design.** Pleni never writes anywhere except its own settings file, and it never
-   stops or sends anything to a session. The one thing it may start is the opt-in Open in
-   PowerShell window (`src/open.js`), which the person types into. Sending work and approving
-   actions are planned, and they will get their own design first.
-4. **Private by default.** No network calls, no telemetry, nothing loaded from the internet. Session
+3. **Read-only by design.** Pleni never writes anywhere on your computer except its own settings
+   file, and it never stops a session. It sends a session nothing but Roll over's two fixed
+   messages. It may start only the opt-in windows (Open in PowerShell, Roll over, New agent, Bring a
+   cloud session here), which the person types into, and the GitHub CLI (`gh`) for opt-in Live
+   GitHub status. Sending other work and approving actions will get their own design first.
+4. **Private by default.** No telemetry, and nothing loaded from the internet. Pleni makes no
+   network calls of its own; only opt-in Live GitHub status reaches GitHub, through `gh`. Session
    text is shown only as text, and only when the `content` setting allows it.
 5. **This repository is public.** Never commit personal names, e-mail addresses, user names,
    computer names, session ids, absolute paths from your computer, or real session content. Use
