@@ -329,11 +329,10 @@ function history(clock) {
   const handoffs = [];
   const mail = MAIL_HISTORY.map(({ ago, ...rest }) => ({ at: clock.mark - ago * MIN, ...rest }));
   const letters = LETTERS.map(({ ago, unread = false, ...rest }) => ({ ...rest, at: clock.mark - ago * MIN, unread }));
-  for (let beat = Math.max(0, clock.beat - HISTORY_BEATS); beat <= clock.beat; beat++) {
-    for (const step of LETTER_SCRIPT) {
-      if (step.beat !== beat % LOOP_BEATS) continue;
-      letters.push({ from: step.from, to: step.to, text: step.text, at: beat * BEAT_MS, unread: clock.beat - beat < step.read });
-    }
+  // Each scripted letter once, at the last time the loop sent it, so the Mail page shows no copies.
+  for (const step of LETTER_SCRIPT) {
+    const beat = clock.beat - (((clock.beat - step.beat) % LOOP_BEATS) + LOOP_BEATS) % LOOP_BEATS;
+    if (beat >= 0) letters.push({ from: step.from, to: step.to, text: step.text, at: beat * BEAT_MS, unread: clock.beat - beat < step.read });
   }
   for (const member of CAST) {
     if (!member.parent) continue;
