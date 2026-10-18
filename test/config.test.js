@@ -70,8 +70,9 @@ test('cleanSettings keeps good values', () => {
     projects: { pleni: { label: 'Pleni', hidden: false } },
     chain: [{ match: 'Sergeant', reportsTo: 'Colonel', role: 'coordinator' }, { match: 'Colonel', reportsTo: 'you', role: null }],
     remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] },
-    actions: { openTerminal: true, rollover: true },
+    actions: { openTerminal: true, rollover: true, newAgent: true },
     alerts: { stoppedMinutes: 20 },
+    rollSoon: { memoryPercent: 80, squeezes: 0, days: 10 },
   };
   assert.deepEqual(cleanSettings(raw), raw);
 });
@@ -92,15 +93,16 @@ test('alerts: the stopped time stays in range, and only a real true watches a ti
   assert.deepEqual(people, { [`codex:${UUID}`]: { label: 'Planner', watch: true } });
 });
 
-test('Open in PowerShell and Roll over stay off unless each is turned on with a real true', () => {
-  const off = { openTerminal: false, rollover: false };
+test('Open in PowerShell, Roll over and New agent stay off unless each is turned on with a real true', () => {
+  const off = { openTerminal: false, rollover: false, newAgent: false };
   assert.deepEqual(cleanSettings({}).actions, off);
   for (const value of ['true', 1, null, {}, []]) {
-    assert.deepEqual(cleanSettings({ actions: { openTerminal: value, rollover: value } }).actions, off, String(value));
+    assert.deepEqual(cleanSettings({ actions: { openTerminal: value, rollover: value, newAgent: value } }).actions, off, String(value));
   }
   assert.deepEqual(cleanSettings({ actions: 'on' }).actions, off);
-  assert.deepEqual(cleanSettings({ actions: { openTerminal: true, other: true } }).actions, { openTerminal: true, rollover: false });
-  assert.deepEqual(cleanSettings({ actions: { rollover: true } }).actions, { openTerminal: false, rollover: true });
+  assert.deepEqual(cleanSettings({ actions: { openTerminal: true, other: true } }).actions, { ...off, openTerminal: true });
+  assert.deepEqual(cleanSettings({ actions: { rollover: true } }).actions, { ...off, rollover: true });
+  assert.deepEqual(cleanSettings({ actions: { newAgent: true } }).actions, { ...off, newAgent: true });
 });
 
 test('cleanSettings clamps and rounds numbers', () => {
@@ -477,4 +479,11 @@ test('Grok and Kimi Code have their own folders, environment variables and node 
   assert.deepEqual(cleanSettings({}).sources.grok, { enabled: true, root: null });
   for (const key of [`grok:${UUID}`, `kimi:${UUID}`, `kimi:${UUID}/agent-0`]) assert.equal(isNodeKey(key), true, key);
   assert.equal(isNodeKey(`gemini:${UUID}`), false);
+});
+
+test('rollSoon limits are whole numbers in range, and 0 turns one off', () => {
+  assert.deepEqual(cleanSettings({}).rollSoon, { memoryPercent: 70, squeezes: 2, days: 7 });
+  assert.deepEqual(cleanSettings({ rollSoon: { memoryPercent: 150, squeezes: -3, days: 3.6 } }).rollSoon, { memoryPercent: 100, squeezes: 0, days: 4 });
+  assert.deepEqual(cleanSettings({ rollSoon: { memoryPercent: '80', squeezes: null } }).rollSoon, { memoryPercent: 70, squeezes: 2, days: 7 });
+  assert.deepEqual(cleanSettings({ rollSoon: 'soon' }).rollSoon, { memoryPercent: 70, squeezes: 2, days: 7 });
 });

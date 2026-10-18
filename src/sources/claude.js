@@ -161,7 +161,8 @@ export function createClaudeSource({ root, desktopRoot = null, settings = DEFAUL
     for (const record of res.records) applyRecord(s, record);
     if (!s.headDone && res.size > 0) {
       s.headDone = true;
-      if (res.size > TAIL_BYTES) scanHeadOnce(s);
+      s.partial = res.size > TAIL_BYTES;
+      if (s.partial) scanHeadOnce(s);
     }
   }
 
@@ -301,6 +302,12 @@ function freshParse() {
     calls: new Map(),    // Agent/Task tool_use id -> { at, description, background }
     results: new Map(),  // Agent/Task tool_use id -> { at, agentId, async, text }
     sends: [],           // SendMessage uses: { at, to, label }
+    used: null,          // tokens the newest answer read: how full the context (memory) is
+    ceiling: null,       // tokens at the newest automatic squeeze: where the next one comes
+    squeezes: 0,         // squeezes (compactions) in the whole history, from the newest record's totals
+    squeezeTotal: false, // the count came from a running total, so it covers the part not read
+    squeezedAt: null,
+    partial: false,      // the file was read from its middle
   };
 }
 
@@ -349,6 +356,12 @@ function restart(s) {
     calls: s.calls,
     results: s.results,
     sends: s.sends,
+    used: s.used,
+    ceiling: s.ceiling,
+    squeezes: s.squeezes,
+    squeezeTotal: s.squeezeTotal,
+    squeezedAt: s.squeezedAt,
+    partial: true,
   };
   Object.assign(s, freshParse(), keep);
   s.tail = new JsonlTail(s.file, { maxInitialBytes: TAIL_BYTES });
@@ -379,6 +392,7 @@ function applyRecord(s, r) {
     s.lastAt = s.lastAt === null ? at : Math.max(s.lastAt, at);
     s.startedAt = minTime(s.startedAt, at);
   }
+  if (r.type === 'system' && r.subtype === 'compact_boundary') applySqueeze(s, r, at);
   if (isText(r.cwd)) s.cwd = cleanPath(r.cwd);
   if (isText(r.gitBranch)) s.branch = r.gitBranch;
   if (isText(r.entrypoint)) s.entrypoint = r.entrypoint;
@@ -413,6 +427,11 @@ function applyAssistant(s, r, at) {
   if (isText(r.uuid)) s.assistantUuid = r.uuid;
   s.synthError = msg.model === SYNTHETIC && r.isApiErrorMessage === true;
   if (isText(msg.model) && msg.model !== SYNTHETIC) s.model = msg.model;
+  if (msg.model !== SYNTHETIC && isObject(msg.usage)) {
+    const u = msg.usage;
+    const used = count(u.input_tokens) + count(u.cache_creation_input_tokens) + count(u.cache_read_input_tokens);
+    if (used > 0) s.used = used;
+  }
   for (const block of blocks(msg.content)) {
     if (block.type === 'text' && isText(block.text)) {
       s.msgText.push(clip(collapse(block.text), 280));
@@ -423,6 +442,28 @@ function applyAssistant(s, r, at) {
     }
   }
   if (s.synthError || TURN_ENDS.has(s.stop)) s.open.clear();
+}
+
+// A squeeze: Claude Code squeezed the history into a summary (compacted it). The size it squeezed
+// at shows where the next automatic one comes, which is how full "full" is for this session's
+// model. Pleni reads only the end of a long file, so the count comes from the record's running
+// total of dropped tokens, divided by what this squeeze dropped; without one, each record counts.
+function applySqueeze(s, r, at) {
+  if (at !== null) s.squeezedAt = at;
+  const meta = isObject(r.compactMetadata) ? r.compactMetadata : {};
+  const pre = count(meta.preTokens);
+  const post = count(meta.postTokens);
+  if (meta.trigger === 'auto' && pre > 0) s.ceiling = pre;
+  if (post > 0) s.used = post;
+  const dropped = pre - post;
+  const total = count(meta.cumulativeDroppedTokens);
+  const fromTotal = dropped > 0 && total >= dropped ? Math.round(total / dropped) : 0;
+  s.squeezes = Math.max(s.squeezes + 1, fromTotal);
+  if (fromTotal) s.squeezeTotal = true;
+}
+
+function count(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
 function addToolUse(s, block, at) {
@@ -593,6 +634,7 @@ function toSession(view, desk, t, win, snippets) {
     needs: agent ? null : needsOf(s, desk, snippets),
     links: view.links.sort((a, b) => a.at - b.at).slice(-MAX_LINKS),
     archived: desk?.isArchived === true,
+    context: agent ? null : { used: s.used, size: s.ceiling, squeezes: s.squeezes, squeezesAtLeast: s.partial && !s.squeezeTotal, squeezedAt: s.squeezedAt },
   };
 }
 

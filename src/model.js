@@ -13,6 +13,7 @@ const MAX_LABEL = 40;
 const MAX_SOURCE = 4000;
 const SPAWN_GRACE_MS = 60000;
 const HOUR_MS = 3600000;
+const DAY_MS = 24 * HOUR_MS;
 const MINUTE_MS = 60000;
 const STATUSES = ['working', 'ready', 'idle', 'done', 'error'];
 const KINDS = ['session', 'agent', 'reviewer'];
@@ -28,7 +29,7 @@ const RANKS = {
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 const gitCache = new Map();
 
-// `actions` says which actions the page may offer: { openTerminal, rollover }, each true when that
+// `actions` says which actions the page may offer: { openTerminal, rollover, newAgent }, each true when that
 // button is turned on and can work on this computer.
 export function buildSnapshot({ now, settings, claude = null, codex = null, grok = null, kimi = null, mailbox = null, dismissed = null, actions = null } = {}) {
   const s = cleanSettings(settings);
@@ -72,7 +73,8 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
     attention: attentionList(sessionNodes, tasks ?? [], [...mailboxAttention(box, tree, ctx), ...watchAttention(nodes, all, box, ctx)])
       .filter((item) => !(hidden(item.id) >= item.at)),
     tasks,
-    actions: { openTerminal: actions?.openTerminal === true, rollover: actions?.rollover === true },
+    hiddenSessions: hiddenSessions(all, ctx),
+    actions: { openTerminal: actions?.openTerminal === true, rollover: actions?.rollover === true, newAgent: actions?.newAgent === true },
   };
 }
 
@@ -276,6 +278,22 @@ function cleanSession(raw) {
     needs: cleanNeeds(raw.needs),
     links: Array.isArray(raw.links) ? raw.links : [],
     archived: raw.archived === true,
+    context: cleanContext(raw.context),
+  };
+}
+
+// How full a session's context (its memory of the conversation) is, and how often it was squeezed
+// (compacted). Numbers only. `size` is what the model holds, or for Claude Code the size at its
+// newest automatic squeeze, which is where the next one comes; null while unknown.
+function cleanContext(raw) {
+  if (!isObject(raw)) return null;
+  const whole = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
+  return {
+    used: whole(raw.used),
+    size: whole(raw.size) || null,
+    squeezes: whole(raw.squeezes) ?? 0,
+    squeezesAtLeast: raw.squeezesAtLeast === true,
+    squeezedAt: time(raw.squeezedAt),
   };
 }
 
@@ -560,7 +578,52 @@ function sessionNode(session, project, ctx, rule = null) {
     archived: false,
     named: Boolean(person?.label || session.title),
     placement: 'auto',
+    memory: memoryOf(session),
+    rollSoon: rollSoonOf(session, ctx),
   };
+}
+
+// The side panel's numbers: { used, size, percent, squeezes, squeezesAtLeast, squeezedAt } for a
+// main Claude Code session or Codex thread, else null.
+function memoryOf(session) {
+  const c = session.context;
+  if (!c || session.kind !== 'session') return null;
+  const percent = c.used !== null && c.size ? Math.min(100, Math.round((c.used / c.size) * 100)) : null;
+  return { used: c.used, size: c.size, percent, squeezes: c.squeezes, squeezesAtLeast: c.squeezesAtLeast, squeezedAt: c.squeezedAt };
+}
+
+// Why a long session is due for a roll over, in plain words, or null: its memory is nearly full,
+// it was squeezed often, or it is old. Each limit is in settings.rollSoon; 0 turns it off.
+function rollSoonOf(session, ctx) {
+  const limits = ctx.settings.rollSoon;
+  const m = memoryOf(session);
+  if (!m) return null;
+  const why = [];
+  if (limits.memoryPercent && m.percent !== null && m.percent >= limits.memoryPercent) why.push(`Memory ${m.percent}% full`);
+  if (limits.squeezes && m.squeezes >= limits.squeezes) why.push(`Squeezed ${squeezeWords(m.squeezes, m.squeezesAtLeast)}`);
+  const days = session.startedAt === null ? 0 : Math.floor((ctx.now - session.startedAt) / DAY_MS);
+  if (limits.days && days >= limits.days) why.push(`${days} ${days === 1 ? 'day' : 'days'} old`);
+  return why.length ? why : null;
+}
+
+function squeezeWords(n, atLeast) {
+  const times = n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`;
+  return atLeast ? `${times} or more` : times;
+}
+
+// Sessions that would be on the map but the person hid (Role: Hide it), so the page can count them
+// and Settings can name them: [{ key, title, platform, kind }], by title.
+function hiddenSessions(all, ctx) {
+  const { settings } = ctx;
+  const out = [];
+  for (const session of all.values()) {
+    const person = entry(settings.people, session.key);
+    if (person?.role !== 'hidden' || session.archived) continue;
+    const at = session.lastAt ?? session.startedAt;
+    if (at === null || at < ctx.now - settings.window.recentHours * HOUR_MS) continue;
+    out.push({ key: session.key, title: person.label || session.title || fallbackTitle(session), platform: session.platform, kind: session.kind });
+  }
+  return out.sort((a, b) => collator.compare(a.title, b.title) || collator.compare(a.key, b.key));
 }
 
 function fallbackTitle(session) {
@@ -582,7 +645,7 @@ function groupNode({ key, parent, platform, kind, title, rank, project = null })
     key, parent, platform, kind, title, subtitle: null, rank, role: null, tier: null,
     model: null, modelLabel: null, effort: null, status: null, startedAt: null, lastAt: null,
     activity: null, lastText: null, needs: null, project, projectLabel: project, entrypoint: null, hidden: false, archived: false,
-    named: false, placement: null,
+    named: false, placement: null, memory: null, rollSoon: null,
   };
 }
 

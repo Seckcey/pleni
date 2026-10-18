@@ -63,8 +63,9 @@ const DEFAULTS = {
   projects: {},
   chain: [],
   remote: { hosts: [], tailscaleUsers: [] },
-  actions: { openTerminal: false, rollover: false },
+  actions: { openTerminal: false, rollover: false, newAgent: false },
   alerts: { stoppedMinutes: 15 },
+  rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 },
 };
 
 const ICONS = {
@@ -88,6 +89,8 @@ const S = {
   conn: 'starting',
   connError: '',
   lastOk: 0,
+  about: null, // { version, build } of the Pleni this page came with
+  aboutNow: null, // the same, from the newest answer
   mapMode: readStore('pleni.mapMode') === 'all' ? 'all' : 'working',
   fv: { x: 0, y: 0, k: 1, user: false, sig: '' },
   layout: null,
@@ -248,7 +251,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-roll', 'data-copy', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-roll', 'data-copy', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -262,6 +265,8 @@ function setHtml(el, html) {
   }
   const active = document.activeElement;
   const restore = active && active !== el && el.contains(active) ? focusSelector(active) : null;
+  // A text box keeps its caret, so a repaint while someone types does not move it.
+  const caret = restore && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
   el.innerHTML = html;
   painted.set(el, { html, shape });
   if (restore) {
@@ -270,6 +275,7 @@ function setHtml(el, html) {
       restoringFocus = true;
       try {
         next.focus({ preventScroll: true });
+        if (caret && typeof next.selectionStart === 'number') next.setSelectionRange(caret[0], caret[1]);
       } finally {
         restoringFocus = false;
       }
@@ -524,6 +530,8 @@ function countsLine() {
   const c = (S.snap && S.snap.counts) || {};
   const parts = [plural(c.total || 0, 'session', 'sessions'), `${c.working || 0} working`, needYou(c.needs)];
   if (c.error) parts.push(plural(c.error, 'error', 'errors'));
+  const hidden = S.snap && Array.isArray(S.snap.hiddenSessions) ? S.snap.hiddenSessions.length : 0;
+  if (hidden) parts.push(`${hidden} hidden (Settings, Team)`);
   return parts.join(' · ');
 }
 
@@ -566,6 +574,7 @@ async function pollOnce() {
       checkAlerts();
       if (isTime(body.now)) S.skew = Date.now() - body.now;
     }
+    noteVersion(res.headers.get('X-Pleni-Version'), res.headers.get('X-Pleni-Build'));
     S.conn = 'live';
     S.connError = '';
     S.lastOk = Date.now();
@@ -713,7 +722,10 @@ function setView(v, focus) {
     else a.removeAttribute('aria-current');
   }
   if (v === 'map' && !S.fv.user) S.fv.sig = '';
-  if (v === 'settings') loadSettings(false);
+  if (v === 'settings') {
+    pickSettingsGroupFromHash();
+    loadSettings(false);
+  }
   render();
   if (focus) {
     window.scrollTo(0, 0);
@@ -736,6 +748,7 @@ function render() {
   }
   renderFacts();
   renderNotices();
+  renderVersion();
   renderSignIn();
   $('#nav-tasks').hidden = !(S.snap && Array.isArray(S.snap.tasks));
   const asking = (S.snap && S.snap.counts && S.snap.counts.needs) || 0;
@@ -771,8 +784,40 @@ function notice(bad, title, text) {
   return `<div class="notice${bad ? ' bad' : ''}"><span class="k">${esc(title)}</span><span class="v">${esc(text)}</span></div>`;
 }
 
+// ---- version ----
+// The first answer says which Pleni this page came with. A later answer from another version means
+// Pleni was updated and started again, while this page still runs the old code.
+const VERSION_TEXT = /^[0-9A-Za-z.+-]{1,40}$/;
+
+function noteVersion(version, build) {
+  if (typeof version !== 'string' || !VERSION_TEXT.test(version)) return;
+  const now = { version, build: typeof build === 'string' && /^[0-9a-f]{7,40}$/.test(build) ? build : null };
+  if (!S.about) S.about = now;
+  S.aboutNow = now;
+}
+
+function versionText(about, long) {
+  if (!about) return '';
+  return about.build ? `${about.version} (${long ? 'commit ' : ''}${about.build})` : about.version;
+}
+
+function renderVersion() {
+  const el = $('#brand-version');
+  setText(el, S.about ? S.about.version : '');
+  if (S.about) el.title = `Pleni ${versionText(S.about, true)}`;
+  setText($('#settings-version'), S.about ? `This is Pleni ${versionText(S.about, true)}.` : '');
+}
+
+function updatedTo() {
+  const a = S.about;
+  const b = S.aboutNow;
+  return a && b && (a.version !== b.version || a.build !== b.build) ? b : null;
+}
+
 function renderNotices() {
   const out = [];
+  const newer = updatedTo();
+  if (newer) out.push(notice(false, 'Pleni was updated.', `It now runs version ${versionText(newer, true)}. Reload this page to use it.`));
   if (S.conn === 'error') out.push(notice(true, 'Cannot reach Pleni.', `${S.connError} The page keeps trying every few seconds.`));
   const src = (S.snap && S.snap.sources) || {};
   for (const [name, label] of [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code'], ['mailbox', 'The mailbox']]) {
@@ -966,7 +1011,7 @@ function welcomeHtml() {
       <p>Start a Claude Code, Codex, Grok or Kimi Code session and it shows up here within a few seconds.</p>
       <h3>Just want to look around?</h3>
       <p>In the Pleni folder, run <code>node bin/pleni.js --demo</code> in a terminal and open the address it prints. The demo uses made-up sessions, so it needs nothing from you.</p>
-      <p><a href="#/settings">Change where Pleni looks</a></p>
+      <p><a href="#/settings/sources">Change where Pleni looks</a></p>
     </div>
   </div>`;
 }
@@ -1147,7 +1192,7 @@ function tileHtml(p, L, ix, i) {
       `<span class="tile-meta"><span class="pill">${esc(STATUS_WORDS[status] || 'Unknown')}</span>` +
       `<span class="tile-model">${esc(model)}</span>${when || '<span class="tile-ago"></span>'}</span>` +
       (d ? `<span class="tile-text">${doingHtml(d)}</span>` : '');
-    label = [title, rank, STATUS_WORDS[status], model].filter(Boolean).join(', ');
+    label = [title, rank, STATUS_WORDS[status], model, rollSoonText(n)].filter(Boolean).join(', ');
   } else if (isRelay(n)) {
     const c = ix.counts.get(n.key) || { total: 0 };
     const words = STATUS_WORDS[status] || 'Unknown';
@@ -1167,6 +1212,7 @@ function tileHtml(p, L, ix, i) {
     `<span class="tile-title">${esc(title)}</span><span class="tile-rank">${esc(rank)}</span>` +
     body +
     (quiet ? `<span class="tile-quiet" aria-hidden="true">+${quiet} quiet</span>` : '') +
+    (isSession(n) && n.rollSoon ? '<span class="tile-roll" aria-hidden="true">Roll over soon</span>' : '') +
     '</button>'
   );
 }
@@ -1296,15 +1342,18 @@ function fitView() {
   const L = S.layout;
   if (!cv || !L || !cv.clientWidth) return false;
   const cw = cv.clientWidth;
-  const ch = cv.clientHeight;
+  // The legend floats over the top of the map, so the tiles fit in the space below it.
+  const legend = $('.map-legend', cv);
+  const top = legend && legend.offsetHeight ? legend.offsetTop + legend.offsetHeight : 0;
+  const ch = Math.max(1, cv.clientHeight - top);
   let k = Math.max(ZOOM_MIN, Math.min(1, cw / L.w, ch / L.h));
   let x = (cw - L.w * k) / 2;
-  let y = (ch - L.h * k) / 2;
+  let y = top + (ch - L.h * k) / 2;
   // On a narrow screen the whole map would be too small to read: fit the height, start at the left.
   if (k < 0.55 && cw < 720) {
     k = Math.max(0.5, Math.min(0.85, ch / L.h));
     x = 0;
-    y = Math.max(0, (ch - L.h * k) / 2);
+    y = top + Math.max(0, (ch - L.h * k) / 2);
   }
   Object.assign(S.fv, { x, y, k, user: false });
   applyView();
@@ -1639,7 +1688,8 @@ function rowHtml(n, depth) {
     `<td><div class="who" style="--depth:${depth}">${markHtml(n, 'small')}<span class="tx">` +
     `<button type="button" class="open" data-node="${esc(n.key)}">${esc(titleOf(n))}</button>` +
     `<span class="sub">${esc(rankLine(n))}</span></span></div></td>` +
-    `<td><span class="pill">${esc(STATUS_WORDS[status] || 'Unknown')}</span></td>` +
+    `<td><span class="pill">${esc(STATUS_WORDS[status] || 'Unknown')}</span>` +
+    `${n.rollSoon ? ` <span class="pill roll-soon" title="${esc(n.rollSoon.join(', '))}">Roll over soon<span class="sr-only">: ${esc(n.rollSoon.join(', '))}</span></span>` : ''}</td>` +
     `<td class="doing">${d ? `<span class="quiet">${esc(d.label)}:</span> ${doingHtml(d)}` : ''}</td>` +
     `<td class="model">${esc(modelText(n))}</td>` +
     `<td class="when">${agoHtml(n.lastAt)}</td></tr>`
@@ -1829,7 +1879,7 @@ function renderTasks() {
     setText($('#tasks-meta'), '');
     setHtml(
       $('#tasks'),
-      '<p class="empty">Tasks come from a mailbox: a folder where one agent hands out work and another reports back. No mailbox is turned on. You can add one in <a href="#/settings">Settings</a>.</p>',
+      '<p class="empty">Tasks come from a mailbox: a folder where one agent hands out work and another reports back. No mailbox is turned on. You can add one in <a href="#/settings/sources">Settings, under Sources</a>.</p>',
     );
     return;
   }
@@ -1912,7 +1962,7 @@ function drawerFrame(frame) {
         '<p class="help" id="d-boss-how"></p>' +
         '<p class="dplace-done"><span id="d-boss-msg" role="status"></span><button type="button" class="btn" id="d-boss-undo" data-undo aria-describedby="d-boss-msg" hidden>Undo</button></p></div>' +
         '<div class="dwatch" id="drawer-watch" hidden><label><input type="checkbox" id="d-watch" aria-describedby="d-watch-help d-watch-msg">Tell me if this stops working</label>' +
-        '<p class="help" id="d-watch-help">It goes under Needs you, and pops up if alerts are on, once this has done no work for a while. Settings, under Alerts, says how long.</p>' +
+        '<p class="help" id="d-watch-help">It shows under Needs you once this does no work for a while. Settings, under Alerts, says how long.</p>' +
         '<p class="dwatch-msg" id="d-watch-msg" role="status"></p></div>') +
     `<div class="tabs" role="tablist" aria-label="${DRAWER_ABOUT[frame]}">` +
     tabs
@@ -2106,8 +2156,11 @@ function sessionNowHtml(n, d) {
   } else if (now) {
     out.push(`<p class="dnow"><b>${esc(now.label)}:</b> ${doingHtml(now)}</p>`);
   }
+  if (n && n.rollSoon) out.push(`<p class="dnow roll-soon"><b>Roll over soon:</b> ${esc(sentence(n.rollSoon))}</p>`);
   out.push(openHtml(n));
   out.push(rollHtml(n, d));
+  out.push(newHtml(n, d));
+  out.push(hideHtml(n));
   if (isWorkerKey(d.key)) {
     out.push('<p class="empty">This worker keeps no session file.</p>');
     return out.join('');
@@ -2193,7 +2246,8 @@ function rollStepsHtml(n, r) {
   const copy = (which, what) => `<button type="button" class="btn" data-copy="${which}">Copy ${what}</button>`;
   const check = found
     ? `<p>New session found: <button type="button" class="linkish" data-node="${esc(found.key)}">${esc(titleOf(found))}</button>, started ${agoHtml(found.startedAt)}.` +
-      `${found.parent === 'relay' ? ' The relay now wakes it.' : ''}</p>`
+      `${found.parent === 'relay' ? ' The relay now wakes it.' : ''}</p>` +
+      `<div class="roll-btns"><button type="button" class="btn" data-hide="${esc(n.key)}" data-title="${esc(titleOf(n))}">Hide the old session</button></div>`
     : '<p>Pleni has not found the new session yet.</p>';
   return (
     `<p class="note">The new session gets the name <b>${esc(i.name)}</b> and works in the same folder. It starts by reading a handoff note that this session writes first.</p>` +
@@ -2233,6 +2287,204 @@ function rollFound(n, name) {
   return best;
 }
 
+// ---- New agent ----
+// Starts a new Claude Code or Codex agent in this session's folder, in a PowerShell window. The
+// person types its first message there; Pleni sends nothing. The server takes the folder from the
+// session, so the page never needs its path.
+
+const NEW_FROM = /^(claude|codex):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// The same marks the server lets through, so most mistakes are caught before a click.
+const NEW_NAME = /^[A-Za-z0-9*][A-Za-z0-9 ._#+*,-]*$/;
+
+function canStartHere(n) {
+  return !!n && LOCAL_PAGE && !!(S.snap && S.snap.actions && S.snap.actions.newAgent) && isSession(n) && n.kind !== 'reviewer' && NEW_FROM.test(n.key);
+}
+
+function newAgentName(a) {
+  return String(a.name || '').replace(/\s+/g, ' ').trim();
+}
+
+function newNameProblem(name) {
+  if (!name) return 'Type a name for the new agent.';
+  if (name.length > MAX_NAME) return `Use ${MAX_NAME} letters or fewer for the name.`;
+  if (!NEW_NAME.test(name) || !/[A-Za-z0-9]/.test(name)) return 'Use only letters, digits, spaces and . _ - # + * , signs in the name, and start it with a letter or a digit.';
+  return '';
+}
+
+function newHtml(n, d) {
+  if (!canStartHere(n)) return '';
+  const a = d.newAgent;
+  if (!a) {
+    return (
+      '<div class="dnew"><button type="button" class="btn" data-new="open" aria-describedby="d-new-help">New agent here…</button>' +
+      '<p class="help" id="d-new-help">Start a new Claude Code or Codex session in this folder, in a PowerShell window.</p></div>'
+    );
+  }
+  const name = newAgentName(a);
+  const where = n.project ? ` (${esc(n.project)})` : '';
+  const radio = (tool, label) => `<label><input type="radio" name="d-new-tool" id="d-new-${tool}" value="${tool}"${a.tool === tool ? ' checked' : ''}>${label}</label>`;
+  const rename = a.tool === 'codex'
+    ? `<p class="help">Codex cannot take a name when it starts. After its first message, type <code>/rename ${esc(name || 'name')}</code> in the new window.</p>` +
+      (name ? '<div class="roll-btns"><button type="button" class="btn" data-copy="new-rename">Copy the name command</button></div>' : '')
+    : '';
+  return (
+    '<section class="droll dnew open" aria-labelledby="d-new-title">' +
+    '<div class="droll-head"><h3 id="d-new-title" tabindex="-1">New agent here</h3><button type="button" class="btn" data-new="close">Close</button></div>' +
+    `<p class="note">Pleni opens a new PowerShell window in this session's folder${where} and starts a new agent there. You type its first message in that window. Pleni sends it nothing.</p>` +
+    `<div class="dnew-row" role="radiogroup" aria-labelledby="d-new-tool-lbl"><span class="lbl" id="d-new-tool-lbl">Tool</span><div class="checks">${radio('claude', 'Claude Code')}${radio('codex', 'Codex')}</div></div>` +
+    `<div class="dnew-row"><label for="d-new-name">Name</label><input class="field" id="d-new-name" type="text" value="${esc(a.name)}" maxlength="${MAX_NAME}" autocomplete="off" spellcheck="false"${a.bad ? ' aria-invalid="true"' : ''} aria-describedby="d-new-name-help">` +
+    '<p class="help" id="d-new-name-help">For example Sergeant 3. Letters, digits, spaces and . _ - # + * , signs. The relay and your chain of command rules find agents by name.</p></div>' +
+    '<div class="roll-btns"><button type="button" class="btn primary" data-new="start">Start in PowerShell</button></div>' +
+    `<p class="roll-msg${a.msg && a.msg.bad ? ' bad' : ''}">${a.msg ? esc(a.msg.text) : ''}</p>` +
+    rename +
+    '</section>'
+  );
+}
+
+function newClick(what) {
+  const d = S.drawer;
+  if (!d) return;
+  if (what === 'open') {
+    d.newAgent = { tool: d.key.startsWith('codex:') ? 'codex' : 'claude', name: '', msg: null, bad: false, busy: false };
+    renderDrawerParts();
+    $('#d-new-name')?.focus();
+  } else if (what === 'close') {
+    d.newAgent = null;
+    renderDrawerParts();
+    $('#drawer [data-new="open"]')?.focus();
+  } else if (what === 'start') {
+    newStart();
+  }
+}
+
+async function newStart() {
+  const d = S.drawer;
+  const a = d && d.newAgent;
+  if (!a || a.busy) return;
+  const name = newAgentName(a);
+  const problem = newNameProblem(name);
+  if (problem) {
+    a.bad = true;
+    a.msg = { text: problem, bad: true };
+    renderDrawerParts();
+    say(problem);
+    $('#d-new-name')?.focus();
+    return;
+  }
+  a.bad = false;
+  a.busy = true;
+  a.msg = { text: 'Opening a PowerShell window…' };
+  renderDrawerParts();
+  try {
+    await postJson('/api/new', { from: d.key, tool: a.tool, name });
+    a.msg = {
+      text: a.tool === 'codex'
+        ? `A PowerShell window is opening with Codex. Type its first message there, then /rename ${name}.`
+        : `A PowerShell window is opening with a new Claude Code session named "${name}". Type its first message there.`,
+    };
+  } catch (err) {
+    a.msg = { text: `Not started. ${plainError(err)}`, bad: true };
+  } finally {
+    a.busy = false;
+    say(a.msg.text); // the message by the button is not a live region: it is rebuilt with the panel
+    if (S.drawer === d && d.newAgent === a) renderDrawerParts();
+  }
+}
+
+async function newCopy() {
+  const d = S.drawer;
+  const a = d && d.newAgent;
+  const name = a ? newAgentName(a) : '';
+  if (!name) return;
+  try {
+    await navigator.clipboard.writeText(`/rename ${name}`);
+    a.msg = { text: 'Copied the name command.' };
+  } catch {
+    a.msg = { text: 'The browser did not allow copying. Select the text and copy it yourself.', bad: true };
+  }
+  say(a.msg.text);
+  if (S.drawer === d) renderDrawerParts();
+}
+
+// ---- Roll over soon ----
+// The reasons come from Pleni (settings.rollSoon): memory nearly full, squeezed often, or old.
+
+function rollSoonText(n) {
+  return n && Array.isArray(n.rollSoon) && n.rollSoon.length ? `roll over soon: ${n.rollSoon.join(', ').toLowerCase()}` : '';
+}
+
+// ['Memory 87% full', 'Squeezed 3 times'] -> 'Memory 87% full, squeezed 3 times.'
+function sentence(parts) {
+  return `${parts.map((p, i) => (i ? p.charAt(0).toLowerCase() + p.slice(1) : p)).join(', ')}.`;
+}
+
+function tokensText(count) {
+  if (count >= 1e6) return `${(count / 1e6).toFixed(count >= 1e7 ? 0 : 1).replace(/\.0$/, '')}M`;
+  if (count >= 1e3) return `${Math.round(count / 1e3)}k`;
+  return String(count);
+}
+
+// How full the context (the model's memory of the conversation) is.
+function memoryWords(m) {
+  if (m.used === null || m.used === undefined) return '';
+  if (!m.size) return `${tokensText(m.used)} tokens in use`;
+  return `${tokensText(m.used)} of ${tokensText(m.size)} tokens (${m.percent}% full)`;
+}
+
+// How often the history was squeezed into a summary (compacted), and when last.
+function squeezedHtml(m) {
+  if (!m.squeezes) return m.squeezesAtLeast ? 'Not in the part Pleni read' : 'Never';
+  const times = m.squeezes === 1 ? 'Once' : m.squeezes === 2 ? 'Twice' : `${m.squeezes} times`;
+  const more = m.squeezesAtLeast ? ' or more' : '';
+  return `${esc(times + more)}${isTime(m.squeezedAt) ? `, last ${agoHtml(m.squeezedAt)}` : ''}`;
+}
+
+// ---- Hide from the map ----
+
+const HIDE_KEY = /^(claude|codex|grok|kimi):/;
+const hiding = new Set(); // tiles whose Hide is on its way to Pleni
+
+function hideHtml(n) {
+  if (!n || !isSession(n) || !HIDE_KEY.test(n.key)) return '';
+  return (
+    `<div class="dhide"><button type="button" class="btn" data-hide="${esc(n.key)}" data-title="${esc(titleOf(n))}" aria-describedby="d-hide-help">Hide from the map</button>` +
+    '<p class="help" id="d-hide-help">For an old or test session. Nothing is deleted. To show it again, go to Settings, then Team.</p></div>'
+  );
+}
+
+// Hides a session (Role: Hide it). The side panel closes, since its tile is gone, and the notice at
+// the bottom of the page offers Undo, which puts back the role it had before.
+async function hideNode(key, title) {
+  if (!key || hiding.has(key)) return;
+  hiding.add(key);
+  let before = null;
+  try {
+    const answer = await postJson('/api/hide', { key, hide: true });
+    before = answer && typeof answer.role === 'string' ? answer.role : null;
+  } catch (err) {
+    hiding.delete(key);
+    showMoved({ key, spot: 'note', bad: true, text: `Not hidden. ${plainError(err)}` });
+    return;
+  }
+  keepPersonField(key, 'role', 'hidden'); // so saving Settings later keeps it
+  hiding.delete(key);
+  if (S.drawer && S.drawer.key === key) closeDrawer();
+  await pollNow().catch(() => {});
+  showMoved({ key, spot: 'note', text: `Hidden from the map: "${title}". To show it again later, go to Settings, then Team.`, undo: () => unhideNode(key, title, before) });
+}
+
+async function unhideNode(key, title, role) {
+  try {
+    await postJson('/api/hide', { key, hide: false, role });
+  } catch (err) {
+    showMoved({ key, spot: 'note', bad: true, text: `Not undone. ${plainError(err)}` });
+    return;
+  }
+  keepPersonField(key, 'role', role || undefined);
+  await pollNow().catch(() => {});
+  showMoved({ key, spot: 'note', text: `"${title}" is on the map again.` });
+}
+
 function groupNowHtml(n) {
   const ix = S.index;
   const c = ix.counts.get(n.key) || { total: 0 };
@@ -2263,6 +2515,10 @@ function detailsHtml(n) {
     add('Model', esc([n.modelLabel || prettyModel(n.model), n.model && n.modelLabel !== n.model ? `(${n.model})` : ''].filter(Boolean).join(' ')));
     add('Effort', esc(EFFORT_WORDS[n.effort] || n.effort || ''));
     add('Tier', esc(n.tier === 'senior' ? 'Senior' : n.tier === 'junior' ? 'Junior' : ''));
+    if (n.memory) {
+      add('Memory', esc(memoryWords(n.memory)));
+      add('Squeezed', squeezedHtml(n.memory));
+    }
     add('Started', isTime(n.startedAt) ? timeHtml(n.startedAt, stamp(n.startedAt)) : '');
     add('Last active', isTime(n.lastAt) ? `${timeHtml(n.lastAt, stamp(n.lastAt))} (${agoHtml(n.lastAt)})` : '');
     add('Archived', n.archived ? 'Yes' : '');
@@ -2632,6 +2888,11 @@ function say(text) {
 
 const drawerBox = $('#drawer');
 drawerBox.addEventListener('keydown', (ev) => {
+  if (ev.target.id === 'd-new-name' && ev.key === 'Enter') {
+    ev.preventDefault();
+    newStart();
+    return;
+  }
   if (ev.target.id !== 'd-boss') return;
   // Enter sends a pick made with the arrow keys at once.
   if (ev.key === 'Enter') {
@@ -2641,7 +2902,20 @@ drawerBox.addEventListener('keydown', (ev) => {
     keyedAt = Date.now();
   }
 });
+drawerBox.addEventListener('input', (ev) => {
+  const a = S.drawer && S.drawer.newAgent;
+  if (!a || ev.target.id !== 'd-new-name') return;
+  a.name = ev.target.value;
+  if (a.bad) {
+    a.bad = false;
+    ev.target.removeAttribute('aria-invalid');
+  }
+});
 drawerBox.addEventListener('change', (ev) => {
+  if (ev.target.name === 'd-new-tool' && S.drawer && S.drawer.newAgent) {
+    S.drawer.newAgent.tool = ev.target.value;
+    return void renderDrawerParts();
+  }
   if (ev.target.id === 'd-watch') return void setWatch(ev.target);
   if (ev.target.id !== 'd-boss') return;
   releasePress(0);
@@ -2819,9 +3093,23 @@ async function rollCopy(which) {
 // settings
 // ---------------------------------------------------------------------------------------------
 
+// The tabs on the Settings page, in order. Each one holds a few short sections.
+const SETTINGS_GROUPS = [
+  ['basics', 'Basics'],
+  ['team', 'Team'],
+  ['sources', 'Sources'],
+  ['alerts', 'Alerts'],
+  ['buttons', 'Buttons'],
+  ['devices', 'Devices'],
+];
+
+function settingsState() {
+  if (!S.set) S.set = { info: null, draft: null, msg: null, search: '', error: null, group: SETTINGS_GROUPS[0][0], find: '' };
+  return S.set;
+}
+
 async function loadSettings(force) {
-  if (!S.set) S.set = { info: null, draft: null, msg: null, search: '', error: null };
-  const st = S.set;
+  const st = settingsState();
   if (st.info && !force) {
     renderSettingsForm();
     return;
@@ -2958,7 +3246,7 @@ function mailboxRows() {
   const root = getPath(d, 'sources.mailbox.root', null);
   const help = 'A folder where a planner agent hands out tasks and a coordinator agent reports back in Markdown files. Pleni only reads it.';
   return (
-    `<div class="srow"><span class="lbl" id="${id}-lbl">Mailbox</span><div class="src">` +
+    `<div class="srow"><span class="lbl" id="${id}-lbl">Folder</span><div class="src">` +
     `<div class="checks"><label><input type="checkbox" id="${id}-on" data-path="sources.mailbox.enabled" data-kind="bool"${on ? ' checked' : ''}>Read a coordination mailbox</label></div>` +
     `<label class="sr-only" for="${id}-root">Mailbox folder</label>` +
     `<input class="field" id="${id}-root" type="text" data-path="sources.mailbox.root" data-kind="root" value="${esc(root || '')}" placeholder="The full path of the mailbox folder" autocomplete="off" spellcheck="false"${desc(id, help)}>` +
@@ -3215,76 +3503,102 @@ function renderSettingsForm() {
   }
   if (!st.info || !st.draft) return;
   const theme = storedTheme() || 'system';
+  const group = (id, intro, body) =>
+    `<div role="tabpanel" class="sgroup" id="spanel-${id}" aria-labelledby="stab-${id}" data-name="${groupName(id)}"><p class="sgroup-intro">${intro}</p>${body}</div>`;
   const html = `<form class="settings" id="settings-form" novalidate>
-    ${st.info.file ? `<p class="lead">Saved on this computer in <code>${esc(st.info.file)}</code>.</p>` : ''}
-    <section class="panel" aria-labelledby="s-h-you"><h2 id="s-h-you">You and the map</h2>
+    <div class="sfind"><label for="s-find">Find a setting</label>
+      <input class="field" id="s-find" type="search" value="${esc(st.find || '')}" placeholder="For example: name, folder, alerts" autocomplete="off" aria-describedby="s-find-msg">
+      <p class="sfind-msg" id="s-find-msg" role="status"></p></div>
+    <div class="tabs stabs" role="tablist" aria-label="Groups of settings">${SETTINGS_GROUPS.map(([id, label]) =>
+      `<button type="button" role="tab" id="stab-${id}" data-stab="${id}" aria-controls="spanel-${id}" aria-selected="false" tabindex="-1">${label}</button>`).join('')}</div>
+    ${group('basics', 'Your name, how the page looks, and which sessions it shows.', `
+    <section class="panel" aria-labelledby="s-h-you" data-find="colors colours dark light mode titles military company folders"><h2 id="s-h-you">You and the map</h2>
       ${textRow('s-name', 'Your name', 'displayName', { help: 'Shown on the top tile of the map.', max: 40 })}
-      ${selectRow('s-titles', 'Rank words', 'titles', [['plain', 'Plain: Lead and Agent (plus Superintendent and Coordinator for those roles)'], ['military', 'Military: General, Colonel, Sergeant, Specialist, Private'], ['company', 'Company: Owner, Vice President, Manager, Supervisor, Worker']], 'The words used for ranks on the tiles.')}
-      ${selectRow('s-group', 'Group sessions', 'groupBy', [['none', 'Not at all'], ['project', 'By project folder']], 'By project folder puts a folder tile between you and its sessions. Without it, each tile names its folder.')}
-      ${checkRow('s-reviewers', 'Reviewers', 'showReviewers', 'Show the automatic reviewers that Codex starts', '')}
       <div class="srow"><label for="s-theme">Theme</label><div><select class="field" id="s-theme" data-local="theme" aria-describedby="s-theme-help">
         <option value="system"${theme === 'system' ? ' selected' : ''}>Match this computer</option>
         <option value="dark"${theme === 'dark' ? ' selected' : ''}>Dark</option>
         <option value="light"${theme === 'light' ? ' selected' : ''}>Light</option>
       </select></div><p class="help" id="s-theme-help">Kept in this browser only. It changes right away.</p></div>
+      ${selectRow('s-titles', 'Rank words', 'titles', [['plain', 'Plain: Lead and Agent (plus Superintendent and Coordinator for those roles)'], ['military', 'Military: General, Colonel, Sergeant, Specialist, Private'], ['company', 'Company: Owner, Vice President, Manager, Supervisor, Worker']], 'The words used for ranks on the tiles.')}
+      ${selectRow('s-group', 'Group sessions', 'groupBy', [['none', 'Not at all'], ['project', 'By project folder']], 'By project folder puts a folder tile between you and its sessions.')}
     </section>
-    <section class="panel" aria-labelledby="s-h-show"><h2 id="s-h-show">What the page shows</h2>
+    <section class="panel" aria-labelledby="s-h-show" data-find="snippets text privacy hours days time window old finished stuck idle reviewers"><h2 id="s-h-show">What the page shows</h2>
       <div class="srow" role="radiogroup" aria-labelledby="s-content-lbl" aria-describedby="s-content-help"><span class="lbl" id="s-content-lbl">Session text</span><div class="checks">
         <label><input type="radio" name="s-content" id="s-content-snippets" data-path="content" data-kind="text" value="snippets"${getPath(st.draft, 'content', 'snippets') === 'snippets' ? ' checked' : ''}>Short snippets of what sessions say and do</label>
         <label><input type="radio" name="s-content" id="s-content-none" data-path="content" data-kind="text" value="none"${getPath(st.draft, 'content', '') === 'none' ? ' checked' : ''}>Only tool names and states</label>
       </div><p class="help" id="s-content-help">Snippets stay on this computer either way.</p></div>
       ${numberRow('s-recent', 'Show sessions from the last', 'window.recentHours', 1, 720, 'Hours. Older sessions are left off the page.')}
-      ${numberRow('s-active', 'Finished, for', 'window.activeMinutes', 1, 240, 'Minutes. A session that finished its turn this recently shows "Finished". Only a real question, plan, block or permission request shows "Needs you".')}
-      ${numberRow('s-stale', 'Call a turn stuck after', 'window.staleMinutes', 5, 1440, 'Minutes. A turn whose file has not moved for this long counts as idle.')}
+      <details class="smore"><summary>More choices</summary>
+        ${numberRow('s-active', 'Finished, for', 'window.activeMinutes', 1, 240, 'Minutes. A session that finished its turn this recently shows "Finished".')}
+        ${numberRow('s-stale', 'Call a turn stuck after', 'window.staleMinutes', 5, 1440, 'Minutes. A turn whose file has not moved for this long counts as idle.')}
+        ${checkRow('s-reviewers', 'Reviewers', 'showReviewers', 'Show the automatic reviewers that Codex starts', '')}
+      </details>
+    </section>`)}
+    ${group('team', 'Names, roles and who reports to whom.', `
+    <section class="panel" aria-labelledby="s-h-people" data-find="rename role roles hide hidden show unhide sessions agents"><h2 id="s-h-people">Names and roles</h2>
+      <div class="srow"><label for="s-people-search">Find a session</label><div><input class="field" id="s-people-search" type="search" value="${esc(st.search)}" placeholder="Search by name" autocomplete="off" aria-describedby="s-people-search-help"></div>
+      <p class="help" id="s-people-search-help">Give a session a shorter name, set its role, or hide it. Hidden sessions are listed here.</p></div>
+      <div id="people-rows">${peopleHtml()}</div>
     </section>
-    <section class="panel" aria-labelledby="s-h-tiers"><h2 id="s-h-tiers">Ranks by model</h2>
+    <section class="panel" aria-labelledby="s-h-chain" data-find="boss bosses leader reports rules tree"><h2 id="s-h-chain">Chain of command</h2>
+      <p class="note">Say who reports to whom, by name. A rule keeps working when a session is replaced by a new one with the same name.</p>
+      <details class="smore"><summary>How the rules work</summary>
+        <p class="note">Pleni checks the rules from the top down and uses the first one that fits. A session goes under the newest active session whose name has the "it reports to" text. Leave that empty, or type me, to put it right under you. Pick Automatic under Rank to let Pleni choose the rank.</p>
+      </details>
+      <div id="chain-rows">${chainHtml()}</div>
+      <div class="chain-add"><button type="button" class="btn" id="s-chain-add">Add a rule</button></div>
+    </section>
+    <section class="panel" aria-labelledby="s-h-projects" data-find="folders rename hide"><h2 id="s-h-projects">Projects</h2>
+      <p class="note">Give a project folder a shorter name, or hide all of its sessions.</p>
+      <div id="project-rows">${projectsHtml()}</div>
+    </section>
+    <section class="panel" aria-labelledby="s-h-tiers" data-find="models senior junior specialist private"><h2 id="s-h-tiers">Ranks by model</h2>
       <p class="note">Pick the rank for each model. In the Military titles, workers on a senior model are Specialists and the rest are Privates. Leaders keep their own ranks.</p>
       <div id="model-rows">${modelsHtml()}</div>
-      <h3>Words that set the rank</h3>
-      <p class="note">Most people can skip this. A model on Automatic gets its rank from these words. A rank you pick above always wins over them.</p>
-      ${textRow('s-senior', 'Senior words', 'modelTiers.senior', { kind: 'words', help: 'A model whose name has any of these words is senior. Separate the words with commas.' })}
-      ${textRow('s-junior', 'Junior words', 'modelTiers.junior', { kind: 'words', help: 'A model whose name has any of these words is junior. Senior words are checked first.' })}
-    </section>
-    <section class="panel" aria-labelledby="s-h-where"><h2 id="s-h-where">Where Pleni looks</h2>
+      <details class="smore"><summary>Words that set the rank</summary>
+        <p class="note">A model on Automatic gets its rank from these words. A rank you pick above always wins.</p>
+        ${textRow('s-senior', 'Senior words', 'modelTiers.senior', { kind: 'words', help: 'A model whose name has any of these words is senior. Separate the words with commas.' })}
+        ${textRow('s-junior', 'Junior words', 'modelTiers.junior', { kind: 'words', help: 'A model whose name has any of these words is junior. Senior words are checked first.' })}
+      </details>
+    </section>`)}
+    ${group('sources', 'Which tools Pleni reads, and where their files are.', `
+    <section class="panel" aria-labelledby="s-h-where" data-find="folders paths sources read claude codex grok kimi desktop"><h2 id="s-h-where">Where Pleni looks</h2>
       ${sourceRow('claude', 'Claude Code', 'Read Claude Code sessions', 'Leave the folder empty to use CLAUDE_CONFIG_DIR, or the .claude folder in your home folder.')}
       ${sourceRow('claudeDesktop', 'Claude desktop app', 'Read session names from the Claude desktop app', 'Gives desktop sessions the names you see in the app.')}
       ${sourceRow('codex', 'Codex', 'Read Codex threads', 'Leave the folder empty to use CODEX_HOME, or the .codex folder in your home folder.')}
       ${sourceRow('grok', 'Grok', 'Read Grok sessions', "Pleni reads Grok's session logs in this folder.")}
       ${sourceRow('kimi', 'Kimi Code', 'Read Kimi Code sessions', "Pleni reads Kimi Code's session logs in this folder.")}
+    </section>
+    <section class="panel" aria-labelledby="s-h-mailbox" data-find="relay planner coordinator tasks notes folder"><h2 id="s-h-mailbox">Mailbox</h2>
       ${mailboxRows()}
-    </section>
-    <section class="panel" aria-labelledby="s-h-people"><h2 id="s-h-people">Names and roles</h2>
-      <div class="srow"><label for="s-people-search">Find a session</label><div><input class="field" id="s-people-search" type="search" value="${esc(st.search)}" placeholder="Search by name" autocomplete="off" aria-describedby="s-people-search-help"></div>
-      <p class="help" id="s-people-search-help">Give a session a shorter name, set its role, or hide it.</p></div>
-      <div id="people-rows">${peopleHtml()}</div>
-    </section>
-    <section class="panel" aria-labelledby="s-h-chain"><h2 id="s-h-chain">Chain of command</h2>
-      <p class="note">Say who reports to whom. Pleni matches session names, so a rule keeps working when a session is replaced by a new one.</p>
-      <p class="note">Pleni checks the rules from the top down and uses the first one that fits. A session goes under the newest active session whose name has the "it reports to" text. Leave that empty, or type me, to put it right under you. Pick Automatic under Rank to let Pleni choose the rank.</p>
-      <div id="chain-rows">${chainHtml()}</div>
-      <div class="chain-add"><button type="button" class="btn" id="s-chain-add">Add a rule</button></div>
-    </section>
-    <section class="panel" aria-labelledby="s-h-projects"><h2 id="s-h-projects">Projects</h2>
-      <div id="project-rows">${projectsHtml()}</div>
-    </section>
-    <section class="panel" aria-labelledby="s-h-alerts"><h2 id="s-h-alerts">Alerts</h2>
-      <p class="note">What needs you shows under Needs you on the map and the list: questions, errors, notes for you in the mailbox, the relay's alerts, and tiles you watch that stop working. To watch a tile, open it and tick Tell me if this stops working.</p>
+    </section>`)}
+    ${group('alerts', 'What Pleni points out to you.', `
+    <section class="panel" aria-labelledby="s-h-alerts" data-find="alerts notifications pop-ups popups watch stopped questions errors"><h2 id="s-h-alerts">Needs you</h2>
+      <p class="note">Questions, errors, notes for you, the relay's alerts, and watched tiles that stop working show under Needs you. To watch a tile, open it and tick Tell me if this stops working.</p>
       ${numberRow('s-stopped', 'Call a watched tile stopped after', 'alerts.stoppedMinutes', 1, 1440, 'Minutes without any work.')}
       ${alertsRowHtml()}
     </section>
-    <section class="panel" aria-labelledby="s-h-open"><h2 id="s-h-open">Open sessions</h2>
-      <p class="note">Pleni only looks, unless you turn these on. Open in PowerShell gives each Claude Code and Codex session's side panel a button that opens a new PowerShell window in the session's folder and runs <code>claude --resume</code> or <code>codex resume</code> for it, so you can see the conversation and type to it. It never types into a session itself.</p>
-      ${checkRow('s-open', 'Open in PowerShell', 'actions.openTerminal', 'Show the Open in PowerShell button', 'It works only on Windows, and only on this computer, not from another device. Pleni will not open a session that is already open in another window.')}
-      <p class="note">Roll over starts a fresh session that takes over from a long one. It asks the old session to write a handoff note, then starts a new session with the same name that reads the note first. Each step opens a PowerShell window and sends one short message. The side panel shows you each message before you click.</p>
-      ${checkRow('s-roll', 'Roll over', 'actions.rollover', 'Show the Roll over button', 'It works only on Windows, and only on this computer, for sessions that have a name of their own. It will not send to a session that is busy or open in another window.')}
-      ${st.info.platform && st.info.platform !== 'win32' ? '<p class="note">This computer does not run Windows, so the button will not show here yet.</p>' : ''}
-    </section>
-    <section class="panel" aria-labelledby="s-h-remote"><h2 id="s-h-remote">Other devices</h2>
+    <section class="panel" aria-labelledby="s-h-roll" data-find="memory context full squeeze squeezed compact summary old days long"><h2 id="s-h-roll">Roll over soon</h2>
+      <p class="note">A long session gets slow, and it forgets details each time its history is squeezed into a summary. Pleni marks a main session "Roll over soon" when it passes any of these limits. Set one to 0 to turn it off.</p>
+      ${numberRow('s-roll-memory', 'Memory full to', 'rollSoon.memoryPercent', 0, 100, 'Percent. For Claude Code, full means the size where it last squeezed the history.')}
+      ${numberRow('s-roll-squeezes', 'Squeezed at least', 'rollSoon.squeezes', 0, 100, 'Times its history was squeezed into a summary.')}
+      ${numberRow('s-roll-days', 'Older than', 'rollSoon.days', 0, 365, 'Days since the session started.')}
+    </section>`)}
+    ${group('buttons', 'Buttons that open and start sessions in PowerShell windows. Off until you turn them on.', `
+    <section class="panel" aria-labelledby="s-h-open" data-find="buttons powershell terminal window resume roll over windows new agent start team"><h2 id="s-h-open">Open sessions</h2>
+      ${checkRow('s-open', 'Open in PowerShell', 'actions.openTerminal', 'Show the Open in PowerShell button', 'Opens a session in a new PowerShell window, so you can see it and type to it. Pleni never types into it. Windows only, this computer only. It will not open a session that is already open in another window.')}
+      ${checkRow('s-new', 'New agent', 'actions.newAgent', 'Show the New agent button', 'Starts a new Claude Code or Codex session in the folder of a session you pick, in a new PowerShell window. You type its first message there. Windows only, this computer only.')}
+      ${checkRow('s-roll', 'Roll over', 'actions.rollover', 'Show the Roll over button', 'Starts a fresh session with the same name, from a handoff note the old one writes. Each step opens a window and sends one short message, which the side panel shows first. Windows only, this computer only, for sessions with a name of their own. It will not send to a session that is busy or open in another window.')}
+      ${st.info.platform && st.info.platform !== 'win32' ? '<p class="note">This computer does not run Windows, so these buttons will not show here yet.</p>' : ''}
+    </section>`)}
+    ${group('devices', 'Opening Pleni from another device, and where its settings are kept.', `
+    <section class="panel" aria-labelledby="s-h-remote" data-find="phone tablet laptop remote tailscale proxy port host login"><h2 id="s-h-remote">Other devices</h2>
       <p class="note">Pleni only listens on this computer. To open it from another device, put a private proxy such as <code>tailscale serve</code> in front of it, then list the host name and the Tailscale logins that may use it. The other device also needs Pleni's key: open the address Pleni printed when it started, with your Tailscale address in place of the part before <code>/?t=</code>.</p>
       ${textRow('s-hosts', 'Allowed host names', 'remote.hosts', { kind: 'words', placeholder: 'pleni.example.ts.net', help: 'Separate names with commas. Up to 20.' })}
       ${textRow('s-users', 'Allowed Tailscale logins', 'remote.tailscaleUsers', { kind: 'words', placeholder: 'ada@example.com', help: 'Separate logins with commas. Up to 20.' })}
       ${numberRow('s-port', 'Port', 'port', 1024, 65535, 'Pleni uses a new port the next time it starts.')}
     </section>
+    ${st.info.file ? `<section class="panel" aria-labelledby="s-h-file" data-find="file json saved where"><h2 id="s-h-file">Settings file</h2><p class="note">Saved on this computer in <code>${esc(st.info.file)}</code>.</p></section>` : ''}`)}
     <div class="btnrow">
       <button type="submit" class="btn primary" id="s-save">Save settings</button>
       <button type="button" class="btn" id="s-undo">Undo changes</button>
@@ -3298,6 +3612,101 @@ function renderSettingsForm() {
   const box = $('#settings');
   painted.delete(box);
   setHtml(box, html);
+  applySettingsView();
+}
+
+function groupName(id) {
+  const g = SETTINGS_GROUPS.find((x) => x[0] === id);
+  return g ? g[1] : '';
+}
+
+// An address such as #/settings/alerts opens that group.
+function pickSettingsGroupFromHash() {
+  const id = location.hash.replace(/^#\/?/, '').split(/[/?]/)[1];
+  if (!groupName(id)) return;
+  const st = settingsState();
+  st.group = id;
+  st.find = '';
+}
+
+function selectSettingsGroup(id, focus) {
+  const st = S.set;
+  if (!st || !groupName(id)) return;
+  st.group = id;
+  st.find = '';
+  const find = $('#s-find');
+  if (find) find.value = '';
+  history.replaceState(null, '', `#/settings/${id}`);
+  applySettingsView();
+  if (focus) $(`#stab-${id}`).focus();
+}
+
+// The text the Find box looks through: a section's group, heading, notes and rows, plus a few
+// extra words. Not the names in its tables, so it finds settings rather than sessions.
+function findText(sec) {
+  const parts = [sec.closest('.sgroup').dataset.name, sec.dataset.find || ''];
+  for (const el of $$('h2, .note, summary, .srow', sec)) parts.push(el.textContent);
+  return parts.join(' ');
+}
+
+// Shows the open group or, while the Find box has words in it, every section that has them all.
+function applySettingsView() {
+  const st = S.set;
+  const form = $('#settings-form');
+  if (!st || !form) return;
+  const words = st.find.split(/\s+/).filter(Boolean);
+  const finding = words.length > 0;
+  // Each word must start a word in the text, so "port" finds Port but not "reports".
+  const tests = words.map((w) => new RegExp(`(?<![\\p{L}\\p{N}])${w.replace(/[.*+?^$()|[\]{}\\]/g, '\\$&')}`, 'iu'));
+  const has = (text) => tests.every((re) => re.test(text));
+  form.classList.toggle('finding', finding);
+  $('.stabs', form).hidden = finding;
+  let found = 0;
+  for (const panel of $$('.sgroup', form)) {
+    let any = false;
+    for (const sec of $$('section', panel)) {
+      const hit = finding && has(findText(sec));
+      sec.hidden = finding && !hit;
+      for (const row of $$('.srow', sec)) row.classList.toggle('found', hit && has(row.textContent));
+      for (const more of $$('details', sec)) if (hit && has(more.textContent)) more.open = true;
+      if (hit) {
+        any = true;
+        found += 1;
+      }
+    }
+    panel.hidden = finding ? !any : panel.id !== `spanel-${st.group}`;
+  }
+  for (const tab of $$('[data-stab]', form)) {
+    const on = tab.dataset.stab === st.group;
+    tab.setAttribute('aria-selected', String(on));
+    tab.tabIndex = on ? 0 : -1;
+  }
+  let said = '';
+  if (finding) {
+    said = found
+      ? `${plural(found, 'section has', 'sections have')} what you typed. Clear the box to see the groups again.`
+      : 'No setting has what you typed. Try a shorter word, or clear the box to see the groups.';
+  }
+  setText($('#s-find-msg'), said);
+}
+
+// A bad field may sit in another group, under a search, or in a closed More choices box.
+function revealSetting(el) {
+  const panel = el.closest('.sgroup');
+  if (panel && (panel.hidden || el.closest('section[hidden]'))) selectSettingsGroup(panel.id.slice('spanel-'.length), false);
+  for (let more = el.closest('details'); more; more = more.parentElement.closest('details')) more.open = true;
+}
+
+// The groups that hold a field marked in red, for the message under the form.
+function badGroups(problems) {
+  const ids = new Set(problems.map(({ el }) => (el.closest('.sgroup') || { id: '' }).id.slice('spanel-'.length)));
+  return SETTINGS_GROUPS.filter(([id]) => ids.has(id)).map(([, name]) => name);
+}
+
+function markBadTabs() {
+  for (const tab of $$('#settings-form [data-stab]')) {
+    tab.classList.toggle('bad', !!$(`#spanel-${tab.dataset.stab} [aria-invalid="true"]`));
+  }
 }
 
 function updateSettingsMsg() {
@@ -3328,6 +3737,11 @@ function onSettingsInput(el) {
   if (el.id === 's-people-search') {
     st.search = el.value;
     setHtml($('#people-rows'), peopleHtml());
+    return;
+  }
+  if (el.id === 's-find') {
+    st.find = el.value;
+    applySettingsView();
     return;
   }
   if (el.dataset.local === 'theme') {
@@ -3454,6 +3868,7 @@ function showFieldError(el, text) {
   note.id = id;
   note.textContent = text;
   el.insertAdjacentElement('afterend', note);
+  markBadTabs();
 }
 
 function clearFieldError(el) {
@@ -3465,6 +3880,7 @@ function clearFieldError(el) {
   else el.removeAttribute('aria-describedby');
   const note = document.getElementById(id);
   if (note) note.remove();
+  markBadTabs();
 }
 
 // Marks every bad field, moves focus to the first one, and says so. Returns true when all is well.
@@ -3475,12 +3891,21 @@ function checkSettingsForm() {
   const problems = settingsProblems(form);
   for (const { el, text } of problems) showFieldError(el, text);
   if (!problems.length) return true;
+  const where = badGroups(problems);
+  const names = where.length > 1 ? `${where.slice(0, -1).join(', ')} and ${where[where.length - 1]}` : where[0];
+  const under = names ? ` It is under ${names}.` : '';
   S.set.msg = {
     kind: 'err',
-    text: problems.length === 1 ? 'Not saved. Fix the field marked in red.' : `Not saved. Fix the ${problems.length} fields marked in red.`,
+    text:
+      problems.length === 1
+        ? `Not saved. Fix the field marked in red.${under}`
+        : `Not saved. Fix the ${problems.length} fields marked in red.${under.replace('It is', 'They are')}`,
   };
   updateSettingsMsg();
-  problems[0].el.focus();
+  // Prefer a bad field in the group on screen; otherwise go to the first one.
+  const first = (problems.find(({ el }) => !el.closest('.sgroup[hidden], section[hidden]')) || problems[0]).el;
+  revealSetting(first);
+  first.focus();
   return false;
 }
 
@@ -3546,8 +3971,25 @@ const settingsBox = $('#settings');
 settingsBox.addEventListener('input', (ev) => onSettingsInput(ev.target));
 settingsBox.addEventListener('change', (ev) => onSettingsInput(ev.target));
 settingsBox.addEventListener('keydown', (ev) => {
-  // Enter in the search box searches; it should not save the whole form.
-  if (ev.key === 'Enter' && ev.target.id === 's-people-search') ev.preventDefault();
+  // Enter in a search box searches; it should not save the whole form.
+  if (ev.key === 'Enter' && (ev.target.id === 's-people-search' || ev.target.id === 's-find')) ev.preventDefault();
+  if (ev.key === 'Escape' && ev.target.id === 's-find' && ev.target.value) {
+    ev.preventDefault();
+    ev.target.value = '';
+    onSettingsInput(ev.target);
+    return;
+  }
+  const tab = ev.target.closest('[data-stab]');
+  if (tab && ['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(ev.key)) {
+    const tabs = $$('[data-stab]', tab.parentElement);
+    let i = tabs.indexOf(tab);
+    if (ev.key === 'ArrowRight') i = (i + 1) % tabs.length;
+    else if (ev.key === 'ArrowLeft') i = (i - 1 + tabs.length) % tabs.length;
+    else if (ev.key === 'Home') i = 0;
+    else i = tabs.length - 1;
+    ev.preventDefault();
+    selectSettingsGroup(tabs[i].dataset.stab, true);
+  }
 });
 settingsBox.addEventListener('submit', (ev) => {
   ev.preventDefault();
@@ -3583,6 +4025,9 @@ document.addEventListener('click', (ev) => {
   if (el.id === 's-alerts-test') return testAlert();
   if (el.dataset.open) return openInWindow(el);
   if (el.dataset.roll) return rollClick(el.dataset.roll);
+  if (el.dataset.new) return newClick(el.dataset.new);
+  if (el.dataset.hide) return hideNode(el.dataset.hide, el.dataset.title || keyName(el.dataset.hide));
+  if (el.dataset.copy === 'new-rename') return newCopy();
   if (el.dataset.copy) return rollCopy(el.dataset.copy);
   if (el.dataset.node) return openDrawer(el.dataset.node, el);
   if (el.dataset.listFilter) {
@@ -3602,6 +4047,7 @@ document.addEventListener('click', (ev) => {
     return;
   }
   if (el.id === 's-retry') return loadSettings(true);
+  if (el.dataset.stab) return selectSettingsGroup(el.dataset.stab, false);
   if (el.id === 's-chain-add') return addChainRule();
   if (el.dataset.chainRemove) return removeChainRule(Number(el.dataset.chainRemove));
   if (el.id === 's-undo' && S.set && S.set.info) {

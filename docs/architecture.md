@@ -11,8 +11,10 @@ window that runs `claude --resume` or `codex resume` for one Claude Code session
 and the person types there (see `src/open.js` below). With **Roll over** turned on (also off by
 default), two buttons open such windows with one fixed message each, which the page shows first:
 a request to the old session to write a handoff note, and the first message of a new session with
-the same name (see `src/rollover.js` below). Sending other work and approving actions come later
-and will get their own design.
+the same name (see `src/rollover.js` below). With **New agent** turned on (also off by default), a
+button opens a window that starts a new named session in the folder of a session on the map, and
+the person types its first message there (see `src/newagent.js` below). Sending other work and
+approving actions come later and will get their own design.
 
 ## Ground rules
 
@@ -24,8 +26,8 @@ and will get their own design.
 - **Only the person who started it.** Every account on the computer can reach `127.0.0.1`, so the
   API also needs a random key made at each start and printed in Pleni's address (see Server).
 - **Read-only.** Pleni reads; it does not write anywhere except its own settings file. It starts no
-  program except the opt-in Open in PowerShell and Roll over windows, and only when the person
-  clicks for one. The only messages it sends are Roll over's two fixed ones.
+  program except the opt-in Open in PowerShell, Roll over and New agent windows, and only when the
+  person clicks for one. The only messages it sends are Roll over's two fixed ones.
 - **Private by default.** Nothing leaves the computer. No telemetry, no network calls. The page shows
   short snippets of session text only when `content` is `"snippets"` (the default); `"none"` shows
   only tool names and states.
@@ -49,6 +51,7 @@ src/model.js            builds the snapshot the page draws (nodes, edges, events
 src/store.js            owns the sources, polls them, caches the snapshot
 src/open.js             Open in PowerShell: a Claude Code session or Codex thread in a new window (opt-in, Windows)
 src/rollover.js         Roll over: a handoff note from a long session, then a new one with its name (opt-in, Windows)
+src/newagent.js         New agent: a new named session in the folder of one on the map (opt-in, Windows)
 src/demo.js             synthetic, moving demo data (no files needed)
 src/server.js           HTTP server, security gate, routes
 public/index.html       the page (no inline script or style)
@@ -88,8 +91,9 @@ export const DEFAULTS = {
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
-  actions: { openTerminal: false, rollover: false },   // the Open in PowerShell and Roll over buttons; each true only when set to true
+  actions: { openTerminal: false, rollover: false, newAgent: false }, // the Open in PowerShell, Roll over and New agent buttons; each true only when set to true
   alerts: { stoppedMinutes: 15 },                      // a watched tile counts as stopped after this long without work
+  rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 }, // "Roll over soon" limits (0-100, 0-100, 0-365); 0 turns one off
 }
 // Role = 'superintendent' | 'coordinator' | 'lead' | 'worker' | 'hidden'
 ```
@@ -176,7 +180,11 @@ Session = {
   lastText: string | null,  // last assistant text, whitespace collapsed, ≤280 chars; null when content = 'none'
   links: Link[],            // hand-offs this session took part in, newest last, max 50
   archived: boolean,
+  context: Context | null,  // main Claude Code sessions and Codex threads; null elsewhere
 }
+// How full the context (the model's memory of the conversation) is, and how often its history was
+// squeezed into a summary (compacted). Numbers only, so they show with content = 'none' too.
+Context = { used: number | null, size: number | null, squeezes: number, squeezesAtLeast: boolean, squeezedAt: number | null }
 Link = { at: number, dir: 'down' | 'up', other: string /* node key, or 'path:<agentPath>' for codex */, label: string | null }
 ```
 
@@ -224,6 +232,16 @@ export function createClaudeSource({ root, desktopRoot, settings, now = Date.now
   refresh the listing every 30 s; ignore every error. Archived sessions get `archived: true`.
 - One API message can be split across several `assistant` lines (same `message.id`); treat them as
   one. Synthetic error turns have `message.model` `"<synthetic>"` and `isApiErrorMessage`.
+- Context (main sessions only): `used` is the newest assistant message's `message.usage`
+  `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`. A squeeze is a `system`
+  record with `subtype: 'compact_boundary'` and `compactMetadata` (`trigger` `auto` or `manual`,
+  `preTokens`, `postTokens`, `cumulativeDroppedTokens`). The transcript does not say how much the
+  model holds, so `size` is the newest automatic squeeze's `preTokens`: where the next one comes.
+  After a squeeze, `used` is its `postTokens` until the next answer. Pleni reads only the end of a
+  long file, so `squeezes` comes from the newest record's running total:
+  `round(cumulativeDroppedTokens / (preTokens - postTokens))`, or one more than before when the
+  record has no total. `squeezesAtLeast` is true when the file was read from its middle and no
+  record had a total.
 - Status: **working** if the last conversation record is a `user` record, an assistant record with
   `stop_reason` `tool_use`, or an assistant `tool_use` with no later `tool_result` for its id, and
   `lastAt` is within `staleMinutes`. **error** if the last assistant record is a synthetic error.
@@ -287,6 +305,9 @@ export function createCodexSource({ root, settings, now = Date.now })
   `imported_thread_id`) are copies of another tool's sessions and get `archived: true`.
 - Titles: `<root>/session_index.jsonl` `{ id, thread_name, updated_at }`, last line per id wins.
   Sub-agents are not in the index: use `agent_nickname`.
+- Context: an `event_msg` of type `token_count` holds `info.last_token_usage.total_tokens` (`used`)
+  and `info.model_context_window` (`size`); a `compacted` record is a squeeze. A file read from its
+  middle may hold squeezes before that part, so `squeezesAtLeast` is true for it.
 - Links: `function_call` `spawn_agent` is a **down** link (label: `task_name` when snippets);
   `send_message`/`followup_task` are **down** links to the named agent; an `item_completed` item of
   type `SubAgentActivity` with `kind: 'completed'` (`agent_thread_id`) is an **up** link from that
@@ -386,7 +407,8 @@ Snapshot = {
   nodes: Node[], edges: Edge[], events: Event[], counts: { working, ready, idle, done, error, total },
   attention: [{ id: '<key>|<kind>', key, kind, text, at }],  // at is 0 when unknown
   tasks: MailboxState['tasks'] | null,
-  actions: { openTerminal: boolean, rollover: boolean },  // the page may show each button (setting on, Pleni on Windows)
+  hiddenSessions: [{ key, title, platform, kind }],  // recent sessions with Role "Hide it": off the map, named in Settings
+  actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean },  // the page may show each button (setting on, Pleni on Windows)
 }
 SourceInfo = { enabled, ok, error, count }
 Node = {
@@ -395,6 +417,8 @@ Node = {
   title, subtitle, rank, role, tier: 'senior' | 'junior' | null,
   model, modelLabel, effort, status, startedAt, lastAt, activity, lastText,
   project, entrypoint, hidden, archived,
+  memory,   // main Claude Code session or Codex thread: { used, size, percent, squeezes, squeezesAtLeast, squeezedAt }, else null
+  rollSoon, // plain reasons it is due for a roll over ('Memory 87% full', 'Squeezed 3 times', '9 days old'), else null
   watched,  // true for a session or the relay whose people[key].watch is true
 }
 Edge = { from, to, kind: 'spawn' | 'mailbox' | 'contains', lastDown, lastUp, downLabel, upLabel, active: 'down' | 'up' | 'both' | null }
@@ -412,6 +436,15 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'error', from, 
   and opened like any session. Other runs (older ones kept no session file) become a session-like
   node `mailbox:<task id>/W<n>` (platform `claude`, kind `agent`, status from the run, project from
   its worktree).
+- Roll over soon: `memory.percent` is `round(used / size × 100)` (at most 100), null while `size` is
+  unknown. `rollSoon` lists, in this order, `Memory N% full` when `percent ≥ rollSoon.memoryPercent`,
+  `Squeezed once`, `twice` or `N times` (`… or more` when `squeezesAtLeast`) when
+  `squeezes ≥ rollSoon.squeezes`, and `N days old` when whole days since `startedAt` reach
+  `rollSoon.days`; a limit of 0 is off. Only main sessions (kind `session`) with a `context` get
+  `memory` and `rollSoon`; other nodes get null.
+- Hidden sessions: a session whose `people[key].role` is `hidden` is left off the map. The ones that
+  would otherwise be listed (recent, not archived) are in `hiddenSessions`, by title, so the page
+  can count them and Settings can name them.
 - Who reports to whom, strongest first: the person's choice (`people[key].reportsTo`, set by the
   Reports to menu or by dragging a tile), the mailbox (planner → relay → coordinator → its workers:
   fixed links, like a helper under the session that started it), a chain rule, and last the parent
@@ -480,10 +513,11 @@ export function createStore({ settings, roots, demo = false, now = Date.now, sta
 
 Creates the enabled sources (or the demo source), polls at most every 2 s on demand, caches the
 snapshot with its JSON and its ETag, and rebuilds when settings change. `snapshot().actions.openTerminal`
-is `settings.actions.openTerminal` and `platform === 'win32'`, and `actions.rollover` the same for
-`settings.actions.rollover`. `session(key)` gives what the newest poll knows about a top-level
-Claude Code session or a Codex thread (`{ id, cwd, status, entrypoint, kind, title, titleSource }`)
-for Open in PowerShell and Roll over, and `null` for anything else and in the demo. The ETag is
+is `settings.actions.openTerminal` and `platform === 'win32'`, and `actions.rollover` and
+`actions.newAgent` the same for their settings. `session(key)` gives what the newest poll knows
+about a top-level Claude Code session or a Codex thread (`{ id, cwd, status, entrypoint, kind,
+title, titleSource }`) for Open in PowerShell, Roll over and New agent, and `null` for anything else
+and in the demo. The ETag is
 `snapshotTag(snapshot)` from `src/model.js`: `W/"<sha1 of the JSON with now set to 0>"`. `now`
 changes on every build, and the page needs it only to allow for a clock difference, so a snapshot
 that changed only its time keeps its ETag and the page's poll gets `304`.
@@ -620,6 +654,37 @@ export function rollCommand(tool, step, { id, name, text }, systemRoot) // -> { 
 - **Limits** are Open in PowerShell's (`openLimits`, shared): asking takes the session's own
   "just opened" slot, starting takes `start:<key>`.
 
+## New agent (`src/newagent.js`)
+
+Starts a new Claude Code session or Codex thread in a PowerShell window, in the folder of a session
+on the map, so a team can grow from Pleni. It is off until the person turns it on
+(`actions.newAgent`), works only on Windows for now, and the server allows it only for a request
+made on this computer. Pleni sends nothing: the person types the first message in the window.
+
+```js
+export async function newAgent({ from, tool, name, settings, roots, store, limits, platform, env, home, spawn, now })
+// -> { ok: true } | { ok: false, status, error }   (error is a plain sentence)
+export function cleanName(name)            // spaces squeezed and trimmed; '' for a non-string
+export function newNameProblem(name)       // why the name cannot be used, or null
+export function takenMessage(name)         // the refusal for a name a session on the map has
+export function newAgentCommand(tool, name, systemRoot) // -> { file, args }
+```
+
+- **Where:** `from` is a session on the map, `claude:<session id>` or `codex:<thread id>` (a main
+  Claude Code session, or any Codex thread but a reviewer), not in the demo. The new agent works in
+  that session's folder (`store.session(from).cwd`, checked with `folderProblem`), so the page never
+  sends or needs a path. `tool` is `claude` or `codex`, whatever tool `from` is.
+- **The name** is needed: `cleanName(name)` must pass Roll over's name rule (`nameFits`: at most 80
+  characters of letters, digits, spaces and `. _ - # + * ,`, starting with a letter, a digit or
+  `*`). No Claude Code or Codex tile on the map may have the same name, ignoring case and extra
+  spaces, because Pleni and the relay find agents by name; Roll over is the way to replace one.
+- **The command**, in Open in PowerShell's `cmd.exe /d /s /c "start "<title>" "<powershell.exe>"
+  -NoExit -NoLogo -Command "<run>""` line, spawned the same way in the folder with `toolEnv` for the
+  new agent's tool: `claude --name '<name>'`, or `codex`. Codex cannot name a thread when it
+  starts, so the page shows `/rename <name>` for the person to type after the first message.
+- **Limits** are Open in PowerShell's (`openLimits`, shared), with the slot `new:<from>`: a second
+  click from the same side panel within a few seconds starts nothing.
+
 ## Server (`src/server.js`)
 
 ```js
@@ -674,10 +739,14 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `GET /favicon.ico`, `GET /api/health`, `GET /api/snapshot` (weak ETag, `304` on match),
   `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`,
   `POST /api/placement`, `POST /api/dismiss`, `POST /api/watch`, `POST /api/open`,
-  `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`.
+  `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`, `POST /api/new`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
 - `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
-  them the same way (`snapshotTag`) for a store that did not.
+  them the same way (`snapshotTag`) for a store that did not. Its answers, `304` included, carry
+  `X-Pleni-Version` (from package.json) and, when Pleni runs from a git copy, `X-Pleni-Build`: the
+  short commit id from `readBuild()`, which reads only `.git/HEAD` and the branch it names (its file
+  under `refs/`, else its line in `packed-refs`) in Pleni's own folder. A branch name with a part
+  that starts with a dot is not read. `createServer({ version, build })` can set both for tests.
 - **POST /api/settings** requires the key cookie, `X-Pleni: settings`, `Content-Type:
   application/json`, a body of at most 64 KB, and an `Origin` (when present) whose host equals the
   request host. The body is cleaned with `cleanSettings`, saved, and the store reloaded.
@@ -692,6 +761,12 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **POST /api/watch** `{ key, watch: boolean }` passes the same checks and saves
   `people[key].watch` (`false` removes it). Only a session on the map or the relay can be watched:
   other keys get `400`, a tile that is not on the map `404`. It answers `{ ok: true }`.
+- **POST /api/hide** `{ key, hide: true }` passes the same checks and saves `people[key].role =
+  'hidden'` for a Claude Code, Codex, Grok or Kimi Code session or helper on the map (kind session,
+  agent or reviewer; other keys `400`, a tile not on the map `404`). It answers
+  `{ ok: true, role }` with the role it had before (null for none). `{ key, hide: false, role }` puts
+  that role back (one of `superintendent`, `coordinator`, `lead`, `worker`, or null to remove it),
+  only when the session is hidden now; the session need not be on the map.
 - **POST /api/open** `{ key }` passes the same checks, then refuses (`403`) a request that is not
   from this computer: a host other than the loopback names, or one carrying `Tailscale-User-Login`
   or `X-Forwarded-For` (a proxy such as `tailscale serve` passed it on). `openSession` in
@@ -704,15 +779,20 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **POST /api/rollover** `{ key, step: 'ask' | 'start', name }` passes the same checks as
   `/api/open`, then `rollover` in `src/rollover.js` makes the rest and opens the window. It answers
   `{ ok: true }` or `{ error }` with the status it gives. Both share the server's `openLimits`.
+- **POST /api/new** `{ from: nodeKey, tool: 'claude' | 'codex', name }` passes the same checks as
+  `/api/open`, then `newAgent` in `src/newagent.js` makes the rest and opens the window. It answers
+  `{ ok: true }` or `{ error }` with the status it gives, and shares the server's `openLimits`.
 - `GET /api/settings` returns `{ settings, file, roots, nodes: [{ key, title, platform, kind }], platform }`,
-  where the last `platform` is the server's `process.platform`.
+  where the last `platform` is the server's `process.platform`. `nodes` holds the snapshot's nodes
+  and its `hiddenSessions`, so Settings can name hidden sessions.
 - JSON responses use `Content-Type: application/json; charset=utf-8`. Errors are `{ error }` with a
   plain-words message and never include stack traces or file contents.
 
 ## Page (`public/`)
 
 - Hash routes: `#/` map (default), `#/list`, `#/activity`, `#/tasks` (only with a mailbox),
-  `#/settings`.
+  `#/settings`, and `#/settings/<group>` for one group of settings (`basics`, `team`, `sources`,
+  `alerts`, `buttons` or `devices`).
 - **Map:** a left-to-right tidy tree of tiles (`W 268 × H 128`, gaps 96 × 22, padding 48) joined by
   rounded orthogonal lines. A line glows while its edge is `active`; three small packets travel down
   (planner/parent → child, teal) or up (child → parent, purple). Pan with drag, zoom with Ctrl+wheel,
@@ -746,18 +826,53 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   The check finds the newest other session of the same tool whose title is the name and that
   started later, links to it, and says when the relay now wakes it (its parent is the relay
   tile). It says whether the handoff note is there, and when it was written. A session without a
-  usable name shows the reason instead of the steps.
+  usable name shows the reason instead of the steps. When `snapshot.actions.newAgent` is true, on
+  this computer, the Now tab of a main Claude Code session or a Codex thread (not a reviewer) has
+  **New agent here…**. It opens a section with Tool (Claude Code or Codex, the session's own tool
+  first), Name, and **Start in PowerShell**, which posts `/api/new` (Enter in the name box does the
+  same). The page checks the name with the server's rule first and marks the box when it is bad.
+  For Codex it shows `/rename <name>` with a copy button. The answer shows under the button and is
+  read out through the page's live region. A repaint keeps a text box's caret where it was, so
+  typing goes on while the panel updates.
   Sessions and the relay have a **Tell me if this stops working**
   box that posts `/api/watch`; Settings' own copy of the settings is updated too, so saving Settings
   later keeps it.
-- **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. The Open sessions
-  section turns Open in PowerShell and Roll over on and says when the computer does not run Windows. The Alerts
-  section sets `alerts.stoppedMinutes` and holds the Pop-ups box. Before saving, the page
-  checks the form: whole numbers within the server's limits, full folder paths, host names, and
-  Tailscale logins (`name@domain`), at most 20 of each. A bad field gets `aria-invalid="true"` and
-  a plain message tied to it with `aria-describedby`, focus moves to the first one, and nothing is
-  sent. After a save, the page compares what the server saved with what it sent and names any
-  value the server had to change; the port message uses the saved port.
+- **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. Under the Settings
+  title, the page says which version runs ("This is Pleni 0.1.0 (commit 0c5808a)."). The form is
+  split into six groups, shown as tabs (`role="tablist"`; arrow keys, Home and End move between
+  them): **Basics** (You and the map; What the page shows, with Finished for, Call a turn stuck
+  after and Reviewers folded under **More choices**), **Team** (Names and roles, Chain of command,
+  Projects, Ranks by model with its words folded), **Sources** (Where Pleni looks, Mailbox),
+  **Alerts** (Needs you, with `alerts.stoppedMinutes` and the Pop-ups box; Roll over soon, with
+  the three `rollSoon` limits), **Buttons** (Open sessions: Open in PowerShell, New agent and Roll
+  over, and a line when the computer does not run Windows) and **Devices** (Other devices, the port, and
+  where the settings file is). `#/settings/<group>` opens a group, and choosing a tab puts its
+  group in the address. **Find a setting** shows, from every group, the sections whose group
+  name, heading, notes, rows, or a few extra words (`data-find`) have each typed word at the start
+  of a word. It marks the matching rows, opens a fold that holds a match, hides the tabs, and says
+  how many sections match; Esc clears it. All groups are one form, so Save sends every field.
+  Before saving, the page checks the form: whole numbers within the server's limits, full folder
+  paths, host names, and Tailscale logins (`name@domain`), at most 20 of each. A bad field gets
+  `aria-invalid="true"` and a plain message tied to it with `aria-describedby`, and its tab gets a
+  red dot. The message under the form names the groups that hold bad fields. Focus moves to the
+  first bad field in the open group, or else the first one, after opening its group and fold.
+  Nothing is sent. After a save, the page compares what the server saved with what it sent and
+  names any value the server had to change; the port message uses the saved port.
+- **Version:** the app bar shows the version beside the name (hidden at phone width, like the name;
+  its tooltip adds the commit). The page keeps the first `X-Pleni-Version` and `X-Pleni-Build` it
+  gets; when a later snapshot answer carries others, Pleni was updated and started again, and a
+  notice says "Pleni was updated. It now runs version …. Reload this page to use it."
+- **Roll over soon:** a session whose node has `rollSoon` gets a "Roll over soon" badge on the top
+  edge of its tile (the reasons are in the tile's label for screen readers), a "Roll over soon" pill
+  in its List row, and a line at the top of its side panel's Now tab: "Roll over soon: Memory 87%
+  full, squeezed 3 times." Its Details tab shows Memory ("680k of 780k tokens (87% full)", or
+  "40k tokens in use" while the size is unknown) and Squeezed ("3 times, last 2 hours ago").
+- **Hide from the map:** the Now tab of a Claude Code, Codex, Grok or Kimi Code session or helper
+  has **Hide from the map**, which posts `/api/hide`. The side panel closes, since the tile is
+  gone, and the notice at the bottom of the page offers Undo, which puts back the role it had.
+  Settings' own copy gets the role too. Roll over's Check step offers **Hide the old session** once
+  the new one is found. The counts line under the Map and List titles adds "N hidden (Settings,
+  Team)".
 - **Missing key:** a `401` from the API shows the sign-in box (`#signin`) instead of "Cannot reach
   Pleni", and the page keeps polling. The box is a form with a hidden `username` field ("Pleni") and
   a `current-password` field, so browsers can save the key like a password. Sign in takes the key,
@@ -790,6 +905,7 @@ export function createDemoSource({ now = Date.now })  // -> { poll(): { claude, 
 ```
 
 A deterministic, time-driven cast: a person, two projects, a Codex planner with two sub-agents, a
-Claude coordinator with three sub-agents (one working, one waiting, one done), and a small mailbox
+Claude coordinator with three sub-agents (one working, one waiting, one done; the coordinator has a
+long session's numbers, so it shows "Roll over soon"), and a small mailbox
 with a note for the person, with hand-offs that light up every few seconds. It is used by `node bin/pleni.js --demo`, the screenshots and the
 tests, so that no real session data is ever needed to show Pleni.

@@ -887,3 +887,23 @@ test('registered coordinators are followed however long they have been quiet', (
   assert.ok(ids.includes(idAt(1)), 'the quiet coordinator is kept');
   assert.equal(ids.includes(idAt(2)), false, 'an ordinary quiet thread is not');
 });
+
+// ---- how full the context is ----
+
+test('reads how full the context is from token counts, and counts squeezes', (t) => {
+  const root = codexHome(t);
+  const tokens = (ms, total, size) => rec('event_msg', ms, { type: 'token_count', info: { total_token_usage: { total_tokens: total * 3 }, last_token_usage: { input_tokens: total - 100, output_tokens: 100, total_tokens: total }, model_context_window: size } });
+  const file = rollout(root, MAIN, { records: [tokens(T0 - 20 * MINUTE, 50000, 272000)] });
+  const src = open(root);
+  assert.deepEqual(src.session(MAIN).context, { used: 50000, size: 272000, squeezes: 0, squeezesAtLeast: false, squeezedAt: null });
+  append(file, rec('compacted', T0 - 10 * MINUTE, { message: 'summary' }), tokens(T0 - 9 * MINUTE, 30000, 272000));
+  setMtime(file, T0);
+  const c = src.session(MAIN).context;
+  assert.equal(c.squeezes, 1);
+  assert.equal(c.used, 30000);
+  assert.equal(c.squeezedAt, T0 - 10 * MINUTE);
+  // A token count with no usage keeps what was known.
+  append(file, rec('event_msg', T0 - 8 * MINUTE, { type: 'token_count', info: null }));
+  setMtime(file, T0 + 1000);
+  assert.equal(src.session(MAIN).context.used, 30000);
+});

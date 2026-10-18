@@ -37,7 +37,7 @@ const OWN_NAME = { claude: new Set(['custom-title', 'agent-name']), codex: new S
 // backticks, backslashes and brackets are not, so a name with one of them is refused.
 const NAME = /^[A-Za-z0-9*][A-Za-z0-9 ._#+*,-]*$/;
 const TEXT = /^[A-Za-z0-9 ._#+*,:-]+$/;
-const MAX_NAME = 80;
+export const MAX_NAME = 80;
 const MAX_SLUG = 40;
 const TITLES = { claude: 'Claude Code', codex: 'Codex' };
 
@@ -72,8 +72,13 @@ export function ownName(tool, session) {
 export function nameProblem(name) {
   if (typeof name !== 'string' || !name) return ROLL_MESSAGES.noName;
   if (name.length > MAX_NAME) return ROLL_MESSAGES.longName;
-  if (!NAME.test(name) || !/[A-Za-z0-9]/.test(name)) return ROLL_MESSAGES.badName;
+  if (!nameFits(name)) return ROLL_MESSAGES.badName;
   return null;
+}
+
+// True when this name may go on a command line: see NAME.
+export function nameFits(name) {
+  return typeof name === 'string' && name.length <= MAX_NAME && NAME.test(name) && /[A-Za-z0-9]/.test(name);
 }
 
 // "Sergeant Claude Code" -> "HANDOFF-sergeant-claude-code.md", in the session's own folder.
