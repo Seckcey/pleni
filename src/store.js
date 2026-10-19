@@ -27,7 +27,7 @@ const NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi
 const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
 // Settings that only change how the snapshot is drawn. Changing them keeps the
 // sources, so they do not have to read every session file again.
-const VIEW_ONLY = new Set(['displayName', 'titles', 'groupBy', 'modelTiers', 'people', 'projects', 'chain', 'remote', 'port', 'actions', 'alerts']);
+const VIEW_ONLY = new Set(['displayName', 'titles', 'groupBy', 'modelTiers', 'people', 'projects', 'chain', 'remote', 'port', 'actions', 'alerts', 'models']);
 const DISMISSED_FILE = 'dismissed.json';
 const MAX_DISMISSED = 1000;
 

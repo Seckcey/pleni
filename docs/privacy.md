@@ -7,7 +7,9 @@ what it never does.
 ## The short version
 
 - Pleni **reads** session files. It **writes** only in its own folder: its settings, its key, and
-  the list of notices you dismissed.
+  the list of notices you dismissed. The one exception is the **Models** page, off until you turn
+  it on: when you choose **Save to Codex**, it changes the model and effort lines in Codex's
+  settings, after it keeps a copy of the old file (see [below](#models)).
 - Pleni **starts** nothing, unless you turn on **Open in PowerShell**, **Roll over**, **New
   agent** or **Bring a cloud session here** and click a button. Then it opens one PowerShell
   window. You do the typing, except for Roll over's one short message, which the page shows you
@@ -38,6 +40,7 @@ read the start of a file once, to find a session's name and where it started.
 | Codex folder (usually `~/.codex`)        | Session files in `sessions/` and `archived_sessions/`, and the list of session names in `session_index.jsonl` |
 | Grok folder (usually `~/.grok`)          | Each session's summary and its event, chat and update logs in `sessions/` |
 | Kimi Code folder (usually `~/.kimi-code`) | Each session's `state.json` and its agents' `wire.jsonl` logs in `sessions/` |
+| Codex folder, while Settings → Models is open | From `config.toml`, only the model and effort lines (`model`, `model_reasoning_effort`, and `default_subagent_model` and `default_subagent_reasoning_effort` under `[agents]`); the whole file is read to find them, and nothing else in it is kept or shown. From each worker type file in `agents/`, its name, description, model and effort. From `models_cache.json`, the list of models Codex offers you: each model's name and the effort levels it takes |
 | Codex coordinator list, if present      | `coordinators/registry.sqlite3` (opened read-only) and `coordinators/superintendent.json`, only to learn which coordinator started which worker |
 | A mailbox folder, if you turn one on    | The Markdown files of the queue, the status board, and each task (with any worker run notes), the notes for you (`NEEDS-<NAME>.md`), plus the small relay files in `.relay/`, its alerts (`alerts.md`) and the list of agents it wakes for mail (`agents.json`) among them. With agent mail, also the `mail/` folder: each agent's name (`name.txt`) and its messages, the newest 100 unread and the newest 30 read (the first 80 KB of each). While the Mail page is open, Pleni reads the whole of the newest 100 messages it shows. From the relay's settings (`bin/relay-settings.json`) Pleni reads only `owner_name`, the name agents use to write to you |
 | A session's project folder, only when it is inside a `_worktrees` folder on a local drive | Only the small `.git` pointer file (at most 4 KB) of that worktree, to learn the name of the repository it belongs to |
@@ -46,7 +49,7 @@ read the start of a file once, to find a session's name and where it started.
 | Codex folder, only when you click Open in PowerShell | One empty file, `thread-writer-locks/<thread id>.lock`, which Codex locks while a program writes that thread. Pleni tries to read one byte of it, only to learn whether another window has the thread open |
 | The same two folders, when you click Roll over's buttons | The same small files as for Open in PowerShell, for the same reason |
 | A session's own folder, only while its Roll over section is open | Only whether the handoff note (`HANDOFF-<name>.md`) is there, and when it last changed. Pleni never reads what is in it |
-| Pleni's own folder                      | `settings.json`, `key`, and `dismissed.json` (which notices you dismissed, and when) in Pleni's settings folder |
+| Pleni's own folder                      | `settings.json`, `key`, and `dismissed.json` (which notices you dismissed, and when) in Pleni's settings folder, and the copies of Codex's files in `backups/` |
 | Pleni's own program folder, if it is a git copy | Only `.git/HEAD` and the one branch file it names (or `packed-refs`), to show which commit runs |
 
 From the session files it uses: when each step happened, the working folder, the git branch, the
@@ -101,9 +104,11 @@ recent pop-ups in its notification list until you clear them.
 ## What Pleni never does
 
 - It never writes, moves, or deletes anything in the Claude Code, Codex, Claude desktop app, or
-  mailbox folders.
-- It writes nowhere except its own folder (`settings.json`, `key`, `dismissed.json`). It saves each
-  file safely: it writes a temporary file in the same folder, then renames it.
+  mailbox folders. The one exception is **Save to Codex** on the Models page (see
+  [below](#models)).
+- It writes nowhere except its own folder (`settings.json`, `key`, `dismissed.json`, and the
+  `backups/` folder of the Models page). It saves each file safely: it writes a temporary file in
+  the same folder, then renames it.
 - When it turns away a device that Tailscale brings, it keeps that device's Tailscale address and
   login in memory (the last 5, never in a file), so Settings → Devices on your computer can offer
   **Allow**. Only your computer's page can see this list, and Pleni's key.
@@ -155,6 +160,25 @@ Live GitHub status is off until you turn it on in **Settings → Sources**. Then
   words and checked values, never through a shell (a program that reads commands), and in your
   temporary folder, away from your projects.
 - What GitHub does with what it receives is covered by GitHub's own privacy rules.
+
+## Models
+
+The **Models** page (Settings → Models) shows which model and effort your Codex agents start with.
+It reads them from Codex's own files (see [What Pleni reads](#what-pleni-reads)). Changing them
+from Pleni is off until you tick **Let Pleni change the models Codex uses**. Then:
+
+- Pleni changes Codex's files only when you choose **Save to Codex** or **Add the worker type**, and
+  only on the computer that runs Pleni. Another device can look but not change.
+- It changes only the model and effort lines, and keeps every other line, comment and space in the
+  file as it was. If a line is written in a way Pleni does not change, it changes nothing and says
+  so.
+- Before it changes a file, it saves a copy of it in the `backups/` folder in Pleni's own folder
+  (the newest 20 copies of each file). To undo a change, copy one back.
+- If Codex changed the file since the page looked, Pleni changes nothing and shows what the file
+  says now.
+- **Add the worker type** makes one new file in Codex's `agents/` folder. It never writes over a
+  file that is there.
+- None of this leaves your computer.
 
 ## Who can open the page
 

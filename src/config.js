@@ -30,6 +30,8 @@ export const DEFAULTS = deepFreeze({
   actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false }, // the window buttons (Windows, this computer only)
   // Live pull request status through the GitHub CLI (gh), and the Merge button (this computer only).
   github: { live: false, merge: false, mergeMethod: 'squash' },
+  // The Models page may change the model and effort lines in Codex's settings (this computer only).
+  models: { edit: false },
   alerts: { stoppedMinutes: 15 }, // a watched tile counts as stopped after this long without work
   // "Roll over soon" when any limit is passed; 0 turns that limit off.
   rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 },
@@ -115,6 +117,7 @@ export function cleanSettings(raw) {
     remote: cleanRemote(r.remote),
     actions: cleanActions(r.actions),
     github: cleanGithub(r.github),
+    models: { edit: cleanBool(r.models?.edit, DEFAULTS.models.edit) },
     alerts: cleanAlerts(r.alerts),
     rollSoon: cleanRollSoon(r.rollSoon),
   };

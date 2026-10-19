@@ -72,10 +72,18 @@ test('cleanSettings keeps good values', () => {
     remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] },
     actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true },
     github: { live: true, merge: true, mergeMethod: 'rebase' },
+    models: { edit: true },
     alerts: { stoppedMinutes: 20 },
     rollSoon: { memoryPercent: 80, squeezes: 0, days: 10 },
   };
   assert.deepEqual(cleanSettings(raw), raw);
+});
+
+test('the Models page may change Codex settings only when turned on with a real true', () => {
+  assert.deepEqual(cleanSettings({}).models, { edit: false });
+  for (const edit of ['true', 1, null, {}]) assert.deepEqual(cleanSettings({ models: { edit } }).models, { edit: false });
+  assert.deepEqual(cleanSettings({ models: 'on' }).models, { edit: false });
+  assert.deepEqual(cleanSettings({ models: { edit: true, extra: 1 } }).models, { edit: true });
 });
 
 test('alerts: the stopped time stays in range, and only a real true watches a tile', () => {

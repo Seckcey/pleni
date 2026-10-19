@@ -5,7 +5,9 @@ Codex already write on your computer, works out who is working on what, and show
 browser as an organization map with the hand-offs between agents drawn as moving lines.
 
 Version 0.1 mostly **watches**. It never stops or changes a session, and it never writes into
-Claude Code's, Codex's or a mailbox's folders. What it may start is a window the person asks for:
+Claude Code's, Codex's or a mailbox's folders, except for one opt-in change: with **Change models**
+turned on (off by default), the Models page changes the model and effort lines in Codex's settings
+after the person chooses Save to Codex (see `src/models.js` below). What it may start is a window the person asks for:
 with **Open in PowerShell** turned on (off by default, Windows only), a button opens a PowerShell
 window that runs `claude --resume` or `codex resume` for one Claude Code session or Codex thread,
 and the person types there (see `src/open.js` below). With **Roll over** turned on (also off by
@@ -31,7 +33,8 @@ Sending other work and approving actions come later and will get their own desig
 - **Only the person who started it.** Every account on the computer can reach `127.0.0.1`, so the
   API also needs a random key made at each start and printed in Pleni's address (see Server).
 - **Read-only.** Pleni reads; it does not write anywhere on this computer except its own settings
-  file. It starts no program except the opt-in Open in PowerShell, Roll over, New agent and Bring a
+  file, and, with the opt-in Models page, the model and effort lines in Codex's `config.toml` and
+  the worker type files in Codex's `agents` folder (see Models). It starts no program except the opt-in Open in PowerShell, Roll over, New agent and Bring a
   cloud session here windows, only when the person clicks for one, and the GitHub CLI (`gh`) for
   the opt-in Live GitHub status. The only messages it sends are Roll over's two fixed ones, and the
   only change it makes elsewhere is a merge on GitHub that the person confirms.
@@ -62,6 +65,8 @@ src/open.js             Open in PowerShell: a Claude Code session or Codex threa
 src/rollover.js         Roll over: a handoff note from a long session, then a new one with its name (opt-in, Windows)
 src/newagent.js         New agent: a new named session in the folder of one on the map (opt-in, Windows)
 src/github.js           Live GitHub status and Merge, through the GitHub CLI, gh (opt-in)
+src/models.js           the Models page: Codex's model and effort lines, read always, changed on request (opt-in)
+src/toml.js             a small TOML reader and one-line editor for src/models.js
 src/demo.js             synthetic, moving demo data (no files needed)
 src/server.js           HTTP server, security gate, routes
 public/index.html       the page (no inline script or style)
@@ -103,6 +108,7 @@ export const DEFAULTS = {
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
   actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false }, // the window buttons; each true only when set to true
   github: { live: false, merge: false, mergeMethod: 'squash' }, // Live GitHub status, the Merge button, 'squash' | 'merge' | 'rebase'
+  models: { edit: false },                             // the Models page may change Codex's model lines (this computer only)
   alerts: { stoppedMinutes: 15 },                      // a watched tile counts as stopped after this long without work
   rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 }, // "Roll over soon" limits (0-100, 0-100, 0-365); 0 turns one off
 }
@@ -116,8 +122,8 @@ Exports:
   replaced by defaults, strings trimmed and clipped, numbers clamped (`port` 1024–65535,
   `activeMinutes` 1–240, `recentHours` 1–720, `staleMinutes` 5–1440, `stoppedMinutes` 1–1440), arrays
   de-duplicated, node keys validated with `isNodeKey`, roots must be absolute paths or `null`.
-  `people[key].watch` is kept only when it is exactly `true`, and so are `actions.*`, `github.live`
-  and `github.merge`.
+  `people[key].watch` is kept only when it is exactly `true`, and so are `actions.*`, `github.live`,
+  `github.merge` and `models.edit`.
 - `loadSettings(file)` returns `{ settings, file, error }` and never throws (a missing file gives
   defaults and no error; a broken file gives defaults and an `error` string).
 - `saveSettings(settings, file)` writes `cleanSettings(settings)` atomically (temp file, then rename),
@@ -846,11 +852,84 @@ export const GITHUB_MESSAGES, MAX_REPOS /* 12 */, MERGE_METHODS /* ['squash', 'm
   `--admin`, `--auto` or `--delete-branch`. After a merge, the next look asks GitHub again. It
   answers `{ ok: true }` or `{ ok: false, status, error }`.
 
+## Models (`src/models.js`, `src/toml.js`)
+
+The Models page shows the model and effort Codex agents start with, and with `settings.models.edit`
+on, changes them on this computer when the person chooses Save to Codex. Codex reads its settings
+when a thread starts, so new threads and the relay's wake-ups (`codex exec resume`, which runs on
+`config.toml`'s model, not the thread's) use a change at once; a running thread keeps what it
+started with. Codex reads a worker type file again each time a worker starts.
+
+```js
+export function readCodexModels({ root, seen })  // -> CodexModels (reads only)
+export function createModelSaver({ now })         // -> { save({ root, backupDir, tag, changes }) }
+export function readCatalog(root)                 // -> [{ id, label, efforts, defaultEffort, hidden }]
+export function modelChoices(catalog, seen, set)  // -> the models the page offers
+export const EFFORTS /* ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] */, MODELS_MESSAGES, PLENI_MARK
+
+// CodexModels
+{
+  ok, error,             // error: why Pleni could not read the settings, in plain words
+  folder, file, found,   // the Codex folder, <folder>/config.toml, and whether it is there yet
+  tag,                   // 24 hex digits of SHA-256 over config.toml and the worker type files
+  listed,                // true when Codex keeps a model list here (models_cache.json)
+  sergeant: { model: Line, effort: Line },   // model, model_reasoning_effort
+  worker: { model: Line, effort: Line },     // [agents] default_subagent_model, default_subagent_reasoning_effort
+  types: [{ file, name, description, model: Line, effort: Line, pleni, error }],
+  models: [{ id, label, efforts, defaultEffort, unlisted }],
+  efforts,               // EFFORTS, then any other level Codex's list names
+}
+// Line: { value, set, editable }. value is null unless the line holds a one-line string; set is
+// whether the line is there; editable is false when Pleni would not change it (see toml.js).
+```
+
+- **Files:** `<codex root>/config.toml` (the root `resolveRoots` gives, `$CODEX_HOME` or `~/.codex`),
+  and the worker types: every `*.toml` in `<codex root>/agents/` and in folders in it, two levels
+  down at most, 50 files at most, as Codex reads them. A type's `file` is its path in that folder
+  with `/` between folders. Each file is read whole, at most 256 KB, and must be UTF-8 that writes
+  back to the same bytes; otherwise it is shown with an error and never changed.
+- **Model list:** `<codex root>/models_cache.json`, which Codex keeps fresh for the account (at most
+  4 MB; read again once when it does not parse, because Codex writes it in place). From `models`:
+  `slug` → `id`, `display_name` → `label` (else `modelLabel`), `supported_reasoning_levels[].effort`
+  → `efforts`, `default_reasoning_level` → `defaultEffort`, `visibility` other than `list` →
+  `hidden`, sorted by `priority`. Nothing else in the file is read or shown. With a list, the page
+  offers its models that are not hidden, plus any other model a line names (`unlisted` when Codex
+  does not list it). Without one, it offers the models of the Codex sessions on the map, most used
+  first, plus the ones the lines name, and lets the person type a name.
+- **Saving:** `save` refuses with `429` after 10 saves in a minute. It reads everything again and
+  refuses (`409`) unless `tag` still matches. Each value is checked: a model name is
+  `[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,99}`, and with a model list it must be on it (hidden ones count),
+  because Codex will not start a worker with any other; an effort must be in `efforts`; and when
+  the model of a pair is on the list, its effort must be one that model takes. null takes the line
+  out. All new file texts are worked out first with `setTomlText` and `removeTomlKey`, then read
+  back with `scanToml`; a line Pleni does not change (see below) refuses the whole save (`409`).
+  Then each old file is copied to `<backupDir>/codex-<name>-<yyyyMMdd-HHmmss>.toml` (the newest 20
+  of each are kept), and each file is checked once more against the bytes Pleni read and written
+  through a temp file in the same folder and `renameWithRetry`. It answers `{ ok: true, files,
+  backups }` or `{ ok: false, status, error, files }` (`files`: those already written).
+- **Adding a worker type** (`changes.add: { name, description, model }`): `name` is
+  `[a-z][a-z0-9_-]{0,39}`, not one of Codex's own types (`default`, `explorer`, `worker`), not a
+  Windows device name, and not used by another type file (by file name or `name`); `description`
+  is 1–300 characters with no control characters; `model` is null or checked as above. Pleni writes
+  a new file, never over one, at `<codex root>/agents/<name>.toml`: a first line `PLENI_MARK`, then
+  `name`, `description`, `model` (when given) and a short `developer_instructions`, which Codex
+  needs. No other keys, because Codex drops a type file with a key it does not know.
+- **`src/toml.js`:** `scanToml(text)` finds the statements of a TOML file (table headers, array
+  table headers, and `key = value` lines with bare, quoted or dotted keys) and skips over strings
+  of all four kinds, arrays and inline tables, which may run over lines, and comments. It answers
+  `{ ok: false }` for anything it does not understand. `tomlText(items, path)` reads a one-line
+  string. `setTomlText(text, path, value)` changes only the value of an existing line (a comment
+  after it stays), or adds a line after the table's header, or after the last top-level value, or
+  in a new table at the end (a dotted line when dotted keys made the table). `removeTomlKey` takes
+  out the whole line. Neither touches a key that is there twice, holds something other than a
+  one-line string, or sits inside an inline table or an array of tables, and both keep CRLF line
+  breaks and a BOM. A path is one key, or a table and a key.
+
 ## Server (`src/server.js`)
 
 ```js
 export function newKey()  // -> 43 random base64url characters (32 bytes)
-export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess })  // -> http.Server
+export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess, github, modelSaver })  // -> http.Server
 export function keyFile(settingsPath)  // -> the "key" file next to the settings file
 export function readKeyFile(file, { tries, pause, read })  // -> { key } | { missing: true } | { problem: 'damaged' | <error code> }
 export function keyFileError(file, problem)  // -> Error with code 'PLENI_KEY_FILE' and a plain message
@@ -905,7 +984,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`,
   `POST /api/placement`, `POST /api/dismiss`, `POST /api/watch`, `POST /api/open`,
   `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`, `POST /api/new`, `POST /api/teleport`,
-  `GET /api/devices`, `GET /api/github`, `POST /api/github/merge`, `GET /api/mail`.
+  `GET /api/devices`, `GET /api/github`, `POST /api/github/merge`, `GET /api/mail`,
+  `GET /api/models`, `POST /api/models`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
 - `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
   them the same way (`snapshotTag`) for a store that did not. Its answers, `304` included, carry
@@ -966,6 +1046,15 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   relay's `owner_name`, `owner`, the name in Settings). `text` is the whole message (at most 64 KB),
   null when `content` is `none`. The mailbox source reads these files only for this request
   (`source.mail({ keys, all })`), never on a poll; the demo makes them from its own mail.
+- **GET /api/models** needs the key cookie. It answers `{ edit, here, demo, codex }`: `edit` is
+  `settings.models.edit`, `here` whether the request is from this computer (like `/api/open`), and
+  `codex` is `readCodexModels` for `roots.codex`, with the models of the Codex sessions on the map
+  (reviewers left out), or `demoModels()` in the demo. It only reads.
+- **POST /api/models** `{ tag, sergeant?, worker?, types?, add? }` passes the same checks as
+  `/api/open` (this computer only), needs `settings.models.edit` (`403` otherwise), and is refused in
+  the demo (`409`). `createModelSaver().save` makes the rest, with `backupDir` the `backups` folder
+  next to the settings file, and its answer is sent with the status it gives.
+  `createServer({ modelSaver })` lets tests replace it.
 - **POST /api/github/merge** `{ repo, number, head }` passes the same checks as `/api/open` (this
   computer only), needs `github.live` and `github.merge` (`403` otherwise), and is refused in the
   demo (`409`). `github.merge` makes the rest, with `settings.github.mergeMethod` and the
@@ -984,8 +1073,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 
 - Hash routes: `#/` map (default), `#/list`, `#/activity`, `#/tasks` (only with a mailbox),
   `#/pulls` (shown in the menu only when a session on the map is in a GitHub repository),
-  `#/settings`, and `#/settings/<group>` for one group of settings (`basics`, `team`, `sources`,
-  `alerts`, `buttons` or `devices`).
+  `#/settings`, and `#/settings/<group>` for one group of settings (`basics`, `team`, `models`,
+  `sources`, `alerts`, `buttons` or `devices`).
 - **Map:** a left-to-right tidy tree of tiles (`W 268 × H 128`, gaps 96 × 22, padding 48) joined by
   rounded orthogonal lines. A line glows while its edge is `active`; three small packets travel down
   (planner/parent → child, teal) or up (child → parent, purple). Pan with drag, zoom with Ctrl+wheel,
@@ -1064,10 +1153,10 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   later keeps it.
 - **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. Under the Settings
   title, the page says which version runs ("This is Pleni 0.1.0 (commit 0c5808a)."). The form is
-  split into six groups, shown as tabs (`role="tablist"`; arrow keys, Home and End move between
+  split into seven groups, shown as tabs (`role="tablist"`; arrow keys, Home and End move between
   them): **Basics** (You and the map; What the page shows, with Finished for, Call a turn stuck
   after and Reviewers folded under **More choices**), **Team** (Names and roles, Chain of command,
-  Projects, Ranks by model with its words folded), **Sources** (Where Pleni looks, Mailbox,
+  Projects, Ranks by model with its words folded), **Models** (Codex models, see below), **Sources** (Where Pleni looks, Mailbox,
   GitHub: Live GitHub status, Merge button, How to merge),
   **Alerts** (Needs you, with `alerts.stoppedMinutes` and the Pop-ups box; Roll over soon, with
   the three `rollSoon` limits), **Buttons** (Open sessions: Open in PowerShell, New agent, Bring a
@@ -1092,6 +1181,22 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   first bad field in the open group, or else the first one, after opening its group and fold.
   Nothing is sent. After a save, the page compares what the server saved with what it sent and
   names any value the server had to change; the port message uses the saved port.
+- **Settings → Models:** the **Change models** box is `models.edit`, saved with the other
+  settings. Under it, the page asks `GET /api/models` when the group opens (and **Look again**),
+  and shows where Codex keeps its settings, then menus for **Sergeants and new threads** (Model,
+  with "Codex default"; Effort, with "Codex default"), **Workers** (Model, with "Same as its
+  sergeant"; Effort, with "The sergeant chooses"), and a table of **Worker types** (type and file,
+  when a sergeant uses it, Model with "Same as other workers", Effort with "The sergeant chooses";
+  at phone width each type is a card with its cells named). An effort menu offers the levels its
+  model takes, from Codex's list, else every level. A model menu offers `codex.models`; without
+  Codex's list it adds **Another model…**, which opens a box for a model name. The menus are off
+  unless `edit` and `here` are both true, and a note says why. The section keeps its own copy of
+  the values, apart from the other settings, and **Save to Codex** posts only what changed, with
+  `tag` (null for "Codex default" and the like). **Add a worker type** (a fold, which stays open
+  through a repaint) posts `add` with a name, when a sergeant uses it, and a model. Each answer
+  shows next to the buttons and is read out, and the section asks again after it; a line Pleni
+  will not change says so under its menu. Enter in the section never saves the whole form, and the
+  main Save settings button saves the box but no model line.
 - **Version:** the app bar shows the version beside the name (hidden at phone width, like the name;
   its tooltip adds the commit). The page keeps the first `X-Pleni-Version` and `X-Pleni-Build` it
   gets; when a later snapshot answer carries others, Pleni was updated and started again, and a
@@ -1157,4 +1262,7 @@ person writes to "Sales tax research", and "Sales tax research" has sent the per
 question that waits. It is used by `node bin/pleni.js --demo`, the screenshots and the
 tests, so that no real session data is ever needed to show Pleni. With live GitHub status on, the
 demo shows made-up pull requests for its two repositories (`demoGithub(repos, now)`, in the shape
-`src/github.js` gives, run through `parsePulls`); merging them is refused.
+`src/github.js` gives, run through `parsePulls`); merging them is refused. Settings → Models shows
+made-up Codex settings (`demoModels()`, in the shape `readCodexModels` gives): sergeants on GPT-6.1 Sol
+at high effort, workers on GPT-6 Astra, and two worker types; saving them is refused. Each scripted
+letter is kept once, at the last time the loop sent it, so the Mail page shows no copies.

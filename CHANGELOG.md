@@ -31,6 +31,13 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- A **Models** page (Settings → Models): see and change the model and effort your Codex agents
+  start with. Sergeants and new threads get one model and effort; workers get theirs when their
+  sergeant does not pick; and **worker types** let a sergeant pick a model by the kind of work.
+  The menus list the models Codex offers you, so new models show up on their own, and each effort
+  menu lists only what its model takes. Changing them is off until you turn it on. **Save to
+  Codex** changes only those lines in Codex's settings file, on this computer, after Pleni keeps a
+  copy of the old file in its own `backups` folder.
 - A **Mail** page: read every message between you and your agents in full, newest first, with the
   new ones marked and the PowerShell command that answers each one. **All mail** shows the mail
   between your agents too. **Mark all as read** changes only what Pleni shows; the mail files stay
