@@ -341,6 +341,18 @@ If you enrolled by id (`-SessionId`, `-ThreadId`), the relay never switches. Run
 This copies only the scripts. Your settings files, your templates, and the coordinator's files stay
 as they are.
 
+To get new standing orders for the coordinator too, such as order 13 (choose a model and an effort
+for every worker), copy `COORDINATOR.md` and the worker brief. The first line keeps your old orders
+as `CLAUDE.md.old`, in case you changed them yourself:
+
+```powershell
+Copy-Item -Force "$mb\CLAUDE.md" "$mb\CLAUDE.md.old"
+Copy-Item -Force "$repo\relay\COORDINATOR.md" "$mb\CLAUDE.md"
+Copy-Item -Force "$repo\relay\templates\worker-brief.md" "$mb\templates\"
+```
+
+Then roll the coordinator over, so it surely reads them: a new session always reads `CLAUDE.md`.
+
 ## Test it
 
 ```powershell

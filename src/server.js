@@ -19,8 +19,8 @@ import { snapshotTag } from './model.js';
 import { openLimits, openSession } from './open.js';
 import { newAgent, teleport } from './newagent.js';
 import { GITHUB_MESSAGES, createGithub } from './github.js';
-import { MODELS_MESSAGES, createModelSaver, readCodexModels } from './models.js';
-import { demoGithub, demoModels } from './demo.js';
+import { MODELS_MESSAGES, createModelSaver, readClaudeModels, readCodexModels } from './models.js';
+import { demoClaudeModels, demoGithub, demoModels } from './demo.js';
 import { rollover, rolloverInfo } from './rollover.js';
 
 const BIND_HOST = '127.0.0.1';
@@ -721,19 +721,21 @@ async function postMerge(app, req, res, host) {
   return sendError(req, res, result.status, result.error);
 }
 
-// The Models page: { edit, here, demo, codex } where `codex` is what Codex's settings say about
-// models and effort (src/models.js). `edit` is settings.models.edit; Save to Codex works only when
+// The Models page: { edit, here, demo, codex, claude }, what Codex's and Claude Code's settings say
+// about models and effort (src/models.js). `edit` is settings.models.edit; saving works only when
 // `here` (this computer) is true as well.
 function sendModels(app, req, res, host) {
   const state = app.readSettings();
   const base = { edit: state.settings.models?.edit === true, here: isLocalRequest(host, req), demo: app.store.demo === true };
-  const codex = app.store.demo ? demoModels() : readCodexModels({ root: state.roots?.codex ?? null, seen: codexModelsOnMap(app.store) });
-  return sendJson(req, res, 200, { ...base, codex });
+  if (app.store.demo) return sendJson(req, res, 200, { ...base, codex: demoModels(), claude: demoClaudeModels() });
+  const codex = readCodexModels({ root: state.roots?.codex ?? null, seen: modelsOnMap(app.store, 'codex') });
+  const claude = readClaudeModels({ root: state.roots?.claude ?? null, seen: modelsOnMap(app.store, 'claude') });
+  return sendJson(req, res, 200, { ...base, codex, claude });
 }
 
-// Save to Codex: { tag, sergeant?, worker?, types?, add? }. Only on this computer and with
-// settings.models.edit on; src/models.js makes the other checks and keeps a copy of each file it
-// changes, in a "backups" folder next to Pleni's settings.
+// Save to Codex or Save to Claude Code: { app: 'codex' | 'claude', tag, sergeant?, worker?, types?,
+// add? }. Only on this computer and with settings.models.edit on; src/models.js makes the other
+// checks and keeps a copy of each file it changes, in a "backups" folder next to Pleni's settings.
 async function postModels(app, req, res, host) {
   const body = await readJsonPost(req, res, host);
   if (body === undefined) return undefined;
@@ -741,8 +743,10 @@ async function postModels(app, req, res, host) {
   const state = app.readSettings();
   if (state.settings.models?.edit !== true) return sendError(req, res, 403, MODELS_MESSAGES.off);
   if (app.store.demo) return sendError(req, res, 409, MODELS_MESSAGES.demo);
+  const which = body.app === 'claude' ? 'claude' : 'codex';
   const result = app.models.save({
-    root: state.roots?.codex ?? null,
+    app: which,
+    root: state.roots?.[which] ?? null,
     backupDir: path.join(path.dirname(state.file ?? settingsFile()), 'backups'),
     tag: body.tag,
     changes: { sergeant: body.sergeant, worker: body.worker, types: body.types, add: body.add },
@@ -751,11 +755,11 @@ async function postModels(app, req, res, host) {
   return sendError(req, res, result.status, result.error);
 }
 
-// The models of the Codex sessions on the map, most used first, leaving out Codex's reviewers.
-function codexModelsOnMap(store) {
+// The models of one tool's sessions on the map, most used first, leaving out Codex's reviewers.
+function modelsOnMap(store, platform) {
   const count = new Map();
   for (const n of store.snapshot()?.nodes ?? []) {
-    if (n?.platform !== 'codex' || n.kind === 'reviewer' || typeof n.model !== 'string') continue;
+    if (n?.platform !== platform || n.kind === 'reviewer' || typeof n.model !== 'string') continue;
     count.set(n.model, (count.get(n.model) ?? 0) + 1);
   }
   return [...count].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([model]) => model);

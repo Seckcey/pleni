@@ -686,6 +686,31 @@ test('sub-agents: meta files, nested parents, background and workflow agents, do
   assert.deepEqual(get('a3').links, []);
 });
 
+test('a sub-agent shows its worker type and whether its model and effort were chosen for it', (t) => {
+  const env = setup(t);
+  const at = (m) => env.ago(m * MIN);
+  write(sessionPath(env.root), [user(at(20), 'Start the helpers'), assistant(at(19), [text('Started them.')])]);
+  const agent = (id, meta, records = [user(at(18), 'work'), assistant(at(17), [text('Done.')], { model: 'claude-sonnet-5-5' })]) => {
+    write(agentPath(env.root, id), records);
+    writeMeta(env.root, id, meta);
+  };
+  agent('d1', { agentType: 'general-purpose', description: 'Nothing chosen', launchedWithDefaults: true });
+  agent('d2', { agentType: 'Explore', description: 'Both chosen', model: 'haiku', effort: 'low' }, [user(at(18), 'look')]);
+  agent('d3', { agentType: 'coder', description: 'Effort only', launchedWithDefaults: true, effort: 'high' });
+  agent('d4', { agentType: 'fork', description: 'A fork', model: 'inherit' }, [user(at(18), 'go on')]);
+  agent('d5', { agentType: 'general-purpose', description: 'Older Claude Code' });
+
+  const res = env.poll();
+  const get = (id) => res.sessions.find((s) => s.key === keyOf(SID, id));
+  assert.deepEqual([get('d1').workerType, get('d1').chosen], ['general-purpose', { model: false, effort: false }]);
+  assert.deepEqual([get('d2').chosen, get('d2').model], [{ model: true, effort: true }, 'haiku'], 'the chosen model shows before the first answer');
+  assert.deepEqual(get('d3').chosen, { model: false, effort: true });
+  assert.deepEqual([get('d4').chosen, get('d4').model], [{ model: false, effort: false }, null], "a fork runs on its parent's model");
+  assert.equal(get('d5').chosen, null, 'an older meta file does not say');
+  assert.equal(get('d5').workerType, 'general-purpose');
+  assert.deepEqual([get(null).workerType, get(null).chosen], [null, null]);
+});
+
 test('a sub-agent the parent heard back from is done, even when its file looks open', (t) => {
   const env = setup(t);
   const at = (m) => env.ago(m * MIN);

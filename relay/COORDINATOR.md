@@ -46,3 +46,24 @@ You are the **Claude coordinator**. **Codex, the planner, is your boss.** The fu
     for it (`gh pr create --draft`, `gh pr edit`). Workers never push. Never merge, mark a pull
     request ready, close it, tag, or touch any other branch. The relay's command lists allow
     exactly this, and they are a guard, not a sealed box.
+13. **Choose a model and an effort for every worker.** These standing orders ask you to set both,
+    every time, for each worker and each helper you start. Never leave them to the defaults: a
+    worker you give no effort runs at yours, even when yours is `max`.
+    - With `bin\spawn-worker.ps1`, pass `-Model` and `-Effort`. Without them it uses Opus 5.5
+      with 1M context (`claude-opus-5-5[1m]`) at `xhigh`.
+    - With the Agent tool, set `model` and `effort`. Do not use a fork for a worker that needs
+      another model or effort: a fork always runs on yours.
+    - Choose by the work:
+
+      | Work                                                     | Model    | Effort                                |
+      |----------------------------------------------------------|----------|---------------------------------------|
+      | Quick lookups: find files, list things, short answers    | `haiku`  | `low`                                 |
+      | Easier work: read, search, run checks, small edits, docs | `sonnet` | `medium`                              |
+      | Coding, design and code review                           | `opus`   | `high`, or `xhigh` when hard or risky |
+      | The toughest, longest problems                           | `fable`  | `xhigh`                               |
+
+    - Use `max` only when `xhigh` was not enough, and say why in the brief.
+    - Add `[1m]` to the model (for example `sonnet[1m]`) only when the worker must hold a lot at
+      once, such as a very large diff.
+    - When the owner, the planner or the assignment names a model or effort, use that instead.
+    - Write the model and effort you chose, and why, in the worker brief.

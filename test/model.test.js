@@ -372,11 +372,27 @@ test('nodes carry tier, model label and session fields', () => {
   assert.equal(node(s, 'you').tier, null);
   assert.deepEqual(Object.keys(lead), [
     'key', 'parent', 'platform', 'kind', 'title', 'subtitle', 'rank', 'role', 'tier', 'model', 'modelLabel',
-    'effort', 'status', 'startedAt', 'lastAt', 'activity', 'lastText', 'needs', 'project', 'projectLabel', 'entrypoint',
+    'effort', 'workerType', 'chosen', 'status', 'startedAt', 'lastAt', 'activity', 'lastText', 'needs', 'project', 'projectLabel', 'entrypoint',
     'hidden', 'archived', 'named', 'placement', 'memory', 'rollSoon', 'github', 'mail', 'watched',
   ]);
   assert.deepEqual(Object.keys(node(s, 'you')), Object.keys(lead));
   assert.deepEqual(Object.keys(node(s, 'project:alpha')), Object.keys(lead));
+});
+
+test('a worker carries its type and whether its model and effort were chosen for it', () => {
+  const s = snap({
+    claude: [
+      session(LEAD),
+      session(HELPER, { parentKey: LEAD, kind: 'agent', workerType: 'general-purpose', chosen: { model: true, effort: 'yes' } }),
+      session(CHILD, { parentKey: LEAD, kind: 'agent', workerType: 7, chosen: 'both' }),
+    ],
+  });
+  assert.equal(node(s, HELPER).workerType, 'general-purpose');
+  assert.deepEqual(node(s, HELPER).chosen, { model: true, effort: false }, 'only true counts as chosen');
+  assert.equal(node(s, CHILD).workerType, null);
+  assert.equal(node(s, CHILD).chosen, null, 'a value that is not an object is unknown');
+  assert.equal(node(s, LEAD).chosen, null);
+  assert.equal(node(s, 'you').chosen, null);
 });
 
 test('a session in a GitHub repository carries owner/name; a named one is kept; other tiles have none', (t) => {

@@ -6,8 +6,8 @@ browser as an organization map with the hand-offs between agents drawn as moving
 
 Version 0.1 mostly **watches**. It never stops or changes a session, and it never writes into
 Claude Code's, Codex's or a mailbox's folders, except for one opt-in change: with **Change models**
-turned on (off by default), the Models page changes the model and effort lines in Codex's settings
-after the person chooses Save to Codex (see `src/models.js` below). What it may start is a window the person asks for:
+turned on (off by default), the Models page changes the model and effort values in Codex's and
+Claude Code's settings after the person chooses Save (see `src/models.js` below). What it may start is a window the person asks for:
 with **Open in PowerShell** turned on (off by default, Windows only), a button opens a PowerShell
 window that runs `claude --resume` or `codex resume` for one Claude Code session or Codex thread,
 and the person types there (see `src/open.js` below). With **Roll over** turned on (also off by
@@ -33,8 +33,8 @@ Sending other work and approving actions come later and will get their own desig
 - **Only the person who started it.** Every account on the computer can reach `127.0.0.1`, so the
   API also needs a random key made at each start and printed in Pleni's address (see Server).
 - **Read-only.** Pleni reads; it does not write anywhere on this computer except its own settings
-  file, and, with the opt-in Models page, the model and effort lines in Codex's `config.toml` and
-  the worker type files in Codex's `agents` folder (see Models). It starts no program except the opt-in Open in PowerShell, Roll over, New agent and Bring a
+  file, and, with the opt-in Models page, the model and effort values in Codex's `config.toml` and
+  Claude Code's `settings.json`, and the worker type files in their `agents` folders (see Models). It starts no program except the opt-in Open in PowerShell, Roll over, New agent and Bring a
   cloud session here windows, only when the person clicks for one, and the GitHub CLI (`gh`) for
   the opt-in Live GitHub status. The only messages it sends are Roll over's two fixed ones, and the
   only change it makes elsewhere is a merge on GitHub that the person confirms.
@@ -65,8 +65,9 @@ src/open.js             Open in PowerShell: a Claude Code session or Codex threa
 src/rollover.js         Roll over: a handoff note from a long session, then a new one with its name (opt-in, Windows)
 src/newagent.js         New agent: a new named session in the folder of one on the map (opt-in, Windows)
 src/github.js           Live GitHub status and Merge, through the GitHub CLI, gh (opt-in)
-src/models.js           the Models page: Codex's model and effort lines, read always, changed on request (opt-in)
+src/models.js           the Models page: Codex's and Claude Code's models and effort, read always, changed on request (opt-in)
 src/toml.js             a small TOML reader and one-line editor for src/models.js
+src/frontmatter.js      a small reader and line editor for the settings block of a Claude Code agent file
 src/demo.js             synthetic, moving demo data (no files needed)
 src/server.js           HTTP server, security gate, routes
 public/index.html       the page (no inline script or style)
@@ -108,7 +109,7 @@ export const DEFAULTS = {
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
   actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false }, // the window buttons; each true only when set to true
   github: { live: false, merge: false, mergeMethod: 'squash' }, // Live GitHub status, the Merge button, 'squash' | 'merge' | 'rebase'
-  models: { edit: false },                             // the Models page may change Codex's model lines (this computer only)
+  models: { edit: false },                             // the Models page may change Codex's and Claude Code's model settings (this computer only)
   alerts: { stoppedMinutes: 15 },                      // a watched tile counts as stopped after this long without work
   rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 }, // "Roll over soon" limits (0-100, 0-100, 0-365); 0 turns one off
 }
@@ -190,6 +191,9 @@ Session = {
   entrypoint: string | null,// claude: 'claude-desktop' | 'claude-vscode' | 'cli' | 'sdk-cli'; codex: originator
   model: string | null,
   effort: string | null,
+  workerType: string | null,  // claude sub-agents: the meta agentType ('general-purpose', 'Explore', a type from an agents folder); else null
+  chosen: { model: boolean, effort: boolean } | null,  // claude sub-agents: whether the session that started it chose
+                            // its model and its effort; null when the meta file does not say, and elsewhere
   mode: string | null,      // claude main sessions: the newest turn's permissionMode
                             // (default, acceptEdits, plan, auto, bypassPermissions, dontAsk); else null
   startedAt: number | null,
@@ -235,7 +239,13 @@ export function createClaudeSource({ root, desktopRoot, settings, now = Date.now
   track files modified within `recentHours`.
 - Sub-agents: `<root>/projects/<enc>/<sessionId>/subagents/agent-<agentId>.jsonl` with
   `agent-<agentId>.meta.json` (`agentType`, `description`, `toolUseId`, `spawnDepth`,
-  `parentAgentId`, `model`). Workflow agents live in
+  `parentAgentId`, `model`, `effort`, `launchedWithDefaults`). Claude Code writes `model` and
+  `effort` only when the session that started the agent chose them (`model` is the name it asked
+  for, such as `haiku`; a fork's is `inherit`, since a fork runs on its parent's model and effort),
+  and `launchedWithDefaults: true` when no model was chosen. So `chosen` is `{ model, effort }`
+  from those, `{ model: false, effort: false }` for a fork, and null when the file has none of
+  them (older Claude Code). The meta `model` is the agent's model until its own records name one,
+  except `inherit`. `workerType` is `agentType`. Workflow agents live in
   `subagents/workflows/<runId>/agent-*.jsonl`; their labels are in that folder's `journal.jsonl`
   `started` records (`agentId`, `label`). A sub-agent's key is `claude:<sessionId>/<agentId>`; its
   parent is `claude:<sessionId>/<parentAgentId>` when nested, else `claude:<sessionId>`.
@@ -465,6 +475,7 @@ Node = {
   kind: 'person' | 'project' | 'session' | 'agent' | 'reviewer',
   title, subtitle, rank, role, tier: 'senior' | 'junior' | null,
   model, modelLabel, effort, status, startedAt, lastAt, activity, lastText,
+  workerType, chosen, // a Claude Code sub-agent's type, and whether its model and effort were chosen for it (Session); else null
   project, entrypoint, hidden, archived,
   memory,   // main Claude Code session or Codex thread: { used, size, percent, squeezes, squeezesAtLeast, squeezedAt }, else null
   rollSoon, // plain reasons it is due for a roll over ('Memory 87% full', 'Squeezed 3 times', '9 days old'), else null
@@ -852,20 +863,23 @@ export const GITHUB_MESSAGES, MAX_REPOS /* 12 */, MERGE_METHODS /* ['squash', 'm
   `--admin`, `--auto` or `--delete-branch`. After a merge, the next look asks GitHub again. It
   answers `{ ok: true }` or `{ ok: false, status, error }`.
 
-## Models (`src/models.js`, `src/toml.js`)
+## Models (`src/models.js`, `src/toml.js`, `src/frontmatter.js`)
 
-The Models page shows the model and effort Codex agents start with, and with `settings.models.edit`
-on, changes them on this computer when the person chooses Save to Codex. Codex reads its settings
+The Models page shows the model and effort Codex and Claude Code agents start with, and with
+`settings.models.edit` on, changes them on this computer when the person chooses Save to Codex or
+Save to Claude Code. The Codex part: Codex reads its settings
 when a thread starts, so new threads and the relay's wake-ups (`codex exec resume`, which runs on
 `config.toml`'s model, not the thread's) use a change at once; a running thread keeps what it
 started with. Codex reads a worker type file again each time a worker starts.
 
 ```js
 export function readCodexModels({ root, seen })  // -> CodexModels (reads only)
-export function createModelSaver({ now })         // -> { save({ root, backupDir, tag, changes }) }
+export function readClaudeModels({ root, seen, env })  // -> ClaudeModels (reads only)
+export function createModelSaver({ now })         // -> { save({ app: 'codex' | 'claude', root, backupDir, tag, changes }) }
 export function readCatalog(root)                 // -> [{ id, label, efforts, defaultEffort, hidden }]
 export function modelChoices(catalog, seen, set)  // -> the models the page offers
 export const EFFORTS /* ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] */, MODELS_MESSAGES, PLENI_MARK
+export const CLAUDE_EFFORTS /* ['low', 'medium', 'high', 'xhigh'] */, CLAUDE_TYPE_EFFORTS /* + 'max' */, CLAUDE_ALIASES, CLAUDE_MESSAGES
 
 // CodexModels
 {
@@ -903,7 +917,7 @@ export const EFFORTS /* ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] */, M
   the model of a pair is on the list, its effort must be one that model takes. null takes the line
   out. All new file texts are worked out first with `setTomlText` and `removeTomlKey`, then read
   back with `scanToml`; a line Pleni does not change (see below) refuses the whole save (`409`).
-  Then each old file is copied to `<backupDir>/codex-<name>-<yyyyMMdd-HHmmss>.toml` (the newest 20
+  Then each old file is copied to `<backupDir>/<app>-<name>-<yyyyMMdd-HHmmss><ext>` (the newest 20
   of each are kept), and each file is checked once more against the bytes Pleni read and written
   through a temp file in the same folder and `renameWithRetry`. It answers `{ ok: true, files,
   backups }` or `{ ok: false, status, error, files }` (`files`: those already written).
@@ -924,6 +938,54 @@ export const EFFORTS /* ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] */, M
   out the whole line. Neither touches a key that is there twice, holds something other than a
   one-line string, or sits inside an inline table or an array of tables, and both keep CRLF line
   breaks and a BOM. A path is one key, or a table and a key.
+
+The Claude Code part. Claude Code reads its settings when a session starts, so new sessions use a
+change; it reads an agent file again within a few seconds.
+
+```js
+// ClaudeModels: the CodexModels shape, with listed: false, worker.effort: null, and
+{
+  efforts,               // CLAUDE_EFFORTS: what settings.json keeps for a model (max lasts one session only)
+  typeEfforts,           // CLAUDE_TYPE_EFFORTS: what an agent file may name
+  modelEfforts,          // { [model on the list]: the effort Claude Code keeps for it }
+  notes,                 // settings that win over the page, in plain words
+}
+```
+
+- **Files:** `<claude root>/settings.json` (the root `resolveRoots` gives, `$CLAUDE_CONFIG_DIR` or
+  `~/.claude`), read whole as JSON (at most 256 KB; `{}` when it is not there yet), and the worker
+  types: every `*.md` in `<claude root>/agents/` and in folders in it, like Codex's.
+- **What is read:** the sergeant's model is `model`; its effort is the `effortLevel` Claude Code
+  keeps for that model under `modelSettings` (where `/effort` keeps it). For a short name such as
+  `opus`, an entry under a full name of the same kind (`claude-opus-5-5`; the kind is the first of
+  fable, opus, sonnet or haiku in the name) comes first, as Claude Code reads it. The worker model
+  is `env.CLAUDE_CODE_SUBAGENT_MODEL`. Claude Code has no setting for a worker's effort, so there is
+  none: a worker its sergeant gives no effort gets its type's, else the sergeant's own. A worker type's `name`, `description`, `model` and `effort` come from the settings block at
+  the top of its file (`src/frontmatter.js`); a file without one is shown with an error.
+- **Notes:** `ANTHROPIC_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL` and `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`,
+  in the `env` block or in Pleni's own environment, win over what the page sets, so each one that is
+  set (and not 0, false, no or off) adds a note. Only these three names are read.
+- **Model list:** Claude Code keeps none on this computer. The page offers its short names (fable,
+  opus, sonnet, haiku, "…, the newest"), which always point at its newest models, then the models
+  of the Claude Code sessions on the map, then any model a value names, and lets the person type a
+  name. A model name is `[A-Za-z0-9][A-Za-z0-9._:/@+[\]-]{0,99}`.
+- **Saving** (`app: 'claude'`): the same limits, tag check, copies and writing as Codex. The JSON
+  is changed as an object and written back with the old file's indent, line breaks, BOM and last
+  line break, every other key kept, then read back. A sergeant effort needs a sergeant model
+  (`400` otherwise) and is one of `CLAUDE_EFFORTS`; it is set in `modelSettings.<model>`, and for a
+  short name also in each entry of the same kind that holds an effort; null takes it out of them.
+  Entries, `modelSettings` and `env` left empty are dropped. `worker.effort` is refused (`400`). A
+  type's `model` and `effort` lines are changed with `setFrontmatterValue` and
+  `removeFrontmatterKey`, `effort` one of `CLAUDE_TYPE_EFFORTS`. A new type is
+  `<claude root>/agents/<name>.md` with a settings block (`name`, `description`, `model` when given)
+  and a one-line instruction, under the same name rules as Codex, but not one of Claude Code's own
+  agents (`general-purpose`, `explore`, `plan`, `statusline-setup`, `claude-code-guide`, `fork`).
+- **`src/frontmatter.js`:** `scanFrontmatter(text)` reads the block between a first `---` line and
+  the next one: top-level `key: value` lines, with a plain, single- or double-quoted value and an
+  optional `#` comment. A key followed by indented lines or list items is not simple. It answers
+  `{ ok: false }` for anything else. `frontmatterText`, `setFrontmatterValue` (a new key goes just
+  before the closing `---`) and `removeFrontmatterKey` work like their TOML twins, and `yamlValue`
+  quotes a value YAML would read another way.
 
 ## Server (`src/server.js`)
 
@@ -1046,11 +1108,13 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   relay's `owner_name`, `owner`, the name in Settings). `text` is the whole message (at most 64 KB),
   null when `content` is `none`. The mailbox source reads these files only for this request
   (`source.mail({ keys, all })`), never on a poll; the demo makes them from its own mail.
-- **GET /api/models** needs the key cookie. It answers `{ edit, here, demo, codex }`: `edit` is
-  `settings.models.edit`, `here` whether the request is from this computer (like `/api/open`), and
-  `codex` is `readCodexModels` for `roots.codex`, with the models of the Codex sessions on the map
-  (reviewers left out), or `demoModels()` in the demo. It only reads.
-- **POST /api/models** `{ tag, sergeant?, worker?, types?, add? }` passes the same checks as
+- **GET /api/models** needs the key cookie. It answers `{ edit, here, demo, codex, claude }`:
+  `edit` is `settings.models.edit`, `here` whether the request is from this computer (like
+  `/api/open`), `codex` is `readCodexModels` for `roots.codex` and `claude` is `readClaudeModels`
+  for `roots.claude`, each with the models of that tool's sessions on the map (reviewers left out),
+  or `demoModels()` and `demoClaudeModels()` in the demo. It only reads.
+- **POST /api/models** `{ app: 'codex' | 'claude', tag, sergeant?, worker?, types?, add? }` (`app`
+  is `codex` unless it is `claude`; the root is that tool's) passes the same checks as
   `/api/open` (this computer only), needs `settings.models.edit` (`403` otherwise), and is refused in
   the demo (`409`). `createModelSaver().save` makes the rest, with `backupDir` the `backups` folder
   next to the settings file, and its answer is sent with the status it gives.
@@ -1182,8 +1246,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   Nothing is sent. After a save, the page compares what the server saved with what it sent and
   names any value the server had to change; the port message uses the saved port.
 - **Settings → Models:** the **Change models** box is `models.edit`, saved with the other
-  settings. Under it, the page asks `GET /api/models` when the group opens (and **Look again**),
-  and shows where Codex keeps its settings, then menus for **Sergeants and new threads** (Model,
+  settings. Under it are a **Codex** section and a **Claude Code** section. The page asks
+  `GET /api/models` when the group opens (and **Look again**). Each section shows where its tool
+  keeps its settings and any `notes`, then menus for **Sergeants and new threads** (Model,
   with "Codex default"; Effort, with "Codex default"), **Workers** (Model, with "Same as its
   sergeant"; Effort, with "The sergeant chooses"), and a table of **Worker types** (type and file,
   when a sergeant uses it, Model with "Same as other workers", Effort with "The sergeant chooses";
@@ -1196,7 +1261,12 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   through a repaint) posts `add` with a name, when a sergeant uses it, and a model. Each answer
   shows next to the buttons and is read out, and the section asks again after it; a line Pleni
   will not change says so under its menu. Enter in the section never saves the whole form, and the
-  main Save settings button saves the box but no model line.
+  main Save settings button saves the box but no model line. The Claude Code section is the same,
+  with **Save to Claude Code**, `app: 'claude'`, "Claude Code default", **Another model…** always
+  offered, and these changes: its sergeant Effort is off until a model is picked, and picking a
+  model shows the effort `modelEfforts` holds for it (which counts as a change only when it
+  differs); a worker's Effort row only says that Claude Code has no such setting; and a worker
+  type's Effort offers `typeEfforts`.
 - **Version:** the app bar shows the version beside the name (hidden at phone width, like the name;
   its tooltip adds the commit). The page keeps the first `X-Pleni-Version` and `X-Pleni-Build` it
   gets; when a later snapshot answer carries others, Pleni was updated and started again, and a
@@ -1211,6 +1281,13 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   no mail. Feed lines read "<sender> sent mail to <receiver>", up when the receiver is above the
   sender on the map, else down; a side that is not on the map shows its mail name. A relay wake
   reads "Relay woke <agent>". Working mode shows the relay while one of its lines is lit.
+- **Chosen or default:** where a tile, a List row or the side panel shows a sub-agent's model and
+  effort, a part its sergeant did not choose (`chosen.model` or `chosen.effort` false) ends with
+  "(default)", and both with "(defaults)": "Sonnet 5.5 · max effort (defaults)". The Details tab
+  has Worker type (`workerType`) and Who chose them ("The session that started it", "Nobody: both
+  are defaults", or which one it chose), and under the table, where defaults come from: the worker
+  type's model, else the worker model in Settings > Models, else the model of the session that
+  started it; the worker type's effort, else that session's. Nothing is marked when `chosen` is null.
 - **Roll over soon:** a session whose node has `rollSoon` gets a "Roll over soon" badge on the top
   edge of its tile (the reasons are in the tile's label for screen readers), a "Roll over soon" pill
   in its List row, and a line at the top of its side panel's Now tab: "Roll over soon: Memory 87%
@@ -1264,5 +1341,7 @@ tests, so that no real session data is ever needed to show Pleni. With live GitH
 demo shows made-up pull requests for its two repositories (`demoGithub(repos, now)`, in the shape
 `src/github.js` gives, run through `parsePulls`); merging them is refused. Settings → Models shows
 made-up Codex settings (`demoModels()`, in the shape `readCodexModels` gives): sergeants on GPT-6.1 Sol
-at high effort, workers on GPT-6 Astra, and two worker types; saving them is refused. Each scripted
+at high effort, workers on GPT-6 Astra, and two worker types, and made-up Claude Code settings
+(`demoClaudeModels()`): sergeants on Opus at high effort, workers on Sonnet, and two worker types;
+saving them is refused. Each scripted
 letter is kept once, at the last time the loop sent it, so the Mail page shows no copies.

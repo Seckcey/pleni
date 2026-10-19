@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { EFFORTS, MODELS_MESSAGES, PLENI_MARK, createModelSaver, modelChoices, readCatalog, readCodexModels } from '../src/models.js';
+import { CLAUDE_EFFORTS, CLAUDE_MESSAGES, EFFORTS, MODELS_MESSAGES, PLENI_MARK, createModelSaver, modelChoices, readCatalog, readClaudeModels, readCodexModels } from '../src/models.js';
 
 const CONFIG = [
   '# My Codex settings',
@@ -278,4 +278,139 @@ test('a settings file that is not plain UTF-8 text is never changed', (t) => {
   const done = createModelSaver().save({ root, backupDir: backups, tag: m.tag, changes: { sergeant: { model: 'x' } } });
   assert.equal(done.ok, false);
   assert.ok(fs.readFileSync(path.join(root, 'config.toml')).equals(bytes));
+});
+
+// ---- Claude Code ----
+
+const SETTINGS = {
+  permissions: { allow: ['Bash(npm test)'] },
+  model: 'opus',
+  modelSettings: { 'claude-opus-5-5': { effortLevel: 'medium', autoCompactWindow: 400000 } },
+  env: { DEBUG: '1' },
+};
+const CODER_MD = '---\nname: coder\ndescription: Coding and design work.\nmodel: opus\n---\n\nWrite code.\n';
+
+function claudeFolder(t, { settings = SETTINGS, raw = null, types = {} } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pleni-claude-models-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  if (raw !== null) fs.writeFileSync(path.join(root, 'settings.json'), raw);
+  else if (settings) fs.writeFileSync(path.join(root, 'settings.json'), `${JSON.stringify(settings, null, 2)}\n`);
+  if (Object.keys(types).length) fs.mkdirSync(path.join(root, 'agents'));
+  for (const [name, text] of Object.entries(types)) fs.writeFileSync(path.join(root, 'agents', name), text);
+  const backups = path.join(root, 'pleni-backups');
+  const json = () => JSON.parse(fs.readFileSync(path.join(root, 'settings.json'), 'utf8'));
+  return { root, backups, json, read: (name) => fs.readFileSync(path.join(root, name), 'utf8') };
+}
+
+test("readClaudeModels shows the model, its effort, the worker model, the agents, and what wins over them", (t) => {
+  const settings = { ...SETTINGS, env: { DEBUG: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet', ANTHROPIC_MODEL: 'claude-haiku-5-5' } };
+  const { root } = claudeFolder(t, { settings, types: { 'coder.md': CODER_MD, 'notes.txt': 'x', 'broken.md': 'no block\n' } });
+  const m = readClaudeModels({ root, seen: ['claude-opus-5-5'], env: { CLAUDE_CODE_EFFORT_LEVEL: 'max', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '0' } });
+  assert.equal(m.ok, true, m.error);
+  assert.deepEqual(m.sergeant.model, { value: 'opus', set: true, editable: true });
+  // /effort keeps the effort under the full name, which Claude Code reads first for opus.
+  assert.deepEqual(m.sergeant.effort, { value: 'medium', set: true, editable: true });
+  assert.deepEqual(m.worker, { model: { value: 'sonnet', set: true, editable: true }, effort: null });
+  assert.deepEqual(m.types.map((x) => [x.file, x.name, x.model?.value ?? null, x.error]), [
+    ['broken.md', null, null, CLAUDE_MESSAGES.noBlock],
+    ['coder.md', 'coder', 'opus', null],
+  ]);
+  assert.deepEqual(m.models.map((x) => x.id), ['fable', 'opus', 'sonnet', 'haiku', 'claude-opus-5-5']);
+  assert.equal(m.models[1].label, 'Opus, the newest');
+  assert.deepEqual(m.modelEfforts, { opus: 'medium', 'claude-opus-5-5': 'medium' });
+  assert.deepEqual(m.efforts, CLAUDE_EFFORTS);
+  assert.equal(m.notes.length, 2);
+  assert.match(m.notes[0], /ANTHROPIC_MODEL is set to claude-haiku-5-5/);
+  assert.match(m.notes[1], /CLAUDE_CODE_EFFORT_LEVEL is set to max/);
+});
+
+test('readClaudeModels works before Claude Code has a settings file, and says when it cannot read one', (t) => {
+  const none = claudeFolder(t, { settings: null });
+  const fresh = readClaudeModels({ root: none.root, seen: [], env: {} });
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.found, false);
+  assert.deepEqual(fresh.sergeant.effort, { value: null, set: false, editable: true });
+  const broken = claudeFolder(t, { raw: '{ "model": "opus", }' });
+  assert.equal(readClaudeModels({ root: broken.root, env: {} }).error, CLAUDE_MESSAGES.unreadable);
+  assert.equal(readClaudeModels({ root: null }).error, CLAUDE_MESSAGES.noRoot);
+});
+
+test("saving Claude Code's sergeant model and effort keeps every other setting, after a copy", (t) => {
+  const { root, backups, json, read } = claudeFolder(t);
+  const saver = createModelSaver({ now: () => Date.UTC(2026, 9, 19, 12, 0, 0) });
+  const { tag } = readClaudeModels({ root, env: {} });
+  const done = saver.save({ app: 'claude', root, backupDir: backups, tag, changes: { sergeant: { effort: 'high' } } });
+  assert.equal(done.ok, true, done.error);
+  // Both entries Claude Code reads for opus get the new effort; the other value in it stays.
+  assert.deepEqual(json(), {
+    ...SETTINGS,
+    modelSettings: { 'claude-opus-5-5': { effortLevel: 'high', autoCompactWindow: 400000 }, opus: { effortLevel: 'high' } },
+  });
+  assert.equal(read('settings.json'), `${JSON.stringify(json(), null, 2)}\n`);
+  assert.match(path.basename(done.backups[0]), /^claude-settings-\d{8}-\d{6}\.json$/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(done.backups[0], 'utf8')), SETTINGS);
+  // A full model name gets its own entry; null takes the effort out and drops empty entries.
+  const next = readClaudeModels({ root, env: {} });
+  const again = saver.save({ app: 'claude', root, backupDir: backups, tag: next.tag, changes: { sergeant: { model: 'claude-sonnet-5-5', effort: 'xhigh' } } });
+  assert.equal(again.ok, true, again.error);
+  assert.equal(json().model, 'claude-sonnet-5-5');
+  assert.deepEqual(json().modelSettings['claude-sonnet-5-5'], { effortLevel: 'xhigh' });
+  const off = saver.save({ app: 'claude', root, backupDir: backups, tag: readClaudeModels({ root, env: {} }).tag, changes: { sergeant: { model: 'opus', effort: null } } });
+  assert.equal(off.ok, true, off.error);
+  assert.deepEqual(json().modelSettings, { 'claude-opus-5-5': { autoCompactWindow: 400000 }, 'claude-sonnet-5-5': { effortLevel: 'xhigh' } });
+});
+
+test("Claude Code's worker model lives in the env block, and a worker has no effort of its own", (t) => {
+  const { root, backups, json } = claudeFolder(t);
+  const saver = createModelSaver();
+  const tryIt = (changes) => saver.save({ app: 'claude', root, backupDir: backups, tag: readClaudeModels({ root, env: {} }).tag, changes });
+  assert.equal(tryIt({ worker: { effort: 'high' } }).error, CLAUDE_MESSAGES.noWorkerEffort);
+  assert.equal(tryIt({ worker: { model: 'sonnet' } }).ok, true);
+  assert.deepEqual(json().env, { DEBUG: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' });
+  assert.equal(tryIt({ worker: { model: null } }).ok, true);
+  assert.deepEqual(json().env, { DEBUG: '1' });
+  assert.equal(tryIt({ sergeant: { model: null, effort: 'high' } }).error, CLAUDE_MESSAGES.needModel);
+  assert.equal(tryIt({ sergeant: { model: 'opus "x"' } }).error, CLAUDE_MESSAGES.badModel);
+  assert.equal(tryIt({ sergeant: { effort: 'max' } }).error, CLAUDE_MESSAGES.badEffort, 'max lasts one session only');
+  const empty = claudeFolder(t, { settings: { model: 'opus' } });
+  const first = saver.save({ app: 'claude', root: empty.root, backupDir: empty.backups, tag: readClaudeModels({ root: empty.root, env: {} }).tag, changes: { worker: { model: 'haiku' } } });
+  assert.equal(first.ok, true, first.error);
+  assert.deepEqual(empty.json(), { model: 'opus', env: { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' } });
+  const back = saver.save({ app: 'claude', root: empty.root, backupDir: empty.backups, tag: readClaudeModels({ root: empty.root, env: {} }).tag, changes: { worker: { model: null } } });
+  assert.equal(back.ok, true);
+  assert.deepEqual(empty.json(), { model: 'opus' });
+});
+
+test("Claude Code's settings keep their indent and line breaks, and a stale page or a broken file changes nothing", (t) => {
+  const raw = '{\r\n\t"model": "opus",\r\n\t"theme": "dark"\r\n}';
+  const { root, backups, read } = claudeFolder(t, { raw });
+  const saver = createModelSaver();
+  const { tag } = readClaudeModels({ root, env: {} });
+  fs.writeFileSync(path.join(root, 'settings.json'), raw.replace('dark', 'light'));
+  assert.equal(saver.save({ app: 'claude', root, backupDir: backups, tag, changes: { sergeant: { model: 'sonnet' } } }).error, CLAUDE_MESSAGES.changed);
+  const done = saver.save({ app: 'claude', root, backupDir: backups, tag: readClaudeModels({ root, env: {} }).tag, changes: { sergeant: { model: 'sonnet' } } });
+  assert.equal(done.ok, true, done.error);
+  assert.equal(read('settings.json'), '{\r\n\t"model": "sonnet",\r\n\t"theme": "light"\r\n}');
+  const broken = claudeFolder(t, { raw: '{ "model": ' });
+  const refused = saver.save({ app: 'claude', root: broken.root, backupDir: broken.backups, tag: readClaudeModels({ root: broken.root, env: {} }).tag, changes: { sergeant: { model: 'opus' } } });
+  assert.equal(refused.error, CLAUDE_MESSAGES.unreadable);
+  assert.equal(broken.read('settings.json'), '{ "model": ');
+});
+
+test('Claude Code agent files get a new model or effort, and new ones are made safely', (t) => {
+  const { root, backups, read } = claudeFolder(t, { types: { 'coder.md': CODER_MD } });
+  const saver = createModelSaver();
+  const tag = () => readClaudeModels({ root, env: {} }).tag;
+  const changed = saver.save({ app: 'claude', root, backupDir: backups, tag: tag(), changes: { types: [{ file: 'coder.md', model: 'fable', effort: 'max' }] } });
+  assert.equal(changed.ok, true, changed.error);
+  assert.equal(read('agents/coder.md'), '---\nname: coder\ndescription: Coding and design work.\nmodel: fable\neffort: max\n---\n\nWrite code.\n');
+  assert.match(path.basename(changed.backups[0]), /^claude-coder-\d{8}-\d{6}\.md$/);
+  const add = (a) => saver.save({ app: 'claude', root, backupDir: backups, tag: tag(), changes: { add: a } });
+  assert.equal(add({ name: 'explore', description: 'Mine.', model: null }).error, CLAUDE_MESSAGES.builtInName);
+  assert.equal(add({ name: 'coder', description: 'Again.', model: null }).error, MODELS_MESSAGES.takenName);
+  const made = add({ name: 'helper', description: 'Easier tasks: small fixes, checks and notes.', model: 'sonnet' });
+  assert.equal(made.ok, true, made.error);
+  assert.equal(read('agents/helper.md'), '---\nname: helper\ndescription: "Easier tasks: small fixes, checks and notes."\nmodel: sonnet\n---\n\nDo the task you were given. When you finish, say what you did and what is left to do.\n');
+  const view = readClaudeModels({ root, env: {} }).types.find((x) => x.file === 'helper.md');
+  assert.deepEqual([view.name, view.description, view.model.value, view.effort.set], ['helper', 'Easier tasks: small fixes, checks and notes.', 'sonnet', false]);
 });

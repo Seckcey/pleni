@@ -283,6 +283,8 @@ function cleanSession(raw) {
     entrypoint: text(raw.entrypoint, 80),
     model: text(raw.model, 120),
     effort: text(raw.effort, 40),
+    workerType: text(raw.workerType, 80),
+    chosen: cleanChosen(raw.chosen),
     startedAt: time(raw.startedAt),
     lastAt: time(raw.lastAt),
     status: STATUSES.includes(raw.status) ? raw.status : 'idle',
@@ -293,6 +295,12 @@ function cleanSession(raw) {
     archived: raw.archived === true,
     context: cleanContext(raw.context),
   };
+}
+
+// Whether the session that started a sub-agent chose its model and its effort; null when unknown.
+function cleanChosen(raw) {
+  if (!isObject(raw)) return null;
+  return { model: raw.model === true, effort: raw.effort === true };
 }
 
 // How full a session's context (its memory of the conversation) is, and how often it was squeezed
@@ -578,6 +586,8 @@ function sessionNode(session, project, ctx, rule = null) {
     model: session.model,
     modelLabel: modelLabel(session.model),
     effort: session.effort,
+    workerType: session.workerType ?? null,
+    chosen: session.chosen ?? null,
     status: session.status,
     startedAt: session.startedAt,
     lastAt: session.lastAt,
@@ -658,7 +668,7 @@ function projectNode(key, title, name) {
 function groupNode({ key, parent, platform, kind, title, rank, project = null }) {
   return {
     key, parent, platform, kind, title, subtitle: null, rank, role: null, tier: null,
-    model: null, modelLabel: null, effort: null, status: null, startedAt: null, lastAt: null,
+    model: null, modelLabel: null, effort: null, workerType: null, chosen: null, status: null, startedAt: null, lastAt: null,
     activity: null, lastText: null, needs: null, project, projectLabel: project, entrypoint: null, hidden: false, archived: false,
     named: false, placement: null, memory: null, rollSoon: null, github: null, mail: null,
   };
