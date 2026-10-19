@@ -39,8 +39,11 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 - **Coordinator order 13:** the coordinator's standing orders (`relay/COORDINATOR.md`) now ask
   Sergeant Claude Code to choose a model and an effort for every worker, from a table by kind of
   work, and the worker brief has a line for them. Claude Code tells a sergeant to set a worker's
-  effort only when its orders ask, so without this it never does. Copy the new orders into your
-  mailbox to get this (relay README, "Update the relay in a mailbox").
+  effort only when its orders ask, so without this it never does. Add the new order to the end of
+  your mailbox's own `CLAUDE.md`, and the new line to your own worker brief (relay README, "Update
+  the relay in a mailbox"). Do not copy `COORDINATOR.md` or the templates over your mailbox's
+  files: an earlier version of that README said to, and that loses what your mailbox added over
+  time.
 - **Claude Code on the Models page:** see and change the model and effort Sergeant Claude Code
   starts with (Claude Code keeps an effort for each model, where `/effort` keeps it), the model a
   worker gets when its sergeant does not pick, and Claude Code worker types (agent files). The

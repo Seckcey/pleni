@@ -341,17 +341,41 @@ If you enrolled by id (`-SessionId`, `-ThreadId`), the relay never switches. Run
 This copies only the scripts. Your settings files, your templates, and the coordinator's files stay
 as they are.
 
-To get new standing orders for the coordinator too, such as order 13 (choose a model and an effort
-for every worker), copy `COORDINATOR.md` and the worker brief. The first line keeps your old orders
-as `CLAUDE.md.old`, in case you changed them yourself:
+Never copy `COORDINATOR.md` over a mailbox's `CLAUDE.md`, or the templates over the mailbox's
+`templates` folder. Over time a mailbox gets orders and brief fields of its own (who reports to whom,
+their addresses, exceptions the owner made), and a copy would lose them. To get a new order, such
+as "Choose a model and an effort for every worker", add just that order to the end of your
+`CLAUDE.md`. Set `$next` to the next free order number in your file. These lines take the newest
+order in `COORDINATOR.md`, keep a copy of your file as `CLAUDE.md.old` first, and do nothing if your
+file already has that order:
 
 ```powershell
-Copy-Item -Force "$mb\CLAUDE.md" "$mb\CLAUDE.md.old"
-Copy-Item -Force "$repo\relay\COORDINATOR.md" "$mb\CLAUDE.md"
-Copy-Item -Force "$repo\relay\templates\worker-brief.md" "$mb\templates\"
+$repo  = 'C:\Users\ada\pleni'     # change these two to your folders
+$mb    = 'C:\Users\ada\mailbox'
+$next  = 14                      # the next free order number in your CLAUDE.md
+$src   = @(Get-Content "$repo\relay\COORDINATOR.md")
+$first = @($src | Select-String -Pattern '^\d+\. \*\*')[-1].LineNumber - 1
+$order = $src[$first..($src.Count - 1)]
+$title = [regex]::Match($order[0], '\*\*(.+?)\*\*').Groups[1].Value
+if (Select-String -Path "$mb\CLAUDE.md" -Pattern $title -SimpleMatch -Quiet) {
+  "Your CLAUDE.md already has: $title"
+} else {
+  Copy-Item -Force "$mb\CLAUDE.md" "$mb\CLAUDE.md.old"
+  $order[0] = $order[0] -replace '^\d+\.', "$next."
+  [IO.File]::AppendAllText("$mb\CLAUDE.md", "`r`n" + ($order -join "`r`n") + "`r`n")
+  "Added order ${next}: $title"
+}
 ```
 
-Then roll the coordinator over, so it surely reads them: a new session always reads `CLAUDE.md`.
+If the new order names a line for the worker brief, add that line to your own
+`templates\worker-brief.md` by hand. For the model and effort order, put this under the branch and
+base commit lines:
+
+```markdown
+- **Model and effort:** <model>, <effort>   (why: <one line>)
+```
+
+Then tell the coordinator to read `CLAUDE.md` again, or roll it over: a new session always reads it.
 
 ## Test it
 

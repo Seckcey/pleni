@@ -6,7 +6,7 @@ You are a **Claude worker** session, supervised by the **Claude coordinator**. Y
 - **Worktree (your only working directory):** <worktrees folder>\<TASK-ID>\<repo>
 - **Branch:** claude/<TASK-ID>   (already created — do not create/switch branches)
 - **Base commit:** <sha>
-- **Model and effort:** <model>, <effort>   (why: <one line, by standing order 13>)
+- **Model and effort:** <model>, <effort>   (why: <one line>)
 
 ## Read first
 - `<worktree>\AGENTS.md` (and any CLAUDE.md / docs it names)
