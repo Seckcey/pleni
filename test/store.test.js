@@ -142,7 +142,7 @@ test('the snapshot carries a weak ETag of its JSON without the time', () => {
   assert.equal(snap.etag, `W/"${crypto.createHash('sha1').update(untimed).digest('hex')}"`);
   assert.equal(snap.json, json);
   assert.equal(json.includes('etag'), false);
-  assert.deepEqual(Object.keys(snap), ['version', 'now', 'sources', 'nodes', 'edges', 'events', 'counts', 'attention', 'tasks', 'hiddenSessions', 'actions']);
+  assert.deepEqual(Object.keys(snap), ['version', 'now', 'sources', 'nodes', 'edges', 'events', 'counts', 'attention', 'tasks', 'mail', 'hiddenSessions', 'actions']);
   assert.ok(snap.nodes.some((n) => n.key === CLAUDE_KEY));
   assert.ok(snap.nodes.some((n) => n.key === CODEX_KEY));
 });
@@ -335,4 +335,24 @@ test('the demo has no real sessions to open', () => {
   assert.equal(store.demo, true);
   for (const key of Object.values(DEMO_KEYS)) assert.equal(store.session(key), null);
   assert.equal(store.session(CLAUDE_KEY), null);
+});
+
+test('the Mail page gets the demo mail with the person, whole, and none without a mailbox', () => {
+  const store = createStore({ settings: {}, roots: {}, demo: true });
+  const mail = store.mail();
+  assert.equal(mail.name, 'Ada');
+  assert.equal(mail.readAt, null);
+  assert.ok(mail.messages.length >= 2);
+  assert.ok(mail.messages.every((m) => m.toYou || m.fromYou), 'only mail with the person');
+  assert.ok(mail.messages.some((m) => m.toYou && m.text.includes('\n')), 'whole text, line breaks kept');
+  assert.ok(store.mail({ all: true }).messages.length > mail.messages.length);
+  store.dismiss('you|mailread', 123);
+  assert.equal(store.mail().readAt, 123);
+  store.close();
+  const hidden = createStore({ settings: { content: 'none' }, roots: {}, demo: true });
+  assert.ok(hidden.mail().messages.every((m) => m.text === null));
+  hidden.close();
+  const none = createStore({ settings: {}, roots: {} });
+  assert.equal(none.mail(), null);
+  none.close();
 });

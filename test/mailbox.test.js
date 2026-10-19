@@ -786,3 +786,25 @@ test('relay: the turns it started to wake an agent for its mail', (t) => {
   write(root, '.relay/state.json', JSON.stringify({ mail_dispatches: [1, 2] }));
   assert.deepEqual(createMailboxSource({ root }).poll().relay.wakes, []);
 });
+
+test('agent mail: the Mail page gets the whole of each message to or from the person', (t) => {
+  const root = tempMailbox(t);
+  buildMail(root);
+  write(root, 'mail/ada/name.txt', 'Ada');
+  const long = `Line one.\n\n${'x'.repeat(5000)}`;
+  mailFile(root, 'mail/ada/new/20261018-103000-000-sergeant-ada-abcdef.md', 'Sergeant Ada', 'Ada', 'x', long);
+  mailFile(root, 'mail/sergeant-ada/read/20261018-095000-000-ada-fedcba.md', 'Ada', 'Sergeant Ada', 'x', 'Please check the build.');
+  const source = createMailboxSource({ root });
+  const mine = source.mail({ keys: ['ada', 'owner'] });
+  assert.deepEqual(mine.map((m) => [m.id, m.from, m.to, m.unread]), [
+    ['ada/new/20261018-103000-000-sergeant-ada-abcdef.md', 'sergeant-ada', 'ada', true],
+    ['sergeant-ada/read/20261018-095000-000-ada-fedcba.md', 'ada', 'sergeant-ada', false],
+  ], 'mail to the person and mail they sent, newest first');
+  assert.equal(mine[0].text, long, 'the whole message, line breaks kept');
+  assert.equal(mine[0].fromName, 'Sergeant Ada');
+  assert.equal(mine[0].toName, 'Ada');
+  assert.equal(mine[1].toName, 'Sergeant Ada');
+  assert.equal(source.mail({ keys: ['ada'], all: true }).length, 5, 'every message with all');
+  assert.deepEqual(createMailboxSource({ root, settings: { content: 'none' } }).mail({ keys: ['ada'] }).map((m) => m.text), [null, null]);
+  assert.equal(createMailboxSource({ root: path.join(root, 'tasks') }).mail({ keys: ['ada'] }), null, 'no mail folder');
+});

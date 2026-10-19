@@ -49,11 +49,13 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
   const links = linkParts(tree, all, ctx);
   const runs = workerRuns(workers, tree, links.pairs, ctx);
   const mail = mailboxParts(box, tree, ctx);
+  const hidden = dismissedAt(dismissed);
+  // The newest mail the person marked as read on the Mail page; Pleni never moves mail files.
+  ctx.mailReadAt = hidden(MAIL_READ_ID);
   const agentMail = agentMailParts(box, tree, all, links.pairs, ctx);
   const nodes = tree.order.map((key) => tree.nodes.get(key));
   markWatched(nodes, ctx);
   const sessionNodes = nodes.filter((node) => KINDS.includes(node.kind));
-  const hidden = dismissedAt(dismissed);
   // A dismissed ask stops showing as "Needs you" until a newer one comes.
   for (const node of sessionNodes) {
     if (node.needs && hidden(`${node.key}|needs`) >= (node.needs.at ?? 0)) node.needs = null;
@@ -76,6 +78,7 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
     attention: attentionList(sessionNodes, tasks ?? [], [...mailboxAttention(box, tree, ctx), ...agentMail.attention, ...watchAttention(nodes, all, box, ctx)])
       .filter((item) => !(hidden(item.id) >= item.at)),
     tasks,
+    mail: agentMail.summary,
     hiddenSessions: hiddenSessions(all, ctx),
     actions: {
       openTerminal: actions?.openTerminal === true,
@@ -665,6 +668,8 @@ function groupNode({ key, parent, platform, kind, title, rank, project = null })
 
 const RELAY = 'relay';
 const WORKER_ID = /^W\d{1,4}$/;
+// Kept with the dismissed notices: the time of the newest mail the person marked as read.
+export const MAIL_READ_ID = 'you|mailread';
 
 // The relay between a mailbox's planner and coordinator, as a tile of its own.
 function relayNode(mailbox, settings) {
@@ -967,9 +972,11 @@ function taskText(item, ctx) {
 // between sender and receiver and goes in the feed; a tile shows how much mail waits for it; mail
 // that waits for the person goes under Needs you, one notice for each tile that sent some.
 function agentMailParts(mailbox, tree, all, pairs, ctx) {
-  const out = { events: [], attention: [] };
+  const out = { events: [], attention: [], summary: null };
   const mail = isObject(mailbox?.mail) ? mailbox.mail : null;
   if (!mail) return out;
+  const readAt = ctx.mailReadAt ?? -Infinity;
+  const yours = { unread: 0, since: null, lastAt: null };
   const agents = (Array.isArray(mail.agents) ? mail.agents : []).filter((a) => isObject(a) && a.key && mailKey(a.key) === a.key);
   const messages = (Array.isArray(mail.messages) ? mail.messages : [])
     .filter((m) => isObject(m) && time(m.at) !== null && typeof m.to === 'string' && typeof m.from === 'string')
@@ -996,7 +1003,10 @@ function agentMailParts(mailbox, tree, all, pairs, ctx) {
       else lightMail(pairs, lineage, from, to, m.at, label);
     }
     if (from || to) out.events.push({ at: m.at, kind: 'mail', from, to, text: words, fromName, toName });
-    if (to === 'you' && m.unread === true) {
+    yours.lastAt = m.at; // messages come oldest first
+    if (to === 'you' && m.unread === true && m.at > readAt) {
+      yours.unread++;
+      if (yours.since === null) yours.since = m.at;
       const key = from && from !== 'you' ? from : 'you';
       if (key !== 'you') addMailBox(tree.nodes.get(key), { toYou: 1 }, fromName);
       const group = forYou.get(key) ?? { count: 0, at: 0, text: null, names: [] };
@@ -1007,6 +1017,10 @@ function agentMailParts(mailbox, tree, all, pairs, ctx) {
     }
   }
   out.events.push(...relayWakeParts(mailbox, tree, pairs, tileOf, lineage));
+  // Mail the person marked as read in Pleni stops counting as new, though its file stays in new/.
+  const you = tree.nodes.get('you');
+  if (you.mail && readAt > -Infinity) Object.assign(you.mail, { unread: yours.unread, since: yours.since });
+  out.summary = { name: text(mail.owner, MAX_LABEL * 2) || you.mail?.name || null, unread: you.mail?.unread ?? 0, lastAt: yours.lastAt };
   for (const [key, group] of forYou) {
     const who = key === 'you' ? nameList(group.names) : snippet(tree.nodes.get(key).title, MAX_TITLE) || group.names[0];
     const what = group.count === 1 ? 'sent you mail' : `sent you ${group.count} messages`;
@@ -1041,7 +1055,7 @@ function relayWakeParts(mailbox, tree, pairs, tileOf, lineage) {
 // Settings; the Codex thread the relay wakes for it; else the newest session tile with that whole
 // name (its own title or the name the person gave it). Null when no tile is that name.
 function mailTiles(mail, agents, tree, all, ctx) {
-  const person = new Set(['owner', mailKey(ctx.settings.displayName), mailKey(mail.owner)].filter(Boolean));
+  const person = new Set(personMailKeys(ctx.settings, mail.owner));
   const byName = new Map();
   for (const [key, node] of tree.nodes) {
     if (!KINDS.includes(node.kind) || key.startsWith('mailbox:')) continue;
@@ -1099,6 +1113,11 @@ function lightNewer(pairs, upper, lower, record) {
   const last = record.dir === 'down' ? pair?.lastDown : pair?.lastUp;
   if (last != null && last > record.at) return;
   lightPair(pairs, upper, lower, record);
+}
+
+// The mail names that are the person's: the relay's owner_name, "Owner" and the name in Settings.
+export function personMailKeys(settings, owner) {
+  return [...new Set(['owner', mailKey(settings?.displayName), mailKey(owner)].filter(Boolean))];
 }
 
 // The folder name agent-mail.ps1 makes from a name: small letters, each run of other marks one '-'.

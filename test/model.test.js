@@ -1474,3 +1474,25 @@ test('a relay wake lights the line from the relay to the agent and goes in the f
   assert.equal(tree.upLabel, 'Woke it to read 2 new messages');
   assert.equal(snap({ codex: mailTeam(), mailbox: { ...box, relay: null } }).events.some((e) => e.kind === 'wake'), false, 'no relay tile, no wakes');
 });
+
+test('mail the person marked as read in Pleni stops counting as new', () => {
+  const box = mailState({
+    agents: [agent('ada', 'Ada', { unread: 2, since: NOW - 4 * MIN })],
+    messages: [
+      { to: 'ada', from: 'sergeant-ada', fromName: 'Sergeant Ada', at: NOW - 4 * MIN, unread: true, text: 'Older.' },
+      { to: 'ada', from: 'sergeant-ada', fromName: 'Sergeant Ada', at: NOW - MIN, unread: true, text: 'Newer.' },
+    ],
+  });
+  const before = snap({ codex: mailTeam(), mailbox: box });
+  assert.deepEqual(before.mail, { name: 'Ada', unread: 2, lastAt: NOW - MIN });
+  assert.equal(node(before, SERGEANT).mail.toYou, 2);
+  const half = snap({ codex: mailTeam(), mailbox: box, dismissed: { 'you|mailread': NOW - 4 * MIN } });
+  assert.equal(node(half, 'you').mail.unread, 1);
+  assert.equal(node(half, 'you').mail.since, NOW - MIN);
+  assert.equal(node(half, SERGEANT).mail.toYou, 1);
+  assert.equal(half.attention.find((a) => a.kind === 'mail').text, 'Sergeant Ada sent you mail: Newer.');
+  const all = snap({ codex: mailTeam(), mailbox: box, dismissed: { 'you|mailread': NOW - MIN } });
+  assert.deepEqual(all.mail, { name: 'Ada', unread: 0, lastAt: NOW - MIN });
+  assert.equal(all.attention.some((a) => a.kind === 'mail'), false);
+  assert.equal(snap({ codex: mailTeam() }).mail, null, 'no mailbox, no mail');
+});

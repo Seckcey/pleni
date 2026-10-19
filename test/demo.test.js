@@ -135,6 +135,15 @@ test('the demo snapshot shows two projects, ranks and a live mailbox line', () =
   assert.ok(demoSnapshot(NOW, { showReviewers: true }).nodes.some((n) => n.kind === 'reviewer'));
 });
 
+test('each demo letter shows once, however long the demo has run', () => {
+  const source = createDemoSource({ now: () => NOW });
+  for (const messages of [source.poll().mailbox.mail.messages, source.mail({ all: true })]) {
+    const seen = messages.map((m) => `${m.from}|${m.to}|${m.text}`);
+    assert.equal(new Set(seen).size, seen.length);
+    assert.equal(seen.length, 6);
+  }
+});
+
 test('demoSettings wires the mailbox and keeps your own choices', () => {
   const settings = demoSettings(cleanSettings({ people: { [DEMO_KEYS.coordinator]: { label: 'Main', role: 'lead' } } }));
   assert.equal(settings.sources.mailbox.planner, DEMO_KEYS.planner);

@@ -43,6 +43,8 @@ const MAX_MAIL_READ = 30;      // the newest read messages kept for each agent
 const MAX_MAIL_MESSAGES = 300;
 const MAX_MAIL_BYTES = 80 * 1024; // agent-mail.ps1 sends at most 64 KB of text
 const MAX_MAIL_TEXT = 1000;    // the model makes a short snippet of it
+const MAX_BROWSE = 100;        // messages the Mail page gets at once
+const MAX_FULL_TEXT = 64 * 1024; // the Mail page shows a message whole (agent-mail.ps1 sends at most 64 KB)
 const MAX_MAIL_NAME = 80;
 const MAX_NAME_BYTES = 1024;
 const MAX_WAKES = 30;          // the relay keeps its last 50 mail wakes
@@ -174,7 +176,14 @@ export function createMailboxSource({ root = null, settings = null, now = Date.n
     };
   }
 
-  return { poll };
+  // Every message to or from the person's mail names, newest first, with each whole text: what the
+  // Mail page shows. `all` gives every message instead. Read when the page asks, not on each poll.
+  function readMail({ keys = [], all = false } = {}) {
+    if (!mail) return null;
+    return mail.browse({ keys, all, hide: settings?.content === 'none' });
+  }
+
+  return { poll, mail: readMail };
 }
 
 // Finds the first valid time stamp in `text`: { at, index, length } or null.
@@ -615,6 +624,41 @@ function createMailReader(root, now) {
     return { owner, agents, messages: kept };
   }
 
+  // The newest MAX_BROWSE messages whose sender or receiver is one of `keys` (every message with
+  // `all`), newest first: { id, to, toName, from, fromName, at, unread, text }.
+  function browse({ keys, all, hide }) {
+    if (!isDir(dir)) return null;
+    const t = now();
+    const mine = new Set(keys);
+    const picked = [];
+    for (const key of listFolder(dir, 'dirs', t, false).filter((name) => MAIL_AGENT.test(name)).slice(0, MAX_MAIL_AGENTS)) {
+      for (const [folder, unread] of [['new', true], ['read', false]]) {
+        for (const file of listFolder(path.join(dir, key, folder), 'mail', t, unread)) {
+          const from = MAIL_FILE.exec(file)[8];
+          if (all || mine.has(key) || mine.has(from)) picked.push({ key, folder, file, from, unread, at: fileTime(file) });
+        }
+      }
+    }
+    picked.sort((a, b) => b.at - a.at || ORDER.compare(a.key, b.key) || ORDER.compare(a.file, b.file));
+    const out = [];
+    for (const p of picked.slice(0, MAX_BROWSE)) {
+      const raw = readHead(path.join(dir, p.key, p.folder, p.file), MAX_MAIL_BYTES);
+      if (raw === null) continue; // read and moved just now; the next look finds it in read/
+      const msg = parseMail(raw, MAX_FULL_TEXT);
+      out.push({
+        id: `${p.key}/${p.folder}/${p.file}`,
+        to: p.key,
+        toName: names.get(path.join(dir, p.key, 'name.txt'), readName) ?? null,
+        from: p.from,
+        fromName: msg.fromName,
+        at: p.at,
+        unread: p.unread,
+        text: hide ? null : msg.text,
+      });
+    }
+    return out;
+  }
+
   // The names in a folder, by name (so mail is oldest first). `kind` is 'dirs' or 'mail'; `force`
   // lists it again even when its times did not move.
   function listFolder(folder, kind, t, force) {
@@ -644,7 +688,7 @@ function createMailReader(root, now) {
     return msg;
   }
 
-  return { read };
+  return { read, browse };
 }
 
 function listMail(folder) {
@@ -668,8 +712,9 @@ function fileTime(file) {
   return toTime(y, mo, d, h, mi, s, ms, 0);
 }
 
-// "From: <name>", "To: <names>" and "Sent: <time>" lines, a blank line, then the message.
-function parseMail(text) {
+// "From: <name>", "To: <names>" and "Sent: <time>" lines, a blank line, then the message, kept to
+// `max` characters.
+function parseMail(text, max = MAX_MAIL_TEXT) {
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
   let fromName = null;
   let body = 0;
@@ -684,7 +729,7 @@ function parseMail(text) {
   }
   const rest = lines.slice(body).join('\n').trim().replace(/(?![\n\t])\p{Cc}/gu, ' ');
   const chars = Array.from(rest);
-  return { fromName, text: (chars.length > MAX_MAIL_TEXT ? chars.slice(0, MAX_MAIL_TEXT).join('') : rest) || null };
+  return { fromName, text: (chars.length > max ? chars.slice(0, max).join('') : rest) || null };
 }
 
 // The turns the relay started to wake an agent for its mail (state.json "mail_dispatches"), newest
