@@ -484,8 +484,22 @@ function rankLine(n) {
   return [n.rank, PLATFORM_WORDS[n.platform], folder, n.subtitle].filter(Boolean).join(' · ');
 }
 
+// A worker's model or effort that its sergeant did not choose is marked "(default)".
 function modelText(n) {
-  return [n.modelLabel || prettyModel(n.model), EFFORT_WORDS[n.effort] || (n.effort ? `${n.effort} effort` : '')].filter(Boolean).join(' · ');
+  const model = n.modelLabel || prettyModel(n.model);
+  const effort = EFFORT_WORDS[n.effort] || (n.effort ? `${n.effort} effort` : '');
+  const c = n.chosen;
+  if (c && model && effort && !c.model && !c.effort) return `${model} · ${effort} (defaults)`;
+  const mark = (part, chosen) => (part && c && !chosen ? `${part} (default)` : part);
+  return [mark(model, c && c.model), mark(effort, c && c.effort)].filter(Boolean).join(' · ');
+}
+
+// Who chose a worker's model and effort: the session that started it, or Claude Code's defaults.
+function chosenWords(c) {
+  if (c.model && c.effort) return 'The session that started it';
+  if (c.model) return 'The session that started it chose the model. The effort is a default.';
+  if (c.effort) return 'The session that started it chose the effort. The model is a default.';
+  return 'Nobody: both are defaults';
 }
 
 function statusOf(n) {
@@ -1211,7 +1225,7 @@ function tileHtml(p, L, ix, i) {
     if (when) described = ` aria-describedby="${timeId}"`;
     body =
       `<span class="tile-meta"><span class="pill">${esc(STATUS_WORDS[status] || 'Unknown')}</span>` +
-      `<span class="tile-model">${esc(model)}</span>${when || '<span class="tile-ago"></span>'}</span>` +
+      `<span class="tile-model"${model ? ` title="${esc(model)}"` : ''}>${esc(model)}</span>${when || '<span class="tile-ago"></span>'}</span>` +
       (d ? `<span class="tile-text">${doingHtml(d)}</span>` : '');
     label = [title, rank, STATUS_WORDS[status], model, rollSoonText(n)].filter(Boolean).join(', ');
   } else if (isRelay(n)) {
@@ -3048,6 +3062,8 @@ function detailsHtml(n) {
   if (isSession(n)) {
     add('Model', esc([n.modelLabel || prettyModel(n.model), n.model && n.modelLabel !== n.model ? `(${n.model})` : ''].filter(Boolean).join(' ')));
     add('Effort', esc(EFFORT_WORDS[n.effort] || n.effort || ''));
+    add('Worker type', esc(n.workerType || ''));
+    if (n.chosen) add('Who chose them', esc(chosenWords(n.chosen)));
     add('Tier', esc(n.tier === 'senior' ? 'Senior' : n.tier === 'junior' ? 'Junior' : ''));
     if (n.memory) {
       add('Memory', esc(memoryWords(n.memory)));
@@ -3059,7 +3075,10 @@ function detailsHtml(n) {
   }
   add('Key', `<span class="mono">${esc(n.key)}</span>`);
   const from = isRelay(n) || isWorkerKey(n.key) ? 'Read from the mailbox folder on this computer. Pleni never changes it.' : 'Read from the session files on this computer. Pleni never changes them.';
-  return `<table class="facts-t"><tbody>${rows.join('')}</tbody></table><p class="note">${from}</p>`;
+  const defaults = n.chosen && !(n.chosen.model && n.chosen.effort)
+    ? "<p class=\"note\">Defaults: a worker gets its type's model, else the worker model in Settings &gt; Models, else the model of the session that started it. It gets its type's effort, else the effort of that session.</p>"
+    : '';
+  return `<table class="facts-t"><tbody>${rows.join('')}</tbody></table>${defaults}<p class="note">${from}</p>`;
 }
 
 function handoffsHtml(key) {
@@ -3881,7 +3900,7 @@ function appModelsHtml(app) {
       : '<p class="help">A sergeant can pick the model and effort for each worker it starts. A worker gets these when it does not.</p>',
     modelsRowHtml(`${p}-worker-model`, 'Model', modelSelectHtml(app, `${p}-worker-model`, 'worker', d.worker.model, c.worker.model, 'Same as its sergeant'), c.worker.model),
     claude
-      ? '<div class="srow"><span class="lbl">Effort</span><p class="help">Claude Code has no setting for this. Each sergeant picks the effort for each worker it starts.</p></div>'
+      ? "<div class=\"srow\"><span class=\"lbl\">Effort</span><p class=\"help\">Claude Code has no setting for this. A sergeant can pick the effort for each worker it starts. When it does not, the worker gets its type's effort, or else the sergeant's own.</p></div>"
       : modelsRowHtml(`${p}-worker-effort`, 'Effort', effortSelectHtml(app, `${p}-worker-effort`, 'worker', workerModel, d.worker.effort, c.worker.effort, 'The sergeant chooses'), c.worker.effort),
     '<h3 class="sub-h">Worker types</h3>',
     claude

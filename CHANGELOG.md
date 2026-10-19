@@ -31,6 +31,16 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **Who chose a worker's model and effort:** when the sergeant that started a Claude Code worker did
+  not choose its model or its effort, the map, the List and its side panel now show "(default)"
+  after it, such as "Sonnet 5.5 · max effort (defaults)". Its Details tab shows its worker type and
+  who chose them. A worker with no effort chosen runs at its sergeant's own effort, which is why a
+  sergeant at max effort gave every worker max.
+- **Coordinator order 13:** the coordinator's standing orders (`relay/COORDINATOR.md`) now ask
+  Sergeant Claude Code to choose a model and an effort for every worker, from a table by kind of
+  work, and the worker brief has a line for them. Claude Code tells a sergeant to set a worker's
+  effort only when its orders ask, so without this it never does. Copy the new orders into your
+  mailbox to get this (relay README, "Update the relay in a mailbox").
 - **Claude Code on the Models page:** see and change the model and effort Sergeant Claude Code
   starts with (Claude Code keeps an effort for each model, where `/effort` keeps it), the model a
   worker gets when its sergeant does not pick, and Claude Code worker types (agent files). The

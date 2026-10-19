@@ -191,6 +191,9 @@ Session = {
   entrypoint: string | null,// claude: 'claude-desktop' | 'claude-vscode' | 'cli' | 'sdk-cli'; codex: originator
   model: string | null,
   effort: string | null,
+  workerType: string | null,  // claude sub-agents: the meta agentType ('general-purpose', 'Explore', a type from an agents folder); else null
+  chosen: { model: boolean, effort: boolean } | null,  // claude sub-agents: whether the session that started it chose
+                            // its model and its effort; null when the meta file does not say, and elsewhere
   mode: string | null,      // claude main sessions: the newest turn's permissionMode
                             // (default, acceptEdits, plan, auto, bypassPermissions, dontAsk); else null
   startedAt: number | null,
@@ -236,7 +239,13 @@ export function createClaudeSource({ root, desktopRoot, settings, now = Date.now
   track files modified within `recentHours`.
 - Sub-agents: `<root>/projects/<enc>/<sessionId>/subagents/agent-<agentId>.jsonl` with
   `agent-<agentId>.meta.json` (`agentType`, `description`, `toolUseId`, `spawnDepth`,
-  `parentAgentId`, `model`). Workflow agents live in
+  `parentAgentId`, `model`, `effort`, `launchedWithDefaults`). Claude Code writes `model` and
+  `effort` only when the session that started the agent chose them (`model` is the name it asked
+  for, such as `haiku`; a fork's is `inherit`, since a fork runs on its parent's model and effort),
+  and `launchedWithDefaults: true` when no model was chosen. So `chosen` is `{ model, effort }`
+  from those, `{ model: false, effort: false }` for a fork, and null when the file has none of
+  them (older Claude Code). The meta `model` is the agent's model until its own records name one,
+  except `inherit`. `workerType` is `agentType`. Workflow agents live in
   `subagents/workflows/<runId>/agent-*.jsonl`; their labels are in that folder's `journal.jsonl`
   `started` records (`agentId`, `label`). A sub-agent's key is `claude:<sessionId>/<agentId>`; its
   parent is `claude:<sessionId>/<parentAgentId>` when nested, else `claude:<sessionId>`.
@@ -466,6 +475,7 @@ Node = {
   kind: 'person' | 'project' | 'session' | 'agent' | 'reviewer',
   title, subtitle, rank, role, tier: 'senior' | 'junior' | null,
   model, modelLabel, effort, status, startedAt, lastAt, activity, lastText,
+  workerType, chosen, // a Claude Code sub-agent's type, and whether its model and effort were chosen for it (Session); else null
   project, entrypoint, hidden, archived,
   memory,   // main Claude Code session or Codex thread: { used, size, percent, squeezes, squeezesAtLeast, squeezedAt }, else null
   rollSoon, // plain reasons it is due for a roll over ('Memory 87% full', 'Squeezed 3 times', '9 days old'), else null
@@ -949,8 +959,8 @@ change; it reads an agent file again within a few seconds.
   keeps for that model under `modelSettings` (where `/effort` keeps it). For a short name such as
   `opus`, an entry under a full name of the same kind (`claude-opus-5-5`; the kind is the first of
   fable, opus, sonnet or haiku in the name) comes first, as Claude Code reads it. The worker model
-  is `env.CLAUDE_CODE_SUBAGENT_MODEL`. Claude Code has no default effort for a worker, so there is
-  none. A worker type's `name`, `description`, `model` and `effort` come from the settings block at
+  is `env.CLAUDE_CODE_SUBAGENT_MODEL`. Claude Code has no setting for a worker's effort, so there is
+  none: a worker its sergeant gives no effort gets its type's, else the sergeant's own. A worker type's `name`, `description`, `model` and `effort` come from the settings block at
   the top of its file (`src/frontmatter.js`); a file without one is shown with an error.
 - **Notes:** `ANTHROPIC_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL` and `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`,
   in the `env` block or in Pleni's own environment, win over what the page sets, so each one that is
@@ -1271,6 +1281,13 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   no mail. Feed lines read "<sender> sent mail to <receiver>", up when the receiver is above the
   sender on the map, else down; a side that is not on the map shows its mail name. A relay wake
   reads "Relay woke <agent>". Working mode shows the relay while one of its lines is lit.
+- **Chosen or default:** where a tile, a List row or the side panel shows a sub-agent's model and
+  effort, a part its sergeant did not choose (`chosen.model` or `chosen.effort` false) ends with
+  "(default)", and both with "(defaults)": "Sonnet 5.5 · max effort (defaults)". The Details tab
+  has Worker type (`workerType`) and Who chose them ("The session that started it", "Nobody: both
+  are defaults", or which one it chose), and under the table, where defaults come from: the worker
+  type's model, else the worker model in Settings > Models, else the model of the session that
+  started it; the worker type's effort, else that session's. Nothing is marked when `chosen` is null.
 - **Roll over soon:** a session whose node has `rollSoon` gets a "Roll over soon" badge on the top
   edge of its tile (the reasons are in the tile's label for screen readers), a "Roll over soon" pill
   in its List row, and a line at the top of its side panel's Now tab: "Roll over soon: Memory 87%

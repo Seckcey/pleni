@@ -359,11 +359,17 @@ and lets you change them. Each tool has its own section:
   relay wakes Codex agents with them too. Claude Code keeps an effort for each model.
 - **Workers:** what a worker gets when the sergeant that starts it does not pick. A sergeant can
   still pick the model and effort for each worker it starts. Leave the effort on **The sergeant
-  chooses** to let it. Claude Code has no worker effort setting, so there each sergeant always
-  picks it. A Claude Code worker that is a fork of its sergeant always runs on the sergeant's
-  model.
+  chooses** to let it. Claude Code has no worker effort setting: a worker its sergeant gives no
+  effort gets its type's, or else the sergeant's own. A Claude Code worker that is a fork of its
+  sergeant always runs on the sergeant's model.
 - **Worker types:** kinds of workers a sergeant can pick by the work, such as one for coding and
   design work and one for easier tasks, each with its own model. **Add a worker type** makes one.
+
+On the map, a Claude Code worker's model or effort that its sergeant did not choose ends with
+"(default)", such as "Sonnet 5.5 · max effort (defaults)". Its Details tab says who chose them. To
+have a sergeant choose for every worker, its standing orders must ask for it: Claude Code tells a
+sergeant to set a worker's effort only when told to. The relay's coordinator orders
+(`relay/COORDINATOR.md`) do this.
 
 For Codex, the model menus list the models Codex offers you, so a new model shows up there once
 Codex knows it, and an effort menu lists only the levels its model takes. For Claude Code, they

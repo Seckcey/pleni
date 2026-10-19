@@ -25,6 +25,8 @@ const SESSION_FILE = /^([0-9a-f-]{8,64})\.jsonl$/;
 const AGENT_FILE = /^agent-([0-9a-z_-]{1,64})\.jsonl$/;
 const SESSION_ID = /^[0-9a-f-]{8,64}$/;
 const AGENT_ID = /^[0-9a-z_-]{1,64}$/;
+// The model a fork's meta file names: it runs on its parent's.
+const FORK_MODEL = 'inherit';
 const DESKTOP_FILE = /^local_[\w-]+\.json$/;
 const CONVERSATION = new Set(['user', 'assistant', 'attachment', 'system']);
 const TITLE_TYPES = new Set(['custom-title', 'agent-name', 'ai-title']);
@@ -334,8 +336,21 @@ function refreshMeta(s) {
     toolUseId: textOrNull(raw.toolUseId),
     spawnDepth: Number.isFinite(raw.spawnDepth) ? raw.spawnDepth : null,
     parentAgentId: isText(raw.parentAgentId) && AGENT_ID.test(raw.parentAgentId) ? raw.parentAgentId : null,
+    // What the session that started it asked for, if anything: Claude Code writes model and effort
+    // only when they were chosen, and launchedWithDefaults when no model was.
     model: textOrNull(raw.model),
+    effort: textOrNull(raw.effort),
+    launchedWithDefaults: raw.launchedWithDefaults === true,
   };
+}
+
+// Whether the session that started a sub-agent chose its model and effort, or null when the meta
+// file does not say (older Claude Code). A fork always runs on its parent's model and effort.
+function chosenOf(meta) {
+  if (!meta) return null;
+  if (meta.model === FORK_MODEL) return { model: false, effort: false };
+  const chosen = { model: meta.model !== null, effort: meta.effort !== null };
+  return chosen.model || chosen.effort || meta.launchedWithDefaults ? chosen : null;
 }
 
 // Polls stop while nobody has the page open, and a busy transcript can grow by hundreds of
@@ -629,8 +644,10 @@ function toSession(view, desk, t, win, snippets) {
     cwd: s.cwd ?? desk?.cwd ?? null,
     branch: s.branch,
     entrypoint: s.entrypoint,
-    model: s.model ?? (agent ? s.meta?.model : desk?.model) ?? null,
+    model: s.model ?? (agent ? (s.meta?.model === FORK_MODEL ? null : s.meta?.model) : desk?.model) ?? null,
     effort: s.effort ?? (agent ? null : desk?.effort) ?? null,
+    workerType: agent ? s.meta?.agentType ?? null : null,
+    chosen: agent ? chosenOf(s.meta) : null,
     mode: agent ? null : s.mode,
     startedAt: s.startedAt,
     lastAt: s.lastAt,

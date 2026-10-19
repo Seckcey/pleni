@@ -101,7 +101,8 @@ const CAST = [
   },
   {
     key: TESTS, parent: COORDINATOR, kind: 'agent', title: 'Refund endpoint tests', cwd: BILLING,
-    branch: 'refactor/billing-api', entrypoint: 'claude-desktop', model: 'claude-sonnet-5-5', effort: null,
+    branch: 'refactor/billing-api', entrypoint: 'claude-desktop', model: 'claude-sonnet-5-5', effort: 'medium',
+    workerType: 'general-purpose', chosen: { model: true, effort: true },
     status: 'working', start: 25, prompt: 'Write tests for the refund endpoint',
     tools: [
       ['Write', 'refunds.test.ts', 'Wrote 86 lines.'],
@@ -112,13 +113,16 @@ const CAST = [
   },
   {
     key: LAYOUT, parent: COORDINATOR, kind: 'agent', title: 'Invoice PDF layout', cwd: BILLING,
-    branch: 'refactor/billing-api', entrypoint: 'claude-desktop', model: 'claude-sonnet-5-5', effort: null,
+    branch: 'refactor/billing-api', entrypoint: 'claude-desktop', model: 'claude-opus-5-5', effort: 'high',
+    // Started without a pick, so it runs on its sergeant's model and effort.
+    workerType: 'general-purpose', chosen: { model: false, effort: false },
     status: 'ready', start: 30, end: 2, prompt: 'Lay out the new invoice PDF',
     last: 'The first layout draft is ready for a look.',
   },
   {
     key: LEDGER, parent: COORDINATOR, kind: 'agent', title: 'Ledger migration check', cwd: BILLING,
-    branch: 'refactor/billing-api', entrypoint: 'claude-desktop', model: 'claude-haiku-5-5', effort: null,
+    branch: 'refactor/billing-api', entrypoint: 'claude-desktop', model: 'claude-haiku-5-5', effort: 'high',
+    workerType: 'Explore', chosen: { model: true, effort: false },
     status: 'done', start: 50, end: 8, prompt: 'Check that the ledger migration is safe to run twice',
     last: 'The migration is safe to run twice.',
   },
@@ -429,6 +433,8 @@ function session(member, clock, handoffs) {
     entrypoint: member.entrypoint,
     model: member.model,
     effort: member.effort,
+    workerType: member.workerType ?? null,
+    chosen: member.chosen ?? null,
     startedAt: startOf(member, clock),
     lastAt: endOf(member, clock),
     status: member.status,
