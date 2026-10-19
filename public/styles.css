@@ -821,6 +821,13 @@ table.models .auto { display: block; margin-top: var(--ui-space-1); font-size: v
   position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-5);
   padding: var(--ui-space-5) 0; background: var(--ui-bg); border-top: 1px solid var(--ui-border);
 }
+/* Settings > Models: a model menu with its "Another model" box, and the worker types. */
+.mpick { display: flex; flex-wrap: wrap; gap: var(--ui-space-3); min-width: 0; }
+.mpick .field { flex: 1 1 12rem; min-width: 0; max-width: 24rem; }
+.mbtns { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-5); margin-top: var(--ui-space-6); }
+table.mtypes .mname { font-weight: var(--ui-weight-semibold); overflow-wrap: anywhere; }
+table.mtypes td { min-width: 0; }
+table.mtypes select.field { max-width: 15rem; }
 .saved { font-size: var(--ui-font-md); }
 .saved.ok { color: var(--ui-ok-text); }
 .saved.err { color: var(--ui-error-text); }
@@ -979,6 +986,11 @@ ul.kids .t { font-weight: var(--ui-weight-semibold); overflow: hidden; text-over
   .ev { grid-template-columns: 64px 18px minmax(0, 1fr); }
   .drawer { padding: 0 var(--ui-space-6) 32px; }
   ol.dev li { grid-template-columns: minmax(0, 1fr); }
+  /* Each worker type is a small card, with its cells named. */
+  table.mtypes thead { display: none; }
+  table.mtypes tr { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ui-space-2); padding: var(--ui-space-4) 0; border-top: 1px solid var(--ui-border); }
+  table.mtypes td { border-top: 0; padding: 0; }
+  table.mtypes td[data-label]::before { content: attr(data-label); display: block; margin-bottom: var(--ui-space-1); font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
 }
 
 /* ---------- reduced motion: solid glowing lines, no packets (app.js drops them) ---------- */

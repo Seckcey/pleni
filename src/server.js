@@ -19,7 +19,8 @@ import { snapshotTag } from './model.js';
 import { openLimits, openSession } from './open.js';
 import { newAgent, teleport } from './newagent.js';
 import { GITHUB_MESSAGES, createGithub } from './github.js';
-import { demoGithub } from './demo.js';
+import { MODELS_MESSAGES, createModelSaver, readCodexModels } from './models.js';
+import { demoGithub, demoModels } from './demo.js';
 import { rollover, rolloverInfo } from './rollover.js';
 
 const BIND_HOST = '127.0.0.1';
@@ -72,7 +73,7 @@ const BRAND_NAME = /^[a-z0-9][a-z0-9._-]*\.(png|svg|ico|webp)$/;
 // Names such as "nul.png" or "com1.svg" are devices, not files, on Windows.
 const WINDOWS_DEVICE = /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/;
 const BRAND_TYPES = { png: 'image/png', svg: 'image/svg+xml', ico: 'image/x-icon', webp: 'image/webp' };
-const API_GET = new Set(['/api/health', '/api/snapshot', '/api/session', '/api/devices', '/api/github', '/api/mail']);
+const API_GET = new Set(['/api/health', '/api/snapshot', '/api/session', '/api/devices', '/api/github', '/api/mail', '/api/models']);
 // Only the health check answers without the key: it says nothing but "Pleni is running".
 const OPEN_API = new Set(['/api/health']);
 const READ_ONLY = ['GET', 'HEAD'];
@@ -195,9 +196,10 @@ export function loadOrCreateKey(file, { renew = false, tries, pause } = {}) {
 // getSettings() -> { settings, file, roots }; saveSettings(clean) saves and returns the same shape.
 // Without them, settings are read from and saved to the usual settings file.
 // `key` is the secret every API request needs (see keyAllowed); a new one is made when it is left out.
-// `platform` and `spawnProcess` are for Open in PowerShell (see src/open.js), and `github` for live
-// GitHub status (see src/github.js); tests replace them.
-export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null, github = null }) {
+// `platform` and `spawnProcess` are for Open in PowerShell (see src/open.js), `github` for live
+// GitHub status (see src/github.js) and `modelSaver` for the Models page (see src/models.js); tests
+// replace them.
+export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null, github = null, modelSaver = null }) {
   if (typeof key !== 'string' || !KEY_RE.test(key)) {
     throw new Error('The server key must be at least 16 letters, digits, "-" or "_".');
   }
@@ -215,6 +217,7 @@ export function createServer({ store, getSettings, saveSettings, publicDir = PUB
     spawnProcess,
     opens: openLimits(),
     github: github ?? createGithub(),
+    models: modelSaver ?? createModelSaver(),
     knocks: new Map(),
   };
   return http.createServer((req, res) => {
@@ -285,6 +288,7 @@ async function handle(app, req, res) {
     if (pathname === '/api/new') return postNewAgent(app, req, res, host);
     if (pathname === '/api/teleport') return postTeleport(app, req, res, host);
     if (pathname === '/api/github/merge') return postMerge(app, req, res, host);
+    if (pathname === '/api/models') return postModels(app, req, res, host);
     return postSettings(app, req, res, host);
   }
   if (pathname.startsWith('/brand/')) return sendBrand(app, req, res, pathname.slice('/brand/'.length));
@@ -297,11 +301,12 @@ async function handle(app, req, res) {
   if (pathname === '/api/devices') return sendDevices(app, req, res, host);
   if (pathname === '/api/github') return sendGithub(app, req, res, host, new URLSearchParams(query));
   if (pathname === '/api/mail') return sendMail(app, req, res, new URLSearchParams(query));
+  if (pathname === '/api/models') return sendModels(app, req, res, host);
   return sendJson(req, res, 200, await settingsPayload(app, app.readSettings()));
 }
 
 function allowedMethods(pathname) {
-  if (pathname === '/api/settings' || pathname === '/api/rollover') return ['GET', 'HEAD', 'POST'];
+  if (pathname === '/api/settings' || pathname === '/api/rollover' || pathname === '/api/models') return ['GET', 'HEAD', 'POST'];
   if (['/api/placement', '/api/dismiss', '/api/watch', '/api/hide', '/api/open', '/api/new', '/api/teleport', '/api/github/merge'].includes(pathname)) return ['POST'];
   if (PAGE_FILES.has(pathname) || API_GET.has(pathname)) return READ_ONLY;
   if (/^\/brand\/[^/]+$/.test(pathname)) return READ_ONLY;
@@ -714,6 +719,46 @@ async function postMerge(app, req, res, host) {
   });
   if (result.ok) return sendJson(req, res, 200, { ok: true });
   return sendError(req, res, result.status, result.error);
+}
+
+// The Models page: { edit, here, demo, codex } where `codex` is what Codex's settings say about
+// models and effort (src/models.js). `edit` is settings.models.edit; Save to Codex works only when
+// `here` (this computer) is true as well.
+function sendModels(app, req, res, host) {
+  const state = app.readSettings();
+  const base = { edit: state.settings.models?.edit === true, here: isLocalRequest(host, req), demo: app.store.demo === true };
+  const codex = app.store.demo ? demoModels() : readCodexModels({ root: state.roots?.codex ?? null, seen: codexModelsOnMap(app.store) });
+  return sendJson(req, res, 200, { ...base, codex });
+}
+
+// Save to Codex: { tag, sergeant?, worker?, types?, add? }. Only on this computer and with
+// settings.models.edit on; src/models.js makes the other checks and keeps a copy of each file it
+// changes, in a "backups" folder next to Pleni's settings.
+async function postModels(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MODELS_MESSAGES.remote);
+  const state = app.readSettings();
+  if (state.settings.models?.edit !== true) return sendError(req, res, 403, MODELS_MESSAGES.off);
+  if (app.store.demo) return sendError(req, res, 409, MODELS_MESSAGES.demo);
+  const result = app.models.save({
+    root: state.roots?.codex ?? null,
+    backupDir: path.join(path.dirname(state.file ?? settingsFile()), 'backups'),
+    tag: body.tag,
+    changes: { sergeant: body.sergeant, worker: body.worker, types: body.types, add: body.add },
+  });
+  if (result.ok) return sendJson(req, res, 200, { ok: true, files: result.files, backups: result.backups });
+  return sendError(req, res, result.status, result.error);
+}
+
+// The models of the Codex sessions on the map, most used first, leaving out Codex's reviewers.
+function codexModelsOnMap(store) {
+  const count = new Map();
+  for (const n of store.snapshot()?.nodes ?? []) {
+    if (n?.platform !== 'codex' || n.kind === 'reviewer' || typeof n.model !== 'string') continue;
+    count.set(n.model, (count.get(n.model) ?? 0) + 1);
+  }
+  return [...count].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([model]) => model);
 }
 
 // The GitHub repositories the sessions on the map work in (node.github), not counting reviewers.

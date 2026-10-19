@@ -275,6 +275,33 @@ export function demoGithub(repos, now = Date.now()) {
   };
 }
 
+// What GET /api/models gives in the demo, in the same shape as readCodexModels in src/models.js.
+export function demoModels() {
+  const line = (value) => ({ value, set: value !== null, editable: true });
+  const levels = ['low', 'medium', 'high', 'xhigh'];
+  return {
+    ok: true,
+    error: null,
+    folder: `${HOME}/${ROOTS.codex}`,
+    file: `${HOME}/${ROOTS.codex}/config.toml`,
+    found: true,
+    tag: 'demo',
+    listed: true,
+    sergeant: { model: line('gpt-6.1-sol'), effort: line('high') },
+    worker: { model: line('gpt-6-astra'), effort: line(null) },
+    types: [
+      { file: 'coder.toml', name: 'coder', description: 'Coding and design work.', model: line('gpt-6-astra'), effort: line(null), pleni: true, error: null },
+      { file: 'helper.toml', name: 'helper', description: 'Easier tasks: small fixes, checks and notes.', model: line('gpt-6.1-sol'), effort: line(null), pleni: true, error: null },
+    ],
+    models: [
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', efforts: [...levels, 'max', 'ultra'], defaultEffort: 'medium', unlisted: false },
+      { id: 'gpt-6-astra', label: 'GPT-6 Astra', efforts: [...levels, 'max', 'ultra'], defaultEffort: 'high', unlisted: false },
+      { id: 'gpt-6.1-luna', label: 'GPT-6.1 Luna', efforts: [...levels, 'max'], defaultEffort: 'medium', unlisted: false },
+    ],
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+  };
+}
+
 // One made-up pull request as `gh pr list --json` gives it.
 function ghPull(p, now) {
   return {

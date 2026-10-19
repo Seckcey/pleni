@@ -10,8 +10,12 @@ before you change code, and follow its names, shapes, and file paths.
 - **Zero dependencies.** Node.js 22.12 or newer, ES modules, `node:` built-ins only. Never add an
   npm package, not even a dev one. No build step.
 - **Read-only by design.** Pleni writes nowhere on this computer except its own settings file. It
-  never stops a session, and never writes into Claude Code's, Codex's, or a mailbox's folders. It
-  sends nothing to a session except Roll over's two fixed messages (`src/rollover.js`), each in a
+  never stops a session, and never writes into Claude Code's, Codex's, or a mailbox's folders, with
+  one opt-in exception: the Models page (`src/models.js`) changes the model and effort lines in
+  Codex's `config.toml`, and the worker type files in Codex's `agents` folder, only after the person
+  chooses Save to Codex on this computer. It copies each file into a `backups` folder next to its
+  settings first, changes nothing else in the file, and stops if Codex changed the file since the
+  page looked. It sends nothing to a session except Roll over's two fixed messages (`src/rollover.js`), each in a
   window the person sees, after a click. The only programs it may start are for the opt-in Open in
   PowerShell, Roll over, New agent and Bring a cloud session here buttons (`src/open.js`,
   `src/rollover.js`, `src/newagent.js`, Windows only, this computer only): a window that runs

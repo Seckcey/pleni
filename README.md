@@ -44,7 +44,8 @@ is handed down and when a report comes back up.
 - **It only looks.** Pleni never stops or types into a session, and it never changes the files it
   reads. The one exception is a button you can turn on, which opens a session in a PowerShell
   window for you (see [Open a session in PowerShell](#open-a-session-in-powershell)).
-  Even then, you do the typing.
+  Even then, you do the typing. The other is the [Models](#models) page, also off until you turn
+  it on, which changes the models Codex uses when you ask it to.
 - **It stays on your computer.** It opens only on your own computer (`127.0.0.1`). It sends
   nothing anywhere. There is no account and no tracking. The only sign-in is Pleni's own key,
   which it keeps on your computer.
@@ -119,8 +120,9 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   lists the branches your agents work on, who is on each, and links to its pull request on GitHub,
   or to open one. With [Live GitHub status](#live-github-status) on, it also shows each pull
   request's checks and reviews, and a **Merge** button.
-- **Settings** — six short groups: **Basics** (your name, the look, which sessions show),
-  **Team** (names, roles, who reports to whom), **Sources** (which folders to read, and the
+- **Settings** — seven short groups: **Basics** (your name, the look, which sessions show),
+  **Team** (names, roles, who reports to whom), **Models** (the models and effort your Codex
+  agents use, see [Models](#models)), **Sources** (which folders to read, and the
   mailbox, and GitHub), **Alerts**, **Buttons** (Open in PowerShell, New agent, Bring a cloud
   session here and Roll over), and **Devices**
   (opening Pleni from another device). Type in **Find a setting** to find one by name, such as
@@ -348,6 +350,34 @@ the repositories your sessions work in.
 says the pull request is ready. Pleni asks you first, then checks once more that nobody pushed
 since you looked. A merge changes your repository on GitHub, so read the pull request first.
 
+## Models
+
+**Settings → Models** shows which model and effort your Codex agents start with, and lets you
+change them:
+
+- **Sergeants and new threads:** the model and effort Codex starts a new thread with. The relay
+  wakes agents with them too.
+- **Workers:** what a worker gets when the sergeant that starts it does not pick. A sergeant can
+  still pick the model and effort for each worker it starts. Leave the effort on **The sergeant
+  chooses** to let it.
+- **Worker types:** kinds of workers a sergeant can pick by the work, such as one for coding and
+  design work and one for easier tasks, each with its own model. **Add a worker type** makes one.
+
+The model menus list the models Codex offers you, so a new model shows up there once Codex knows
+it. An effort menu lists only the levels its model takes.
+
+To change them from Pleni:
+
+1. Open **Settings**, then **Models**. Tick **Let Pleni change the models Codex uses**, then choose
+   **Save settings**.
+2. Pick the models and effort levels you want, then choose **Save to Codex**.
+
+Pleni changes only those lines in Codex's settings file, and saves a copy of the old file first, in
+the `backups` folder next to Pleni's settings. If Codex changed the file since you looked, Pleni
+changes nothing and shows you what it says now. It works only on the computer that runs Pleni.
+Threads that start after you save use the new settings, and so do the relay's wake-ups. A thread
+that is running keeps what it started with.
+
 ## Where it looks
 
 Pleni finds the usual folders on its own. You can change any of them in **Settings → Sources**.
@@ -398,7 +428,8 @@ whether the relay wakes it for its mail. Pleni never sends mail itself.
 
 ## Privacy and safety
 
-- Pleni reads files. It writes only its own settings file.
+- Pleni reads files. It writes only its own settings file, except when you choose **Save to
+  Codex** on the [Models](#models) page, which changes Codex's model lines after it keeps a copy.
 - It starts nothing unless you turn on **Open in PowerShell**, **Roll over**, **New agent** or
   **Bring a cloud session here** and click a button. Then it opens one PowerShell window that runs
   `claude` or `codex`. Open in PowerShell and New agent never type into a session. Roll over sends

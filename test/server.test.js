@@ -1452,3 +1452,93 @@ test('settings name hidden sessions, which are not on the map', async (t) => {
   assert.equal(res.status, 200);
   assert.ok(res.json.nodes.some((n) => n.key === 'codex:0f8e2c4a-1b3d-4e5f-8a9b-00000000beef' && n.title === 'Old helper'));
 });
+
+// ---- Models ----
+
+function modelsSetup(t, settings = {}) {
+  const dir = tempDir(t, 'pleni-models-server-');
+  const codex = path.join(dir, 'codex');
+  fs.mkdirSync(codex);
+  fs.writeFileSync(path.join(codex, 'config.toml'), 'model = "gpt-6-astra"\nmodel_reasoning_effort = "max"\n');
+  const memory = memorySettings({ ...REMOTE, ...settings });
+  memory.state.file = path.join(dir, 'pleni', 'settings.json');
+  memory.state.roots = { ...memory.state.roots, codex };
+  const store = fakeStore();
+  store.current.nodes.push(
+    { key: 'codex:019a3f33-8e66-7b43-a04f-000000000001', title: 'Sergeant Lark', platform: 'codex', kind: 'session', model: 'gpt-6.1-sol' },
+    { key: 'codex:019a3f33-8e66-7b43-a04f-000000000002', title: 'Sergeant Wren', platform: 'codex', kind: 'session', model: 'gpt-6.1-sol' },
+    { key: 'codex:019a3f33-8e66-7b43-a04f-000000000003', title: 'Helper', platform: 'codex', kind: 'agent', model: 'gpt-6-astra' },
+    { key: 'codex:019a3f33-8e66-7b43-a04f-000000000004', title: 'Review', platform: 'codex', kind: 'reviewer', model: 'codex-auto-review' },
+  );
+  return { dir, codex, memory, store };
+}
+
+const modelsReq = (port, body, headers = {}) => request(port, {
+  method: 'POST',
+  path: '/api/models',
+  headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+  body: JSON.stringify(body),
+});
+
+test("GET /api/models reads Codex's model lines, and says where they can be changed", async (t) => {
+  const { memory, store } = modelsSetup(t);
+  const { port } = await startServer(t, { store, memory });
+  const res = await request(port, { path: '/api/models' });
+  assert.equal(res.status, 200);
+  assert.deepEqual([res.json.edit, res.json.here, res.json.demo], [false, true, false]);
+  assert.equal(res.json.codex.ok, true);
+  assert.equal(res.json.codex.sergeant.model.value, 'gpt-6-astra');
+  assert.equal(res.json.codex.sergeant.effort.value, 'max');
+  assert.deepEqual(res.json.codex.models.map((m) => m.id), ['gpt-6.1-sol', 'gpt-6-astra'], 'the models in use, most used first, no reviewers');
+  const laptop = await request(port, { path: '/api/models', headers: FROM_LAPTOP });
+  assert.equal(laptop.status, 200);
+  assert.equal(laptop.json.here, false);
+  assertPlainError(await request(port, { path: '/api/models', headers: { cookie: undefined } }), 401);
+  assertPlainError(await request(port, { method: 'PUT', path: '/api/models' }), 405);
+});
+
+test('Save to Codex works only on this computer, with the switch on, and keeps a copy', async (t) => {
+  const { dir, codex, memory, store } = modelsSetup(t, { models: { edit: true } });
+  const { port } = await startServer(t, { store, memory });
+  const { tag } = (await request(port, { path: '/api/models' })).json.codex;
+  const body = { tag, sergeant: { model: 'gpt-6.1-sol', effort: 'high' }, worker: { model: 'gpt-6-astra' } };
+  assertPlainError(await modelsReq(port, body, { cookie: undefined }), 401);
+  assertPlainError(await modelsReq(port, body, { 'x-pleni': undefined }), 403);
+  assertPlainError(await modelsReq(port, body, { origin: 'https://evil.example' }), 403);
+  const remote = await modelsReq(port, body, FROM_LAPTOP);
+  assertPlainError(remote, 403);
+  assert.match(remote.json.error, /only on the computer that runs Pleni/);
+  assert.equal(fs.readFileSync(path.join(codex, 'config.toml'), 'utf8'), 'model = "gpt-6-astra"\nmodel_reasoning_effort = "max"\n');
+
+  const ok = await modelsReq(port, body);
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.json.files, [path.join(codex, 'config.toml')]);
+  assert.equal(ok.json.backups.length, 1);
+  assert.equal(path.dirname(ok.json.backups[0]), path.join(dir, 'pleni', 'backups'));
+  assert.equal(
+    fs.readFileSync(path.join(codex, 'config.toml'), 'utf8'),
+    'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\n\n[agents]\ndefault_subagent_model = "gpt-6-astra"\n',
+  );
+  const stale = await modelsReq(port, body);
+  assertPlainError(stale, 409);
+  assert.match(stale.json.error, /changed since you looked/);
+});
+
+test('Save to Codex is refused while the switch is off, and in the demo', async (t) => {
+  const off = modelsSetup(t);
+  const a = await startServer(t, { store: off.store, memory: off.memory });
+  const { tag } = (await request(a.port, { path: '/api/models' })).json.codex;
+  const refused = await modelsReq(a.port, { tag, sergeant: { model: 'gpt-6.1-sol' } });
+  assertPlainError(refused, 403);
+  assert.match(refused.json.error, /turned off/);
+
+  const demo = modelsSetup(t, { models: { edit: true } });
+  demo.store.demo = true;
+  const b = await startServer(t, { store: demo.store, memory: demo.memory });
+  const shown = await request(b.port, { path: '/api/models' });
+  assert.equal(shown.json.demo, true);
+  assert.equal(shown.json.codex.sergeant.model.value, 'gpt-6.1-sol', 'the demo shows made-up settings');
+  const saved = await modelsReq(b.port, { tag: 'demo', sergeant: { model: 'gpt-6-astra' } });
+  assertPlainError(saved, 409);
+  assert.equal(fs.readFileSync(path.join(demo.codex, 'config.toml'), 'utf8'), 'model = "gpt-6-astra"\nmodel_reasoning_effort = "max"\n');
+});
