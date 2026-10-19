@@ -302,6 +302,32 @@ export function demoModels() {
   };
 }
 
+// What GET /api/models gives for Claude Code in the demo, in the same shape as readClaudeModels.
+export function demoClaudeModels() {
+  const line = (value) => ({ value, set: value !== null, editable: true });
+  const alias = (id, label) => ({ id, label: `${label}, the newest`, efforts: null, defaultEffort: null, unlisted: false });
+  return {
+    ok: true,
+    error: null,
+    folder: `${HOME}/${ROOTS.claude}`,
+    file: `${HOME}/${ROOTS.claude}/settings.json`,
+    found: true,
+    tag: 'demo',
+    listed: false,
+    sergeant: { model: line('opus'), effort: line('high') },
+    worker: { model: line('sonnet'), effort: null },
+    types: [
+      { file: 'coder.md', name: 'coder', description: 'Coding and design work.', model: line('opus'), effort: line(null), pleni: false, error: null },
+      { file: 'helper.md', name: 'helper', description: 'Easier tasks: small fixes, checks and notes.', model: line('sonnet'), effort: line(null), pleni: false, error: null },
+    ],
+    models: [alias('fable', 'Fable'), alias('opus', 'Opus'), alias('sonnet', 'Sonnet'), alias('haiku', 'Haiku')],
+    efforts: ['low', 'medium', 'high', 'xhigh'],
+    typeEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    modelEfforts: { opus: 'high' },
+    notes: [],
+  };
+}
+
 // One made-up pull request as `gh pr list --json` gives it.
 function ghPull(p, now) {
   return {

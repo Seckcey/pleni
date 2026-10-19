@@ -31,6 +31,13 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **Claude Code on the Models page:** see and change the model and effort Sergeant Claude Code
+  starts with (Claude Code keeps an effort for each model, where `/effort` keeps it), the model a
+  worker gets when its sergeant does not pick, and Claude Code worker types (agent files). The
+  menus offer Claude Code's short names (Fable, Opus, Sonnet, Haiku), which always point at its
+  newest models. **Save to Claude Code** keeps every other setting in `settings.json`, after Pleni
+  keeps a copy of the old file. The page also warns when a setting such as `ANTHROPIC_MODEL` wins
+  over what it sets.
 - A **Models** page (Settings → Models): see and change the model and effort your Codex agents
   start with. Sergeants and new threads get one model and effort; workers get theirs when their
   sergeant does not pick; and **worker types** let a sergeant pick a model by the kind of work.

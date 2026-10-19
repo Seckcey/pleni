@@ -1538,7 +1538,34 @@ test('Save to Codex is refused while the switch is off, and in the demo', async 
   const shown = await request(b.port, { path: '/api/models' });
   assert.equal(shown.json.demo, true);
   assert.equal(shown.json.codex.sergeant.model.value, 'gpt-6.1-sol', 'the demo shows made-up settings');
+  assert.equal(shown.json.claude.sergeant.model.value, 'opus');
   const saved = await modelsReq(b.port, { tag: 'demo', sergeant: { model: 'gpt-6-astra' } });
   assertPlainError(saved, 409);
   assert.equal(fs.readFileSync(path.join(demo.codex, 'config.toml'), 'utf8'), 'model = "gpt-6-astra"\nmodel_reasoning_effort = "max"\n');
+});
+
+test("the Models page reads and saves Claude Code's settings too", async (t) => {
+  const { dir, memory, store } = modelsSetup(t, { models: { edit: true } });
+  const claude = path.join(dir, 'claude');
+  fs.mkdirSync(claude);
+  fs.writeFileSync(path.join(claude, 'settings.json'), '{\n  "model": "opus",\n  "theme": "dark"\n}\n');
+  memory.state.roots = { ...memory.state.roots, claude };
+  store.current.nodes.push({ key: 'claude:0f8e2c4a-1b3d-4e5f-8a9b-0c1d2e3f4a5c', title: 'Sergeant Claude', platform: 'claude', kind: 'session', model: 'claude-opus-5-5' });
+  const { port } = await startServer(t, { store, memory });
+  const shown = (await request(port, { path: '/api/models' })).json;
+  assert.equal(shown.claude.ok, true);
+  assert.equal(shown.claude.sergeant.model.value, 'opus');
+  assert.ok(shown.claude.models.some((m) => m.id === 'claude-opus-5-5'), 'the models in use are offered');
+  assert.ok(!shown.claude.models.some((m) => m.id === 'gpt-6.1-sol'), 'only Claude Code models');
+  const ok = await modelsReq(port, { app: 'claude', tag: shown.claude.tag, sergeant: { effort: 'high' }, worker: { model: 'sonnet' } });
+  assert.equal(ok.status, 200, ok.text);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8')), {
+    model: 'opus',
+    theme: 'dark',
+    modelSettings: { opus: { effortLevel: 'high' } },
+    env: { CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' },
+  });
+  assert.match(path.basename(ok.json.backups[0]), /^claude-settings-\d{8}-\d{6}\.json$/);
+  // The Codex file was not touched by a Claude Code save.
+  assert.equal(fs.readFileSync(path.join(dir, 'codex', 'config.toml'), 'utf8'), 'model = "gpt-6-astra"\nmodel_reasoning_effort = "max"\n');
 });

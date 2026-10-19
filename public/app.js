@@ -117,7 +117,7 @@ const S = {
   // The Mail page: the newest answer, which list it holds, and a message for the person.
   mail: { data: null, all: false, asking: false, error: '', key: '', msg: null, cmds: [] },
   // Settings > Models: what Codex's settings say, the person's changes, and a message.
-  models: { data: null, error: '', busy: false, draft: null, msg: null },
+  models: { data: null, error: '', busy: false, drafts: {}, msgs: {}, addOpen: {} },
 };
 
 const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
@@ -3769,19 +3769,25 @@ function allowDevice(index) {
 }
 
 // ---- models ----
-// Settings > Models shows the model and effort Codex agents start with, read from Codex's own
-// settings (GET /api/models). With "Let Pleni change the models Codex uses" saved and on, on this
-// computer, Save to Codex changes those lines (POST /api/models). The section keeps its own draft,
-// apart from the other settings, and sends only what changed, with the tag it was shown.
+// Settings > Models shows the model and effort Codex and Claude Code agents start with, read from
+// their own settings (GET /api/models). With "Let Pleni change the models Codex and Claude Code
+// use" saved and on, on this computer, each tool's Save button changes them (POST /api/models with
+// its `app`). Each tool's section keeps its own draft, apart from the other settings, and sends only
+// what changed, with the tag it was shown.
 const MODEL_OTHER = '__other';
 const EFFORT_NAMES = { minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
-const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,99}$/;
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@+[\]-]{0,99}$/;
 const TYPE_NAME = /^[a-z][a-z0-9_-]{0,39}$/;
 const MAX_TYPE_TEXT = 300;
+// What differs between the two tools' sections. `p` starts the id of each field.
+const MODEL_APPS = {
+  codex: { p: 'm', name: 'Codex', blank: 'Codex default', placeholder: 'For example gpt-6.1-sol' },
+  claude: { p: 'mc', name: 'Claude Code', blank: 'Claude Code default', placeholder: 'For example opusplan' },
+};
 
-// Changes not saved yet are kept when Codex's files are as they were, unless `keep` is false
+// Changes not saved yet are kept when a tool's files are as they were, unless `keep` is false
 // (Look again).
-async function loadCodexModels(force, keep = true) {
+async function loadModels(force, keep = true) {
   const st = S.set;
   const m = S.models;
   if (!st || !st.info || m.busy) return;
@@ -3789,23 +3795,27 @@ async function loadCodexModels(force, keep = true) {
   if (!force && (!shown || m.data)) return;
   m.busy = true;
   try {
-    const tag = m.data && m.data.codex ? m.data.codex.tag : null;
-    const dirty = keep && !!m.draft && Object.keys(codexChanges().out).length > 0;
+    const before = {};
+    for (const app of Object.keys(MODEL_APPS)) {
+      const c = m.data && m.data[app];
+      before[app] = { tag: c ? c.tag : null, dirty: keep && !!m.drafts[app] && Object.keys(modelChanges(app).out).length > 0 };
+    }
     m.data = await getJson('/api/models');
     m.error = '';
-    const c = m.data.codex;
-    if (!(dirty && c && c.ok && c.tag === tag)) m.draft = codexDraft(m.data);
+    for (const app of Object.keys(MODEL_APPS)) {
+      const c = m.data[app];
+      if (!(before[app].dirty && c && c.ok && c.tag === before[app].tag)) m.drafts[app] = modelsDraft(c);
+    }
   } catch (err) {
     m.error = plainError(err);
   } finally {
     m.busy = false;
   }
-  paintCodexModels();
+  for (const app of Object.keys(MODEL_APPS)) paintAppModels(app);
 }
 
 // The values on the page: '' means the line is not there.
-function codexDraft(data) {
-  const c = data && data.codex;
+function modelsDraft(c) {
   if (!c || !c.ok) return null;
   const pick = (lines) => ({ model: (lines.model && lines.model.value) || '', effort: (lines.effort && lines.effort.value) || '' });
   const types = {};
@@ -3814,101 +3824,122 @@ function codexDraft(data) {
 }
 
 // Always repaints: a menu the person changed shows its new choice, which the old markup does not.
-function paintCodexModels() {
-  const box = $('#models-box');
+function paintAppModels(app) {
+  const box = $(`#models-${app}`);
   if (!box) return;
   painted.delete(box);
-  setHtml(box, codexModelsHtml());
+  setHtml(box, appModelsHtml(app));
 }
 
-function codexCanChange() {
+function modelsCanChange(app) {
   const d = S.models.data;
-  return !!(d && d.edit && d.here && d.codex && d.codex.ok);
+  return !!(d && d.edit && d.here && d[app] && d[app].ok);
 }
 
-function codexModelsHtml() {
+function appModelsHtml(app) {
   const m = S.models;
-  const again = '<button type="button" class="btn" id="m-again">Look again</button>';
+  const a = MODEL_APPS[app];
+  const again = `<button type="button" class="btn" id="${a.p}-again" data-models-app="${app}" data-models-act="again">Look again</button>`;
   if (!m.data) return m.error ? `<p class="help">Could not read this. ${esc(m.error)}</p>${again}` : '<p class="help">Loading…</p>';
-  const c = m.data.codex;
-  if (!c || !c.ok || !m.draft) {
+  const c = m.data[app];
+  const d = m.drafts[app];
+  if (!c || !c.ok || !d) {
     const file = c && c.file ? `<p class="help">The file: <code>${esc(c.file)}</code></p>` : '';
-    return `<p class="note">${esc((c && c.error) || "Pleni could not read Codex's settings.")}</p>${file}${again}`;
+    return `<p class="note">${esc((c && c.error) || `Pleni could not read ${a.name}'s settings.`)}</p>${file}${again}`;
   }
-  const d = m.draft;
+  const claude = app === 'claude';
   const why = !m.data.edit
     ? 'To change these here, tick the box above, then choose Save settings at the bottom of the page.'
     : !m.data.here
       ? 'Models can be changed only on the computer that runs Pleni.'
       : '';
-  const where = (c.found
-    ? `Codex keeps these in <code>${esc(c.file)}</code>.`
-    : `Codex has no settings file yet. Pleni makes <code>${esc(c.file)}</code> when you save.`) +
-    (c.listed
+  const kept = c.found
+    ? `${a.name} keeps these in <code>${esc(c.file)}</code>.`
+    : `${a.name} has no settings file yet. Pleni makes <code>${esc(c.file)}</code> when you save.`;
+  const list = claude
+    ? " The menus offer Claude Code's short names, which always point at its newest models, and the models your sessions use."
+    : c.listed
       ? ' The models are the ones Codex lists for you, so a new model shows up here once Codex knows it.'
-      : ' Codex has not listed its models here yet, so Pleni offers the ones your sessions use. Open Codex once to get its list.');
+      : ' Codex has not listed its models here yet, so Pleni offers the ones your sessions use. Open Codex once to get its list.';
   const sergeantModel = d.sergeant.model;
   const workerModel = d.worker.model || sergeantModel;
+  const p = a.p;
   const out = [
-    `<p class="note">${where}${why ? ` ${esc(why)}` : ''}</p>`,
-    '<h3 class="sub-h">Sergeants and new threads</h3>',
-    '<p class="help">Codex starts new threads with these, and the relay wakes agents with them.</p>',
-    codexRowHtml('m-sergeant-model', 'Model', modelSelectHtml('m-sergeant-model', 'sergeant', d.sergeant.model, c.sergeant.model, 'Codex default'), c.sergeant.model),
-    codexRowHtml('m-sergeant-effort', 'Effort', effortSelectHtml('m-sergeant-effort', 'sergeant', sergeantModel, d.sergeant.effort, c.sergeant.effort, 'Codex default'), c.sergeant.effort),
+    `<p class="note">${kept}${list}${why ? ` ${esc(why)}` : ''}</p>`,
+    ...(Array.isArray(c.notes) ? c.notes : []).map((n) => `<p class="note"><strong>Heads up:</strong> ${esc(n)}</p>`),
+    `<h3 class="sub-h">Sergeants and new ${claude ? 'sessions' : 'threads'}</h3>`,
+    claude
+      ? '<p class="help">Claude Code starts new sessions with these. Claude Code keeps an effort for each model.</p>'
+      : '<p class="help">Codex starts new threads with these, and the relay wakes agents with them.</p>',
+    modelsRowHtml(`${p}-sergeant-model`, 'Model', modelSelectHtml(app, `${p}-sergeant-model`, 'sergeant', d.sergeant.model, c.sergeant.model, a.blank), c.sergeant.model),
+    claude && !sergeantModel
+      ? modelsRowHtml(`${p}-sergeant-effort`, 'Effort', effortSelectHtml(app, `${p}-sergeant-effort`, 'sergeant', '', '', { editable: false }, a.blank), null, 'Pick a model first. Claude Code keeps an effort for each model.')
+      : modelsRowHtml(`${p}-sergeant-effort`, 'Effort', effortSelectHtml(app, `${p}-sergeant-effort`, 'sergeant', sergeantModel, d.sergeant.effort, c.sergeant.effort, a.blank), c.sergeant.effort),
     '<h3 class="sub-h">Workers</h3>',
-    '<p class="help">A sergeant can pick the model and effort for each worker it starts. A worker gets these when it does not.</p>',
-    codexRowHtml('m-worker-model', 'Model', modelSelectHtml('m-worker-model', 'worker', d.worker.model, c.worker.model, 'Same as its sergeant'), c.worker.model),
-    codexRowHtml('m-worker-effort', 'Effort', effortSelectHtml('m-worker-effort', 'worker', workerModel, d.worker.effort, c.worker.effort, 'The sergeant chooses'), c.worker.effort),
+    claude
+      ? "<p class=\"help\">A sergeant can pick the model and effort for each worker it starts. A worker gets this model when it does not. A worker that is a fork of its sergeant (a copy of its whole conversation) always runs on the sergeant's model.</p>"
+      : '<p class="help">A sergeant can pick the model and effort for each worker it starts. A worker gets these when it does not.</p>',
+    modelsRowHtml(`${p}-worker-model`, 'Model', modelSelectHtml(app, `${p}-worker-model`, 'worker', d.worker.model, c.worker.model, 'Same as its sergeant'), c.worker.model),
+    claude
+      ? '<div class="srow"><span class="lbl">Effort</span><p class="help">Claude Code has no setting for this. Each sergeant picks the effort for each worker it starts.</p></div>'
+      : modelsRowHtml(`${p}-worker-effort`, 'Effort', effortSelectHtml(app, `${p}-worker-effort`, 'worker', workerModel, d.worker.effort, c.worker.effort, 'The sergeant chooses'), c.worker.effort),
     '<h3 class="sub-h">Worker types</h3>',
-    "<p class=\"help\">A sergeant picks a worker type by the kind of work. The type's model wins over the sergeant's pick. The sergeant still chooses the effort, unless you set one here. A change here counts from the next worker a sergeant starts.</p>",
-    codexTypesHtml(workerModel),
-    codexAddHtml(),
+    claude
+      ? "<p class=\"help\">A sergeant picks a worker type by the kind of work. A model or effort the sergeant names when it starts the worker wins over the type's. Claude Code sees a change here within a few seconds.</p>"
+      : "<p class=\"help\">A sergeant picks a worker type by the kind of work. The type's model wins over the sergeant's pick. The sergeant still chooses the effort, unless you set one here. A change here counts from the next worker a sergeant starts.</p>",
+    modelTypesHtml(app, workerModel),
+    modelAddHtml(app),
     '<div class="mbtns">' +
-      `<button type="button" class="btn primary" id="m-save"${codexCanChange() ? '' : ' disabled'}>Save to Codex</button>${again}` +
-      `<span id="m-msg" role="status">${codexMsgHtml()}</span></div>`,
-    '<p class="help">Codex reads these when a thread starts, so new threads and the relay\'s wake-ups use them at once. A thread that is running keeps what it started with. Pleni keeps a copy of each file it changes in the backups folder next to its settings.</p>',
+      `<button type="button" class="btn primary" id="${p}-save" data-models-app="${app}" data-models-act="save"${modelsCanChange(app) ? '' : ' disabled'}>Save to ${esc(a.name)}</button>${again}` +
+      `<span id="${p}-msg" role="status">${modelsMsgHtml(app)}</span></div>`,
+    claude
+      ? '<p class="help">Claude Code reads these when a session starts. A session that is running keeps what it started with. Pleni keeps a copy of each file it changes in the backups folder next to its settings.</p>'
+      : '<p class="help">Codex reads these when a thread starts, so new threads and the relay\'s wake-ups use them at once. A thread that is running keeps what it started with. Pleni keeps a copy of each file it changes in the backups folder next to its settings.</p>',
   ];
   return out.join('');
 }
 
-function codexRowHtml(id, label, control, line) {
-  const note = line && !line.editable ? `<p class="help">This line is written in a way Pleni does not change. Change it in the file.</p>` : '';
-  return `<div class="srow"><label for="${id}">${esc(label)}</label><div class="mpick">${control}</div>${note}</div>`;
+function modelsRowHtml(id, label, control, line, why) {
+  const text = why || (line && !line.editable ? 'This line is written in a way Pleni does not change. Change it in the file.' : '');
+  return `<div class="srow"><label for="${id}">${esc(label)}</label><div class="mpick">${control}</div>${text ? `<p class="help">${esc(text)}</p>` : ''}</div>`;
 }
 
-function modelChoiceText(x) {
-  const name = x.label && x.label !== x.id ? `${x.label} (${x.id})` : x.id;
-  return x.unlisted ? `${name}, which Codex does not list` : name;
+function modelChoiceText(app, x) {
+  // "Opus, the newest" names itself already; "GPT-6.1 Sol (gpt-6.1-sol)" shows the name Codex uses.
+  const named = !x.label || x.label.toLowerCase().startsWith(x.id.toLowerCase());
+  const name = named ? x.label || x.id : `${x.label} (${x.id})`;
+  return x.unlisted ? `${name}, which ${MODEL_APPS[app].name} does not list` : name;
 }
 
-// The models Codex lists for the account. Without such a list, the models in use, and "Another
+// The models the tool lists for the account. Without such a list, the models on offer, and "Another
 // model…", which opens a box to type any name.
-function modelSelectHtml(id, field, value, line, blank) {
-  const c = S.models.data.codex;
+function modelSelectHtml(app, id, field, value, line, blank) {
+  const c = S.models.data[app];
   const choices = Array.isArray(c.models) ? c.models : [];
-  const other = !c.listed && (!!S.models.draft.other[field] || (!!value && !choices.some((x) => x.id === value)));
-  const off = !codexCanChange() || (line && !line.editable) ? ' disabled' : '';
+  const other = !c.listed && (!!S.models.drafts[app].other[field] || (!!value && !choices.some((x) => x.id === value)));
+  const off = !modelsCanChange(app) || (line && !line.editable) ? ' disabled' : '';
   const opts = [
     `<option value=""${!value && !other ? ' selected' : ''}>${esc(blank)}</option>`,
-    ...choices.map((x) => `<option value="${esc(x.id)}"${!other && x.id === value ? ' selected' : ''}>${esc(modelChoiceText(x))}</option>`),
+    ...choices.map((x) => `<option value="${esc(x.id)}"${!other && x.id === value ? ' selected' : ''}>${esc(modelChoiceText(app, x))}</option>`),
     ...(c.listed ? [] : [`<option value="${MODEL_OTHER}"${other ? ' selected' : ''}>Another model…</option>`]),
   ];
   let html = `<select class="field" id="${id}" data-m-model="${esc(field)}"${off}>${opts.join('')}</select>`;
   if (other) {
     html +=
       `<label class="sr-only" for="${id}-other">Model name</label>` +
-      `<input class="field" id="${id}-other" type="text" data-m-other="${esc(field)}" value="${esc(value)}" maxlength="100" placeholder="For example gpt-6.1-sol" autocomplete="off" spellcheck="false"${off}>`;
+      `<input class="field" id="${id}-other" type="text" data-m-other="${esc(field)}" value="${esc(value)}" maxlength="100" placeholder="${esc(MODEL_APPS[app].placeholder)}" autocomplete="off" spellcheck="false"${off}>`;
   }
   return html;
 }
 
-// The levels the model takes when Codex lists them, else every level Codex knows.
-function effortSelectHtml(id, field, model, value, line, blank) {
-  const c = S.models.data.codex;
+// The levels the model takes when the tool lists them, else every level it knows.
+function effortSelectHtml(app, id, field, model, value, line, blank, levelsFor = null) {
+  const c = S.models.data[app];
   const known = (Array.isArray(c.models) ? c.models : []).find((x) => x.id === model);
-  const list = known && Array.isArray(known.efforts) && known.efforts.length ? known.efforts : Array.isArray(c.efforts) ? c.efforts : [];
+  const all = levelsFor || (Array.isArray(c.efforts) ? c.efforts : []);
+  const list = known && Array.isArray(known.efforts) && known.efforts.length ? known.efforts : all;
   const levels = value && !list.includes(value) ? [...list, value] : list;
-  const off = !codexCanChange() || (line && !line.editable) ? ' disabled' : '';
+  const off = !modelsCanChange(app) || (line && !line.editable) ? ' disabled' : '';
   const opts = [
     `<option value=""${value ? '' : ' selected'}>${esc(blank)}</option>`,
     ...levels.map((e) => `<option value="${esc(e)}"${e === value ? ' selected' : ''}>${esc(EFFORT_NAMES[e] || e)}</option>`),
@@ -3916,21 +3947,22 @@ function effortSelectHtml(id, field, model, value, line, blank) {
   return `<select class="field" id="${id}" data-m-effort="${esc(field)}"${off}>${opts.join('')}</select>`;
 }
 
-function codexTypesHtml(workerModel) {
-  const c = S.models.data.codex;
+function modelTypesHtml(app, workerModel) {
+  const c = S.models.data[app];
+  const p = MODEL_APPS[app].p;
   const types = Array.isArray(c.types) ? c.types : [];
   if (!types.length) return '<p class="help">No worker types yet. Add one below, for example one for coding and design work and one for easier tasks.</p>';
   const rows = types.map((t, i) => {
     const name = esc(t.name || t.file);
     if (t.error) return `<tr><td><span class="mname">${name}</span><span class="key">${esc(t.file)}</span></td><td colspan="3">${esc(t.error)}</td></tr>`;
-    const slot = S.models.draft.types[t.file];
+    const slot = S.models.drafts[app].types[t.file];
     const field = `type:${t.file}`;
-    const model = modelSelectHtml(`m-type-${i}-model`, field, slot.model, t.model, 'Same as other workers');
-    const effort = effortSelectHtml(`m-type-${i}-effort`, field, slot.model || workerModel, slot.effort, t.effort, 'The sergeant chooses');
+    const model = modelSelectHtml(app, `${p}-type-${i}-model`, field, slot.model, t.model, 'Same as other workers');
+    const effort = effortSelectHtml(app, `${p}-type-${i}-effort`, field, slot.model || workerModel, slot.effort, t.effort, 'The sergeant chooses', c.typeEfforts || null);
     return (
       `<tr><td><span class="mname">${name}</span><span class="key">${esc(t.file)}</span></td><td data-label="When a sergeant uses it">${esc(t.description || '')}</td>` +
-      `<td data-label="Model"><label class="sr-only" for="m-type-${i}-model">Model for ${name}</label><div class="mpick">${model}</div></td>` +
-      `<td data-label="Effort"><label class="sr-only" for="m-type-${i}-effort">Effort for ${name}</label>${effort}</td></tr>`
+      `<td data-label="Model"><label class="sr-only" for="${p}-type-${i}-model">Model for ${name}</label><div class="mpick">${model}</div></td>` +
+      `<td data-label="Effort"><label class="sr-only" for="${p}-type-${i}-effort">Effort for ${name}</label>${effort}</td></tr>`
     );
   });
   return (
@@ -3939,158 +3971,185 @@ function codexTypesHtml(workerModel) {
   );
 }
 
-function codexAddHtml() {
-  if (!codexCanChange()) return '';
-  const a = S.models.draft.add;
+function modelAddHtml(app) {
+  if (!modelsCanChange(app)) return '';
+  const a = MODEL_APPS[app];
+  const add = S.models.drafts[app].add;
+  const p = a.p;
   // A repaint (a model picked in the box, say) keeps the box open.
-  const box = $('#m-add-box');
-  if (box) S.models.addOpen = box.open;
+  const box = $(`#${p}-add-box`);
+  if (box) S.models.addOpen[app] = box.open;
   return (
-    `<details class="smore" id="m-add-box"${S.models.addOpen ? ' open' : ''}><summary>Add a worker type</summary>` +
-    '<p class="help">Pleni makes a new file for it in Codex\'s agents folder. It never changes a file that is there already.</p>' +
-    `<div class="srow"><label for="m-add-name">Name</label><div><input class="field" id="m-add-name" type="text" data-m-add="name" value="${esc(a.name)}" maxlength="40" placeholder="For example coder" autocomplete="off" spellcheck="false" aria-describedby="m-add-name-help"></div>` +
-    '<p class="help" id="m-add-name-help">Small letters, digits, - and _.</p></div>' +
-    `<div class="srow"><label for="m-add-description">When a sergeant uses it</label><div><input class="field" id="m-add-description" type="text" data-m-add="description" value="${esc(a.description)}" maxlength="${MAX_TYPE_TEXT}" placeholder="For example: coding and design work" autocomplete="off"></div></div>` +
-    `<div class="srow"><label for="m-add-model">Model</label><div class="mpick">${modelSelectHtml('m-add-model', 'add', a.model, null, 'Same as other workers')}</div></div>` +
-    '<div class="mbtns"><button type="button" class="btn" id="m-add">Add the worker type</button></div></details>'
+    `<details class="smore" id="${p}-add-box"${S.models.addOpen[app] ? ' open' : ''}><summary>Add a worker type</summary>` +
+    `<p class="help">Pleni makes a new file for it in ${esc(a.name)}'s agents folder. It never changes a file that is there already.</p>` +
+    `<div class="srow"><label for="${p}-add-name">Name</label><div><input class="field" id="${p}-add-name" type="text" data-m-add="name" value="${esc(add.name)}" maxlength="40" placeholder="For example coder" autocomplete="off" spellcheck="false" aria-describedby="${p}-add-name-help"></div>` +
+    `<p class="help" id="${p}-add-name-help">Small letters, digits, - and _.</p></div>` +
+    `<div class="srow"><label for="${p}-add-description">When a sergeant uses it</label><div><input class="field" id="${p}-add-description" type="text" data-m-add="description" value="${esc(add.description)}" maxlength="${MAX_TYPE_TEXT}" placeholder="For example: coding and design work" autocomplete="off"></div></div>` +
+    `<div class="srow"><label for="${p}-add-model">Model</label><div class="mpick">${modelSelectHtml(app, `${p}-add-model`, 'add', add.model, null, 'Same as other workers')}</div></div>` +
+    `<div class="mbtns"><button type="button" class="btn" id="${p}-add" data-models-app="${app}" data-models-act="add">Add the worker type</button></div></details>`
   );
 }
 
-function codexMsgHtml() {
-  const m = S.models;
-  if (m.msg) return `<span class="saved ${m.msg.kind}">${esc(m.msg.text)}</span>`;
-  if (m.draft && Object.keys(codexChanges().out).length) return '<span class="saved dirty">You have changes that are not saved to Codex yet.</span>';
+function modelsMsgHtml(app) {
+  const msg = S.models.msgs[app];
+  if (msg) return `<span class="saved ${msg.kind}">${esc(msg.text)}</span>`;
+  if (S.models.drafts[app] && Object.keys(modelChanges(app).out).length) return `<span class="saved dirty">You have changes that are not saved to ${esc(MODEL_APPS[app].name)} yet.</span>`;
   return '';
 }
 
-function updateCodexMsg() {
-  const el = $('#m-msg');
-  if (el) setHtml(el, codexMsgHtml());
+function updateModelsMsg(app) {
+  const el = $(`#${MODEL_APPS[app].p}-msg`);
+  if (el) setHtml(el, modelsMsgHtml(app));
 }
 
-function codexSlot(field) {
-  const d = S.models.draft;
+function modelSlot(app, field) {
+  const d = S.models.drafts[app];
   if (field === 'sergeant' || field === 'worker' || field === 'add') return d[field];
   return field.startsWith('type:') ? d.types[field.slice('type:'.length)] : null;
 }
 
-function onCodexModelsInput(el) {
+function onModelsInput(app, el) {
   const m = S.models;
-  if (!m.draft) return;
+  const d = m.drafts[app];
+  if (!d || !MODEL_APPS[app]) return;
   if (el.dataset.mModel) {
-    const slot = codexSlot(el.dataset.mModel);
+    const field = el.dataset.mModel;
+    const slot = modelSlot(app, field);
     if (!slot) return;
-    m.draft.other[el.dataset.mModel] = el.value === MODEL_OTHER;
+    d.other[field] = el.value === MODEL_OTHER;
     slot.model = el.value === MODEL_OTHER ? '' : el.value;
-    m.msg = null;
+    // Claude Code keeps an effort for each model, so the menu shows the one kept for this model.
+    if (app === 'claude' && field === 'sergeant') slot.effort = (m.data.claude.modelEfforts || {})[slot.model] || '';
+    m.msgs[app] = null;
     // The effort menu follows the model, and "Another model…" opens its box.
-    paintCodexModels();
+    paintAppModels(app);
     if (el.value === MODEL_OTHER) $(`#${el.id}-other`)?.focus();
     return;
   }
   if (el.dataset.mOther) {
-    const slot = codexSlot(el.dataset.mOther);
+    const slot = modelSlot(app, el.dataset.mOther);
     if (slot) slot.model = el.value.trim();
   } else if (el.dataset.mEffort) {
-    const slot = codexSlot(el.dataset.mEffort);
+    const slot = modelSlot(app, el.dataset.mEffort);
     if (slot) slot.effort = el.value;
   } else if (el.dataset.mAdd) {
-    m.draft.add[el.dataset.mAdd] = el.value;
+    d.add[el.dataset.mAdd] = el.value;
     return;
   } else {
     return;
   }
-  m.msg = null;
-  updateCodexMsg();
+  m.msgs[app] = null;
+  updateModelsMsg(app);
 }
 
-// What changed from what Codex has: { out: { sergeant?, worker?, types? }, bad: { id, text } | null }.
-// null takes a line out of the file.
-function codexChanges() {
-  const c = S.models.data.codex;
-  const d = S.models.draft;
+// What changed from what the tool has: { out: { sergeant?, worker?, types? }, bad: { id, text } |
+// null }. null takes a value out. For Claude Code, the sergeant's effort is the one kept for the
+// model picked, so it counts as changed only when it differs from that.
+function modelChanges(app) {
+  const c = S.models.data[app];
+  const d = S.models.drafts[app];
+  const p = MODEL_APPS[app].p;
   let bad = null;
-  const diff = (field, slot, lines, idOf) => {
+  const diff = (field, slot, lines, idOf, keptEffort) => {
     const one = {};
     for (const what of ['model', 'effort']) {
       const line = lines[what];
       if (!line || !line.editable) continue;
       const now = String(slot[what] || '').trim();
       if (what === 'model' && d.other[field] && !now) bad = bad || { id: `${idOf('model')}-other`, text: 'Type the name of the model, or pick one from the list.' };
-      else if (what === 'model' && now && !MODEL_ID.test(now)) bad = bad || { id: `${idOf('model')}-other`, text: 'A model name has only letters, digits and . - _ : / @ +, up to 100 of them.' };
-      if (now !== (line.value || '')) one[what] = now || null;
+      else if (what === 'model' && now && !MODEL_ID.test(now)) bad = bad || { id: `${idOf('model')}-other`, text: 'A model name has only letters, digits and . - _ : / @ + [ ], up to 100 of them.' };
+      const was = what === 'effort' && keptEffort !== undefined ? keptEffort : line.value || '';
+      if (now !== was) one[what] = now || null;
     }
     return one;
   };
   const out = {};
   for (const who of ['sergeant', 'worker']) {
-    const one = diff(who, d[who], c[who], (what) => `m-${who}-${what}`);
+    const claudeEffort = app === 'claude' && who === 'sergeant';
+    if (claudeEffort && !d.sergeant.model) {
+      const one = diff(who, { model: d.sergeant.model }, { model: c.sergeant.model }, (what) => `${p}-${who}-${what}`);
+      if (Object.keys(one).length) out[who] = one;
+      continue;
+    }
+    const kept = claudeEffort ? (c.modelEfforts || {})[d.sergeant.model] || '' : undefined;
+    const one = diff(who, d[who], c[who], (what) => `${p}-${who}-${what}`, kept);
     if (Object.keys(one).length) out[who] = one;
   }
   const types = [];
   (c.types || []).forEach((t, i) => {
     if (t.error || !d.types[t.file]) return;
-    const one = diff(`type:${t.file}`, d.types[t.file], t, (what) => `m-type-${i}-${what}`);
+    const one = diff(`type:${t.file}`, d.types[t.file], t, (what) => `${p}-type-${i}-${what}`);
     if (Object.keys(one).length) types.push({ file: t.file, ...one });
   });
   if (types.length) out.types = types;
   return { out, bad };
 }
 
-async function saveCodexModels() {
-  const m = S.models;
-  if (!codexCanChange() || !m.draft) return;
-  const { out, bad } = codexChanges();
+function modelsAction(app, act) {
+  if (!MODEL_APPS[app]) return undefined;
+  if (act === 'save') return saveModels(app);
+  if (act === 'add') return addModelType(app);
+  S.models.msgs[app] = null;
+  return loadModels(true, false);
+}
+
+async function saveModels(app) {
+  const d = S.models.drafts[app];
+  if (!modelsCanChange(app) || !d) return;
+  const { out, bad } = modelChanges(app);
+  const name = MODEL_APPS[app].name;
   if (bad) {
-    m.msg = { kind: 'err', text: `Not saved. ${bad.text}` };
-    updateCodexMsg();
+    S.models.msgs[app] = { kind: 'err', text: `Not saved. ${bad.text}` };
+    updateModelsMsg(app);
     $(`#${bad.id}`)?.focus();
     return;
   }
   if (!Object.keys(out).length) {
-    m.msg = { kind: 'ok', text: 'Nothing to save. Codex has these already.' };
-    updateCodexMsg();
+    S.models.msgs[app] = { kind: 'ok', text: `Nothing to save. ${name} has these already.` };
+    updateModelsMsg(app);
     return;
   }
-  await sendCodexModels(out, (r) => {
+  await sendModels(app, out, (r) => {
     const copy = Array.isArray(r.backups) && r.backups.length ? ` A copy of the old file is in ${r.backups[0]}.` : '';
-    return `Saved to Codex. New threads and the relay's wake-ups use these now.${copy}`;
+    const who = app === 'claude' ? 'New sessions use these now.' : "New threads and the relay's wake-ups use these now.";
+    return `Saved to ${name}. ${who}${copy}`;
   });
 }
 
-async function addCodexType() {
-  const m = S.models;
-  if (!codexCanChange() || !m.draft) return;
-  const a = m.draft.add;
-  const name = a.name.trim();
-  const description = a.description.trim();
-  const model = a.model.trim();
+async function addModelType(app) {
+  const d = S.models.drafts[app];
+  if (!modelsCanChange(app) || !d) return;
+  const p = MODEL_APPS[app].p;
+  const name = d.add.name.trim();
+  const description = d.add.description.trim();
+  const model = d.add.model.trim();
   const fail = (id, text) => {
-    m.msg = { kind: 'err', text: `Not added. ${text}` };
-    updateCodexMsg();
+    S.models.msgs[app] = { kind: 'err', text: `Not added. ${text}` };
+    updateModelsMsg(app);
     $(`#${id}`)?.focus();
   };
-  if (!TYPE_NAME.test(name)) return fail('m-add-name', 'A name starts with a small letter and has only small letters, digits, - and _.');
-  if (!description) return fail('m-add-description', 'Say when a sergeant should use this worker type.');
-  if (m.draft.other.add && !model) return fail('m-add-model-other', 'Type the name of the model, or pick one from the list.');
-  if (model && !MODEL_ID.test(model)) return fail('m-add-model-other', 'A model name has only letters, digits and . - _ : / @ +, up to 100 of them.');
-  await sendCodexModels({ add: { name, description, model: model || null } }, () => `Added the worker type ${name}. Sergeants can use it in threads that start from now on.`);
+  if (!TYPE_NAME.test(name)) return fail(`${p}-add-name`, 'A name starts with a small letter and has only small letters, digits, - and _.');
+  if (!description) return fail(`${p}-add-description`, 'Say when a sergeant should use this worker type.');
+  if (d.other.add && !model) return fail(`${p}-add-model-other`, 'Type the name of the model, or pick one from the list.');
+  if (model && !MODEL_ID.test(model)) return fail(`${p}-add-model-other`, 'A model name has only letters, digits and . - _ : / @ + [ ], up to 100 of them.');
+  const later = app === 'claude' ? 'Sergeants can use it within a few seconds.' : 'Sergeants can use it in threads that start from now on.';
+  await sendModels(app, { add: { name, description, model: model || null } }, () => `Added the worker type ${name}. ${later}`);
 }
 
-async function sendCodexModels(changes, done) {
+async function sendModels(app, changes, done) {
   const m = S.models;
-  m.msg = { kind: '', text: 'Saving…' };
-  updateCodexMsg();
+  m.msgs[app] = { kind: '', text: 'Saving…' };
+  updateModelsMsg(app);
   let msg;
   try {
-    const r = await postJson('/api/models', { tag: m.data.codex.tag, ...changes });
+    const r = await postJson('/api/models', { app, tag: m.data[app].tag, ...changes });
     msg = { kind: 'ok', text: done(r || {}) };
   } catch (err) {
     msg = { kind: 'err', text: `Not saved. ${plainError(err)}` };
   }
-  await loadCodexModels(true);
-  m.msg = msg;
-  updateCodexMsg();
+  await loadModels(true);
+  m.msgs[app] = msg;
+  updateModelsMsg(app);
   say(msg.text);
 }
 
@@ -4114,7 +4173,7 @@ async function loadSettings(force) {
   }
   if (S.view === 'settings') renderSettingsForm();
   loadDevices(true);
-  loadCodexModels(false);
+  loadModels(false);
 }
 
 function getPath(obj, path, fallback) {
@@ -4549,10 +4608,15 @@ function renderSettingsForm() {
         ${textRow('s-junior', 'Junior words', 'modelTiers.junior', { kind: 'words', help: 'A model whose name has any of these words is junior. Senior words are checked first.' })}
       </details>
     </section>`)}
-    ${group('models', 'The model and effort your Codex agents start with.', `
-    <section class="panel" aria-labelledby="s-h-models" data-find="models model effort reasoning codex sergeant sergeants worker workers types astra sol config"><h2 id="s-h-models">Codex models</h2>
-      ${checkRow('s-models-edit', 'Change models', 'models.edit', 'Let Pleni change the models Codex uses', "Pleni then changes only the model and effort lines in Codex's settings, after you choose Save to Codex below, and keeps a copy of the old file first. Only on this computer.")}
-      <div id="models-box">${codexModelsHtml()}</div>
+    ${group('models', 'The model and effort your Codex and Claude Code agents start with.', `
+    <section class="panel" aria-labelledby="s-h-models" data-find="models model effort change edit"><h2 id="s-h-models">Change models</h2>
+      ${checkRow('s-models-edit', 'Change models', 'models.edit', 'Let Pleni change the models Codex and Claude Code use', "Pleni then changes only the model and effort lines in their settings, after you choose Save in a section below, and keeps a copy of the old file first. Only on this computer.")}
+    </section>
+    <section class="panel" aria-labelledby="s-h-codex-models" data-find="models model effort reasoning codex sergeant sergeants worker workers types astra sol luna config"><h2 id="s-h-codex-models">Codex</h2>
+      <div id="models-codex" data-models="codex">${appModelsHtml('codex')}</div>
+    </section>
+    <section class="panel" aria-labelledby="s-h-claude-models" data-find="models model effort claude code opus sonnet haiku fable sergeant sergeants worker workers types agents settings"><h2 id="s-h-claude-models">Claude Code</h2>
+      <div id="models-claude" data-models="claude">${appModelsHtml('claude')}</div>
     </section>`)}
     ${group('sources', 'Which tools Pleni reads, and where their files are.', `
     <section class="panel" aria-labelledby="s-h-where" data-find="folders paths sources read claude codex grok kimi desktop"><h2 id="s-h-where">Where Pleni looks</h2>
@@ -4641,7 +4705,7 @@ function selectSettingsGroup(id, focus) {
   history.replaceState(null, '', `#/settings/${id}`);
   applySettingsView();
   if (id === 'devices') loadDevices(true);
-  if (id === 'models') loadCodexModels(true);
+  if (id === 'models') loadModels(true);
   if (focus) $(`#stab-${id}`).focus();
 }
 
@@ -4738,8 +4802,9 @@ function readValue(el) {
 function onSettingsInput(el) {
   const st = S.set;
   if (!st || !st.draft) return;
-  if (el.closest('#models-box')) {
-    onCodexModelsInput(el);
+  const modelsBox = el.closest('[data-models]');
+  if (modelsBox) {
+    onModelsInput(modelsBox.dataset.models, el);
     return;
   }
   if (el.id === 's-people-search') {
@@ -4750,7 +4815,7 @@ function onSettingsInput(el) {
   if (el.id === 's-find') {
     st.find = el.value;
     applySettingsView();
-    loadCodexModels(false);
+    loadModels(false);
     return;
   }
   if (el.dataset.local === 'theme') {
@@ -4972,7 +5037,7 @@ async function saveSettings() {
     S.gh.askedAt = 0;
     await loadSettings(true);
     // The Models section may have just been turned on or off.
-    if (S.models.data) loadCodexModels(true);
+    if (S.models.data) loadModels(true);
     poll();
   } catch (err) {
     st.msg = { kind: 'err', text: `Not saved. ${plainError(err)}` };
@@ -4986,7 +5051,7 @@ settingsBox.addEventListener('change', (ev) => onSettingsInput(ev.target));
 settingsBox.addEventListener('keydown', (ev) => {
   // Enter in a search box searches, and the Models section has its own Save button: neither
   // should save the whole form.
-  if (ev.key === 'Enter' && (ev.target.id === 's-people-search' || ev.target.id === 's-find' || ev.target.closest('#models-box'))) ev.preventDefault();
+  if (ev.key === 'Enter' && (ev.target.id === 's-people-search' || ev.target.id === 's-find' || ev.target.closest('[data-models]'))) ev.preventDefault();
   if (ev.key === 'Escape' && ev.target.id === 's-find' && ev.target.value) {
     ev.preventDefault();
     ev.target.value = '';
@@ -5083,12 +5148,7 @@ document.addEventListener('click', (ev) => {
   if (el.id === 's-link-copy') return copyDevices('link');
   if (el.dataset.allow) return allowDevice(Number(el.dataset.allow));
   if (el.id === 's-chain-add') return addChainRule();
-  if (el.id === 'm-save') return saveCodexModels();
-  if (el.id === 'm-add') return addCodexType();
-  if (el.id === 'm-again') {
-    S.models.msg = null;
-    return loadCodexModels(true, false);
-  }
+  if (el.dataset.modelsAct) return modelsAction(el.dataset.modelsApp, el.dataset.modelsAct);
   if (el.dataset.chainRemove) return removeChainRule(Number(el.dataset.chainRemove));
   if (el.id === 's-undo' && S.set && S.set.info) {
     S.set.draft = clone(S.set.info.settings);
