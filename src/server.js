@@ -491,6 +491,9 @@ async function readInside(dir, name) {
 // Uses the JSON and ETag the store already made, when it made them.
 async function sendSnapshot(app, req, res) {
   const snap = await app.store.snapshot();
+  // A held plan or prompt the person answered in the session's own window is let go; the next
+  // snapshot no longer shows it.
+  app.asks.settle(snap?.nodes);
   const body = typeof snap?.json === 'string' ? snap.json : JSON.stringify(snap ?? null);
   const etag = typeof snap?.etag === 'string' ? snap.etag : snapshotTag(snap);
   // The page shows which Pleni answers, and notices when an update has restarted it.
@@ -789,7 +792,7 @@ async function postHook(app, req, res, host) {
   const view = askView(input);
   const mine = key && (settings.people?.[key]?.answer === true || app.sender.running?.(key) === true);
   if (app.store.demo || settings.actions?.answers !== true || settings.content !== 'snippets' || !view || !mine) {
-    return sendJson(req, res, 200, NO_DECISION);
+    return sendNoDecision(req, res);
   }
   const held = app.asks.hold({ key, input, view, waitMs: settings.answers.waitMinutes * 60 * 1000 });
   // Claude Code gave up on the call (its own time limit, or the turn ended): nobody waits any more.
@@ -798,7 +801,13 @@ async function postHook(app, req, res, host) {
   });
   const body = await held.answer;
   if (res.destroyed || res.writableEnded) return undefined;
-  return sendJson(req, res, 200, body);
+  return body === NO_DECISION ? sendNoDecision(req, res) : sendJson(req, res, 200, body);
+}
+
+// No decision: an empty answer, which Claude Code reads as a hook that says nothing, so the session
+// asks in its own window (or, in a turn without a window, refuses what it would have asked).
+function sendNoDecision(req, res) {
+  send(req, res, 200, {}, '');
 }
 
 // The person's answer to a held question: { id, answer }, or { id, release: true } to let the

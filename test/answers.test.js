@@ -43,7 +43,8 @@ const question = (patch = {}) => ({
   },
   ...patch,
 });
-const plan = { session_id: ID, hook_event_name: 'PreToolUse', tool_name: 'ExitPlanMode', tool_input: { plan: '# Plan\n\n1. Read the code.\n2. Fix the bug.' } };
+// Claude Code puts the plan from its plan file into the input of the permission prompt.
+const plan = { session_id: ID, hook_event_name: 'PermissionRequest', tool_name: 'ExitPlanMode', tool_input: { plan: '# Plan\n\n1. Read the code.\n2. Fix the bug.', planFilePath: 'C:\\Users\\ada\\.claude\\plans\\fix-the-bug.md' } };
 const permission = { session_id: ID, hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'npm test', description: 'Run the tests' } };
 
 test('the secret is made once, kept next to the settings, and compared in constant time', (t) => {
@@ -74,6 +75,11 @@ test('a call is shown as a question, a plan or a prompt, and nothing else is hel
   assert.deepEqual(askView(permission), { kind: 'permission', tool: 'Bash', detail: 'npm test' });
   assert.deepEqual(askView({ ...permission, tool_name: 'Write', tool_input: { file_path: 'C:\\Users\\ada\\project\\notes.md', content: 'x' } }).detail, 'C:\\Users\\ada\\project\\notes.md');
   assert.equal(askView({ ...plan, tool_input: {} }), null);
+  // A plan comes through the permission prompt only, and a question through PreToolUse only: when
+  // the person gives a question back, Claude Code asks again with a permission prompt, and Pleni
+  // must not hold it twice.
+  assert.equal(askView({ ...plan, hook_event_name: 'PreToolUse' }), null);
+  assert.equal(askView({ ...question(), hook_event_name: 'PermissionRequest' }), null);
   assert.equal(askView(question({ tool_input: { questions: [] } })), null);
   assert.equal(askView({ ...question(), tool_name: 'Bash' }), null);
   assert.equal(askView({ ...permission, hook_event_name: 'PostToolUse' }), null);
@@ -105,11 +111,15 @@ test('answers become the hook\'s answer in the shape Claude Code reads', () => {
   const longAnswer = hookAnswer(longInput, askView(longInput), { answers: ['Because'] });
   assert.deepEqual(Object.keys(longAnswer.body.hookSpecificOutput.updatedInput.answers), [`${'Why '.repeat(200)}?`]);
   const planView = askView(plan);
-  assert.deepEqual(hookAnswer(plan, planView, { approve: true }), { body: { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } } });
-  assert.deepEqual(hookAnswer(plan, planView, { approve: false, feedback: 'Add a test first.' }), {
-    body: { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Add a test first.' } },
+  // Claude Code approves a plan only when the answer hands back the plan it was given.
+  assert.deepEqual(hookAnswer(plan, planView, { approve: true }), {
+    body: { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow', updatedInput: plan.tool_input } } },
   });
-  assert.match(hookAnswer(plan, planView, { approve: false }).body.hookSpecificOutput.permissionDecisionReason, /Keep planning/);
+  assert.deepEqual(hookAnswer(plan, planView, { approve: false, feedback: 'Add a test first.' }), {
+    body: { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Add a test first.' } } },
+  });
+  assert.match(hookAnswer(plan, planView, { approve: false }).body.hookSpecificOutput.decision.message, /Keep planning/);
+  assert.equal(hookAnswer(plan, planView, { approve: 'yes' }).error, ANSWER_MESSAGES.badAnswer);
   const promptView = askView(permission);
   assert.deepEqual(hookAnswer(permission, promptView, { allow: true }), { body: { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } } });
   assert.deepEqual(hookAnswer(permission, promptView, { allow: false, reason: 'Not on main.' }), {
@@ -161,6 +171,55 @@ test('a held question waits for the person, and is given back when time runs out
   assert.ok(changes >= 6);
 });
 
+test('a plan or prompt answered in the session\'s own window is let go', async () => {
+  let now = 1_700_000_000_000;
+  const asks = createAsks({ now: () => now, setTimer: () => null, clearTimer: () => {} });
+  const key = `claude:${ID}`;
+  const node = (activity) => [{ key: 'you', kind: 'person' }, { key, kind: 'session', activity }];
+  const prompt = asks.hold({ key, input: permission, view: askView(permission), waitMs: 600_000 });
+  let promptAnswer = null;
+  prompt.answer.then((body) => (promptAnswer = body));
+  // Pleni has not read the call from the session's log yet: an older Bash call is not this one.
+  asks.settle(node({ tool: 'Bash', detail: null, at: now - 90_000 }));
+  asks.settle(node(null));
+  assert.equal(asks.size(), 1);
+  // The log shows the call waiting, then a snapshot where it is gone: the person answered there.
+  asks.settle(node({ tool: 'Bash', detail: 'Run the tests', at: now - 400 }));
+  asks.settle(node({ tool: 'Bash', detail: 'Run the tests', at: now - 400 }));
+  assert.equal(asks.size(), 1, 'still waiting while the call is open');
+  asks.settle(node({ tool: 'Read', detail: 'notes.md', at: now + 3000 }));
+  assert.equal(asks.size(), 0);
+  await Promise.resolve();
+  assert.equal(promptAnswer, NO_DECISION);
+  // A newer call of the same tool is not the held one either.
+  now += 60_000;
+  const second = asks.hold({ key, input: plan, view: askView(plan), waitMs: 600_000 });
+  asks.settle(node({ tool: 'ExitPlanMode', detail: null, at: now - 200 }));
+  asks.settle(node({ tool: 'ExitPlanMode', detail: null, at: now + 9000 }));
+  assert.equal(await second.answer, NO_DECISION);
+  // A session Pleni had not read before the person answered: its log already went on past the call.
+  now += 60_000;
+  const quick = asks.hold({ key, input: permission, view: askView(permission), waitMs: 600_000 });
+  asks.settle([{ key, kind: 'session', activity: { tool: 'Read', detail: null, at: now - 200 }, lastAt: now - 200 }]);
+  asks.settle([{ key, kind: 'session', activity: null, lastAt: now + 500 }]);
+  assert.equal(asks.size(), 1, 'a line written as the call began is not an answer');
+  asks.settle([{ key, kind: 'session', activity: null, lastAt: now + 4000 }]);
+  assert.equal(await quick.answer, NO_DECISION);
+  // While the call waits, newer lines from the session do not let it go.
+  now += 60_000;
+  const busy = asks.hold({ key, input: permission, view: askView(permission), waitMs: 600_000 });
+  asks.settle([{ key, kind: 'session', activity: { tool: 'Bash', detail: null, at: now - 100 }, lastAt: now + 5000 }]);
+  assert.equal(asks.size(), 1);
+  assert.equal(asks.release(busy.id).ok, true);
+  // Another session's calls, or a session not on the map, change nothing.
+  const third = asks.hold({ key, input: permission, view: askView(permission), waitMs: 600_000 });
+  asks.settle(node({ tool: 'Bash', detail: null, at: now }));
+  asks.settle([{ key: 'claude:1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', kind: 'session', activity: null }]);
+  asks.settle(null);
+  assert.equal(asks.size(), 1);
+  assert.equal(asks.release(third.id).ok, true);
+});
+
 test('only a few questions are held at once', async () => {
   const asks = createAsks({ setTimer: () => null, clearTimer: () => {} });
   for (let i = 0; i < MAX_ASKS; i++) assert.ok(asks.hold({ key: `claude:${ID}`, input: permission, view: askView(permission), waitMs: 1000 }).id);
@@ -171,7 +230,10 @@ test('only a few questions are held at once', async () => {
 });
 
 test('Pleni\'s hooks are told apart from the person\'s own', () => {
-  const [mine] = pleniEntries(8790, SECRET).PreToolUse[0].hooks;
+  const entries = pleniEntries(8790, SECRET);
+  // Questions come before the tool runs; plans and every other "may I?" through the permission prompt.
+  assert.deepEqual([entries.PreToolUse[0].matcher, entries.PermissionRequest[0].matcher], ['AskUserQuestion', '*']);
+  const [mine] = entries.PreToolUse[0].hooks;
   assert.deepEqual(mine, { type: 'http', url: 'http://127.0.0.1:8790/api/hook', timeout: 3900, headers: { [HOOK_HEADER]: SECRET } });
   assert.equal(isPleniHook(mine), true);
   assert.equal(isPleniHook({ ...mine, url: 'http://127.0.0.1:9100/api/hook' }), true);

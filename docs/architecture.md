@@ -26,7 +26,8 @@ Codex thread in its side panel, and Pleni sends it as one hidden turn of that se
 message on the program's standard input (see `src/send.js` below). With **Answer questions**
 connected (Connect adds Pleni's hooks to Claude Code's `settings.json`, after a copy), a Claude Code
 session the person switched on, or a turn Pleni sent, asks Pleni first: its question, plan or "may
-I run this?" waits on the page until the person answers it (see `src/answers.js` below).
+I run this?" waits on the page until the person answers it there or in the session's own window
+(see `src/answers.js` below).
 
 ## Ground rules
 
@@ -905,9 +906,17 @@ export const SEND_MESSAGES, SEND_MODES /* ['read', 'edit'] */, MAX_TEXT /* 8000 
 ## Answer questions (`src/answers.js`)
 
 A Claude Code session asks Pleni before it asks the person, so a question (`AskUserQuestion`), a
-plan to approve (`ExitPlanMode`) or a permission prompt can be answered on the Pleni page, also for
-a turn that runs without a window (one sent with Send). It works through Claude Code's hooks, which
-call a web address on this computer and wait for the answer.
+plan to approve (`ExitPlanMode`) or a permission prompt can be answered on the Pleni page. It works
+through Claude Code's hooks, which call a web address on this computer and wait for the answer.
+Everything below was checked against Claude Code 2.1.307, in a real window and with `claude -p`.
+
+- **In a session's window**, a question waits in Pleni only: the window shows "running PreToolUse
+  hook" until Pleni answers or gives it back, and then shows the question itself. A plan or a "may
+  I?" prompt shows in both places at once, and the first answer counts.
+- **In a turn without a window** (`claude -p`, as Send runs), Claude Code turns questions and plans
+  off, so only "may I?" prompts come, and none in "don't ask" mode (Send's "Read files and answer"),
+  where Claude Code refuses at once without calling the hook. In other modes, a prompt nobody
+  decides is refused.
 
 ```js
 export function loadOrCreateHookKey(file), hookKeyFile(settingsPath), hookKeyMatches(sent, key)
@@ -917,16 +926,17 @@ export function withPleniHooks(settings, add)           // -> the settings with 
 export function createHookSaver({ now })                // -> { connect({ root, backupDir, port, secret }), disconnect({ root, backupDir }) }
 export function askView(input), askKey(input)           // -> what the page shows for a hook call, and its session's node key
 export function hookAnswer(input, view, answer)         // -> { body } for the hook, or { error }
-export function createAsks({ now, onChange, setTimer, clearTimer }) // -> { hold, answer, release, list, close, size }
-export const HOOK_PATH /* '/api/hook' */, HOOK_HEADER /* 'X-Pleni-Hook' */, NO_DECISION /* {} */, MAX_ASKS /* 20 */, ANSWER_MESSAGES
+export function createAsks({ now, onChange, setTimer, clearTimer }) // -> { hold, answer, release, settle, list, close, size }
+export const HOOK_PATH /* '/api/hook' */, HOOK_HEADER /* 'X-Pleni-Hook' */, NO_DECISION, MAX_ASKS /* 20 */, ANSWER_MESSAGES
+export const QUESTION_TOOL /* 'AskUserQuestion' */, PLAN_TOOL /* 'ExitPlanMode' */
 ```
 
 - **The secret** (`hook-key` next to the settings file, 32 random bytes, file mode 0600): made once,
   and again when it is missing or damaged (then Settings says to connect again). Only a hook call
   that carries it in `X-Pleni-Hook` (compared in constant time) is answered.
 - **Connect** (`createHookSaver().connect`) adds two entries to the `hooks` of Claude Code's
-  `settings.json` (the root `resolveRoots` gives): `PreToolUse` with matcher
-  `AskUserQuestion|ExitPlanMode`, and `PermissionRequest` with matcher `*`, each with one hook
+  `settings.json` (the root `resolveRoots` gives): `PreToolUse` with matcher `AskUserQuestion`, and
+  `PermissionRequest` with matcher `*` (plans and every other prompt), each with one hook
   `{ type: 'http', url: 'http://127.0.0.1:<port>/api/hook', timeout: 3900, headers: { 'X-Pleni-Hook':
   <secret> } }`. `<port>` is the port the request came in on. Every other hook, and every other key
   in the file, stays as it was (`withPleniHooks` takes out only hooks `isPleniHook` knows: an http
@@ -943,22 +953,30 @@ export const HOOK_PATH /* '/api/hook' */, HOOK_HEADER /* 'X-Pleni-Hook' */, NO_D
 - **Which calls Pleni holds**: a call from a main Claude Code session whose `people[key].answer` is
   true, or whose turn Pleni's Send is running (`sender.running(key)`), while `actions.answers` is on
   and `content` is `snippets`, not in the demo, and only when `askView` can show it. Every other call
-  is answered `{}` at once (no decision), so Claude Code asks in its own window as before. At most
-  `MAX_ASKS` (20) are held; more get no decision.
+  gets no decision at once: the server answers `NO_DECISION` with an empty body, which Claude Code
+  reads as a hook that says nothing (`{}` works the same), so it asks in its own window as before.
+  At most `MAX_ASKS` (20) are held; more get no decision.
 - **`askView`**: an `AskUserQuestion` `PreToolUse` call becomes `{ kind: 'question', questions }`
   (at most 4, with at most 8 options each, words cut to 500, 200 and 400 characters; each keeps its
-  `index` in the call), an `ExitPlanMode` call `{ kind: 'plan', plan }` (at most 20,000 characters,
-  line breaks kept), and a `PermissionRequest` call `{ kind: 'permission', tool, detail }`, where
-  `detail` is the input's `command`, `file_path`, `notebook_path`, `url`, `path` or `pattern` (at most
-  2,000 characters), else its `description`, else the names of its keys.
+  `index` in the call), an `ExitPlanMode` `PermissionRequest` call `{ kind: 'plan', plan }` (Claude
+  Code puts the plan from its plan file in `tool_input.plan`, with `planFilePath`; at most 20,000
+  characters, line breaks kept), and any other `PermissionRequest` call `{ kind: 'permission', tool,
+  detail }`, where `detail` is the input's `command`, `file_path`, `notebook_path`, `url`, `path` or
+  `pattern` (at most 2,000 characters), else its `description`, else the names of its keys. A
+  `PermissionRequest` for `AskUserQuestion` is never held: Claude Code sends one when the person gave
+  the question back, and the question then shows in the window.
 - **The answers** (`hookAnswer`), in the shape Claude Code reads from a hook:
   - question, `{ answers: [one per question shown] }` (the labels picked joined with `, `, or the
     person's own words; at most 2,000 characters each): `{ hookSpecificOutput: { hookEventName:
     'PreToolUse', permissionDecision: 'allow', updatedInput: { ...tool_input, answers: { '<the
     question's own words>': '<answer>' } } } }`;
-  - plan, `{ approve: true }`: `permissionDecision: 'allow'`; `{ approve: false, feedback }`:
-    `permissionDecision: 'deny'` with `permissionDecisionReason` the feedback, or "Keep planning. The
-    person did not approve this plan yet.";
+  - plan, `{ approve: true }`: `{ hookSpecificOutput: { hookEventName: 'PermissionRequest',
+    decision: { behavior: 'allow', updatedInput: { ...tool_input } } } }`. Claude Code approves a
+    plan only when the answer hands back the input it was given (without it, it ignores the yes and
+    keeps asking in its window); the session then leaves plan mode for the mode it had before
+    (manual, asking each time, when it started in plan mode). `{ approve: false, feedback }`:
+    `behavior: 'deny'` with `message` the feedback, or "Keep planning. The person did not approve
+    this plan yet."; the session stays in plan mode and reads the message;
   - permission, `{ allow: true }`: `{ hookSpecificOutput: { hookEventName: 'PermissionRequest',
     decision: { behavior: 'allow' } } }`; `{ allow: false, reason }`: `behavior: 'deny'` with
     `message` the reason, or "The person said no in Pleni.".
@@ -968,7 +986,16 @@ export const HOOK_PATH /* '/api/hook' */, HOOK_HEADER /* 'X-Pleni-Hook' */, NO_D
   when the person gives it back (`release(id)`), when `waitMs` (`answers.waitMinutes`) passes, when
   Claude Code drops the call (the turn ended, or its own time limit), on Disconnect, and when Pleni
   stops (`close()`).
-- **If Pleni is not running**, Claude Code cannot reach the hook, and goes on as if it had none.
+- **Answered in the window** (`settle(nodes)`, run on each `GET /api/snapshot`): Claude Code does
+  not tell the hook when the person answers a plan or prompt in the session's own window, and keeps
+  the call open. So Pleni lets a held call go (no decision, which Claude Code no longer waits for)
+  once the session's node shows it moved on: its `activity.tool` (the newest tool call still
+  waiting for its result) was the held call's tool (a call that started at most 30 seconds before
+  the hold) and then is not, or is a newer call; or, before Pleni saw the call waiting, the node's
+  `lastAt` is more than a second newer than the hold and the tool is not waiting. Pleni reads a
+  session it knows within a few seconds; a brand-new session's file is found within 15 seconds.
+- **If Pleni is not running**, Claude Code cannot reach the hook: it shows a short "hook error"
+  line (connection refused) and asks in its own window as usual. Disconnect stops that.
 
 ## Live GitHub status (`src/github.js`)
 
@@ -1220,7 +1247,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `GET /api/devices`, `GET /api/github`, `POST /api/github/merge`, `GET /api/mail`,
   `GET /api/models`, `POST /api/models`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
-- `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
+- `GET /api/snapshot` first lets go of held calls answered in a session's own window
+  (`asks.settle(snap.nodes)`, see Answer questions), then sends the JSON and ETag the store made
+  (`snap.json`, `snap.etag`), or makes
   them the same way (`snapshotTag`) for a store that did not. Its answers, `304` included, carry
   `X-Pleni-Version` (from package.json) and, when Pleni runs from a git copy, `X-Pleni-Build`: the
   short commit id from `readBuild()`, which reads only `.git/HEAD` and the branch it names (its file
@@ -1276,8 +1305,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   it. Instead it needs a request from this computer (like `/api/open`), the secret in
   `X-Pleni-Hook`, `Content-Type: application/json` and a body of at most 4 MB; otherwise `403`, `415`
   or `413`. A browser cannot send that header to another site without asking first, and the host
-  gate stops DNS rebinding. Its answer is the hook's JSON: `{}` at once for a call Pleni does not
-  hold (or cannot read), else the person's answer when it comes (see Answer questions). `start()`
+  gate stops DNS rebinding. Its answer is the hook's: an empty body at once for a call Pleni does not
+  hold (or cannot read), else the person's answer as JSON when it comes, or an empty body when the
+  call is given back (see Answer questions). `start()`
   reads or makes the secret (`loadOrCreateHookKey`); the demo has none, so no call is answered.
 - **POST /api/answer** `{ id, answer }` or `{ id, release: true }` passes the same checks as
   `/api/open` and answers or gives back a held question: `{ ok: true }`, or `{ error }` (`400` for an

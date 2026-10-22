@@ -9,8 +9,13 @@
 // Pleni") and for a turn Pleni itself sent. Every other call is answered at once with no decision,
 // and Claude Code asks in its own window as before. A held question is answered when the person
 // answers on the page, and given back to the session (no decision) when the person says so, when
-// the time limit passes, or when Pleni stops. If Pleni is not running, Claude Code cannot reach the
-// hook and goes on as if there were none.
+// the time limit passes, or when Pleni stops. A plan or a "may I?" prompt shows in the session's
+// own window too, and the person may answer it there: Claude Code does not tell the hook, so Pleni
+// lets the call go once the session's log shows it was answered (settle). If Pleni is not running,
+// Claude Code cannot reach the hook: it shows a short "hook error" line and asks in its window.
+//
+// Claude Code turns questions and plans off in a turn that runs without a window (`claude -p`, as
+// Send runs), so from those only a "may I?" prompt can come, and only outside "don't ask" mode.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,8 +25,12 @@ export const HOOK_PATH = '/api/hook';
 export const HOOK_HEADER = 'X-Pleni-Hook';
 const HOOK_KEY_FILE = 'hook-key';
 const HOOK_KEY = /^[A-Za-z0-9_-]{32,128}$/;
-// The questions and plans Pleni can show, through PreToolUse; prompts come through PermissionRequest.
-export const ASK_TOOLS = ['AskUserQuestion', 'ExitPlanMode'];
+// Questions come through PreToolUse on AskUserQuestion: a hook answers one with "allow" and the
+// answers in updatedInput. Plans to approve (ExitPlanMode) and every other "may I?" come through
+// PermissionRequest, which Claude Code's docs give for approving a plan: allowing it ends plan mode
+// and puts back the permission mode the session had before.
+export const QUESTION_TOOL = 'AskUserQuestion';
+export const PLAN_TOOL = 'ExitPlanMode';
 // Claude Code waits this long for Pleni's answer; Pleni gives a question back well before that.
 export const HOOK_TIMEOUT_SECONDS = 3900;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -34,8 +43,13 @@ const MAX_DETAIL = 2000;
 const MAX_ANSWER = 2000;
 const CHANGES_PER_MINUTE = 10;
 const MINUTE_MS = 60 * 1000;
+// How long before a hook call its tool call may have started and still be the same call, and how
+// much newer than the hook call a line in the session's log must be to show the session went on.
+const SEEN_SLACK_MS = 30 * 1000;
+const MOVED_SLACK_MS = 1000;
 
-// What Claude Code takes as "no decision": it goes on and asks in its own window.
+// "No decision": the server answers it with an empty body, which Claude Code's docs give as a hook
+// that says nothing, so the session goes on and asks in its own window.
 export const NO_DECISION = Object.freeze({});
 
 export const ANSWER_MESSAGES = {
@@ -101,7 +115,7 @@ export function pleniHook(port, secret) {
 // The entries Pleni adds: { PreToolUse: [...], PermissionRequest: [...] }.
 export function pleniEntries(port, secret) {
   return {
-    PreToolUse: [{ matcher: ASK_TOOLS.join('|'), hooks: [pleniHook(port, secret)] }],
+    PreToolUse: [{ matcher: QUESTION_TOOL, hooks: [pleniHook(port, secret)] }],
     PermissionRequest: [{ matcher: '*', hooks: [pleniHook(port, secret)] }],
   };
 }
@@ -220,11 +234,13 @@ export function createHookSaver({ now = Date.now } = {}) {
 //   { kind: 'question', questions: [{ index, question, header, multiSelect, options: [{ label, description }] }] }
 //   { kind: 'plan', plan }
 //   { kind: 'permission', tool, detail }
+// A PermissionRequest for a question is never held: its PreToolUse call came first, and the person
+// either answered it or gave it back to the session.
 export function askView(input) {
   if (!isPlainObject(input)) return null;
   const tool = typeof input.tool_name === 'string' ? input.tool_name : '';
   const args = isPlainObject(input.tool_input) ? input.tool_input : {};
-  if (input.hook_event_name === 'PreToolUse' && tool === 'AskUserQuestion') {
+  if (input.hook_event_name === 'PreToolUse' && tool === QUESTION_TOOL) {
     const questions = (Array.isArray(args.questions) ? args.questions : []).slice(0, MAX_QUESTIONS).map((q, index) => ({
       index,
       question: clip(q?.question, 500),
@@ -234,14 +250,13 @@ export function askView(input) {
     })).filter((q) => q.question);
     return questions.length ? { kind: 'question', questions } : null;
   }
-  if (input.hook_event_name === 'PreToolUse' && tool === 'ExitPlanMode') {
+  if (input.hook_event_name !== 'PermissionRequest' || !tool || tool === QUESTION_TOOL) return null;
+  if (tool === PLAN_TOOL) {
+    // Claude Code puts the plan from its plan file into the input before it calls the hook.
     const plan = clip(args.plan, MAX_PLAN, true);
     return plan ? { kind: 'plan', plan } : null;
   }
-  if (input.hook_event_name === 'PermissionRequest' && tool) {
-    return { kind: 'permission', tool: clip(tool, 80), detail: permissionDetail(args) };
-  }
-  return null;
+  return { kind: 'permission', tool: clip(tool, 80), detail: permissionDetail(args) };
 }
 
 // The part of a tool's input a person needs to decide: a command, a file, an address, else a short
@@ -277,11 +292,12 @@ export function hookAnswer(input, view, answer) {
     return { body: preToolUse('allow', { updatedInput: { ...args, answers } }) };
   }
   if (view.kind === 'plan') {
-    if (answer.approve === true) return { body: preToolUse('allow') };
+    // Claude Code approves a plan only when the answer also hands back the plan it was given.
+    if (answer.approve === true) return { body: permissionRequest({ behavior: 'allow', updatedInput: { ...(isPlainObject(input.tool_input) ? input.tool_input : {}) } }) };
     if (answer.approve !== false) return { error: ANSWER_MESSAGES.badAnswer };
     const feedback = plainAnswer(answer.feedback);
     if (feedback === null) return { error: ANSWER_MESSAGES.longAnswer };
-    return { body: preToolUse('deny', { permissionDecisionReason: feedback || 'Keep planning. The person did not approve this plan yet.' }) };
+    return { body: permissionRequest({ behavior: 'deny', message: feedback || 'Keep planning. The person did not approve this plan yet.' }) };
   }
   if (view.kind === 'permission') {
     if (answer.allow === true) return { body: permissionRequest({ behavior: 'allow' }) };
@@ -315,7 +331,7 @@ function plainAnswer(value) {
 // so the snapshot can show it. Each held call resolves its promise once: with the person's answer,
 // or with NO_DECISION.
 export function createAsks({ now = Date.now, onChange = () => {}, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
-  const held = new Map(); // id -> { id, key, view, input, at, until, resolve, timer }
+  const held = new Map(); // id -> { id, key, view, input, at, until, resolve, timer, openAt }
 
   // Holds one call for `waitMs`. Answers NO_DECISION at once when too many are held already.
   function hold({ key, input, view, waitMs }) {
@@ -326,7 +342,7 @@ export function createAsks({ now = Date.now, onChange = () => {}, setTimer = set
     const answer = new Promise((done) => {
       resolve = done;
     });
-    const entry = { id, key, view, input, at, until: at + waitMs, resolve, timer: null };
+    const entry = { id, key, view, input, at, until: at + waitMs, resolve, timer: null, openAt: undefined };
     entry.timer = setTimer(() => finish(id, NO_DECISION), waitMs);
     entry.timer?.unref?.();
     held.set(id, entry);
@@ -361,6 +377,34 @@ export function createAsks({ now = Date.now, onChange = () => {}, setTimer = set
     return finish(id, NO_DECISION) ? { ok: true } : refuse(404, ANSWER_MESSAGES.gone);
   }
 
+  // Lets go of each held call the person answered in the session's own window. `nodes` are the
+  // snapshot's nodes; a session's `activity.tool` names its newest tool call still waiting for its
+  // result, and `lastAt` is the time of the newest line in its log. Once that call is the held
+  // call's tool, a later snapshot where it is gone (or is a newer call) means the session went on
+  // without Pleni. So does a newer line in the log while the call is not waiting, which also covers
+  // a session Pleni had not read yet (it looks for new session files every few seconds). The call
+  // gets no decision, which Claude Code no longer waits for.
+  function settle(nodes) {
+    if (!held.size || !Array.isArray(nodes)) return;
+    const byKey = new Map(nodes.map((n) => [n?.key, n]));
+    for (const entry of [...held.values()]) {
+      const node = byKey.get(entry.key);
+      if (!node) continue;
+      const act = isPlainObject(node.activity) ? node.activity : null;
+      const tool = entry.view.kind === 'question' ? QUESTION_TOOL : entry.view.kind === 'plan' ? PLAN_TOOL : entry.input.tool_name;
+      const open = act?.tool === tool;
+      const at = typeof act?.at === 'number' ? act.at : null;
+      const moved = typeof node.lastAt === 'number' && node.lastAt > entry.at + MOVED_SLACK_MS;
+      if (entry.openAt === undefined) {
+        // An older call of the same tool that the log has not closed yet is not this one.
+        if (open && (at === null || at >= entry.at - SEEN_SLACK_MS)) entry.openAt = at;
+        else if (moved && !open) finish(entry.id, NO_DECISION);
+      } else if (!open || at !== entry.openAt) {
+        finish(entry.id, NO_DECISION);
+      }
+    }
+  }
+
   function list() {
     return [...held.values()].map(({ id, key, view, at, until }) => ({ id, key, at, until, ...view }));
   }
@@ -370,7 +414,7 @@ export function createAsks({ now = Date.now, onChange = () => {}, setTimer = set
     for (const id of [...held.keys()]) finish(id, NO_DECISION);
   }
 
-  return { hold, answer, release, list, close, size: () => held.size };
+  return { hold, answer, release, settle, list, close, size: () => held.size };
 }
 
 // The session a hook call comes from, as a node key, or null.

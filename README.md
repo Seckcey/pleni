@@ -342,27 +342,33 @@ shows in the Chat tab a moment later, like any other turn. Nothing opens on your
 
 A Claude Code session sometimes stops to ask you something: a question with choices, a plan to
 approve, or "may I run this command?". Pleni can show those to you, so you answer them in your
-browser instead of in the session's own window. That is how you answer a session that runs with no
-window, such as one you sent a message with Pleni.
+browser instead of in the session's own window.
 
 1. Open **Settings**, then **Buttons**. Under **Answer questions**, choose **Connect Pleni to Claude
    Code**. Pleni adds two hooks to Claude Code's settings file. It keeps a copy of the file first and
    changes nothing else in it.
 2. Click a Claude Code session on the map. In its side panel, tick **Answer its questions in
-   Pleni**. (Questions from messages you send with Pleni always come to Pleni.)
+   Pleni**. (A message you send with Pleni needs no tick; see below.)
 3. When it asks, the question shows under **Needs you**. Pick the answer, approve the plan or ask it
    to keep planning, or allow or deny the tool. **Answer in the session instead** gives it back.
 
 <p align="center"><img src="https://raw.githubusercontent.com/Seckcey/pleni/main/docs/assets/pleni-answer.png" alt="A Claude Code session's side panel in the demo, with two questions waiting: one with choices and an Other box, and a plan with Approve the plan, Keep planning, and Answer in the session instead buttons." width="760"></p>
 
+- **Answer in either place.** A plan or a "may I?" prompt also shows in the session's own window.
+  If you answer it there, Pleni notices within a few seconds and takes its card away. A question
+  waits only in Pleni, until you answer it or give it back.
 - **Nothing waits forever.** After the time you set under **Hold a question for** (10 minutes at
   first), the session asks in its own window again.
 - **Other sessions are not held up.** Pleni answers "no decision" at once for every session you did
   not switch on, and Claude Code asks there as before.
-- **Only on this computer,** and only while Pleni runs: if Pleni is not running, Claude Code goes on
-  as if there were no hook.
-- **Disconnect** takes Pleni's hooks out of Claude Code's settings again.
-- Codex threads cannot ask Pleni yet.
+- **Messages you send with Pleni** run with no window, and Claude Code asks no questions and shows
+  no plans there. With **Read files and answer**, it turns down anything that would need your yes,
+  without asking. With **Also change files in its folder**, its "may I run this?" prompts come to
+  Pleni.
+- **Only on this computer,** and only while Pleni runs. If Pleni is closed, Claude Code shows a
+  short "hook error" line, then asks in its own window as usual. To stop that, choose
+  **Disconnect**: it takes Pleni's hooks out of Claude Code's settings again.
+- Checked with Claude Code 2.1.307. Codex threads cannot ask Pleni yet.
 
 ## Bring a cloud session to this computer
 

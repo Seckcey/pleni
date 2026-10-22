@@ -3120,7 +3120,7 @@ function paintAnswering(n) {
   if (box.hidden) return;
   if (!answeringNow.has(n.key)) $('#d-answer').checked = n.answering === true;
   const minutes = S.set && S.set.info ? getPath(S.set.info.settings, 'answers.waitMinutes', 10) : 10;
-  setText($('#d-answer-help'), `When it asks you something, the question waits here and under Needs you, not in its own window. After ${minutes} minutes, it asks in its own window again. Questions from messages you send with Pleni always come here.`);
+  setText($('#d-answer-help'), `When it asks you something, it waits here and under Needs you. A question waits only here. A plan or a "may I?" prompt also shows in its own window, so you can answer it in either place. After ${minutes} minutes, it asks in its own window again.`);
 }
 
 async function setAnswering(input) {
@@ -5176,7 +5176,7 @@ function renderSettingsForm() {
       ${st.info.platform && st.info.platform !== 'win32' ? '<p class="note">This computer does not run Windows, so the message box will not show here yet.</p>' : ''}
     </section>
     <section class="panel" aria-labelledby="s-h-answers" data-find="answer answers question questions plan approve permission allow deny hooks connect claude code"><h2 id="s-h-answers">Answer questions</h2>
-      <p class="note">Answer a Claude Code session's questions, approve its plans and allow or deny its tools here, instead of in its own window. Turn it on for a session in its side panel. Questions from messages you send with Pleni always come here.</p>
+      <p class="note">Answer a Claude Code session's questions, approve its plans and allow or deny its tools here, instead of in its own window. Turn it on for a session in its side panel. A message you send with Pleni asks no questions, but with Also change files in its folder, its "may I run this?" prompts come here.</p>
       <div id="hooks-box">${hooksHtml()}</div>
       ${numberRow('s-answer-wait', 'Hold a question for', 'answers.waitMinutes', 1, 60, 'Minutes. Then the session asks in its own window again.')}
     </section>`)}

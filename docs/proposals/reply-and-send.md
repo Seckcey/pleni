@@ -258,16 +258,22 @@ Claude Code runs **hooks** before tools are used, and a hook may be an HTTP call
 answer (up to 10 minutes by default, configurable). Hooks set in the user's Claude settings also
 apply to the Claude desktop app.
 
-- **Questions and plans.** A `PreToolUse` hook on `AskUserQuestion` returns
+- **Questions.** A `PreToolUse` hook on `AskUserQuestion` returns
   `permissionDecision: "allow"` with `updatedInput` holding the answers, for example
-  `{ "questions": [...], "answers": { "Which framework?": "React" } }`. The same hook on
-  `ExitPlanMode` approves a plan. (The docs show the question format; the plan format needs a
-  test.)
+  `{ "questions": [...], "answers": { "Which framework?": "React" } }`.
+- **Plans.** A `PermissionRequest` hook on `ExitPlanMode` approves a plan with
+  `"decision": { "behavior": "allow", "updatedInput": <the input it was given> }`. Without the input
+  handed back, Claude Code 2.1.307 ignores the yes. `"deny"` with a message keeps it planning.
 - **Permission prompts.** A `PermissionRequest` hook returns
   `{ "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": { "behavior": "allow" } } }`
   or `"deny"` with a message.
-- **If Pleni is not running**, the hook call fails and Claude Code goes on as if there were no
-  hook: the normal question or prompt appears in the app. That is the safe default.
+- **If Pleni is not running**, the hook call fails: Claude Code shows a short "hook error" line,
+  and the normal question or prompt appears in the app. That is the safe default.
+- **Tested** (2026-10-22) with Claude Code 2.1.307 on Linux, in a real terminal window and with
+  `claude -p`, against a stand-in for the model: all of the above works. A question waits in Pleni
+  only; a plan or a prompt shows in the window too, and Claude Code does not tell the hook when it
+  is answered there. In `claude -p`, Claude Code turns questions and plans off, and in "don't ask"
+  mode it refuses prompts without calling the hook.
 
 The hard part is **who answers first**. While the hook waits, the app does not show its own
 question. So Pleni must not hold every question hostage. The design:
@@ -296,8 +302,9 @@ Otherwise the Send button is off and says why ("This session is open in the Clau
 there."). A message to a session kept running in the background is delivered as its next turn, as
 the docs describe.
 
-Each send starts a paid turn on the user's plan. The resumed turn starts in the normal
-`claude -p` permission mode, so the permission hook above is what lets it ask before risky steps.
+Each send starts a paid turn on the user's plan. As built, a sent turn runs in "don't ask" mode
+("Read files and answer": anything that would need a yes is refused) or "accept edits" mode ("Also
+change files in its folder"), and only in the second do its permission prompts reach Pleni's hook.
 
 ### What does not work
 
@@ -372,10 +379,10 @@ sessions can run commands on the computer. So:
 | Step | What | Size | State |
 | --- | --- | --- | --- |
 | 1 | The relay wakes the planner's Codex thread (above) | Medium, outside Pleni | Built |
-| 2 | Tests on a spare computer: Claude hooks in the desktop app (HTTP hooks, secret header, what the app shows while a hook waits, the `ExitPlanMode` answer format), and the Codex app server questions above | Small | |
+| 2 | Tests on a spare computer: Claude hooks in the desktop app (HTTP hooks, secret header, what the app shows while a hook waits, the `ExitPlanMode` answer format), and the Codex app server questions above | Small | Claude Code's hooks tested with Claude Code 2.1.307 in a terminal window (see above); the desktop app and the Codex checks are still to do |
 | 3 | Send a message to idle sessions, Claude and Codex, with the safety checks | Medium | Built (`src/send.js`, the Chat tab) |
 | 4 | **New agent:** choose Claude Code or Codex and a name; Pleni opens it in a PowerShell window in the folder of a session on the map, the same way as Open in PowerShell. The first message is typed there | Medium | Built |
-| 5 | Claude questions, plans and permission prompts through hooks, with the "Connect" step, the switch per session, and the answer controls | Large | Built (`src/answers.js`), this computer only; the desktop-app checks of step 2 are still to do |
+| 5 | Claude questions, plans and permission prompts through hooks, with the "Connect" step, the switch per session, and the answer controls | Large | Built (`src/answers.js`), this computer only, and tested end to end with Claude Code 2.1.307; the desktop-app check of step 2 is still to do |
 | 6 | Codex answers and messages through the app server, with `codex exec resume` as the fallback | Large, depends on step 2 | |
 | 7 | Move other Codex threads from app messaging to mailboxes, each with a wake (a relay) | Large, per team | Built: agent mail and its wakes in the relay, and Pleni shows the mail |
 | 8 | Actions from the phone: second confirmation | Medium | |

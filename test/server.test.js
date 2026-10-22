@@ -1724,13 +1724,15 @@ test('a hook call Pleni does not hold gets no decision at once', async (t) => {
     { settings: { actions: { answers: true } } },                                // not switched on for this session
     { settings: { ...ANSWERING, content: 'none' } },                             // no session text shown
     { settings: ANSWERING, body: { ...askedQuestion, tool_name: 'Bash' } },     // not a question Pleni shows
+    { settings: ANSWERING, body: { ...askedQuestion, hook_event_name: 'PermissionRequest' } }, // a question given back
     { settings: ANSWERING, body: 'not json' },
   ];
   for (const c of cases) {
     const { port } = await startServer(t, { store: answerStore(), settings: c.settings, hookKey: HOOK_SECRET });
     const res = await hookReq(port, c.body ?? askedQuestion);
     assert.equal(res.status, 200, res.text);
-    assert.deepEqual(res.json, {});
+    // An empty answer: Claude Code reads it as a hook that says nothing.
+    assert.equal(res.text, '');
   }
 });
 
@@ -1767,7 +1769,50 @@ test('"Answer in the session instead" gives the question back with no decision',
   let tries = 0;
   while (!store.asks.length && tries++ < 500) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual((await answerReq(port, '/api/answer', { id: store.asks[0].id, release: true })).json, { ok: true });
-  assert.deepEqual((await pending).json, {});
+  const res = await pending;
+  assert.equal(res.status, 200);
+  assert.equal(res.text, '');
+});
+
+const askedPlan = {
+  session_id: SESSION_ID,
+  hook_event_name: 'PermissionRequest',
+  tool_name: 'ExitPlanMode',
+  tool_input: { plan: '# Plan\n\n1. Fix the bug.', planFilePath: 'C:\\Users\\ada\\.claude\\plans\\fix.md' },
+};
+
+test('an approved plan goes back to Claude Code with the plan it gave', async (t) => {
+  const store = answerStore();
+  const { port } = await startServer(t, { store, settings: ANSWERING, hookKey: HOOK_SECRET });
+  const pending = hookReq(port, askedPlan);
+  let tries = 0;
+  while (!store.asks.length && tries++ < 500) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(store.asks[0].kind, 'plan');
+  assert.equal(store.asks[0].plan, '# Plan\n\n1. Fix the bug.');
+  assert.deepEqual((await answerReq(port, '/api/answer', { id: store.asks[0].id, answer: { approve: true } })).json, { ok: true });
+  assert.deepEqual((await pending).json, {
+    hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow', updatedInput: askedPlan.tool_input } },
+  });
+});
+
+test('a prompt answered in the session\'s own window leaves Pleni once the map shows it', async (t) => {
+  const store = answerStore();
+  const { port } = await startServer(t, { store, settings: ANSWERING, hookKey: HOOK_SECRET });
+  const asked = { session_id: SESSION_ID, hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'npm test' } };
+  const pending = hookReq(port, asked);
+  let tries = 0;
+  while (!store.asks.length && tries++ < 500) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(store.asks[0].kind, 'permission');
+  const session = store.current.nodes.find((n) => n.key === SESSION_KEY);
+  session.activity = { tool: 'Bash', detail: 'npm test', at: Date.now() };
+  assert.equal((await request(port, { path: '/api/snapshot' })).status, 200);
+  assert.equal(store.asks.length, 1, 'still waiting while the session waits');
+  session.activity = null;
+  assert.equal((await request(port, { path: '/api/snapshot' })).status, 200);
+  const res = await pending;
+  assert.equal(res.status, 200);
+  assert.equal(res.text, '');
+  assert.deepEqual(store.asks, []);
 });
 
 test('a session is switched to answer from Pleni only on this computer, and only a main Claude Code session', async (t) => {

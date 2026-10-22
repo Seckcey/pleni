@@ -38,8 +38,13 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   `settings.json` (after a copy, nothing else changed); Disconnect takes them out. Pleni holds a
   question only for a session you switch on ("Answer its questions in Pleni" in its side panel) and
   for messages Pleni sends, and only for the time you set (10 minutes at first); every other
-  question goes to the session's own window as before. The hooks reach Pleni only on this computer,
-  with a secret Pleni keeps in `hook-key`.
+  question goes to the session's own window as before. A plan or a permission prompt also shows in
+  the session's window; answer it in either place, and Pleni takes its card away within a few
+  seconds when you answer it there. A message sent with Pleni runs with no window, where Claude Code
+  asks no questions and shows no plans, so only its permission prompts come, with **Also change
+  files in its folder**. If Pleni is closed, Claude Code shows a short "hook error" line and asks in
+  its own window. The hooks reach Pleni only on this computer, with a secret Pleni keeps in
+  `hook-key`. Checked with Claude Code 2.1.307 in a real window.
 - **Send messages** (Windows, off until you turn it on in Settings → Buttons): a main Claude Code
   session or Codex thread gets a **Chat** tab in its side panel, with the conversation and a message
   box. Pleni sends what you type as one turn of that session, run in the background
