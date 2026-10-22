@@ -27,9 +27,13 @@ export const DEFAULTS = deepFreeze({
   projects: {},
   chain: [], // [{ match, reportsTo, role }] who reports to whom, by session name; first match wins
   remote: { hosts: [], tailscaleUsers: [] },
-  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false }, // the window buttons and Send (Windows, this computer only)
+  // The window buttons and Send (Windows, this computer only), and whether Pleni's hooks are in
+  // Claude Code's settings (set by Connect and Disconnect, see src/answers.js).
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false },
   // What a message sent from Pleni may do: 'read' (read files and answer) or 'edit' (also change files in its folder).
   send: { mode: 'read' },
+  // How long Pleni holds a question from Claude Code before the session asks in its own window.
+  answers: { waitMinutes: 10 },
   // Live pull request status through the GitHub CLI (gh), and the Merge button (this computer only).
   github: { live: false, merge: false, mergeMethod: 'squash' },
   // The Models page may change the model and effort lines in Codex's settings (this computer only).
@@ -51,6 +55,7 @@ const RANGES = {
   recentHours: [1, 720],
   staleMinutes: [5, 1440],
   stoppedMinutes: [1, 1440],
+  waitMinutes: [1, 60],
   memoryPercent: [0, 100],
   squeezes: [0, 100],
   days: [0, 365],
@@ -120,6 +125,7 @@ export function cleanSettings(raw) {
     remote: cleanRemote(r.remote),
     actions: cleanActions(r.actions),
     send: { mode: oneOf(r.send?.mode, SEND_MODES, DEFAULTS.send.mode) },
+    answers: { waitMinutes: cleanInt(r.answers?.waitMinutes, DEFAULTS.answers.waitMinutes, RANGES.waitMinutes) },
     github: cleanGithub(r.github),
     models: { edit: cleanBool(r.models?.edit, DEFAULTS.models.edit) },
     alerts: cleanAlerts(r.alerts),
@@ -213,6 +219,8 @@ function cleanPeople(raw) {
     if (boss && boss !== key && isNodeKey(boss) && !boss.startsWith('project:')) entry.reportsTo = boss;
     // "Tell me if this stops working" in the tile's side panel.
     if (value.watch === true) entry.watch = true;
+    // "Answer its questions in Pleni" in a Claude Code session's side panel.
+    if (value.answer === true) entry.answer = true;
     return entry;
   });
 }
@@ -260,6 +268,7 @@ function cleanActions(raw) {
     newAgent: cleanBool(a.newAgent, DEFAULTS.actions.newAgent),
     teleport: cleanBool(a.teleport, DEFAULTS.actions.teleport),
     send: cleanBool(a.send, DEFAULTS.actions.send),
+    answers: cleanBool(a.answers, DEFAULTS.actions.answers),
   };
 }
 

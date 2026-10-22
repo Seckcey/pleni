@@ -66,12 +66,13 @@ test('cleanSettings keeps good values', () => {
       kimi: { enabled: true, root: null },
       mailbox: { enabled: true, root, planner: `codex:${UUID}`, coordinator: `claude:${UUID}` },
     },
-    people: { you: { label: 'Ada' }, [`claude:${UUID}`]: { label: 'Builder', role: 'coordinator', watch: true }, relay: { watch: true } },
+    people: { you: { label: 'Ada' }, [`claude:${UUID}`]: { label: 'Builder', role: 'coordinator', watch: true, answer: true }, relay: { watch: true } },
     projects: { pleni: { label: 'Pleni', hidden: false } },
     chain: [{ match: 'Sergeant', reportsTo: 'Colonel', role: 'coordinator' }, { match: 'Colonel', reportsTo: 'you', role: null }],
     remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] },
-    actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true, send: true },
+    actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true, send: true, answers: true },
     send: { mode: 'edit' },
+    answers: { waitMinutes: 25 },
     github: { live: true, merge: true, mergeMethod: 'rebase' },
     models: { edit: true },
     alerts: { stoppedMinutes: 20 },
@@ -104,10 +105,10 @@ test('alerts: the stopped time stays in range, and only a real true watches a ti
 });
 
 test('the window buttons stay off unless each is turned on with a real true', () => {
-  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false };
+  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false };
   assert.deepEqual(cleanSettings({}).actions, off);
   for (const value of ['true', 1, null, {}, []]) {
-    assert.deepEqual(cleanSettings({ actions: { openTerminal: value, rollover: value, newAgent: value, teleport: value, send: value } }).actions, off, String(value));
+    assert.deepEqual(cleanSettings({ actions: { openTerminal: value, rollover: value, newAgent: value, teleport: value, send: value, answers: value } }).actions, off, String(value));
   }
   assert.deepEqual(cleanSettings({ actions: 'on' }).actions, off);
   assert.deepEqual(cleanSettings({ actions: { openTerminal: true, other: true } }).actions, { ...off, openTerminal: true });
@@ -115,6 +116,17 @@ test('the window buttons stay off unless each is turned on with a real true', ()
   assert.deepEqual(cleanSettings({ actions: { newAgent: true } }).actions, { ...off, newAgent: true });
   assert.deepEqual(cleanSettings({ actions: { teleport: true } }).actions, { ...off, teleport: true });
   assert.deepEqual(cleanSettings({ actions: { send: true } }).actions, { ...off, send: true });
+});
+
+test('Pleni holds a question 1 to 60 minutes, 10 by default, and only a real true answers for a session', () => {
+  assert.deepEqual(cleanSettings({}).answers, { waitMinutes: 10 });
+  const minutes = (value) => cleanSettings({ answers: { waitMinutes: value } }).answers.waitMinutes;
+  assert.equal(minutes(0), 1);
+  assert.equal(minutes(90), 60);
+  assert.equal(minutes(12.4), 12);
+  assert.equal(minutes('30'), 10);
+  const people = cleanSettings({ people: { [`claude:${UUID}`]: { answer: 'yes' }, [`codex:${UUID}`]: { answer: true } } }).people;
+  assert.deepEqual(people, { [`codex:${UUID}`]: { answer: true } });
 });
 
 test('a message sent from Pleni only reads and answers unless edit is chosen', () => {

@@ -31,6 +31,15 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **Answer questions** (off until you choose Connect in Settings → Buttons, this computer only): a
+  Claude Code session's question, plan to approve, or permission prompt can wait in Pleni, under
+  Needs you and on top of its side panel, where you pick an answer, approve the plan or ask it to
+  keep planning, or allow or deny the tool. Connect adds Pleni's own two hooks to Claude Code's
+  `settings.json` (after a copy, nothing else changed); Disconnect takes them out. Pleni holds a
+  question only for a session you switch on ("Answer its questions in Pleni" in its side panel) and
+  for messages Pleni sends, and only for the time you set (10 minutes at first); every other
+  question goes to the session's own window as before. The hooks reach Pleni only on this computer,
+  with a secret Pleni keeps in `hook-key`.
 - **Send messages** (Windows, off until you turn it on in Settings → Buttons): a main Claude Code
   session or Codex thread gets a **Chat** tab in its side panel, with the conversation and a message
   box. Pleni sends what you type as one turn of that session, run in the background

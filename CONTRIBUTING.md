@@ -74,7 +74,9 @@ as passing.
    idle session that nothing else has open, with the message on the program's standard input. It may
    start only the opt-in windows (Open in PowerShell, Roll over, New agent, Bring a cloud session
    here), which the person types into, Send's hidden turns, and the GitHub CLI (`gh`) for opt-in
-   Live GitHub status. Approving actions will get its own design first.
+   Live GitHub status. It answers a Claude Code question, plan or permission prompt only with what
+   the person chose on this computer, through the hooks that the opt-in Connect adds to Claude
+   Code's settings (and Disconnect takes out again).
 4. **Private by default.** No telemetry, and nothing loaded from the internet. Pleni makes no
    network calls of its own; only opt-in Live GitHub status reaches GitHub, through `gh`. Session
    text is shown only as text, and only when the `content` setting allows it.

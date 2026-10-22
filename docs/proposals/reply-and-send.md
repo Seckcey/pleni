@@ -3,8 +3,9 @@
 Status: proposal. Step 1 of the plan, the relay waking the planner's Codex thread, is built in
 `relay/`, and so is **agent mail** (step 7, below), which lets the other Codex threads message each
 other without the Codex app; Pleni shows that mail. **Roll over** and **New agent** (step 4) are built in Pleni (see
-below). **Send** (step 3) is built too: the owner asked for it in October 2026, so a team can run
-with no Codex or Claude app open. The rest is not built yet.
+below). **Send** (step 3) and **Claude Code questions, plans and permission prompts** (step 5) are
+built too: the owner asked for them in October 2026, so a team can run with no Codex or Claude app
+open. The rest is not built yet.
 
 ## What we want
 
@@ -374,7 +375,7 @@ sessions can run commands on the computer. So:
 | 2 | Tests on a spare computer: Claude hooks in the desktop app (HTTP hooks, secret header, what the app shows while a hook waits, the `ExitPlanMode` answer format), and the Codex app server questions above | Small | |
 | 3 | Send a message to idle sessions, Claude and Codex, with the safety checks | Medium | Built (`src/send.js`, the Chat tab) |
 | 4 | **New agent:** choose Claude Code or Codex and a name; Pleni opens it in a PowerShell window in the folder of a session on the map, the same way as Open in PowerShell. The first message is typed there | Medium | Built |
-| 5 | Claude questions, plans and permission prompts through hooks, with the "Connect" step, the switch per session, and the answer controls | Large | |
+| 5 | Claude questions, plans and permission prompts through hooks, with the "Connect" step, the switch per session, and the answer controls | Large | Built (`src/answers.js`), this computer only; the desktop-app checks of step 2 are still to do |
 | 6 | Codex answers and messages through the app server, with `codex exec resume` as the fallback | Large, depends on step 2 | |
 | 7 | Move other Codex threads from app messaging to mailboxes, each with a wake (a relay) | Large, per team | Built: agent mail and its wakes in the relay, and Pleni shows the mail |
 | 8 | Actions from the phone: second confirmation | Medium | |

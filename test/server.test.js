@@ -121,6 +121,7 @@ async function startServer(t, options = {}) {
     ...(options.spawnProcess ? { spawnProcess: options.spawnProcess } : {}),
     ...(options.github ? { github: options.github } : {}),
     ...(options.sender ? { sender: options.sender } : {}),
+    ...(options.hookKey ? { hookKey: options.hookKey } : {}),
     ...(options.useFileSettings
       ? {}
       : { getSettings: memory.getSettings, saveSettings: memory.saveSettings.bind(memory) }),
@@ -1661,4 +1662,154 @@ test('the real sender is off by default and works only on Windows', async (t) =>
   const elsewhere = await request(linux.port, { path: `/api/send?key=${encodeURIComponent(SESSION_KEY)}` });
   assertPlainError(elsewhere, 409);
   assert.equal(elsewhere.json.error, SEND_MESSAGES.windowsOnly);
+});
+
+// ---- answering questions ----
+
+const HOOK_SECRET = 'hook-secret-0123456789abcdefghijklmnopqrstuv';
+const SESSION_ID = SESSION_KEY.slice('claude:'.length);
+
+const hookReq = (port, body, headers = {}) => request(port, {
+  method: 'POST',
+  path: '/api/hook',
+  headers: { host: `127.0.0.1:${port}`, cookie: undefined, 'content-type': 'application/json', 'x-pleni-hook': HOOK_SECRET, ...headers },
+  body: typeof body === 'string' ? body : JSON.stringify(body),
+});
+
+const answerReq = (port, path, body, headers = {}) => request(port, {
+  method: 'POST',
+  path,
+  headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+  body: JSON.stringify(body),
+});
+
+const askedQuestion = {
+  session_id: SESSION_ID,
+  hook_event_name: 'PreToolUse',
+  tool_name: 'AskUserQuestion',
+  tool_input: { questions: [{ question: 'Ship it now?', header: 'Ship', multiSelect: false, options: [{ label: 'Yes' }, { label: 'Not yet' }] }] },
+};
+
+const ANSWERING = { actions: { answers: true }, people: { [SESSION_KEY]: { answer: true } } };
+
+// A store that keeps the questions the server hands it, like the real one.
+function answerStore() {
+  const store = fakeStore();
+  store.asks = [];
+  store.setAsks = (list) => {
+    store.asks = list;
+  };
+  return store;
+}
+
+test('a hook call needs the secret, this computer, and JSON', async (t) => {
+  const settings = { ...ANSWERING, remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } };
+  const { port } = await startServer(t, { store: answerStore(), settings, hookKey: HOOK_SECRET });
+  assertPlainError(await hookReq(port, askedQuestion, { 'x-pleni-hook': undefined }), 403);
+  assertPlainError(await hookReq(port, askedQuestion, { 'x-pleni-hook': `${HOOK_SECRET}x` }), 403);
+  assertPlainError(await hookReq(port, askedQuestion, { host: 'box.example.ts.net', 'tailscale-user-login': 'ada@example.com' }), 403);
+  assertPlainError(await hookReq(port, askedQuestion, { 'x-forwarded-for': '100.64.0.7' }), 403);
+  assertPlainError(await hookReq(port, askedQuestion, { 'content-type': 'text/plain' }), 415);
+  assertPlainError(await request(port, { path: '/api/hook' }), 405);
+  // A page's key is not the hook's secret.
+  assertPlainError(await hookReq(port, askedQuestion, { 'x-pleni-hook': undefined, cookie: keyCookie(port) }), 403);
+  // Without a secret at all (the demo), no call is answered.
+  const demo = await startServer(t, { store: answerStore(), settings });
+  assertPlainError(await hookReq(demo.port, askedQuestion), 403);
+});
+
+test('a hook call Pleni does not hold gets no decision at once', async (t) => {
+  const cases = [
+    { settings: { people: { [SESSION_KEY]: { answer: true } } } },               // answering is off
+    { settings: { actions: { answers: true } } },                                // not switched on for this session
+    { settings: { ...ANSWERING, content: 'none' } },                             // no session text shown
+    { settings: ANSWERING, body: { ...askedQuestion, tool_name: 'Bash' } },     // not a question Pleni shows
+    { settings: ANSWERING, body: 'not json' },
+  ];
+  for (const c of cases) {
+    const { port } = await startServer(t, { store: answerStore(), settings: c.settings, hookKey: HOOK_SECRET });
+    const res = await hookReq(port, c.body ?? askedQuestion);
+    assert.equal(res.status, 200, res.text);
+    assert.deepEqual(res.json, {});
+  }
+});
+
+test('a held question waits for the answer from the page, and the hook gets it', async (t) => {
+  const store = answerStore();
+  const { port } = await startServer(t, { store, settings: ANSWERING, hookKey: HOOK_SECRET });
+  const pending = hookReq(port, askedQuestion);
+  let tries = 0;
+  while (!store.asks.length && tries++ < 100) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(store.asks.length, 1);
+  const [ask] = store.asks;
+  assert.equal(ask.key, SESSION_KEY);
+  assert.equal(ask.kind, 'question');
+  assert.equal(ask.questions[0].question, 'Ship it now?');
+  assertPlainError(await answerReq(port, '/api/answer', { id: ask.id, answer: { answers: ['Yes'] } }, { 'tailscale-user-login': 'ada@example.com' }), 403);
+  assertPlainError(await answerReq(port, '/api/answer', { id: ask.id, answer: { answers: [] } }), 400);
+  assertPlainError(await answerReq(port, '/api/answer', { id: 'f'.repeat(24), answer: { answers: ['Yes'] } }), 404);
+  const ok = await answerReq(port, '/api/answer', { id: ask.id, answer: { answers: ['Not yet'] } });
+  assert.deepEqual(ok.json, { ok: true });
+  const res = await pending;
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json.hookSpecificOutput, {
+    hookEventName: 'PreToolUse',
+    permissionDecision: 'allow',
+    updatedInput: { ...askedQuestion.tool_input, answers: { 'Ship it now?': 'Not yet' } },
+  });
+  assert.deepEqual(store.asks, []);
+});
+
+test('"Answer in the session instead" gives the question back with no decision', async (t) => {
+  const store = answerStore();
+  const { port } = await startServer(t, { store, settings: ANSWERING, hookKey: HOOK_SECRET });
+  const pending = hookReq(port, askedQuestion);
+  let tries = 0;
+  while (!store.asks.length && tries++ < 100) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual((await answerReq(port, '/api/answer', { id: store.asks[0].id, release: true })).json, { ok: true });
+  assert.deepEqual((await pending).json, {});
+});
+
+test('a session is switched to answer from Pleni only on this computer, and only a main Claude Code session', async (t) => {
+  const { port, memory } = await startServer(t, { store: answerStore(), settings: { actions: { answers: true } } });
+  assert.deepEqual((await answerReq(port, '/api/answering', { key: SESSION_KEY, on: true })).json, { ok: true });
+  assert.equal(memory.state.settings.people[SESSION_KEY].answer, true);
+  assert.deepEqual((await answerReq(port, '/api/answering', { key: SESSION_KEY, on: false })).json, { ok: true });
+  assert.equal(memory.state.settings.people[SESSION_KEY], undefined);
+  assertPlainError(await answerReq(port, '/api/answering', { key: 'codex:0f8e2c4a-1b3d-4e5f-8a9b-0c1d2e3f4a5b', on: true }), 400);
+  assertPlainError(await answerReq(port, '/api/answering', { key: SESSION_KEY, on: 'yes' }), 400);
+  assertPlainError(await answerReq(port, '/api/answering', { key: 'claude:1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', on: true }), 404);
+  assertPlainError(await answerReq(port, '/api/answering', { key: SESSION_KEY, on: true }, { 'x-forwarded-for': '100.64.0.7' }), 403);
+  assertPlainError(await answerReq(port, '/api/answering', { key: SESSION_KEY, on: true }, { cookie: undefined }), 401);
+});
+
+test('Connect adds Pleni\'s hooks to Claude Code\'s settings and turns answering on; Disconnect undoes both', async (t) => {
+  const dir = tempDir(t);
+  const claude = path.join(dir, 'claude');
+  fs.mkdirSync(claude);
+  fs.writeFileSync(path.join(claude, 'settings.json'), '{\n  "model": "opus"\n}\n');
+  const memory = memorySettings({});
+  memory.state.file = path.join(dir, 'pleni', 'settings.json');
+  memory.state.roots = { ...memory.state.roots, claude };
+  const { port } = await startServer(t, { store: answerStore(), memory, hookKey: HOOK_SECRET });
+  const before = (await request(port, { path: '/api/hooks' })).json;
+  assert.equal(before.on, false);
+  assert.equal(before.connected, false);
+  assert.equal(before.port, port);
+  assert.ok(!JSON.stringify(before).includes(HOOK_SECRET), 'the page never sees the secret');
+  assertPlainError(await request(port, { path: '/api/hooks', headers: { 'x-forwarded-for': '100.64.0.7' } }), 403);
+  assertPlainError(await answerReq(port, '/api/hooks', { connect: true }, { 'tailscale-user-login': 'ada@example.com' }), 403);
+  const done = await answerReq(port, '/api/hooks', { connect: true });
+  assert.equal(done.status, 200, done.text);
+  assert.match(path.basename(done.json.backup), /^claude-settings-\d{8}-\d{6}\.json$/);
+  assert.equal(memory.state.settings.actions.answers, true);
+  const saved = JSON.parse(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8'));
+  assert.equal(saved.model, 'opus');
+  assert.equal(saved.hooks.PreToolUse[0].hooks[0].url, `http://127.0.0.1:${port}/api/hook`);
+  assert.equal(saved.hooks.PreToolUse[0].hooks[0].headers['X-Pleni-Hook'], HOOK_SECRET);
+  assert.equal((await request(port, { path: '/api/hooks' })).json.connected, true);
+  assert.equal((await answerReq(port, '/api/hooks', { connect: false })).status, 200);
+  assert.equal(memory.state.settings.actions.answers, false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8')), { model: 'opus' });
+  assertPlainError(await answerReq(port, '/api/hooks', { connect: 'yes' }), 400);
 });

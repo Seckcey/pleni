@@ -139,7 +139,7 @@ function readState(root) {
 }
 
 // { file, exists, text, bytes, problem }: text is '' for a file that is not there yet.
-function readFileText(file, max = MAX_FILE) {
+export function readFileText(file, max = MAX_FILE) {
   let bytes;
   try {
     const stat = fs.statSync(file);
@@ -490,7 +490,7 @@ function readClaudeState(root) {
 }
 
 // The settings object, {} for a file that is not there yet, or null when it is not a JSON object.
-function parseSettings(text) {
+export function parseSettings(text) {
   if (text === '') return {};
   try {
     const value = JSON.parse(stripBom(text));
@@ -690,7 +690,7 @@ function setClaudeEffort(settings, model, effort) {
 
 // settings.json as Claude Code writes it, with the old file's indent, line breaks, BOM and last line
 // break.
-function settingsText(obj, before) {
+export function settingsText(obj, before) {
   const indent = /\n([ \t]+)"/.exec(before)?.[1] ?? '  ';
   const eol = before.includes('\r\n') ? '\r\n' : '\n';
   const bom = before.charCodeAt(0) === 0xfeff ? String.fromCharCode(0xfeff) : '';
@@ -753,7 +753,7 @@ function writePlan(files, backupDir, t, app) {
   return { ok: true, files: written, backups };
 }
 
-function writeAtomic(file, text, create) {
+export function writeAtomic(file, text, create) {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
   if (create) {
@@ -781,7 +781,7 @@ function writeAtomic(file, text, create) {
 }
 
 // <backupDir>/<app>-<file name>-<yyyyMMdd-HHmmss><ext>, keeping the newest KEEP_BACKUPS of each.
-function backup(backupDir, file, bytes, t, app) {
+export function backup(backupDir, file, bytes, t, app) {
   fs.mkdirSync(backupDir, { recursive: true });
   const ext = path.extname(file).replace(/[^A-Za-z0-9.]/g, '');
   const label = `${app}-${path.basename(file, path.extname(file)).replace(/[^A-Za-z0-9_-]/g, '_')}`;

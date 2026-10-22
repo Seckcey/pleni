@@ -105,11 +105,12 @@ recent pop-ups in its notification list until you clear them.
 ## What Pleni never does
 
 - It never writes, moves, or deletes anything in the Claude Code, Codex, Claude desktop app, or
-  mailbox folders. The one exception is **Save to Codex** and **Save to Claude Code** on the Models
-  page (see [below](#models)).
-- It writes nowhere except its own folder (`settings.json`, `key`, `dismissed.json`, the
-  `backups/` folder of the Models page, and `sent.jsonl`, the record of messages sent with
-  **Send messages**). It saves each file safely: it writes a temporary file in
+  mailbox folders. The exceptions are **Save to Codex** and **Save to Claude Code** on the Models
+  page (see [below](#models)), and **Connect** and **Disconnect** for **Answer questions**, which add
+  and take out Pleni's own two hooks in Claude Code's `settings.json` (see below).
+- It writes nowhere except its own folder (`settings.json`, `key`, `hook-key`, `dismissed.json`, the
+  `backups/` folder of the Models page and of Connect, and `sent.jsonl`, the record of messages
+  sent with **Send messages**). It saves each file safely: it writes a temporary file in
   the same folder, then renames it.
 - When it turns away a device that Tailscale brings, it keeps that device's Tailscale address and
   login in memory (the last 5, never in a file), so Settings → Devices on your computer can offer
@@ -140,6 +141,15 @@ recent pop-ups in its notification list until you clear them.
   record, `sent.jsonl`, says only when, to which session, and how the turn ended. It never sends to
   a session that is working, or open in a window, an app or another program, and it refuses a
   message from another device.
+- **Answer questions** (Settings → Buttons, off until you choose **Connect**, this computer only)
+  adds two hooks to Claude Code's `settings.json`, after a copy of the file: Claude Code then asks
+  Pleni, at `127.0.0.1` on this computer and with a secret Pleni made (`hook-key`), before it shows a
+  question, a plan or a permission prompt. Pleni holds the call only for a session you switched on
+  in its side panel, or for a turn Pleni sent; every other call gets "no decision" at once, and
+  Claude Code asks you in its own window as before. A held question shows on the page with the words
+  Claude Code sent (only while session text is on), in memory only, until you answer it, give it
+  back, or the time you chose runs out. **Disconnect** takes exactly Pleni's hooks out again. If
+  Pleni is not running, Claude Code cannot reach it and goes on as if there were no hook.
 - **New agent** (Settings → Buttons, off until you turn it on, Windows only, this computer only)
   opens one PowerShell window in the folder of a session you pick and runs `claude --name <name>`
   or `codex` there. The name you type is held to the same plain marks. Pleni sends the new agent

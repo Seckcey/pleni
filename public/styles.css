@@ -926,6 +926,24 @@ ol.dev .tx {
   max-height: 14rem; overflow: auto; font-size: var(--ui-font-md);
 }
 ol.dev .k-tool .tx, ol.dev .k-result .tx { font-family: var(--ui-font-mono); font-size: var(--ui-font-sm); }
+/* A question Pleni holds for the person (Answer from Pleni). */
+.dask { margin-top: var(--ui-space-5); padding: var(--ui-space-4) var(--ui-space-5) var(--ui-space-5); border: 1px solid var(--ui-warn, var(--ui-border)); border-radius: var(--ui-radius-md); background: var(--ui-warn-soft); max-width: 720px; }
+.dask h3 { margin: 0; font-size: var(--ui-font-md); }
+.dask .help { margin: var(--ui-space-2) 0 0; font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+.dask-q { margin: var(--ui-space-4) 0 0; padding: 0; border: 0; min-width: 0; }
+.dask-q legend { padding: 0; font-weight: var(--ui-weight-semibold); overflow-wrap: anywhere; }
+.dask-head { display: inline-block; margin-right: var(--ui-space-2); padding: 0 var(--ui-space-3); border-radius: var(--ui-radius-sm); background: var(--ui-surface-raised); font-size: var(--ui-font-sm); color: var(--ui-text-secondary); }
+.dask-opt { display: flex; gap: var(--ui-space-3); align-items: flex-start; margin-top: var(--ui-space-3); overflow-wrap: anywhere; }
+.dask-opt input { margin-top: 0.25em; flex: none; }
+.dask-opt .help { display: block; margin: 0; }
+.dask .dask-other { margin: var(--ui-space-2) 0 0 1.6rem; max-width: 420px; }
+.dask-plan { margin-top: var(--ui-space-3); padding: var(--ui-space-4); max-height: 22rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); }
+.dask-detail { margin: var(--ui-space-3) 0 0; padding: var(--ui-space-3) var(--ui-space-4); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 14rem; overflow: auto; font-family: var(--ui-font-mono); font-size: var(--ui-font-sm); background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); }
+.dask-lbl { display: block; margin-top: var(--ui-space-4); font-size: var(--ui-font-sm); font-weight: var(--ui-weight-semibold); }
+.dask textarea.field, .dask input.field[type="text"] { width: 100%; max-width: 560px; }
+.dask-lines pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--ui-font-mono); font-size: var(--ui-font-sm); }
+.dask-lines summary { cursor: pointer; margin-top: var(--ui-space-4); }
+
 /* The Chat tab: the conversation scrolls by itself, and the message box stays under it. */
 .dchat-log { max-height: min(48vh, 30rem); overflow: auto; border-bottom: 1px solid var(--ui-border); }
 .dchat-log .k-user .k { color: var(--pl-down-text); }

@@ -124,7 +124,7 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   **Team** (names, roles, who reports to whom), **Models** (the models and effort your Codex and
   Claude Code agents use, see [Models](#models)), **Sources** (which folders to read, and the
   mailbox, and GitHub), **Alerts**, **Buttons** (Open in PowerShell, New agent, Bring a cloud
-  session here, Roll over and Send messages), and **Devices**
+  session here, Roll over, Send messages and Answer questions), and **Devices**
   (opening Pleni from another device). Type in **Find a setting** to find one by name, such as
   "port" or "folder".
 
@@ -323,6 +323,8 @@ you typed it in the session. This is off until you turn it on:
 Pleni runs the session's own program once, in the background, and hands it your message. The answer
 shows in the Chat tab a moment later, like any other turn. Nothing opens on your screen.
 
+<p align="center"><img src="https://raw.githubusercontent.com/Seckcey/pleni/main/docs/assets/pleni-chat.png" alt="A Claude Code session's side panel in the demo, on its Chat tab: the last message to it and its answer, then a Message box with a message typed in and a Send button." width="760"></p>
+
 - **It waits its turn.** Pleni never sends to a session that is working, or that is open in a
   PowerShell window, the Claude desktop app, VS Code, the Codex app, or another program: two
   programs at once would mix up its messages. The Chat tab says why when it cannot send yet.
@@ -335,6 +337,32 @@ shows in the Chat tab a moment later, like any other turn. Nothing opens on your
   line. Pleni keeps no copy: its record, `sent.jsonl`, says only when, to which session, and how
   the turn ended.
 - **Only on this computer,** like the other buttons, and only for main sessions, not helpers.
+
+## Answer questions from Pleni
+
+A Claude Code session sometimes stops to ask you something: a question with choices, a plan to
+approve, or "may I run this command?". Pleni can show those to you, so you answer them in your
+browser instead of in the session's own window. That is how you answer a session that runs with no
+window, such as one you sent a message with Pleni.
+
+1. Open **Settings**, then **Buttons**. Under **Answer questions**, choose **Connect Pleni to Claude
+   Code**. Pleni adds two hooks to Claude Code's settings file. It keeps a copy of the file first and
+   changes nothing else in it.
+2. Click a Claude Code session on the map. In its side panel, tick **Answer its questions in
+   Pleni**. (Questions from messages you send with Pleni always come to Pleni.)
+3. When it asks, the question shows under **Needs you**. Pick the answer, approve the plan or ask it
+   to keep planning, or allow or deny the tool. **Answer in the session instead** gives it back.
+
+<p align="center"><img src="https://raw.githubusercontent.com/Seckcey/pleni/main/docs/assets/pleni-answer.png" alt="A Claude Code session's side panel in the demo, with two questions waiting: one with choices and an Other box, and a plan with Approve the plan, Keep planning, and Answer in the session instead buttons." width="760"></p>
+
+- **Nothing waits forever.** After the time you set under **Hold a question for** (10 minutes at
+  first), the session asks in its own window again.
+- **Other sessions are not held up.** Pleni answers "no decision" at once for every session you did
+  not switch on, and Claude Code asks there as before.
+- **Only on this computer,** and only while Pleni runs: if Pleni is not running, Claude Code goes on
+  as if there were no hook.
+- **Disconnect** takes Pleni's hooks out of Claude Code's settings again.
+- Codex threads cannot ask Pleni yet.
 
 ## Bring a cloud session to this computer
 
@@ -473,6 +501,10 @@ whether the relay wakes it for its mail. Pleni never sends mail itself.
   PowerShell window that runs `claude` or `codex`, or, for Send, runs the session's program once in
   the background with your message. Open in PowerShell and New agent never type into a session.
   Roll over sends one short message, which it shows you first. Send sends only what you type.
+- With **Answer questions** connected, Claude Code asks Pleni before it asks you, for the sessions
+  you switch on. Pleni answers only what you choose; every other question goes to the session's own
+  window as before. Connect and Disconnect change only Pleni's own hooks in Claude Code's settings,
+  after a copy.
 - Pop-ups are off until you turn them on. Your browser makes them on your own screen; nothing is
   sent over the internet.
 - It makes no network calls of its own and sends no data about you or your work. There is no
@@ -549,8 +581,9 @@ both. Both are made by 8 West Ventures, LLC.
 ## What comes next
 
 Version 0.1 watches. It can also open a Claude Code or Codex session in PowerShell for you, roll a
-long session over to a fresh one, start a new agent next to one, and send a session a message. The
-next step is to let you answer questions and approve plans right from the browser. The design is in
+long session over to a fresh one, start a new agent next to one, send a session a message, and
+answer a Claude Code session's questions, plans and permission prompts. Next: answering Codex
+threads, and doing these from your phone with a second check. The design is in
 [docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md).
 
 These are plans, not promises. Ideas are welcome in
