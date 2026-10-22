@@ -936,11 +936,11 @@ ol.dev .k-tool .tx, ol.dev .k-result .tx { font-family: var(--ui-font-mono); fon
 .dask-opt { display: flex; gap: var(--ui-space-3); align-items: flex-start; margin-top: var(--ui-space-3); overflow-wrap: anywhere; }
 .dask-opt input { margin-top: 0.25em; flex: none; }
 .dask-opt .help { display: block; margin: 0; }
-.dask .dask-other { margin: var(--ui-space-2) 0 0 1.6rem; max-width: 420px; }
+.dask .dask-other { margin: var(--ui-space-2) 0 0 1.6rem; width: calc(100% - 1.6rem); max-width: 420px; }
 .dask-plan { margin-top: var(--ui-space-3); padding: var(--ui-space-4); max-height: 22rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); }
 .dask-detail { margin: var(--ui-space-3) 0 0; padding: var(--ui-space-3) var(--ui-space-4); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 14rem; overflow: auto; font-family: var(--ui-font-mono); font-size: var(--ui-font-sm); background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); }
 .dask-lbl { display: block; margin-top: var(--ui-space-4); font-size: var(--ui-font-sm); font-weight: var(--ui-weight-semibold); }
-.dask textarea.field, .dask input.field[type="text"] { width: 100%; max-width: 560px; }
+.dask textarea.field, .dask input.field[type="text"]:not(.dask-other) { width: 100%; max-width: 560px; }
 .dask-lines pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--ui-font-mono); font-size: var(--ui-font-sm); }
 .dask-lines summary { cursor: pointer; margin-top: var(--ui-space-4); }
 
