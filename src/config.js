@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { stripBom } from './jsonl.js';
+import { isIPv4 } from './lan.js';
 
 export const DEFAULTS = deepFreeze({
   version: 1,
@@ -26,7 +27,7 @@ export const DEFAULTS = deepFreeze({
   people: {},
   projects: {},
   chain: [], // [{ match, reportsTo, role }] who reports to whom, by session name; first match wins
-  remote: { hosts: [], tailscaleUsers: [] },
+  remote: { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] },
   // The window buttons and Send (Windows, this computer only), and whether Pleni's hooks are in
   // Claude Code's settings (set by Connect and Disconnect, see src/answers.js).
   actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false },
@@ -65,6 +66,8 @@ const MAX_CHAIN = 50;
 const MAX_NAME = 80;
 const MAX_PROJECTS = 200;
 const MAX_REMOTE = 20;
+// The Wi-Fi addresses the person chose; an address changes on another network.
+const MAX_LAN_ADDRESSES = 10;
 const MAX_TIER_WORDS = 50;
 const MAX_PATH = 4096;
 const NODE_KEY = /^(claude|codex|grok|kimi):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
@@ -257,6 +260,9 @@ function cleanRemote(raw) {
   return {
     hosts: cleanList(r.hosts, 253, MAX_REMOTE, []),
     tailscaleUsers: cleanList(r.tailscaleUsers, 254, MAX_REMOTE, []),
+    lan: cleanBool(r.lan, DEFAULTS.remote.lan),
+    // Pleni listens only on one of these that is also a home-network address of this computer now.
+    lanAddresses: cleanList(r.lanAddresses, 15, MAX_LAN_ADDRESSES * 4, []).filter(isIPv4).slice(-MAX_LAN_ADDRESSES),
   };
 }
 

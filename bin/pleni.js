@@ -60,7 +60,8 @@ async function main(argv, env) {
   // Pleni at once, and that must still be a clean stop.
   stopOnSignal(app);
   if (options.demo) process.stdout.write('Showing made-up demo data.\n');
-  const remote = (app.remote ?? []).map((address) => `From your other devices: ${address}\n`).join('');
+  const remote = (app.remote ?? []).map((address) => `From your other devices: ${address}\n`).join('') +
+    (app.home ?? []).map((address) => `On this Wi-Fi: ${address}\n`).join('');
   process.stdout.write(`Pleni is running at ${app.url}\n${remote}${openNote(app, options)}\n` +
     `${keyNote(app, options)}\nPress Ctrl+C to stop.\n`);
   return undefined;
@@ -141,9 +142,17 @@ async function showAddress(options, env) {
   const port = options.port ?? settings.port;
   const lines = [`Pleni's address: http://localhost:${port}/`];
   for (const host of settings.remote.hosts) lines.push(`From your other devices: https://${host}/`);
+  // Wi-Fi access works only with a password, and only on the addresses chosen in Settings.
+  const { passwordFile } = await import('../src/signin.js');
+  if (settings.remote.lan && fs.existsSync(passwordFile(file))) {
+    const { homeAddresses } = await import('../src/lan.js');
+    for (const { address } of homeAddresses()) {
+      if (settings.remote.lanAddresses.includes(address)) lines.push(`On this Wi-Fi: http://${address}:${port}/`);
+    }
+  }
   lines.push(`Key: ${found.key}`, `Sign-in link: http://localhost:${port}/?t=${found.key}`, '',
-    'Bookmark the address. If a browser asks for the key, paste the key, or open the sign-in link once.',
-    'The key is like a password: do not share it.');
+    'Bookmark the address. If a browser asks you to sign in, type the password you set in Settings, then',
+    'Devices, or paste the key, or open the sign-in link once. The key is like a password: do not share it.');
   process.stdout.write(`${lines.join('\n')}\n`);
   return 0;
 }

@@ -37,9 +37,17 @@ import {
   loadOrCreateHookKey,
   readHookSetup,
 } from './answers.js';
+import { createLan } from './lan.js';
+import { SIGNIN_MESSAGES, createSignin, deviceName } from './signin.js';
 
 const BIND_HOST = '127.0.0.1';
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+const LOOPBACK = /^(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+const DEVICE_ID = /^[A-Za-z0-9_-]{12}$/;
+// Connections that came in on a home-network address (src/lan.js), whatever Host header they send.
+const homeSockets = new WeakSet();
+// Each server's state, so stopping Pleni can also stop its Wi-Fi listeners.
+const apps = new WeakMap();
 // A Tailscale machine name, <machine>.<tailnet>.ts.net, and a Tailscale login such as ada@example.com.
 const TS_HOST = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net$/;
 const KNOCK_LOGIN = /^[^\s@]{1,128}@[^\s@]{1,125}$/;
@@ -82,6 +90,7 @@ const HTML_TYPE = 'text/html; charset=utf-8';
 const PAGE_FILES = new Map([
   ['/', { dir: '', name: 'index.html', type: HTML_TYPE }],
   ['/app.js', { dir: '', name: 'app.js', type: 'text/javascript; charset=utf-8' }],
+  ['/qr.js', { dir: '', name: 'qr.js', type: 'text/javascript; charset=utf-8' }],
   ['/styles.css', { dir: '', name: 'styles.css', type: 'text/css; charset=utf-8' }],
   ['/favicon.ico', { dir: 'brand', name: 'favicon.ico', type: 'image/x-icon' }],
 ]);
@@ -91,7 +100,8 @@ const BRAND_NAME = /^[a-z0-9][a-z0-9._-]*\.(png|svg|ico|webp)$/;
 const WINDOWS_DEVICE = /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/;
 const BRAND_TYPES = { png: 'image/png', svg: 'image/svg+xml', ico: 'image/x-icon', webp: 'image/webp' };
 const API_GET = new Set(['/api/health', '/api/snapshot', '/api/session', '/api/devices', '/api/github', '/api/mail', '/api/models']);
-// Only the health check answers without the key: it says nothing but "Pleni is running".
+// Only the health check answers without signing in: it says nothing but "Pleni is running". Signing
+// in itself (POST /api/signin) is how a browser gets in.
 const OPEN_API = new Set(['/api/health']);
 const READ_ONLY = ['GET', 'HEAD'];
 // The page address carries the key as "/?t=<key>" once; after that the browser sends it as a cookie.
@@ -100,7 +110,7 @@ const KEY_BYTES = 32;
 
 const MESSAGES = {
   host: 'Pleni does not answer requests for this address.',
-  noKey: 'Pleni needs its key. Open the full address Pleni printed when it started; the part after "?t=" is the key.',
+  noKey: 'Pleni needs you to sign in. Type Pleni\'s password, or open the full address Pleni printed when it started; the part after "?t=" is its key.',
   notFound: 'There is nothing here.',
   method: 'This kind of request is not allowed here.',
   badKey: 'That session key is not valid.',
@@ -130,8 +140,18 @@ const MESSAGES = {
   badAnswering: 'Pleni could not read that. Only a main Claude Code session on the map can send its questions here.',
   goneAnswering: 'That session is not on the map any more.',
   mergeRemote: 'A pull request can be merged from Pleni only on the computer that runs it, not from another device.',
-  devicesRemote: "Pleni's key and the devices it turned away show only on the computer that runs Pleni.",
+  devicesRemote: "Pleni's key and its list of devices show only on the computer that runs Pleni.",
+  passwordRemote: "Pleni's password can be set only on the computer that runs Pleni, not from another device.",
+  lanRemote: 'Wi-Fi access can be turned on or off only on the computer that runs Pleni, not from another device.',
+  lanPassword: 'Set a password first. Phones and computers on your Wi-Fi sign in with it.',
+  lanAddress: 'That is not one of this computer\'s home-network addresses now. Look again in Settings, then Devices.',
+  lanNone: 'This computer is not on a Wi-Fi or home network now, so there is no address to open Pleni on.',
+  keyOnWifi: "Pleni's key does not work on the Wi-Fi address, because that address has no padlock. Type Pleni's password instead.",
+  lanDemo: 'The demo does not open to your Wi-Fi.',
+  badRemove: 'Pleni could not read which device to sign out.',
+  goneDevice: 'That device is not signed in any more.',
   hostPage: 'Pleni does not answer requests for this address yet.\n\nIf this is your own device: on the computer that runs Pleni, open Pleni, go to Settings, then Devices, and choose Allow next to this device. Then reload this page.\n',
+  homePage: 'Pleni does not answer on this address now.\n\nOn the computer that runs Pleni, open Pleni, go to Settings, then Devices, and check that "Open Pleni on this Wi-Fi" is on. Then open the Wi-Fi address it shows there.\n',
 };
 
 // A new random key.
@@ -221,8 +241,10 @@ export function loadOrCreateKey(file, { renew = false, tries, pause } = {}) {
 // GitHub status (see src/github.js), `modelSaver` for the Models page (see src/models.js) and
 // `sender` for Send (see src/send.js), and `asks` and `hookSaver` for answering questions (see
 // src/answers.js); tests replace them. `hookKey` is the secret Claude Code's hooks send; without it,
-// no hook call is answered.
-export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null, github = null, modelSaver = null, sender = null, asks = null, hookSaver = null, hookKey = null }) {
+// no hook call is answered. `signin` keeps the password and the signed-in devices (src/signin.js;
+// in memory only when left out), and `lanAddresses` and `lanPort` let tests stand in for this
+// computer's Wi-Fi addresses and port (src/lan.js).
+export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null, github = null, modelSaver = null, sender = null, asks = null, hookSaver = null, hookKey = null, signin = null, lanAddresses = null, lanPort = null }) {
   if (typeof key !== 'string' || !KEY_RE.test(key)) {
     throw new Error('The server key must be at least 16 letters, digits, "-" or "_".');
   }
@@ -246,16 +268,37 @@ export function createServer({ store, getSettings, saveSettings, publicDir = PUB
     hookSaver: hookSaver ?? createHookSaver(),
     hookKey: typeof hookKey === 'string' && hookKey ? hookKey : null,
     knocks: new Map(),
+    signin: signin ?? createSignin(),
+    lan: null,
   };
   app.asks = asks ?? createAsks({ onChange: () => store.setAsks?.(app.asks.list()) });
-  const server = http.createServer((req, res) => {
+  const answer = (req, res) => {
     handle(app, req, res).catch(() => {
       if (res.headersSent) res.destroy();
       else sendError(req, res, 500, MESSAGES.internal);
     });
+  };
+  const server = http.createServer(answer);
+  // The Wi-Fi listeners answer the same way; their connections are marked, so the gates treat them
+  // as other devices whatever they send.
+  app.lan = createLan({
+    makeServer: () => {
+      const home = http.createServer(answer);
+      home.on('connection', (socket) => homeSockets.add(socket));
+      return home;
+    },
+    isOn: () => app.readSettings().settings?.remote?.lan === true && app.signin.passwordInfo().set && app.store.demo !== true,
+    allowed: () => app.readSettings().settings?.remote?.lanAddresses ?? [],
+    port: () => lanPort ?? server.address()?.port ?? 0,
+    ...(lanAddresses ? { addresses: lanAddresses } : {}),
   });
-  // No session waits for an answer from a Pleni that has stopped.
-  server.on('close', () => app.asks.close());
+  apps.set(server, app);
+  server.on('listening', () => void app.lan.start());
+  // No session waits for an answer from a Pleni that has stopped, and its Wi-Fi addresses close.
+  server.on('close', () => {
+    app.asks.close();
+    void app.lan.close();
+  });
   return server;
 }
 
@@ -275,7 +318,9 @@ export async function start({ port, configFile, demo = false, open = false, rene
   // Dismissed notices are kept next to the settings, so every device sees the same; the demo keeps
   // them only while it runs.
   const store = createStore({ settings: first.settings, roots: first.roots, demo, stateDir: demo ? null : path.dirname(file) });
-  const server = createServer({ store, getSettings: settings.get, saveSettings: settings.save, key, hookKey });
+  // The password and the signed-in devices sit next to the settings; the demo keeps its own in memory.
+  const signin = demo ? createSignin() : createSignin({ file });
+  const server = createServer({ store, getSettings: settings.get, saveSettings: settings.save, key, hookKey, signin });
   try {
     await listen(server, port ?? first.settings.port);
   } catch (err) {
@@ -287,7 +332,10 @@ export async function start({ port, configFile, demo = false, open = false, rene
   const close = () => (closing ??= shutdown(server, store));
   if (open) openBrowser(url);
   const remote = demo ? [] : first.settings.remote.hosts.map((h) => `https://${h}/`);
-  return { server, url, key, keySaved: kept.saved, remote, close };
+  // The Wi-Fi addresses, once their listeners have started (when Wi-Fi access is on).
+  const lan = apps.get(server).lan;
+  await lan.refresh();
+  return { server, url, key, keySaved: kept.saved, remote, home: lan.urls(), close };
 }
 
 // The command that opens a web page in the default browser, without a shell.
@@ -301,7 +349,7 @@ export function browserCommand(url, platform = process.platform) {
 
 async function handle(app, req, res) {
   const host = parseHost(req.headers.host);
-  if (!hostAllowed(host, req, app.readSettings())) return refuseHost(app, req, res, host);
+  if (!hostAllowed(app, host, req, app.readSettings())) return refuseHost(app, req, res, host);
   const [pathname, query] = splitUrl(req.url);
   const methods = allowedMethods(pathname);
   if (!methods) return sendError(req, res, 404, MESSAGES.notFound);
@@ -310,10 +358,16 @@ async function handle(app, req, res) {
   }
   // Claude Code's hooks cannot carry the page's key; they carry their own secret instead.
   if (pathname === HOOK_PATH) return postHook(app, req, res, host);
-  if (pathname.startsWith('/api/') && !OPEN_API.has(pathname) && !keyAllowed(app, req)) {
+  if (pathname === '/api/signin') return postSignIn(app, req, res, host);
+  const who = pathname.startsWith('/api/') && !OPEN_API.has(pathname) ? signedIn(app, req) : null;
+  if (pathname.startsWith('/api/') && !OPEN_API.has(pathname) && !who) {
     return sendError(req, res, 401, MESSAGES.noKey);
   }
   if (req.method === 'POST') {
+    if (pathname === '/api/signout') return postSignOut(app, req, res, host, who);
+    if (pathname === '/api/password') return postPassword(app, req, res, host);
+    if (pathname === '/api/lan') return postLan(app, req, res, host);
+    if (pathname === '/api/devices') return postDevices(app, req, res, host);
     if (pathname === '/api/placement') return postPlacement(app, req, res, host);
     if (pathname === '/api/dismiss') return postDismiss(app, req, res, host);
     if (pathname === '/api/watch') return postWatch(app, req, res, host);
@@ -347,8 +401,8 @@ async function handle(app, req, res) {
 }
 
 function allowedMethods(pathname) {
-  if (['/api/settings', '/api/rollover', '/api/models', '/api/send', '/api/hooks'].includes(pathname)) return ['GET', 'HEAD', 'POST'];
-  if (['/api/placement', '/api/dismiss', '/api/watch', '/api/hide', '/api/open', '/api/new', '/api/teleport', '/api/github/merge', '/api/answer', '/api/answering', HOOK_PATH].includes(pathname)) return ['POST'];
+  if (['/api/settings', '/api/rollover', '/api/models', '/api/send', '/api/hooks', '/api/devices'].includes(pathname)) return ['GET', 'HEAD', 'POST'];
+  if (['/api/placement', '/api/dismiss', '/api/watch', '/api/hide', '/api/open', '/api/new', '/api/teleport', '/api/github/merge', '/api/answer', '/api/answering', '/api/signin', '/api/signout', '/api/password', '/api/lan', HOOK_PATH].includes(pathname)) return ['POST'];
   if (PAGE_FILES.has(pathname) || API_GET.has(pathname)) return READ_ONLY;
   if (/^\/brand\/[^/]+$/.test(pathname)) return READ_ONLY;
   return null;
@@ -370,10 +424,12 @@ function parseHost(value) {
   return match ? { host, name: match[1] } : null;
 }
 
-// Only the loopback names, or a listed remote name reached by a listed Tailscale login.
-// Checking the Host header this way also blocks DNS rebinding.
-function hostAllowed(host, req, state) {
+// Only the loopback names, or a listed remote name reached by a listed Tailscale login. A
+// connection on a Wi-Fi address may use only that address itself. Checking the Host header this
+// way also blocks DNS rebinding: a web page cannot make its own name point at this computer.
+function hostAllowed(app, host, req, state) {
   if (!host) return false;
+  if (homeSockets.has(req.socket)) return host.name === plainAddress(req.socket.localAddress) && app.lan.serving(host.name);
   if (LOCAL_HOSTS.has(host.name)) return true;
   const remote = state?.settings?.remote ?? {};
   const hosts = lowerList(remote.hosts);
@@ -385,9 +441,17 @@ function hostAllowed(host, req, state) {
 // A turned-away visit through Tailscale is kept (in memory, the last few), so Settings can offer to
 // allow that device. A browser that opens a page gets plain words; the API keeps its JSON error.
 function refuseHost(app, req, res, host) {
-  noteKnock(app, host, req);
+  // Anyone on the Wi-Fi can send Tailscale's headers, so only a visit to 127.0.0.1 (which tailscale
+  // serve passes on) can be a turned-away Tailscale device.
+  if (!homeSockets.has(req.socket)) noteKnock(app, host, req);
   if (String(req.url ?? '').startsWith('/api/')) return sendError(req, res, 403, MESSAGES.host);
-  return send(req, res, 403, { 'Content-Type': 'text/plain; charset=utf-8' }, MESSAGES.hostPage);
+  const page = homeSockets.has(req.socket) ? MESSAGES.homePage : MESSAGES.hostPage;
+  return send(req, res, 403, { 'Content-Type': 'text/plain; charset=utf-8' }, page);
+}
+
+// "::ffff:192.168.1.5" (IPv4 in IPv6 form) -> "192.168.1.5".
+function plainAddress(address) {
+  return typeof address === 'string' && address.startsWith('::ffff:') ? address.slice(7) : address;
 }
 
 // Only a visit that came through Tailscale counts: a <machine>.<tailnet>.ts.net name, which no web
@@ -410,7 +474,8 @@ function lowerList(list) {
 // ---- key gate ----
 // The host gate stops web sites, but any program or other account on this computer can reach
 // 127.0.0.1 and send any header it likes, including Tailscale's. So every API request must also
-// carry the per-run key, which only the person who started Pleni has seen.
+// carry Pleni's key, which only the person who started Pleni has seen, or the pass of a device
+// that signed in with the password (src/signin.js).
 
 // One cookie name per port, so two Plenis on one computer do not overwrite each other's key.
 function cookieName(req) {
@@ -427,8 +492,25 @@ function keyMatches(app, text) {
   return typeof text === 'string' && text.length > 0 && crypto.timingSafeEqual(hashKey(text), app.keyHash);
 }
 
-function keyAllowed(app, req) {
-  return keyMatches(app, readCookie(req.headers.cookie, cookieName(req)));
+// 'key', the signed-in device ({ id, name, ... }) whose pass the cookie holds, or null. On a Wi-Fi
+// address only a device's pass works: the address has no padlock, and the key, unlike a pass,
+// cannot be signed out.
+function signedIn(app, req) {
+  const value = readCookie(req.headers.cookie, cookieName(req));
+  if (!homeSockets.has(req.socket) && keyMatches(app, value)) return 'key';
+  return app.signin.findDevice(value);
+}
+
+// The key itself, or a pasted sign-in link that holds it ("...?t=<key>").
+function keyInText(app, text) {
+  const t = text.trim();
+  if (keyMatches(app, t)) return true;
+  const m = /(?:^|[?&])t=([A-Za-z0-9_-]{16,})(?:[&#]|$)/.exec(t);
+  return !!m && keyMatches(app, m[1]);
+}
+
+function passCookie(req, value, seconds = COOKIE_SECONDS) {
+  return `${cookieName(req)}=${value}; Path=/; Max-Age=${seconds}; HttpOnly; SameSite=Strict`;
 }
 
 function readCookie(header, name) {
@@ -447,10 +529,36 @@ function readCookie(header, name) {
 const COOKIE_SECONDS = 365 * 24 * 60 * 60;
 function takeKey(app, req, res, query) {
   const headers = { Location: '/' };
-  if (keyMatches(app, new URLSearchParams(query).get(KEY_PARAM))) {
-    headers['Set-Cookie'] = `${cookieName(req)}=${app.key}; Path=/; Max-Age=${COOKIE_SECONDS}; HttpOnly; SameSite=Strict`;
-  }
+  const right = keyMatches(app, new URLSearchParams(query).get(KEY_PARAM));
+  if (right && !homeSockets.has(req.socket)) headers['Set-Cookie'] = passCookie(req, app.key);
   return send(req, res, 303, headers, '');
+}
+
+// The sign-in box: { secret }, Pleni's password, or its key (or a sign-in link that holds it). Either
+// way the browser gets a pass of its own in its cookie, which Settings lists and can sign out. Every
+// wrong try counts toward the wait (src/signin.js); the key always works.
+async function postSignIn(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  const secret = typeof body.secret === 'string' ? body.secret : '';
+  const isKey = keyInText(app, secret);
+  if (isKey && homeSockets.has(req.socket)) return sendError(req, res, 401, MESSAGES.keyOnWifi);
+  let via = 'key';
+  if (!isKey) {
+    const result = await app.signin.checkPassword(secret);
+    if (!result.ok) return sendError(req, res, result.status, result.error, result.wait ? { 'Retry-After': String(result.wait) } : {});
+    via = 'password';
+  }
+  const { pass } = app.signin.addDevice({ name: deviceName(req.headers['user-agent']), via });
+  return sendJson(req, res, 200, { ok: true }, { 'Set-Cookie': passCookie(req, pass) });
+}
+
+// Sign out this browser: its pass stops working at once, and its cookie is cleared.
+async function postSignOut(app, req, res, host, who) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (who && who !== 'key') app.signin.removeDevice(who.id);
+  return sendJson(req, res, 200, { ok: true }, { 'Set-Cookie': passCookie(req, '', 0) });
 }
 
 // ---- static files ----
@@ -542,10 +650,15 @@ async function settingsPayload(app, state) {
 // The key cookie is checked before this. A web page on another site cannot add the X-Pleni header
 // without the browser asking first, and that request is refused, so the header plus the Origin
 // check also stops cross-site saves.
+// Who may open Pleni from another device changes only on this computer, and Wi-Fi access only with
+// its own switch (POST /api/lan), so another device keeps the remote settings as they are.
 async function postSettings(app, req, res, host) {
   const body = await readJsonPost(req, res, host);
   if (body === undefined) return undefined;
-  return saveAndReload(app, req, res, cleanSettings(body), (state) => settingsPayload(app, state));
+  const clean = cleanSettings(body);
+  const { remote } = app.readSettings().settings;
+  clean.remote = isLocalRequest(host, req) ? { ...clean.remote, lan: remote.lan, lanAddresses: remote.lanAddresses } : structuredClone(remote);
+  return saveAndReload(app, req, res, clean, (state) => settingsPayload(app, state));
 }
 
 // "Reports to" from the menu or a drag on the map: { key, reportsTo: node key | 'you' | null }.
@@ -961,21 +1074,91 @@ function reposOnMap(store) {
   return [...repos];
 }
 
-// What Settings shows under Devices, only on this computer: the addresses for other devices, the
-// key, and the devices turned away lately (newest first), each with whether it is allowed now.
+// What Settings shows under Devices, only on this computer: the Tailscale addresses, the key, the
+// devices turned away lately (newest first, each with whether it is allowed now), the password,
+// Wi-Fi access, and the signed-in devices.
 function sendDevices(app, req, res, host) {
   if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.devicesRemote);
   const { settings } = app.readSettings();
   const hosts = lowerList(settings?.remote?.hosts);
   const logins = lowerList(settings?.remote?.tailscaleUsers);
   const knocks = [...app.knocks.values()].reverse().map((k) => ({ ...k, allowed: hosts.includes(k.host) && logins.includes(k.login) }));
-  return sendJson(req, res, 200, { addresses: hosts.map((h) => `https://${h}/`), key: app.key, knocks });
+  return sendJson(req, res, 200, {
+    addresses: hosts.map((h) => `https://${h}/`),
+    key: app.key,
+    knocks,
+    password: app.signin.passwordInfo(),
+    lan: app.lan.state(),
+    devices: app.signin.devices(),
+    devicesProblem: app.signin.devicesProblem(),
+    demo: app.store.demo === true,
+  });
 }
 
-// A window opens on this computer, so only the person at it may ask: a request passed on by a proxy
-// such as tailscale serve (from a phone, say) is refused, even with the key.
+// Sign out a device from Settings: { remove: '<device id>' }, or { remove: 'all' } for every one.
+// Its pass stops working at once. Only on this computer.
+async function postDevices(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.devicesRemote);
+  const all = body.remove === 'all';
+  if (!all && (typeof body.remove !== 'string' || !DEVICE_ID.test(body.remove))) return sendError(req, res, 400, MESSAGES.badRemove);
+  const { removed, saved } = all ? app.signin.removeAllDevices() : app.signin.removeDevice(body.remove);
+  if (!all && !removed) return sendError(req, res, 404, MESSAGES.goneDevice);
+  if (!saved) return sendError(req, res, 500, SIGNIN_MESSAGES.removeUnsaved);
+  return sendJson(req, res, 200, { ok: true, removed });
+}
+
+// Pleni's password: { password: '<new one>' } sets or changes it, { password: null } removes it, and
+// { unlock: true } turns it back on after too many wrong tries. Only on this computer. Wi-Fi access
+// needs a password, so it starts or stops with it.
+async function postPassword(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.passwordRemote);
+  let result;
+  if (body.unlock === true) result = app.signin.unlock();
+  else if (body.password === null) result = app.signin.removePassword();
+  else if (typeof body.password === 'string') result = await app.signin.setPassword(body.password);
+  else return sendError(req, res, 400, MESSAGES.badBody);
+  if (!result.ok) return sendError(req, res, result.status, result.error);
+  await app.lan.refresh();
+  return sendJson(req, res, 200, { ok: true, password: app.signin.passwordInfo(), lan: app.lan.state() });
+}
+
+// "Open Pleni on this Wi-Fi": { on: true, address } adds one of this computer's home-network
+// addresses (the likeliest one when left out) to remote.lanAddresses and turns remote.lan on;
+// { on: false } turns it off and forgets the addresses. The Wi-Fi listeners start or stop with it.
+// Only on this computer, never in the demo, and on only with a password.
+async function postLan(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.lanRemote);
+  if (typeof body.on !== 'boolean' || (body.address !== undefined && typeof body.address !== 'string')) return sendError(req, res, 400, MESSAGES.badBody);
+  if (app.store.demo) return sendError(req, res, 409, MESSAGES.lanDemo);
+  if (body.on && !app.signin.passwordInfo().set) return sendError(req, res, 409, MESSAGES.lanPassword);
+  const next = structuredClone(app.readSettings().settings);
+  next.remote.lan = body.on;
+  if (!body.on) next.remote.lanAddresses = [];
+  else {
+    const present = app.lan.present();
+    const address = body.address ?? present[0]?.address;
+    if (!address) return sendError(req, res, 409, MESSAGES.lanNone);
+    if (!present.some((a) => a.address === address)) return sendError(req, res, 409, MESSAGES.lanAddress);
+    next.remote.lanAddresses = [...next.remote.lanAddresses.filter((a) => a !== address), address];
+  }
+  return saveAndReload(app, req, res, cleanSettings(next), async () => {
+    await app.lan.refresh();
+    return { ok: true, lan: app.lan.state() };
+  });
+}
+
+// A window opens on this computer, so only the person at it may ask: a request from another device
+// is refused, even when it is signed in. That is one passed on by a proxy such as tailscale serve
+// (from a phone, say), one that came in on a Wi-Fi address, or one from anywhere but this computer.
 function isLocalRequest(host, req) {
-  return LOCAL_HOSTS.has(host.name) && req.headers['tailscale-user-login'] === undefined && req.headers['x-forwarded-for'] === undefined;
+  return !homeSockets.has(req.socket) && LOOPBACK.test(req.socket?.remoteAddress ?? '') && LOCAL_HOSTS.has(host.name) &&
+    req.headers['tailscale-user-login'] === undefined && req.headers['x-forwarded-for'] === undefined;
 }
 
 // True when `key` is `top` or sits somewhere below it on the map.
@@ -1116,6 +1299,7 @@ function listen(server, port) {
 }
 
 async function shutdown(server, store) {
+  await apps.get(server)?.lan.close();
   await new Promise((resolve) => {
     server.close(() => resolve());
     server.closeAllConnections();

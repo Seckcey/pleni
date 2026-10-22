@@ -46,11 +46,11 @@
   <div class="notices" id="notices"></div>
 
   <form class="signin" id="signin" aria-labelledby="signin-title" hidden>
-    <h2 id="signin-title">Pleni needs its key</h2>
-    <p>Paste the key Pleni showed when it started. It is the long part after <code>?t=</code> in its address. To see it again, run Pleni with <code>--url</code> on the computer that runs it. Your browser can save the key like a password.</p>
+    <h2 id="signin-title">Sign in to Pleni</h2>
+    <p>Type Pleni's password. You set it on the computer that runs Pleni, in Settings, then Devices. <span id="signin-key-note">Pleni's key works here too. </span>Your browser can save the password.</p>
     <input type="text" name="username" autocomplete="username" value="Pleni" hidden>
     <div class="signin-row">
-      <label for="signin-key">Key</label>
+      <label for="signin-key">Password</label>
       <input class="field" id="signin-key" name="password" type="password" autocomplete="current-password" spellcheck="false" autocapitalize="off" aria-describedby="signin-msg">
       <button type="submit" class="btn primary">Sign in</button>
     </div>
