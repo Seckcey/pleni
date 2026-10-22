@@ -41,6 +41,9 @@ const MAX_IDS = 500;
 // Claude Code writes its answer once, at the end of the turn; Pleni reads only its outcome.
 const MAX_RESULT_BYTES = 1024 * 1024;
 const FIND_MS = 60 * 1000;
+// npm's Claude Code package first holds a stand-in of a few hundred bytes where its install step puts
+// the real claude.exe; a real program is far bigger.
+const MIN_PROGRAM_BYTES = 64 * 1024;
 const LOG_FILE = 'sent.jsonl';
 const MAX_LOG_BYTES = 256 * 1024;
 const KEEP_LOG_LINES = 500;
@@ -275,39 +278,45 @@ export function sendArgs(tool, id, mode = 'read') {
 
 // Where the program is: { file, args } with args put before Pleni's own (the launcher script when
 // the program is a Node.js script), or null. Only absolute, local folders count, and never the
-// current folder, so a program with the same name in a project never runs instead.
-//   Claude Code: claude.exe on PATH; else, next to npm's claude.cmd, its package's bin\claude.exe or
-//   cli.js; else %USERPROFILE%\.local\bin\claude.exe.
-//   Codex: codex.exe on PATH; else, next to npm's codex.cmd, its package's bin\codex.js.
-export function findTool(tool, { env = process.env, platform = process.platform, home = os.homedir(), isFile = fileExists, node = process.execPath } = {}) {
+// current folder, so a program with the same name in a project never runs instead. A program file
+// must be a real program, not npm's small stand-in that its install step replaces.
+//   Claude Code: claude.exe on PATH (its installer, WinGet); else, next to npm's claude.cmd, its
+//   package's bin\claude.exe, or cli-wrapper.cjs or cli.js run by Pleni's own Node.js; else
+//   %USERPROFILE%\.local\bin\claude.exe.
+//   Codex: codex.exe on PATH (its installer, WinGet); else, next to npm's codex.cmd, its package's
+//   bin\codex.js run by Pleni's own Node.js (it finds and runs the real codex.exe); else
+//   %LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe.
+export function findTool(tool, { env = process.env, platform = process.platform, home = os.homedir(), size = fileSize, node = process.execPath } = {}) {
   const win = platform === 'win32';
   const p = win ? path.win32 : path.posix;
   const dirs = pathDirs(env, platform);
+  const isProgram = (file) => size(file) >= MIN_PROGRAM_BYTES;
+  const isScript = (file) => size(file) > 0 && plainLocal(node, p);
   const exe = win ? `${tool}.exe` : tool;
   for (const dir of dirs) {
     const file = p.join(dir, exe);
-    if (isFile(file)) return { file, args: [] };
+    if (isProgram(file)) return { file, args: [] };
   }
   if (!win) return null;
   const pkg = tool === 'claude' ? ['@anthropic-ai', 'claude-code'] : ['@openai', 'codex'];
   for (const dir of dirs) {
-    if (!isFile(p.join(dir, `${tool}.cmd`))) continue;
+    if (size(p.join(dir, `${tool}.cmd`)) <= 0) continue;
     const base = p.join(dir, 'node_modules', ...pkg);
     if (tool === 'claude') {
       const native = p.join(base, 'bin', 'claude.exe');
-      if (isFile(native)) return { file: native, args: [] };
-      const script = p.join(base, 'cli.js');
-      if (isFile(script) && plainLocal(node, p)) return { file: node, args: [script] };
+      if (isProgram(native)) return { file: native, args: [] };
+      for (const name of ['cli-wrapper.cjs', 'cli.js']) {
+        const script = p.join(base, name);
+        if (isScript(script)) return { file: node, args: [script] };
+      }
     } else {
       const script = p.join(base, 'bin', 'codex.js');
-      if (isFile(script) && plainLocal(node, p)) return { file: node, args: [script] };
+      if (isScript(script)) return { file: node, args: [script] };
     }
   }
-  if (tool === 'claude' && typeof home === 'string' && p.isAbsolute(home)) {
-    const native = p.join(home, '.local', 'bin', 'claude.exe');
-    if (isFile(native)) return { file: native, args: [] };
-  }
-  return null;
+  const own = (base, ...parts) => (typeof base === 'string' && p.isAbsolute(base) && !/^[\\/]{2}/.test(base) ? p.join(base, ...parts) : null);
+  const last = tool === 'claude' ? own(home, '.local', 'bin', 'claude.exe') : own(env.LOCALAPPDATA, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe');
+  return last && isProgram(last) ? { file: last, args: [] } : null;
 }
 
 function pathDirs(env, platform) {
@@ -327,11 +336,13 @@ function plainLocal(file, p) {
   return typeof file === 'string' && p.isAbsolute(file) && !/^[\\/]{2}/.test(file);
 }
 
-function fileExists(file) {
+// A file's size, or -1 when it is not a file.
+function fileSize(file) {
   try {
-    return fs.statSync(file).isFile();
+    const info = fs.statSync(file);
+    return info.isFile() ? info.size : -1;
   } catch {
-    return false;
+    return -1;
   }
 }
 

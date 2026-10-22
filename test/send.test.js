@@ -310,31 +310,38 @@ test('Claude Code\'s answer says whether the turn went well, and in which sessio
 });
 
 test('the program is found in absolute, local folders only, never in the current folder', () => {
-  const files = new Set([
-    'C:\\Tools\\claude.exe',
-    'C:\\Users\\ada\\AppData\\Roaming\\npm\\codex.cmd',
-    'C:\\Users\\ada\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js',
-    'project\\codex.exe',
-    '\\\\server\\share\\codex.exe',
+  const BIG = 300 * 1024 * 1024;
+  const sizes = new Map([
+    ['C:\\Tools\\claude.exe', BIG],
+    ['C:\\Users\\ada\\AppData\\Roaming\\npm\\codex.cmd', 400],
+    ['C:\\Users\\ada\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js', 9000],
+    ['project\\codex.exe', BIG],
+    ['\\\\server\\share\\codex.exe', BIG],
   ]);
-  const isFile = (file) => files.has(file);
+  const size = (file) => sizes.get(file) ?? -1;
   const env = { Path: 'project;\\\\server\\share;"C:\\Tools";C:\\Users\\ada\\AppData\\Roaming\\npm' };
   const node = 'C:\\Program Files\\nodejs\\node.exe';
-  assert.deepEqual(findTool('claude', { env, platform: 'win32', isFile, node, home: 'C:\\Users\\ada' }), { file: 'C:\\Tools\\claude.exe', args: [] });
-  assert.deepEqual(findTool('codex', { env, platform: 'win32', isFile, node, home: 'C:\\Users\\ada' }), {
+  assert.deepEqual(findTool('claude', { env, platform: 'win32', size, node, home: 'C:\\Users\\ada' }), { file: 'C:\\Tools\\claude.exe', args: [] });
+  assert.deepEqual(findTool('codex', { env, platform: 'win32', size, node, home: 'C:\\Users\\ada' }), {
     file: node,
     args: ['C:\\Users\\ada\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js'],
   });
-  // npm's Claude Code package: its own claude.exe first, else cli.js through Node.js.
+  // npm's Claude Code package: its own claude.exe once its install step put the real one there,
+  // else its Node.js script.
   const npm = 'C:\\Users\\ada\\AppData\\Roaming\\npm';
-  const claudeNpm = new Set([`${npm}\\claude.cmd`, `${npm}\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe`]);
-  assert.deepEqual(findTool('claude', { env: { PATH: npm }, platform: 'win32', isFile: (f) => claudeNpm.has(f), node }), { file: `${npm}\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe`, args: [] });
-  const claudeJs = new Set([`${npm}\\claude.cmd`, `${npm}\\node_modules\\@anthropic-ai\\claude-code\\cli.js`]);
-  assert.deepEqual(findTool('claude', { env: { PATH: npm }, platform: 'win32', isFile: (f) => claudeJs.has(f), node }), { file: node, args: [`${npm}\\node_modules\\@anthropic-ai\\claude-code\\cli.js`] });
-  // The native installer's folder, when it is not on PATH.
-  const local = new Set(['C:\\Users\\ada\\.local\\bin\\claude.exe']);
-  assert.deepEqual(findTool('claude', { env: {}, platform: 'win32', isFile: (f) => local.has(f), node, home: 'C:\\Users\\ada' }), { file: 'C:\\Users\\ada\\.local\\bin\\claude.exe', args: [] });
-  assert.equal(findTool('codex', { env: { PATH: 'project' }, platform: 'win32', isFile, node }), null);
+  const pkg = `${npm}\\node_modules\\@anthropic-ai\\claude-code`;
+  const found = (files) => findTool('claude', { env: { PATH: npm }, platform: 'win32', size: (f) => files[f] ?? -1, node, home: 'C:\\Users\\ada' });
+  assert.deepEqual(found({ [`${npm}\\claude.cmd`]: 300, [`${pkg}\\bin\\claude.exe`]: BIG }), { file: `${pkg}\\bin\\claude.exe`, args: [] });
+  assert.deepEqual(found({ [`${npm}\\claude.cmd`]: 300, [`${pkg}\\bin\\claude.exe`]: 500, [`${pkg}\\cli-wrapper.cjs`]: 2000 }), { file: node, args: [`${pkg}\\cli-wrapper.cjs`] });
+  assert.deepEqual(found({ [`${npm}\\claude.cmd`]: 300, [`${pkg}\\cli.js`]: 9000 }), { file: node, args: [`${pkg}\\cli.js`] });
+  // A stand-in claude.exe and nothing else is not a program.
+  assert.equal(found({ [`${npm}\\claude.cmd`]: 300, [`${pkg}\\bin\\claude.exe`]: 500 }), null);
+  // The installers' own folders, when they are not on PATH.
+  assert.deepEqual(findTool('claude', { env: {}, platform: 'win32', size: (f) => (f === 'C:\\Users\\ada\\.local\\bin\\claude.exe' ? BIG : -1), node, home: 'C:\\Users\\ada' }), { file: 'C:\\Users\\ada\\.local\\bin\\claude.exe', args: [] });
+  const standalone = 'C:\\Users\\ada\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe';
+  assert.deepEqual(findTool('codex', { env: { LOCALAPPDATA: 'C:\\Users\\ada\\AppData\\Local' }, platform: 'win32', size: (f) => (f === standalone ? BIG : -1), node }), { file: standalone, args: [] });
+  assert.equal(findTool('codex', { env: { LOCALAPPDATA: '\\\\server\\share' }, platform: 'win32', size: () => BIG, node }), null);
+  assert.equal(findTool('codex', { env: { PATH: 'project' }, platform: 'win32', size, node }), null);
 });
 
 test('the page learns what stops a send without starting anything', (t) => {
