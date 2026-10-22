@@ -1,0 +1,12 @@
+# getplenipo.com: check GitHub for a new Pleni release every 15 minutes.
+[Unit]
+Description=Check for a new Pleni release every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -8,7 +8,8 @@ before you change code, and follow its names, shapes, and file paths.
   summaries) uses short sentences and everyday words, at a 5th-grade reading level. If you must
   use a technical word, say what it means right after it.
 - **Zero dependencies.** Node.js 22.12 or newer, ES modules, `node:` built-ins only. Never add an
-  npm package, not even a dev one. No build step.
+  npm package, not even a dev one. No build step. (Only the separate `website/` folder, below, has
+  packages and a build of its own.)
 - **Read-only by design.** Pleni writes nowhere on this computer except its own settings folder. It
   never stops a session, and never writes into Claude Code's, Codex's, or a mailbox's folders,
   except, after the person chooses so on this computer, the Models page's model lines and Answer
@@ -39,6 +40,14 @@ before you change code, and follow its names, shapes, and file paths.
   or `AGENTS.md` inside `relay/`: agents working on Pleni would read it as their own orders. The
   coordinator's orders live in `relay/COORDINATOR.md` instead. Never commit a real mailbox, its
   `.relay` folder, or its `relay-settings.json` or `cost-limits.json`.
+- **The website is separate.** The `website/` folder holds getplenipo.com, made by 8 West Ventures,
+  LLC. It has its own `package.json` with its own add-on packages (React, React Flow, esbuild,
+  TypeScript), its own tests (`cd website && npm ci && npm test`) and its own GitHub check
+  (`.github/workflows/website.yml`). The zero-dependency rule covers everything outside it. Pleni
+  never imports from it, and it is not in the npm package. Read `website/README.md` before you
+  change it. Its pictures of Pleni come from demo mode. A server updater publishes `main`'s site
+  after its checks pass, so a merge there goes live within about 15 minutes. Each Pleni release
+  adds its notes as `docs/releases/vX.Y.Z.md`, which the site shows under What's new.
 - **Private by default.** No telemetry, and nothing loaded from the internet. Pleni makes no
   network calls of its own: only opt-in Live GitHub status reaches GitHub, through `gh` and the
   person's own gh login. Show session text only when `content` is `snippets`, and never show

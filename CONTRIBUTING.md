@@ -50,6 +50,16 @@ npm test                 # every test, with node:test
 node scripts/check.js    # the repository's own checks
 ```
 
+A change to the website in `website/` has its own checks. Run them there, and GitHub runs them too
+(the Website check):
+
+```sh
+cd website
+npm ci
+npm test
+npm run typecheck
+```
+
 If you change anything in `relay/`, also run the relay's own test on Windows. It takes a few
 minutes and costs nothing. GitHub runs it too, on Windows.
 
@@ -67,7 +77,9 @@ as passing.
    what it means right after it.
 2. **Zero dependencies.** Use only Node.js and its built-in `node:` modules. Do not add npm
    packages, not even for development or tests. There is no build step: the files in `public/`
-   are served as they are.
+   are served as they are. The one exception is the website for getplenipo.com in `website/`,
+   which is separate from Pleni: it has its own packages, build and checks
+   ([website/README.md](website/README.md)).
 3. **Read-only by design.** Pleni never writes anywhere on your computer except its own settings
    folder, and it never stops a session. It sends a session nothing but Roll over's two fixed
    messages and, with the opt-in Send messages, a message the person typed, as one hidden turn of an
