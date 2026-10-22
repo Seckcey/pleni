@@ -27,7 +27,7 @@ const NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi
 const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
 // Settings that only change how the snapshot is drawn. Changing them keeps the
 // sources, so they do not have to read every session file again.
-const VIEW_ONLY = new Set(['displayName', 'titles', 'groupBy', 'modelTiers', 'people', 'projects', 'chain', 'remote', 'port', 'actions', 'alerts', 'models']);
+const VIEW_ONLY = new Set(['displayName', 'titles', 'groupBy', 'modelTiers', 'people', 'projects', 'chain', 'remote', 'port', 'actions', 'send', 'answers', 'alerts', 'models']);
 const DISMISSED_FILE = 'dismissed.json';
 const MAX_DISMISSED = 1000;
 
@@ -43,6 +43,7 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
   let signature = null;
   let cache = null;
   let polled = null; // what the sources said for the cached snapshot
+  let asks = []; // the questions Pleni holds for the person (src/answers.js)
   const dismissed = loadDismissed(stateDir);
 
   openSources();
@@ -114,8 +115,10 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
       rollover: current.actions.rollover && windows,
       newAgent: current.actions.newAgent && windows,
       teleport: current.actions.teleport && windows,
+      send: current.actions.send && windows,
+      answers: current.actions.answers,
     };
-    const snap = buildSnapshot({ now: t, settings: demo ? demoSettings(current) : current, dismissed, actions, ...polled });
+    const snap = buildSnapshot({ now: t, settings: demo ? demoSettings(current) : current, dismissed, actions, asks, ...polled });
     // Not enumerable, so they never show up in the JSON itself.
     Object.defineProperties(snap, { etag: { value: snapshotTag(snap) }, json: { value: JSON.stringify(snap) } });
     cache = { at: t, snapshot: snap };
@@ -196,6 +199,12 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
     };
   }
 
+  // The questions Pleni holds changed: the next snapshot shows the new list at once.
+  function setAsks(list) {
+    asks = Array.isArray(list) ? list : [];
+    cache = null;
+  }
+
   // Hides a "Needs you" notice until something newer happens; `at: null` brings it back.
   function dismiss(id, at) {
     if (at === null) dismissed.delete(id);
@@ -212,7 +221,7 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
     polled = null;
   }
 
-  return { snapshot, detail, reload, close, dismiss, session, mail, demo };
+  return { snapshot, detail, reload, close, dismiss, session, mail, setAsks, demo };
 }
 
 function loadDismissed(dir) {

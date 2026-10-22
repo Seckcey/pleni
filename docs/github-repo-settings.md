@@ -9,7 +9,7 @@ result on GitHub.
 Description (under 350 characters):
 
 ```text
-Watch your Claude Code, Codex, Grok and Kimi Code sessions, their sub-agents, and the hand-offs between them, live in your browser. Read-only, local-first, zero dependencies. Pleni is the simple browser edition of Plenipo, by 8 West Ventures, LLC.
+Watch your Claude Code, Codex, Grok and Kimi Code sessions, their sub-agents, and the hand-offs between them, live in your browser. Send them messages and answer their questions there. Local-first, zero dependencies, read-only until you turn on a button. The simple browser edition of Plenipo, by 8 West Ventures, LLC.
 ```
 
 Website: <https://getplenipo.com>
@@ -28,7 +28,7 @@ To apply the About section from a terminal:
 
 ```sh
 gh repo edit Seckcey/pleni \
-  --description "Watch your Claude Code, Codex, Grok and Kimi Code sessions, their sub-agents, and the hand-offs between them, live in your browser. Read-only, local-first, zero dependencies. Pleni is the simple browser edition of Plenipo, by 8 West Ventures, LLC." \
+  --description "Watch your Claude Code, Codex, Grok and Kimi Code sessions, their sub-agents, and the hand-offs between them, live in your browser. Send them messages and answer their questions there. Local-first, zero dependencies, read-only until you turn on a button. The simple browser edition of Plenipo, by 8 West Ventures, LLC." \
   --homepage "https://getplenipo.com" \
   --add-topic plenipo,claude-code,codex,ai-agents,multi-agent,agent-orchestration,local-first,developer-tools,dashboard,observability \
   --add-topic nodejs,zero-dependencies,browser,sub-agents,openai-codex,anthropic,llm-tools,agent-monitoring,grok,kimi-code

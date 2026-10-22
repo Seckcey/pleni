@@ -4,7 +4,14 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.2.0 (2026-10-22)
+
+Pleni can now act when you ask, not only watch. Each action happens only when you click, and only
+on the computer that runs Pleni: send a session a message, answer a Claude Code session's
+questions, plans and permission prompts, roll a long session over, start a new agent, open a
+session in PowerShell, bring a cloud session here, change your agents' models, and merge a pull
+request. The buttons are off until you turn them on in Settings. Without them, Pleni only reads,
+as before.
 
 ### Fixed
 
@@ -31,6 +38,29 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **Answer questions** (off until you choose Connect in Settings → Buttons, this computer only): a
+  Claude Code session's question, plan to approve, or permission prompt can wait in Pleni, under
+  Needs you and on top of its side panel, where you pick an answer, approve the plan or ask it to
+  keep planning, or allow or deny the tool. Connect adds Pleni's own two hooks to Claude Code's
+  `settings.json` (after a copy, nothing else changed); Disconnect takes them out. Pleni holds a
+  question only for a session you switch on ("Answer its questions in Pleni" in its side panel) and
+  for messages Pleni sends, and only for the time you set (10 minutes at first); every other
+  question goes to the session's own window as before. A plan or a permission prompt also shows in
+  the session's window; answer it in either place, and Pleni takes its card away within a few
+  seconds when you answer it there. A message sent with Pleni runs with no window, where Claude Code
+  asks no questions and shows no plans, so only its permission prompts come, with **Also change
+  files in its folder**. If Pleni is closed, Claude Code shows a short "hook error" line and asks in
+  its own window. The hooks reach Pleni only on this computer, with a secret Pleni keeps in
+  `hook-key`. Checked with Claude Code 2.1.307 in a real window.
+- **Send messages** (Windows, off until you turn it on in Settings → Buttons): a main Claude Code
+  session or Codex thread gets a **Chat** tab in its side panel, with the conversation and a message
+  box. Pleni sends what you type as one turn of that session, run in the background
+  (`claude -p --resume` or `codex exec resume`), and the answer shows there. The message goes to the
+  program on its standard input, never on a command line. Pleni never sends to a session that is
+  working, or open in a window, an app or another program, and only on the computer that runs it.
+  A sent message may read files and answer; **A sent message may** can also let it change files in
+  its folder. Pleni keeps no copy of the message: `sent.jsonl` in its own folder says only when, to
+  which session, and how the turn ended. A few messages a minute, three turns at once at most.
 - **Who chose a worker's model and effort:** when the sergeant that started a Claude Code worker did
   not choose its model or its effort, the map, the List and its side panel now show "(default)"
   after it, such as "Sonnet 5.5 · max effort (defaults)". Its Details tab shows its worker type and

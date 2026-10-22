@@ -31,9 +31,10 @@ const RANKS = {
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 const gitCache = new Map();
 
-// `actions` says which actions the page may offer: { openTerminal, rollover, newAgent, teleport }, each true when that
+// `actions` says which actions the page may offer: { openTerminal, rollover, newAgent, teleport, send }, each true when that
 // button is turned on and can work on this computer.
-export function buildSnapshot({ now, settings, claude = null, codex = null, grok = null, kimi = null, mailbox = null, dismissed = null, actions = null } = {}) {
+// `asks` are the questions Pleni holds for the person (src/answers.js), as createAsks().list() gives them.
+export function buildSnapshot({ now, settings, claude = null, codex = null, grok = null, kimi = null, mailbox = null, dismissed = null, actions = null, asks = null } = {}) {
   const s = cleanSettings(settings);
   const ctx = {
     now: Number.isFinite(now) ? now : Date.now(),
@@ -61,6 +62,7 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
     if (node.needs && hidden(`${node.key}|needs`) >= (node.needs.at ?? 0)) node.needs = null;
   }
   const tasks = isObject(mailbox) ? cleanTasks(mailbox, ctx) : null;
+  const held = heldAsks(asks, tree, ctx);
   return {
     version: 1,
     now: ctx.now,
@@ -75,8 +77,9 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
     edges: mergeEdges([...treeEdges(tree, links.pairs, ctx), ...messageEdges(tree, links.pairs, ctx)], mail.edges, ctx),
     events: sortEvents([...links.events, ...runs, ...mail.events, ...agentMail.events, ...errorEvents(sessionNodes, ctx)]),
     counts: countStatuses(sessionNodes),
-    attention: attentionList(sessionNodes, tasks ?? [], [...mailboxAttention(box, tree, ctx), ...agentMail.attention, ...watchAttention(nodes, all, box, ctx)])
+    attention: attentionList(sessionNodes, tasks ?? [], [...held.attention, ...mailboxAttention(box, tree, ctx), ...agentMail.attention, ...watchAttention(nodes, all, box, ctx)])
       .filter((item) => !(hidden(item.id) >= item.at)),
+    asks: held.asks,
     tasks,
     mail: agentMail.summary,
     hiddenSessions: hiddenSessions(all, ctx),
@@ -85,6 +88,8 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
       rollover: actions?.rollover === true,
       newAgent: actions?.newAgent === true,
       teleport: actions?.teleport === true,
+      send: actions?.send === true,
+      answers: actions?.answers === true,
     },
   };
 }
@@ -1271,7 +1276,47 @@ function markWatched(nodes, ctx) {
   for (const node of nodes) {
     const can = node.key === RELAY || (KINDS.includes(node.kind) && !node.key.startsWith('mailbox:'));
     node.watched = can && entry(ctx.settings.people, node.key)?.watch === true;
+    // "Answer its questions in Pleni", for a main Claude Code session.
+    node.answering = node.kind === 'session' && node.platform === 'claude' && entry(ctx.settings.people, node.key)?.answer === true;
   }
+}
+
+// The questions Pleni holds (src/answers.js): { asks, attention }. Each ask keeps the words the page
+// needs to answer it; Pleni holds questions only while session text is shown (content 'snippets').
+// One "Needs you" per session, the oldest question first, on the session's tile, or on the person's
+// when the session is not on the map.
+function heldAsks(asks, tree, ctx) {
+  const out = { asks: [], attention: [] };
+  if (!Array.isArray(asks)) return out;
+  const seen = new Set();
+  const sorted = asks.filter((a) => isObject(a) && typeof a.id === 'string' && typeof a.key === 'string').sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  for (const ask of sorted) {
+    const node = tree.nodes.get(ask.key) ?? null;
+    const view = ctx.snippets ? askWords(ask) : { kind: ask.kind };
+    out.asks.push({ id: ask.id, key: ask.key, on: node ? ask.key : 'you', at: time(ask.at) ?? 0, until: time(ask.until) ?? 0, ...view });
+    if (seen.has(ask.key)) continue;
+    seen.add(ask.key);
+    const name = node ? snippet(node.title, MAX_TITLE) || node.title : 'A Claude Code session';
+    out.attention.push({ key: node ? ask.key : 'you', kind: 'ask', text: `${name} ${askText(ask, ctx)}`, at: time(ask.at) ?? 0 });
+  }
+  return out;
+}
+
+function askWords(ask) {
+  if (ask.kind === 'question') return { kind: 'question', questions: Array.isArray(ask.questions) ? ask.questions : [] };
+  if (ask.kind === 'plan') return { kind: 'plan', plan: typeof ask.plan === 'string' ? ask.plan : null };
+  if (ask.kind === 'permission') return { kind: 'permission', tool: ask.tool ?? null, detail: ask.detail ?? null };
+  return { kind: 'unknown' };
+}
+
+function askText(ask, ctx) {
+  if (ask.kind === 'question') {
+    const first = ctx.snippets && Array.isArray(ask.questions) ? snippet(ask.questions[0]?.question, 160) : null;
+    return first ? `asks you: ${first}` : 'is asking you a question.';
+  }
+  if (ask.kind === 'plan') return 'wants you to approve a plan.';
+  const what = ctx.snippets && typeof ask.tool === 'string' ? ask.tool : 'a tool';
+  return `asks to use ${what}.`;
 }
 
 // Reads dismissals given as a Map or a plain object of id -> time.

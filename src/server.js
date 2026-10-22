@@ -22,6 +22,21 @@ import { GITHUB_MESSAGES, createGithub } from './github.js';
 import { MODELS_MESSAGES, createModelSaver, readClaudeModels, readCodexModels } from './models.js';
 import { demoClaudeModels, demoGithub, demoModels } from './demo.js';
 import { rollover, rolloverInfo } from './rollover.js';
+import { createSender, sendLogFile } from './send.js';
+import {
+  ANSWER_MESSAGES,
+  HOOK_HEADER,
+  HOOK_PATH,
+  NO_DECISION,
+  askKey,
+  askView,
+  createAsks,
+  createHookSaver,
+  hookKeyFile,
+  hookKeyMatches,
+  loadOrCreateHookKey,
+  readHookSetup,
+} from './answers.js';
 
 const BIND_HOST = '127.0.0.1';
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -30,6 +45,8 @@ const TS_HOST = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9]
 const KNOCK_LOGIN = /^[^\s@]{1,128}@[^\s@]{1,125}$/;
 const MAX_KNOCKS = 5;
 const MAX_BODY_BYTES = 64 * 1024;
+// A hook call holds the tool's whole input, which can be a large file Claude Code wants to write.
+const MAX_HOOK_BYTES = 4 * 1024 * 1024;
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const PACKAGE_FILE = new URL('../package.json', import.meta.url);
 const APP_DIR = fileURLToPath(new URL('../', import.meta.url));
@@ -108,6 +125,10 @@ const MESSAGES = {
   rollRemote: 'A session can be rolled over only on the computer that runs Pleni, not from another device.',
   newRemote: 'A new agent can be started only on the computer that runs Pleni, not from another device.',
   teleportRemote: 'A cloud session can be brought here only on the computer that runs Pleni, not from another device.',
+  sendRemote: 'A message can be sent from Pleni only on the computer that runs it, not from another device.',
+  hookRefused: 'Only Claude Code on this computer, with the secret Pleni gave it, may ask here.',
+  badAnswering: 'Pleni could not read that. Only a main Claude Code session on the map can send its questions here.',
+  goneAnswering: 'That session is not on the map any more.',
   mergeRemote: 'A pull request can be merged from Pleni only on the computer that runs it, not from another device.',
   devicesRemote: "Pleni's key and the devices it turned away show only on the computer that runs Pleni.",
   hostPage: 'Pleni does not answer requests for this address yet.\n\nIf this is your own device: on the computer that runs Pleni, open Pleni, go to Settings, then Devices, and choose Allow next to this device. Then reload this page.\n',
@@ -197,9 +218,11 @@ export function loadOrCreateKey(file, { renew = false, tries, pause } = {}) {
 // Without them, settings are read from and saved to the usual settings file.
 // `key` is the secret every API request needs (see keyAllowed); a new one is made when it is left out.
 // `platform` and `spawnProcess` are for Open in PowerShell (see src/open.js), `github` for live
-// GitHub status (see src/github.js) and `modelSaver` for the Models page (see src/models.js); tests
-// replace them.
-export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null, github = null, modelSaver = null }) {
+// GitHub status (see src/github.js), `modelSaver` for the Models page (see src/models.js) and
+// `sender` for Send (see src/send.js), and `asks` and `hookSaver` for answering questions (see
+// src/answers.js); tests replace them. `hookKey` is the secret Claude Code's hooks send; without it,
+// no hook call is answered.
+export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null, github = null, modelSaver = null, sender = null, asks = null, hookSaver = null, hookKey = null }) {
   if (typeof key !== 'string' || !KEY_RE.test(key)) {
     throw new Error('The server key must be at least 16 letters, digits, "-" or "_".');
   }
@@ -218,14 +241,22 @@ export function createServer({ store, getSettings, saveSettings, publicDir = PUB
     opens: openLimits(),
     github: github ?? createGithub(),
     models: modelSaver ?? createModelSaver(),
+    sender: sender ?? createSender(spawnProcess ? { spawn: spawnProcess } : {}),
+    asks: null,
+    hookSaver: hookSaver ?? createHookSaver(),
+    hookKey: typeof hookKey === 'string' && hookKey ? hookKey : null,
     knocks: new Map(),
   };
-  return http.createServer((req, res) => {
+  app.asks = asks ?? createAsks({ onChange: () => store.setAsks?.(app.asks.list()) });
+  const server = http.createServer((req, res) => {
     handle(app, req, res).catch(() => {
       if (res.headersSent) res.destroy();
       else sendError(req, res, 500, MESSAGES.internal);
     });
   });
+  // No session waits for an answer from a Pleni that has stopped.
+  server.on('close', () => app.asks.close());
+  return server;
 }
 
 export async function start({ port, configFile, demo = false, open = false, renewKey = false } = {}) {
@@ -237,12 +268,14 @@ export async function start({ port, configFile, demo = false, open = false, rene
   // first: a key file that cannot be used stops Pleni before anything else starts.
   const kept = demo ? { key: newKey(), saved: false } : loadOrCreateKey(keyFile(file), { renew: renewKey });
   const { key } = kept;
+  // The secret Claude Code's hooks send when Pleni answers questions (src/answers.js).
+  const hookKey = demo ? null : loadOrCreateHookKey(hookKeyFile(file));
   // Loaded here, not at the top, so createServer works without the sources.
   const { createStore } = await import('./store.js');
   // Dismissed notices are kept next to the settings, so every device sees the same; the demo keeps
   // them only while it runs.
   const store = createStore({ settings: first.settings, roots: first.roots, demo, stateDir: demo ? null : path.dirname(file) });
-  const server = createServer({ store, getSettings: settings.get, saveSettings: settings.save, key });
+  const server = createServer({ store, getSettings: settings.get, saveSettings: settings.save, key, hookKey });
   try {
     await listen(server, port ?? first.settings.port);
   } catch (err) {
@@ -275,6 +308,8 @@ async function handle(app, req, res) {
   if (!methods.includes(req.method)) {
     return sendError(req, res, 405, MESSAGES.method, { Allow: methods.join(', ') });
   }
+  // Claude Code's hooks cannot carry the page's key; they carry their own secret instead.
+  if (pathname === HOOK_PATH) return postHook(app, req, res, host);
   if (pathname.startsWith('/api/') && !OPEN_API.has(pathname) && !keyAllowed(app, req)) {
     return sendError(req, res, 401, MESSAGES.noKey);
   }
@@ -287,6 +322,10 @@ async function handle(app, req, res) {
     if (pathname === '/api/rollover') return postRollover(app, req, res, host);
     if (pathname === '/api/new') return postNewAgent(app, req, res, host);
     if (pathname === '/api/teleport') return postTeleport(app, req, res, host);
+    if (pathname === '/api/send') return postSend(app, req, res, host);
+    if (pathname === '/api/answer') return postAnswer(app, req, res, host);
+    if (pathname === '/api/answering') return postAnswering(app, req, res, host);
+    if (pathname === '/api/hooks') return postHooks(app, req, res, host);
     if (pathname === '/api/github/merge') return postMerge(app, req, res, host);
     if (pathname === '/api/models') return postModels(app, req, res, host);
     return postSettings(app, req, res, host);
@@ -298,6 +337,8 @@ async function handle(app, req, res) {
   if (pathname === '/api/snapshot') return sendSnapshot(app, req, res);
   if (pathname === '/api/session') return sendSession(app, req, res, new URLSearchParams(query));
   if (pathname === '/api/rollover') return sendRollover(app, req, res, host, new URLSearchParams(query));
+  if (pathname === '/api/send') return sendSendInfo(app, req, res, host, new URLSearchParams(query));
+  if (pathname === '/api/hooks') return sendHooks(app, req, res, host);
   if (pathname === '/api/devices') return sendDevices(app, req, res, host);
   if (pathname === '/api/github') return sendGithub(app, req, res, host, new URLSearchParams(query));
   if (pathname === '/api/mail') return sendMail(app, req, res, new URLSearchParams(query));
@@ -306,8 +347,8 @@ async function handle(app, req, res) {
 }
 
 function allowedMethods(pathname) {
-  if (pathname === '/api/settings' || pathname === '/api/rollover' || pathname === '/api/models') return ['GET', 'HEAD', 'POST'];
-  if (['/api/placement', '/api/dismiss', '/api/watch', '/api/hide', '/api/open', '/api/new', '/api/teleport', '/api/github/merge'].includes(pathname)) return ['POST'];
+  if (['/api/settings', '/api/rollover', '/api/models', '/api/send', '/api/hooks'].includes(pathname)) return ['GET', 'HEAD', 'POST'];
+  if (['/api/placement', '/api/dismiss', '/api/watch', '/api/hide', '/api/open', '/api/new', '/api/teleport', '/api/github/merge', '/api/answer', '/api/answering', HOOK_PATH].includes(pathname)) return ['POST'];
   if (PAGE_FILES.has(pathname) || API_GET.has(pathname)) return READ_ONLY;
   if (/^\/brand\/[^/]+$/.test(pathname)) return READ_ONLY;
   return null;
@@ -450,6 +491,9 @@ async function readInside(dir, name) {
 // Uses the JSON and ETag the store already made, when it made them.
 async function sendSnapshot(app, req, res) {
   const snap = await app.store.snapshot();
+  // A held plan or prompt the person answered in the session's own window is let go; the next
+  // snapshot no longer shows it.
+  app.asks.settle(snap?.nodes);
   const body = typeof snap?.json === 'string' ? snap.json : JSON.stringify(snap ?? null);
   const etag = typeof snap?.etag === 'string' ? snap.etag : snapshotTag(snap);
   // The page shows which Pleni answers, and notices when an update has restarted it.
@@ -686,6 +730,149 @@ async function postTeleport(app, req, res, host) {
   });
   if (result.ok) return sendJson(req, res, 200, { ok: true });
   return sendError(req, res, result.status, result.error);
+}
+
+// Send a message: GET /api/send?key=<key> answers what the page shows before a send ({ problem,
+// running, last, mode }), and POST /api/send { key, text, id } sends one message as a hidden turn of
+// that session. Both work only on this computer, like Open in PowerShell; src/send.js makes the other
+// checks. The message goes to the program's standard input and is not kept.
+function sendSendInfo(app, req, res, host, params) {
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.sendRemote);
+  const result = app.sender.info({ key: params.get('key'), settings: app.readSettings().settings, store: app.store, platform: app.platform });
+  if (result.ok) return sendJson(req, res, 200, result.info);
+  return sendError(req, res, result.status, result.error);
+}
+
+async function postSend(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.sendRemote);
+  const state = app.readSettings();
+  const result = await app.sender.send({
+    key: body.key,
+    text: body.text,
+    id: body.id,
+    settings: state.settings,
+    roots: state.roots ?? {},
+    store: app.store,
+    logFile: sendLogFile(state.file ?? settingsFile()),
+    platform: app.platform,
+  });
+  if (result.ok) return sendJson(req, res, 200, result.repeat ? { ok: true, repeat: true } : { ok: true });
+  return sendError(req, res, result.status, result.error);
+}
+
+// ---- answering questions (src/answers.js) ----
+
+// A call from one of Claude Code's hooks. Only from this computer, with the secret Pleni gave the
+// hooks. Pleni holds the question when the person answers for that session ("Answer its questions in
+// Pleni") or when the turn is one Pleni sent, while answering is on and session text is shown; any
+// other call gets no decision at once, so Claude Code asks in its own window as before.
+async function postHook(app, req, res, host) {
+  if (!app.hookKey || !isLocalRequest(host, req) || !hookKeyMatches(req.headers[HOOK_HEADER.toLowerCase()], app.hookKey)) {
+    return sendError(req, res, 403, MESSAGES.hookRefused);
+  }
+  if (!/^application\/json\s*(;|$)/i.test(req.headers['content-type'] ?? '')) return sendError(req, res, 415, MESSAGES.notJson);
+  if (Number(req.headers['content-length']) > MAX_HOOK_BYTES) return void sendTooBig(req, res);
+  let raw;
+  try {
+    raw = await readBody(req, MAX_HOOK_BYTES);
+  } catch (err) {
+    if (err.code === 'TOO_BIG') return void sendTooBig(req, res);
+    throw err;
+  }
+  let input = null;
+  try {
+    input = JSON.parse(stripBom(raw.toString('utf8')));
+  } catch {
+    // A call Pleni cannot read gets no decision.
+  }
+  const { settings } = app.readSettings();
+  const key = askKey(input);
+  const view = askView(input);
+  const mine = key && (settings.people?.[key]?.answer === true || app.sender.running?.(key) === true);
+  if (app.store.demo || settings.actions?.answers !== true || settings.content !== 'snippets' || !view || !mine) {
+    return sendNoDecision(req, res);
+  }
+  const held = app.asks.hold({ key, input, view, waitMs: settings.answers.waitMinutes * 60 * 1000 });
+  // Claude Code gave up on the call (its own time limit, or the turn ended): nobody waits any more.
+  if (held.id) res.on('close', () => {
+    if (!res.writableEnded) app.asks.release(held.id);
+  });
+  const body = await held.answer;
+  if (res.destroyed || res.writableEnded) return undefined;
+  return body === NO_DECISION ? sendNoDecision(req, res) : sendJson(req, res, 200, body);
+}
+
+// No decision: an empty answer, which Claude Code reads as a hook that says nothing, so the session
+// asks in its own window (or, in a turn without a window, refuses what it would have asked).
+function sendNoDecision(req, res) {
+  send(req, res, 200, {}, '');
+}
+
+// The person's answer to a held question: { id, answer }, or { id, release: true } to let the
+// session ask in its own window instead. Only on this computer.
+async function postAnswer(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, ANSWER_MESSAGES.remote);
+  const result = body.release === true ? app.asks.release(body.id) : app.asks.answer(body.id, body.answer);
+  if (result.ok) return sendJson(req, res, 200, { ok: true });
+  return sendError(req, res, result.status, result.error);
+}
+
+// "Answer its questions in Pleni" for a main Claude Code session on the map: { key, on }. It is
+// saved with the person's other choices (people[key].answer). Only on this computer.
+const ANSWER_KEY = /^claude:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+async function postAnswering(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, ANSWER_MESSAGES.remote);
+  const key = typeof body.key === 'string' ? body.key : '';
+  if (!ANSWER_KEY.test(key) || typeof body.on !== 'boolean') return sendError(req, res, 400, MESSAGES.badAnswering);
+  const node = (app.store.snapshot()?.nodes ?? []).find((n) => n.key === key);
+  if (!node) return sendError(req, res, 404, MESSAGES.goneAnswering);
+  if (node.kind !== 'session') return sendError(req, res, 400, MESSAGES.badAnswering);
+  const next = structuredClone(app.readSettings().settings);
+  const own = { ...(next.people[key] ?? {}) };
+  if (body.on) own.answer = true;
+  else delete own.answer;
+  if (Object.keys(own).length) next.people[key] = own;
+  else delete next.people[key];
+  return saveAndReload(app, req, res, cleanSettings(next), () => ({ ok: true }));
+}
+
+// Settings: whether Pleni's hooks are in Claude Code's settings.json, and the lines Connect adds.
+// Only on this computer: it names a file on it.
+function sendHooks(app, req, res, host) {
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, ANSWER_MESSAGES.hooksRemote);
+  const state = app.readSettings();
+  const base = { on: state.settings.actions?.answers === true, demo: app.store.demo === true, port: req.socket.localPort };
+  if (app.store.demo) return sendJson(req, res, 200, { ...base, ok: true, error: null, file: null, found: false, connected: false, stale: false, lines: null });
+  const setup = readHookSetup({ root: state.roots?.claude ?? null, port: req.socket.localPort, secret: app.hookKey ?? '' });
+  return sendJson(req, res, 200, { ...base, ...setup });
+}
+
+// Connect ({ connect: true }) adds Pleni's hooks to Claude Code's settings.json, and Disconnect
+// ({ connect: false }) takes them out; each keeps a copy of the file in Pleni's backups folder first.
+// Answering is on only while connected.
+async function postHooks(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, ANSWER_MESSAGES.hooksRemote);
+  if (typeof body.connect !== 'boolean') return sendError(req, res, 400, MESSAGES.badBody);
+  if (app.store.demo) return sendError(req, res, 409, ANSWER_MESSAGES.demo);
+  if (body.connect && !app.hookKey) return sendError(req, res, 409, MESSAGES.hookRefused);
+  const state = app.readSettings();
+  const where = { root: state.roots?.claude ?? null, backupDir: path.join(path.dirname(state.file ?? settingsFile()), 'backups') };
+  const result = body.connect
+    ? app.hookSaver.connect({ ...where, port: req.socket.localPort, secret: app.hookKey })
+    : app.hookSaver.disconnect(where);
+  if (!result.ok) return sendError(req, res, result.status, result.error);
+  if (!body.connect) app.asks.close();
+  const next = structuredClone(state.settings);
+  next.actions.answers = body.connect;
+  return saveAndReload(app, req, res, cleanSettings(next), () => ({ ok: true, backup: result.backup ?? null }));
 }
 
 // Live pull request status for the GitHub repositories on the map, when settings.github.live is on.

@@ -9,6 +9,7 @@
 
 <p align="center">
   See your Claude Code, Codex, Grok and Kimi Code sessions work together, live in your browser.
+  Send them a message and answer their questions there too.
 </p>
 
 <p align="center">
@@ -41,11 +42,17 @@ Pleni shows you. It reads the files that Claude Code, Codex, Grok and Kimi Code 
 works out who started whom, and draws it as a live map in your browser. Lines light up when work
 is handed down and when a report comes back up.
 
-- **It only looks.** Pleni never stops or types into a session, and it never changes the files it
-  reads. The one exception is a button you can turn on, which opens a session in a PowerShell
-  window for you (see [Open a session in PowerShell](#open-a-session-in-powershell)).
-  Even then, you do the typing. The other is the [Models](#models) page, also off until you turn
-  it on, which changes the models Codex and Claude Code use when you ask it to.
+- **It watches first.** Out of the box, Pleni only looks. It never stops a session, and it never
+  changes the files it reads. Buttons that do more are each off until you turn them on in
+  **Settings → Buttons**, and they act only when you click, on the computer that runs Pleni:
+  [send a session a message](#send-a-message-to-a-session),
+  [answer its questions](#answer-questions-from-pleni),
+  [open it in PowerShell](#open-a-session-in-powershell),
+  [roll it over](#roll-over-a-session) to a fresh session,
+  [start a new agent](#start-a-new-agent), and
+  [bring a cloud session here](#bring-a-cloud-session-to-this-computer). The [Models](#models)
+  page changes the models Codex and Claude Code use, and [Merge](#live-github-status) merges a
+  pull request, only when you ask.
 - **It stays on your computer.** It opens only on your own computer (`127.0.0.1`). It sends
   nothing anywhere. There is no account and no tracking. The only sign-in is Pleni's own key,
   which it keeps on your computer.
@@ -124,7 +131,7 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   **Team** (names, roles, who reports to whom), **Models** (the models and effort your Codex and
   Claude Code agents use, see [Models](#models)), **Sources** (which folders to read, and the
   mailbox, and GitHub), **Alerts**, **Buttons** (Open in PowerShell, New agent, Bring a cloud
-  session here and Roll over), and **Devices**
+  session here, Roll over, Send messages and Answer questions), and **Devices**
   (opening Pleni from another device). Type in **Find a setting** to find one by name, such as
   "port" or "folder".
 
@@ -310,6 +317,66 @@ message.
 - **Only on this computer,** like the other buttons, and it uses your plan like any Claude Code or
   Codex window.
 
+## Send a message to a session
+
+On Windows, you can type a message to a Claude Code session or Codex thread right in Pleni, as if
+you typed it in the session. This is off until you turn it on:
+
+1. Open **Settings**, then **Buttons**. Under **Send messages**, tick **Show the Chat tab with a
+   message box**, then choose **Save settings**.
+2. Click a main session on the map. In its side panel, choose the **Chat** tab.
+3. Type your message and choose **Send** (or press Ctrl+Enter).
+
+Pleni runs the session's own program once, in the background, and hands it your message. The answer
+shows in the Chat tab a moment later, like any other turn. Nothing opens on your screen.
+
+<p align="center"><img src="https://raw.githubusercontent.com/Seckcey/pleni/main/docs/assets/pleni-chat.png" alt="A Claude Code session's side panel in the demo, on its Chat tab: the last message to it and its answer, then a Message box with a message typed in and a Send button." width="760"></p>
+
+- **It waits its turn.** Pleni never sends to a session that is working, or that is open in a
+  PowerShell window, the Claude desktop app, VS Code, the Codex app, or another program: two
+  programs at once would mix up its messages. The Chat tab says why when it cannot send yet.
+- **It reads and answers by default.** A sent message may read files and answer. Anything that
+  would need your yes is turned down. To let it change files in its folder too, choose **Also
+  change files in its folder** under **A sent message may**. What the session's own settings forbid
+  stays forbidden either way.
+- **It uses your plan,** like typing the message yourself.
+- **Your message stays private.** It goes to the program on its standard input, never on a command
+  line. Pleni keeps no copy: its record, `sent.jsonl`, says only when, to which session, and how
+  the turn ended.
+- **Only on this computer,** like the other buttons, and only for main sessions, not helpers.
+
+## Answer questions from Pleni
+
+A Claude Code session sometimes stops to ask you something: a question with choices, a plan to
+approve, or "may I run this command?". Pleni can show those to you, so you answer them in your
+browser instead of in the session's own window.
+
+1. Open **Settings**, then **Buttons**. Under **Answer questions**, choose **Connect Pleni to Claude
+   Code**. Pleni adds two hooks to Claude Code's settings file. It keeps a copy of the file first and
+   changes nothing else in it.
+2. Click a Claude Code session on the map. In its side panel, tick **Answer its questions in
+   Pleni**. (A message you send with Pleni needs no tick; see below.)
+3. When it asks, the question shows under **Needs you**. Pick the answer, approve the plan or ask it
+   to keep planning, or allow or deny the tool. **Answer in the session instead** gives it back.
+
+<p align="center"><img src="https://raw.githubusercontent.com/Seckcey/pleni/main/docs/assets/pleni-answer.png" alt="A Claude Code session's side panel in the demo, with two questions waiting: one with choices and an Other box, and a plan with Approve the plan, Keep planning, and Answer in the session instead buttons." width="760"></p>
+
+- **Answer in either place.** A plan or a "may I?" prompt also shows in the session's own window.
+  If you answer it there, Pleni notices within a few seconds and takes its card away. A question
+  waits only in Pleni, until you answer it or give it back.
+- **Nothing waits forever.** After the time you set under **Hold a question for** (10 minutes at
+  first), the session asks in its own window again.
+- **Other sessions are not held up.** Pleni answers "no decision" at once for every session you did
+  not switch on, and Claude Code asks there as before.
+- **Messages you send with Pleni** run with no window, and Claude Code asks no questions and shows
+  no plans there. With **Read files and answer**, it turns down anything that would need your yes,
+  without asking. With **Also change files in its folder**, its "may I run this?" prompts come to
+  Pleni.
+- **Only on this computer,** and only while Pleni runs. If Pleni is closed, Claude Code shows a
+  short "hook error" line, then asks in its own window as usual. To stop that, choose
+  **Disconnect**: it takes Pleni's hooks out of Claude Code's settings again.
+- Checked with Claude Code 2.1.307. Codex threads cannot ask Pleni yet.
+
 ## Bring a cloud session to this computer
 
 Sessions you run in Claude Code on the web (claude.ai/code) run on Anthropic's computers, so Pleni
@@ -439,13 +506,18 @@ whether the relay wakes it for its mail. Pleni never sends mail itself.
 
 ## Privacy and safety
 
-- Pleni reads files. It writes only its own settings file, except when you choose **Save to
+- Pleni reads files. It writes only its own settings folder, except when you choose **Save to
   Codex** or **Save to Claude Code** on the [Models](#models) page, which changes that tool's model
   settings after it keeps a copy.
-- It starts nothing unless you turn on **Open in PowerShell**, **Roll over**, **New agent** or
-  **Bring a cloud session here** and click a button. Then it opens one PowerShell window that runs
-  `claude` or `codex`. Open in PowerShell and New agent never type into a session. Roll over sends
-  one short message, which it shows you first.
+- It starts nothing unless you turn on **Open in PowerShell**, **Roll over**, **New agent**,
+  **Bring a cloud session here** or **Send messages** and click a button. Then it opens one
+  PowerShell window that runs `claude` or `codex`, or, for Send, runs the session's program once in
+  the background with your message. Open in PowerShell and New agent never type into a session.
+  Roll over sends one short message, which it shows you first. Send sends only what you type.
+- With **Answer questions** connected, Claude Code asks Pleni before it asks you, for the sessions
+  you switch on. Pleni answers only what you choose; every other question goes to the session's own
+  window as before. Connect and Disconnect change only Pleni's own hooks in Claude Code's settings,
+  after a copy.
 - Pop-ups are off until you turn them on. Your browser makes them on your own screen; nothing is
   sent over the internet.
 - It makes no network calls of its own and sends no data about you or your work. There is no
@@ -521,10 +593,12 @@ both. Both are made by 8 West Ventures, LLC.
 
 ## What comes next
 
-Version 0.1 watches. It can also open a Claude Code or Codex session in PowerShell for you, roll a
-long session over to a fresh one, and start a new agent next to one. The next step is to let you
-send messages to a session, answer questions and approve plans right from the browser. The design
-is in [docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md).
+Version 0.2 watches, and, when you turn them on, it can open a Claude Code or Codex session in
+PowerShell for you, roll a long session over to a fresh one, start a new agent next to one, send a
+session a message, and answer a Claude Code session's questions, plans and permission prompts.
+Next: answering Codex threads, checking the Claude desktop app with Answer questions, and doing
+these from your phone with a second check. The design is in
+[docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md).
 
 These are plans, not promises. Ideas are welcome in
 [Discussions](https://github.com/Seckcey/pleni/discussions).

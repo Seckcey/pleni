@@ -20,8 +20,14 @@ session here** turned on, a button opens a window in a Claude Code session's fol
 `claude --teleport`, where the person picks a claude.ai cloud session to go on with on this
 computer. With **Live GitHub status** turned on (also off by default), Pleni runs the GitHub CLI
 (`gh`) to read the pull requests of the repositories its sessions work in, and with **Merge** on as
-well, it merges one on this computer after the person confirms (see `src/github.js` below).
-Sending other work and approving actions come later and will get their own design.
+well, it merges one on this computer after the person confirms (see `src/github.js` below). With **Send messages** turned on
+(also off by default, Windows only), the person types a message to an idle Claude Code session or
+Codex thread in its side panel, and Pleni sends it as one hidden turn of that session, with the
+message on the program's standard input (see `src/send.js` below). With **Answer questions**
+connected (Connect adds Pleni's hooks to Claude Code's `settings.json`, after a copy), a Claude Code
+session the person switched on, or a turn Pleni sent, asks Pleni first: its question, plan or "may
+I run this?" waits on the page until the person answers it there or in the session's own window
+(see `src/answers.js` below).
 
 ## Ground rules
 
@@ -34,10 +40,14 @@ Sending other work and approving actions come later and will get their own desig
   API also needs a random key made at each start and printed in Pleni's address (see Server).
 - **Read-only.** Pleni reads; it does not write anywhere on this computer except its own settings
   file, and, with the opt-in Models page, the model and effort values in Codex's `config.toml` and
-  Claude Code's `settings.json`, and the worker type files in their `agents` folders (see Models). It starts no program except the opt-in Open in PowerShell, Roll over, New agent and Bring a
-  cloud session here windows, only when the person clicks for one, and the GitHub CLI (`gh`) for
-  the opt-in Live GitHub status. The only messages it sends are Roll over's two fixed ones, and the
-  only change it makes elsewhere is a merge on GitHub that the person confirms.
+  Claude Code's `settings.json`, and the worker type files in their `agents` folders (see Models),
+  and, with the opt-in Connect of Answer questions, Pleni's own two hooks in Claude Code's
+  `settings.json` (see Answer questions). It starts no program except the opt-in Open in PowerShell, Roll over, New agent and Bring a
+  cloud session here windows, only when the person clicks for one, the GitHub CLI (`gh`) for
+  the opt-in Live GitHub status, and, with the opt-in Send messages, one hidden `claude -p` or
+  `codex exec` turn per message the person sends. The only messages it sends are Roll over's two
+  fixed ones and the ones the person types for Send, and the only change it makes elsewhere is a
+  merge on GitHub that the person confirms.
 - **Private by default.** Nothing leaves the computer, except what the opt-in Live GitHub status
   asks GitHub through `gh`. No telemetry, and no network calls of Pleni's own. The page shows short
   snippets of session text only when `content` is `"snippets"` (the default); `"none"` shows only
@@ -64,6 +74,8 @@ src/store.js            owns the sources, polls them, caches the snapshot
 src/open.js             Open in PowerShell: a Claude Code session or Codex thread in a new window (opt-in, Windows)
 src/rollover.js         Roll over: a handoff note from a long session, then a new one with its name (opt-in, Windows)
 src/newagent.js         New agent: a new named session in the folder of one on the map (opt-in, Windows)
+src/send.js             Send: one message to an idle session, as a hidden turn of it (opt-in, Windows)
+src/answers.js          Answer questions: Claude Code's hooks ask Pleni first; Connect and Disconnect (opt-in)
 src/github.js           Live GitHub status and Merge, through the GitHub CLI, gh (opt-in)
 src/models.js           the Models page: Codex's and Claude Code's models and effort, read always, changed on request (opt-in)
 src/toml.js             a small TOML reader and one-line editor for src/models.js
@@ -103,11 +115,13 @@ export const DEFAULTS = {
     kimi: { enabled: true, root: null },              // null = $KIMI_CODE_HOME or ~/.kimi-code
     mailbox: { enabled: false, root: null, planner: null, coordinator: null }, // planner/coordinator: node key or session name
   },
-  people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role, reportsTo?: nodeKey | 'you', watch?: true } }  max 500
+  people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role, reportsTo?: nodeKey | 'you', watch?: true, answer?: true } }  max 500
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
-  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false }, // the window buttons; each true only when set to true
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false }, // the window buttons, Send, and Answer questions (set by Connect and Disconnect); each true only when set to true
+  send: { mode: 'read' },                              // what a sent message may do: 'read' | 'edit'
+  answers: { waitMinutes: 10 },                        // how long Pleni holds a question (1-60) before the session asks in its own window
   github: { live: false, merge: false, mergeMethod: 'squash' }, // Live GitHub status, the Merge button, 'squash' | 'merge' | 'rebase'
   models: { edit: false },                             // the Models page may change Codex's and Claude Code's model settings (this computer only)
   alerts: { stoppedMinutes: 15 },                      // a watched tile counts as stopped after this long without work
@@ -123,8 +137,9 @@ Exports:
   replaced by defaults, strings trimmed and clipped, numbers clamped (`port` 1024–65535,
   `activeMinutes` 1–240, `recentHours` 1–720, `staleMinutes` 5–1440, `stoppedMinutes` 1–1440), arrays
   de-duplicated, node keys validated with `isNodeKey`, roots must be absolute paths or `null`.
-  `people[key].watch` is kept only when it is exactly `true`, and so are `actions.*`, `github.live`,
-  `github.merge` and `models.edit`.
+  `people[key].watch` and `people[key].answer` are kept only when exactly `true`, and so are `actions.*`, `github.live`,
+  `github.merge` and `models.edit`. `send.mode` is `'edit'` only when it is exactly that, else
+  `'read'`. `answers.waitMinutes` is clamped to 1–60.
 - `loadSettings(file)` returns `{ settings, file, error }` and never throws (a missing file gives
   defaults and no error; a broken file gives defaults and an `error` string).
 - `saveSettings(settings, file)` writes `cleanSettings(settings)` atomically (temp file, then rename),
@@ -467,7 +482,8 @@ Snapshot = {
   tasks: MailboxState['tasks'] | null,
   mail: null | { name, unread, lastAt },  // agent mail: the person's mail name, their new mail, the newest message's time
   hiddenSessions: [{ key, title, platform, kind }],  // recent sessions with Role "Hide it": off the map, named in Settings
-  actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean, teleport: boolean },  // the page may show each button (setting on, Pleni on Windows)
+  actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean, teleport: boolean, send: boolean, answers: boolean },  // the page may show each button (setting on, Pleni on Windows; answers on any system)
+  asks: Ask[],  // the questions Pleni holds for the person (src/answers.js), oldest first
 }
 SourceInfo = { enabled, ok, error, count }
 Node = {
@@ -482,7 +498,14 @@ Node = {
   github,   // 'owner/name' of the GitHub repository the session works in (src/repos.js), else null
   mail,     // agent mail: { name, unread, since, wakes, toYou } for a tile with a mail name, else null
   watched,  // true for a session or the relay whose people[key].watch is true
+  answering, // true for a main Claude Code session whose people[key].answer is true
 }
+Ask = { id, key, on /* the tile it shows on: key, or 'you' when the session is not on the map */, at, until,
+        kind: 'question' | 'plan' | 'permission',
+        questions?: [{ index, question, header, multiSelect, options: [{ label, description }] }],  // question
+        plan?: string,                                                                                // plan
+        tool?: string, detail?: string }                                                              // permission
+      // the words are there only when content is 'snippets'
 Edge = { from, to, kind: 'spawn' | 'mailbox' | 'message' | 'contains', lastDown, lastUp, downLabel, upLabel, active: 'down' | 'up' | 'both' | null }
 Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake' | 'error', from, to, text }
         // a 'mail' event also has fromName and toName, the mail names, for a side that is not on the map;
@@ -586,6 +609,11 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
   in use with a rank menu that writes exact names.
 - `modelLabel`: a short readable name (`claude-opus-5-5` → "Opus 5.5", `gpt-6.1-sol` → "GPT-6.1 Sol").
 - Sorting: children by title (locale compare), then key. Never by activity.
+- Held questions (`asks`, from `src/answers.js`): each becomes an `Ask`, and the oldest of each
+  session an attention item of kind `ask` on its tile (on `you` when the session is not on the
+  map): "<name> asks you: <first question>", "<name> wants you to approve a plan." or "<name> asks
+  to use <tool>.". It cannot be dismissed; it goes away when the person answers or gives it back,
+  or when the time runs out.
 - Attention ("Needs you"), by `kind`: `needs` (a session asks something), `error` (a session
   stopped with an error), `question` and `review` (mailbox tasks, keyed `task:<id>`); from the
   mailbox, `note` (the newest `NEEDS-<NAME>.md` note, on the coordinator's tile, or the person's
@@ -606,15 +634,17 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
 ```js
 export function createStore({ settings, roots, demo = false, now = Date.now, stateDir = null, platform = process.platform })
 // -> { snapshot(): Snapshot, detail(key, since), reload(settings, roots), close(), dismiss(id, at),
-//      session(key): { id, cwd, status, entrypoint, kind, title, titleSource, model, effort, mode } | null, demo: boolean }
+//      session(key): { id, cwd, status, entrypoint, kind, title, titleSource, model, effort, mode } | null, setAsks(list), demo: boolean }
 ```
 
 Creates the enabled sources (or the demo source), polls at most every 2 s on demand, caches the
 snapshot with its JSON and its ETag, and rebuilds when settings change. `snapshot().actions.openTerminal`
 is `settings.actions.openTerminal` and `platform === 'win32'`, and `actions.rollover`,
-`actions.newAgent` and `actions.teleport` the same for their settings. `session(key)` gives what the newest poll knows
+`actions.newAgent`, `actions.teleport` and `actions.send` the same for their settings, and
+`actions.answers` is `settings.actions.answers` on any system. `setAsks(list)` takes the questions the
+server holds (`createAsks().list()`) and drops the cached snapshot, so the next one shows them. `session(key)` gives what the newest poll knows
 about a top-level Claude Code session or a Codex thread (`{ id, cwd, status, entrypoint, kind,
-title, titleSource, model, effort, mode }`) for Open in PowerShell, Roll over and New agent, and
+title, titleSource, model, effort, mode }`) for Open in PowerShell, Roll over, New agent and Send, and
 `null` for anything else and in the demo. The ETag is
 `snapshotTag(snapshot)` from `src/model.js`: `W/"<sha1 of the JSON with now set to 0>"`. `now`
 changes on every build, and the page needs it only to allow for a clock difference, so a snapshot
@@ -800,6 +830,172 @@ export function newAgentCommand(tool, name, systemRoot) // -> { file, args }
   `toolEnv('claude', …)`; Claude Code lists the person's claude.ai cloud sessions there and checks
   its own needs (the same repository, no unsaved changes, the session's branch pushed). Limits:
   `openLimits`, slot `teleport:<from>`.
+
+## Send a message (`src/send.js`)
+
+The person types a message to a Claude Code session or Codex thread in its side panel, and Pleni
+sends it as if the person typed it in the session. It is off until the person turns it on
+(`actions.send`), works only on Windows for now, and the server allows it only for a request made on
+this computer. For each message Pleni starts the session's own program once, hidden, in the
+session's folder, and hands it the message on its standard input. The answer is written to the
+session's own file, where Pleni reads it like any other turn.
+
+```js
+export function createSender({ spawn, now, isAlive, isLocked, processStarts, findProgram })
+// -> { info({ key, settings, store, platform }), send({ key, text, id, settings, roots, store, logFile, platform, env, home }),
+//      running(key), waiting() }
+export function sendHead(key, settings, store, platform)   // the switch, Windows, a main session on the map, not the demo
+export function claudeSendProblem(session, processes), codexSendProblem(session, locked)
+export function cleanMessage(text), messageProblem(text)
+export function sendArgs(tool, id, mode)                   // -> the program's words after its own
+export function findTool(tool, { env, platform, home, isFile, node }) // -> { file, args } | null
+export function claudeOutcome(text, code, sessionId)       // -> { ok, code, otherSession }
+export function sendMode(settings), sendLogFile(settingsPath)
+export const SEND_MESSAGES, SEND_MODES /* ['read', 'edit'] */, MAX_TEXT /* 8000 */, MAX_RUNNING /* 3 */
+```
+
+- **What can get a message:** a main session on the map, `claude:<session id>` or `codex:<thread
+  id>` with kind `session` (not a helper or a reviewer), not in the demo, with a folder
+  `folderProblem` accepts.
+- **The message** is a string, trimmed, with `\r\n` and `\r` made `\n`: 1 to 8,000 characters,
+  well formed, with no control characters but tabs and line breaks. The page makes a one-time `id`
+  for each message (`[A-Za-z0-9_-]{16,64}`); an `id` sent in the last 10 minutes is answered
+  `{ ok: true, repeat: true }` and nothing is sent again.
+- **No two writers.** The same rule as Roll over's ask step: a Claude Code session from the Claude
+  desktop app or VS Code is refused ("send it there"), and so is one that any live Claude Code
+  process has open (`claudeProcesses` and `confirmProcesses`, background sessions included), or
+  that is `working`. A Codex thread another program holds (`codexThreadLocked`, most likely the
+  Codex app) or that is `working` is refused. While a sent turn runs, its command line holds the
+  session id, so the mailbox relay waits for it too.
+- **The command** (`sendArgs`), spawned without a shell, with `cwd` the session's folder, `env` from
+  `toolEnv`, `windowsHide: true` and `detached: true` (a sent turn goes on if Pleni stops):
+  - Claude Code: `claude -p --resume <id> --output-format json --permission-mode dontAsk`, or
+    `acceptEdits` when `send.mode` is `edit`;
+  - Codex: `codex exec --skip-git-repo-check --sandbox read-only resume <id> -`, or
+    `workspace-write` when `send.mode` is `edit`.
+  `dontAsk` and `read-only` let a turn read files and answer; anything that would need the person's
+  yes is turned down. `edit` lets it change files in its folder too. What the session's own
+  settings forbid stays forbidden; Pleni never offers a mode that skips every check. `--sandbox`
+  comes before `resume`, where Codex reads it, and is given on every message, because a resumed
+  thread does not keep its sandbox. On Windows, Codex lets a turn change files only when its own
+  Windows sandbox is set up; without it, `workspace-write` stays read-only. `codex exec` never asks
+  a person for approval, so a Codex turn never waits for one.
+- **Finding the program** (`findTool`): `claude.exe` or `codex.exe` in an absolute, local folder on
+  `PATH` (never the current folder or a network share; their installers and WinGet put them there);
+  else, in a `PATH` folder that holds npm's `claude.cmd` or `codex.cmd`, its package's
+  `bin\claude.exe`, or `cli-wrapper.cjs` or `cli.js` (Claude Code), or `bin\codex.js` (Codex, which
+  finds and runs the real `codex.exe` with the same standard input), run by Pleni's own Node.js;
+  else `%USERPROFILE%\.local\bin\claude.exe` or `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe`.
+  A program file must be at least 64 KB: npm's Claude Code package holds a stand-in of a few hundred
+  bytes until its install step puts the real `claude.exe` there. Where it was found is kept for a
+  minute. Pleni never runs npm's `.cmd` files, which would need a shell.
+- **The outcome.** Claude Code's standard output is read only for its one `result` line at the end
+  (at most 1 MB): `is_error`, `subtype` and `session_id`, never the answer text. Codex's output is
+  not read: its exit code says how the turn ended. Standard error is not read.
+- **Limits:** one sent turn at a time per session, `MAX_RUNNING` (3) at once in all, a new message
+  to the same session at most every 5 seconds, and 6 messages a minute in all. The limit is taken
+  after every other check.
+- **The record** (`sent.jsonl` next to the settings, `sendLogFile`): one line when a message goes
+  out (`at`, `key`, `tool`, `mode`, `chars`) and one when its turn ends (`endedAt`, `ok`, `code`),
+  the newest 500 lines kept. Never the message or the answer.
+- `info` answers what the page shows before a send, without looking at running programs:
+  `{ problem, running, last: { at, endedAt, ok } | null, mode }`, where `problem` is a plain reason
+  a message cannot go out now (the desktop app or VS Code, or `working`, or Pleni still waiting for
+  the last one).
+
+## Answer questions (`src/answers.js`)
+
+A Claude Code session asks Pleni before it asks the person, so a question (`AskUserQuestion`), a
+plan to approve (`ExitPlanMode`) or a permission prompt can be answered on the Pleni page. It works
+through Claude Code's hooks, which call a web address on this computer and wait for the answer.
+Everything below was checked against Claude Code 2.1.307, in a real window and with `claude -p`.
+
+- **In a session's window**, a question waits in Pleni only: the window shows "running PreToolUse
+  hook" until Pleni answers or gives it back, and then shows the question itself. A plan or a "may
+  I?" prompt shows in both places at once, and the first answer counts.
+- **In a turn without a window** (`claude -p`, as Send runs), Claude Code turns questions and plans
+  off, so only "may I?" prompts come, and none in "don't ask" mode (Send's "Read files and answer"),
+  where Claude Code refuses at once without calling the hook. In other modes, a prompt nobody
+  decides is refused.
+
+```js
+export function loadOrCreateHookKey(file), hookKeyFile(settingsPath), hookKeyMatches(sent, key)
+export function pleniHook(port, secret), pleniEntries(port, secret), isPleniHook(hook), hookUrl(port)
+export function readHookSetup({ root, port, secret })  // -> { ok, error, file, found, connected, stale, lines }
+export function withPleniHooks(settings, add)           // -> the settings with Pleni's hooks taken out (and `add` put in), or null
+export function createHookSaver({ now })                // -> { connect({ root, backupDir, port, secret }), disconnect({ root, backupDir }) }
+export function askView(input), askKey(input)           // -> what the page shows for a hook call, and its session's node key
+export function hookAnswer(input, view, answer)         // -> { body } for the hook, or { error }
+export function createAsks({ now, onChange, setTimer, clearTimer }) // -> { hold, answer, release, settle, list, close, size }
+export const HOOK_PATH /* '/api/hook' */, HOOK_HEADER /* 'X-Pleni-Hook' */, NO_DECISION, MAX_ASKS /* 20 */, ANSWER_MESSAGES
+export const QUESTION_TOOL /* 'AskUserQuestion' */, PLAN_TOOL /* 'ExitPlanMode' */
+```
+
+- **The secret** (`hook-key` next to the settings file, 32 random bytes, file mode 0600): made once,
+  and again when it is missing or damaged (then Settings says to connect again). Only a hook call
+  that carries it in `X-Pleni-Hook` (compared in constant time) is answered.
+- **Connect** (`createHookSaver().connect`) adds two entries to the `hooks` of Claude Code's
+  `settings.json` (the root `resolveRoots` gives): `PreToolUse` with matcher `AskUserQuestion`, and
+  `PermissionRequest` with matcher `*` (plans and every other prompt), each with one hook
+  `{ type: 'http', url: 'http://127.0.0.1:<port>/api/hook', timeout: 3900, headers: { 'X-Pleni-Hook':
+  <secret> } }`. `<port>` is the port the request came in on. Every other hook, and every other key
+  in the file, stays as it was (`withPleniHooks` takes out only hooks `isPleniHook` knows: an http
+  hook to `127.0.0.1:<port>/api/hook` with Pleni's header, also when it shares an entry with the
+  person's own). **Disconnect** takes Pleni's hooks out again. Both work like Save to Claude Code on
+  the Models page: a hooks block that is not plain lists of objects refuses (`409`), the old file is
+  copied into the `backups` folder first (`claude-settings-<time>.json`), the file is checked once
+  more against the bytes Pleni read and written through a temp file, with its old indent, line
+  breaks and BOM, and at most 10 changes a minute. A missing file is made with only the hooks.
+- **`readHookSetup`**: `connected` when both events have exactly one Pleni hook, to this port, with
+  this secret; `stale` when Pleni hooks are there but not those (another port, an old secret):
+  Connect again replaces them. `lines` is the hooks block with `<secret>` in place of the secret,
+  for the page to show before Connect.
+- **Which calls Pleni holds**: a call from a main Claude Code session whose `people[key].answer` is
+  true, or whose turn Pleni's Send is running (`sender.running(key)`), while `actions.answers` is on
+  and `content` is `snippets`, not in the demo, and only when `askView` can show it. Every other call
+  gets no decision at once: the server answers `NO_DECISION` with an empty body, which Claude Code
+  reads as a hook that says nothing (`{}` works the same), so it asks in its own window as before.
+  At most `MAX_ASKS` (20) are held; more get no decision.
+- **`askView`**: an `AskUserQuestion` `PreToolUse` call becomes `{ kind: 'question', questions }`
+  (at most 4, with at most 8 options each, words cut to 500, 200 and 400 characters; each keeps its
+  `index` in the call), an `ExitPlanMode` `PermissionRequest` call `{ kind: 'plan', plan }` (Claude
+  Code puts the plan from its plan file in `tool_input.plan`, with `planFilePath`; at most 20,000
+  characters, line breaks kept), and any other `PermissionRequest` call `{ kind: 'permission', tool,
+  detail }`, where `detail` is the input's `command`, `file_path`, `notebook_path`, `url`, `path` or
+  `pattern` (at most 2,000 characters), else its `description`, else the names of its keys. A
+  `PermissionRequest` for `AskUserQuestion` is never held: Claude Code sends one when the person gave
+  the question back, and the question then shows in the window.
+- **The answers** (`hookAnswer`), in the shape Claude Code reads from a hook:
+  - question, `{ answers: [one per question shown] }` (the labels picked joined with `, `, or the
+    person's own words; at most 2,000 characters each): `{ hookSpecificOutput: { hookEventName:
+    'PreToolUse', permissionDecision: 'allow', updatedInput: { ...tool_input, answers: { '<the
+    question's own words>': '<answer>' } } } }`;
+  - plan, `{ approve: true }`: `{ hookSpecificOutput: { hookEventName: 'PermissionRequest',
+    decision: { behavior: 'allow', updatedInput: { ...tool_input } } } }`. Claude Code approves a
+    plan only when the answer hands back the input it was given (without it, it ignores the yes and
+    keeps asking in its window); the session then leaves plan mode for the mode it had before
+    (manual, asking each time, when it started in plan mode). `{ approve: false, feedback }`:
+    `behavior: 'deny'` with `message` the feedback, or "Keep planning. The person did not approve
+    this plan yet."; the session stays in plan mode and reads the message;
+  - permission, `{ allow: true }`: `{ hookSpecificOutput: { hookEventName: 'PermissionRequest',
+    decision: { behavior: 'allow' } } }`; `{ allow: false, reason }`: `behavior: 'deny'` with
+    `message` the reason, or "The person said no in Pleni.".
+- **Holding** (`createAsks`): `hold({ key, input, view, waitMs })` gives a random 24-hex `id` and a
+  promise for the hook's answer, and calls `onChange` (the server then hands `list()` to
+  `store.setAsks`). The promise gets the person's answer (`answer(id, given)`), or `NO_DECISION`
+  when the person gives it back (`release(id)`), when `waitMs` (`answers.waitMinutes`) passes, when
+  Claude Code drops the call (the turn ended, or its own time limit), on Disconnect, and when Pleni
+  stops (`close()`).
+- **Answered in the window** (`settle(nodes)`, run on each `GET /api/snapshot`): Claude Code does
+  not tell the hook when the person answers a plan or prompt in the session's own window, and keeps
+  the call open. So Pleni lets a held call go (no decision, which Claude Code no longer waits for)
+  once the session's node shows it moved on: its `activity.tool` (the newest tool call still
+  waiting for its result) was the held call's tool (a call that started at most 30 seconds before
+  the hold) and then is not, or is a newer call; or, before Pleni saw the call waiting, the node's
+  `lastAt` is more than a second newer than the hold and the tool is not waiting. Pleni reads a
+  session it knows within a few seconds; a brand-new session's file is found within 15 seconds.
+- **If Pleni is not running**, Claude Code cannot reach the hook: it shows a short "hook error"
+  line (connection refused) and asks in its own window as usual. Disconnect stops that.
 
 ## Live GitHub status (`src/github.js`)
 
@@ -991,7 +1187,7 @@ change; it reads an agent file again within a few seconds.
 
 ```js
 export function newKey()  // -> 43 random base64url characters (32 bytes)
-export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess, github, modelSaver })  // -> http.Server
+export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess, github, modelSaver, sender, asks, hookSaver, hookKey })  // -> http.Server
 export function keyFile(settingsPath)  // -> the "key" file next to the settings file
 export function readKeyFile(file, { tries, pause, read })  // -> { key } | { missing: true } | { problem: 'damaged' | <error code> }
 export function keyFileError(file, problem)  // -> Error with code 'PLENI_KEY_FILE' and a plain message
@@ -1046,10 +1242,14 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`,
   `POST /api/placement`, `POST /api/dismiss`, `POST /api/watch`, `POST /api/open`,
   `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`, `POST /api/new`, `POST /api/teleport`,
+  `GET /api/send?key=<nodeKey>`, `POST /api/send`, `POST /api/hook`, `POST /api/answer`,
+  `POST /api/answering`, `GET /api/hooks`, `POST /api/hooks`,
   `GET /api/devices`, `GET /api/github`, `POST /api/github/merge`, `GET /api/mail`,
   `GET /api/models`, `POST /api/models`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
-- `GET /api/snapshot` sends the JSON and ETag the store made (`snap.json`, `snap.etag`), or makes
+- `GET /api/snapshot` first lets go of held calls answered in a session's own window
+  (`asks.settle(snap.nodes)`, see Answer questions), then sends the JSON and ETag the store made
+  (`snap.json`, `snap.etag`), or makes
   them the same way (`snapshotTag`) for a store that did not. Its answers, `304` included, carry
   `X-Pleni-Version` (from package.json) and, when Pleni runs from a git copy, `X-Pleni-Build`: the
   short commit id from `readBuild()`, which reads only `.git/HEAD` and the branch it names (its file
@@ -1093,6 +1293,35 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `{ ok: true }` or `{ error }` with the status it gives, and shares the server's `openLimits`.
 - **POST /api/teleport** `{ from: nodeKey }` passes the same checks as `/api/open`, then `teleport`
   in `src/newagent.js` makes the rest and opens the window.
+- **GET /api/send?key=<nodeKey>** needs the key cookie and, like `/api/open`, a request from this
+  computer (`403` otherwise). It answers `sender.info`'s `{ problem, running, last, mode }`, or
+  `{ error }` with its status. It starts nothing.
+- **POST /api/send** `{ key, text, id }` passes the same checks as `/api/open`, then `sender.send`
+  in `src/send.js` makes the rest and starts the hidden turn, with `logFile` the `sent.jsonl` next to
+  the settings file. It answers `{ ok: true }` (or `{ ok: true, repeat: true }` for an `id` it has
+  sent already) once the program has started, or `{ error }` with the status it gives.
+  `createServer({ sender })` lets tests replace `createSender()`.
+- **POST /api/hook** is the one API route that needs no key cookie: Claude Code's hooks cannot send
+  it. Instead it needs a request from this computer (like `/api/open`), the secret in
+  `X-Pleni-Hook`, `Content-Type: application/json` and a body of at most 4 MB; otherwise `403`, `415`
+  or `413`. A browser cannot send that header to another site without asking first, and the host
+  gate stops DNS rebinding. Its answer is the hook's: an empty body at once for a call Pleni does not
+  hold (or cannot read), else the person's answer as JSON when it comes, or an empty body when the
+  call is given back (see Answer questions). `start()`
+  reads or makes the secret (`loadOrCreateHookKey`); the demo has none, so no call is answered.
+- **POST /api/answer** `{ id, answer }` or `{ id, release: true }` passes the same checks as
+  `/api/open` and answers or gives back a held question: `{ ok: true }`, or `{ error }` (`400` for an
+  answer that does not fit, `404` for a question that is not waiting any more).
+- **POST /api/answering** `{ key, on }` passes the same checks as `/api/open` and saves
+  `people[key].answer` for a main Claude Code session on the map (other keys `400`, a session not
+  on the map `404`).
+- **GET /api/hooks** needs the key cookie and a request from this computer. It answers `{ on, demo,
+  port, ok, error, file, found, connected, stale, lines }`: `on` is `actions.answers`, the rest is
+  `readHookSetup` for this port. It never holds the secret.
+- **POST /api/hooks** `{ connect: boolean }` passes the same checks as `/api/open`, is refused in
+  the demo (`409`), connects or disconnects with `backupDir` the `backups` folder next to the
+  settings, gives back every held question on Disconnect, and saves `actions.answers`. It answers
+  `{ ok: true, backup }`, or `{ error }` with the status it gives.
 - **GET /api/github** (`?fresh=1` for Look again) needs the key cookie. It answers `{ on, merge,
   method, error, repos }`. `on` is `settings.github.live`; `merge` is true when `live` and `merge`
   are both on and the request is from this computer (like `/api/open`); `method` is
@@ -1212,11 +1441,36 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   typing goes on while the panel updates. When `snapshot.actions.teleport` is true, on this
   computer, a main Claude Code session's Now tab has **Bring a cloud session here**, which posts
   `/api/teleport`; its answer shows in the status line under the tabs, like Open in PowerShell.
+  When `snapshot.actions.send` is true, on this computer, the side panel of a main Claude Code
+  session or Codex thread has a **Chat** tab after Now: the messages to the session and its answers
+  from the recent events (`user`, `assistant` and `error` events with text, the newest 60, newest at
+  the bottom, kept scrolled to the bottom while the person is there), a **Message** box (at most
+  8,000 characters; the count shows from 7,000) and **Send** (Ctrl+Enter does the same). The tab is
+  built once and only its parts change, so a repaint never touches what the person types; a message
+  not sent yet is kept while the page is open, also when the panel closes. While the tab shows, the
+  page asks `GET /api/send` every 4 seconds, and the line under the box says why a message cannot go
+  out now (the button then has `aria-disabled="true"` and says why when pressed). Send posts
+  `/api/send` with a new one-time `id` for each message (the same `id` again when the person retries
+  the same text), and the line says "Sent. Pleni is waiting for the answer…", then "Answered" or
+  that the turn ended with an error, read out through the page's live region. The help under the
+  box says what a sent message may do (`mode`) and that it uses the person's plan.
+  When `snapshot.actions.answers` is true, on this computer, a main Claude Code session has **Answer
+  its questions in Pleni** under Tell me if this stops working, a box that posts `/api/answering`
+  (Settings' own copy is updated too) and says how long Pleni holds a question. Each held question
+  of the session (`snapshot.asks` whose `on` is its key; the person's own side panel shows those on
+  `you`) is a section at the top of the Now tab: for a question, each question as a group of radio
+  buttons (check boxes when `multiSelect`) with **Other** and a box for the person's own words
+  (typing there picks Other), then **Send answer**; for a plan, the plan (line breaks kept, scrolls
+  by itself), a box for what should change, **Approve the plan** and **Keep planning**; for a
+  permission prompt, the tool and its detail, a box for why not, **Allow once** and **Deny**. Every
+  kind has **Answer in the session instead** (`release`) and says until when Pleni holds it. Picks
+  and typed words are kept per question while it waits, so a repaint never loses them. The answer
+  posts `/api/answer`; its result shows under the tabs and is read out.
   Sessions and the relay have a **Tell me if this stops working**
   box that posts `/api/watch`; Settings' own copy of the settings is updated too, so saving Settings
   later keeps it.
 - **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. Under the Settings
-  title, the page says which version runs ("This is Pleni 0.1.0 (commit 0c5808a)."). The form is
+  title, the page says which version runs ("This is Pleni 0.2.0 (commit 0c5808a)."). The form is
   split into seven groups, shown as tabs (`role="tablist"`; arrow keys, Home and End move between
   them): **Basics** (You and the map; What the page shows, with Finished for, Call a turn stuck
   after and Reviewers folded under **More choices**), **Team** (Names and roles, Chain of command,
@@ -1224,7 +1478,12 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   GitHub: Live GitHub status, Merge button, How to merge),
   **Alerts** (Needs you, with `alerts.stoppedMinutes` and the Pop-ups box; Roll over soon, with
   the three `rollSoon` limits), **Buttons** (Open sessions: Open in PowerShell, New agent, Bring a
-  cloud session here and Roll over, and a line when the computer does not run Windows) and **Devices** (Open Pleni on another
+  cloud session here and Roll over, and a line when the computer does not run Windows; Send
+  messages: the `actions.send` box and **A sent message may**, `send.mode`: "Read files and answer"
+  or "Also change files in its folder"; Answer questions: what `GET /api/hooks` says, asked when the
+  group opens, with **Connect Pleni to Claude Code**, **Connect again** or **Disconnect** posting
+  `/api/hooks` (Settings' own copy of `actions.answers` follows), Claude Code's settings file, the
+  lines Connect adds in a fold, and **Hold a question for**, `answers.waitMinutes`) and **Devices** (Open Pleni on another
   device; Other devices, the port, and where the settings file is). **Open Pleni on another
   device**, on this computer, asks `GET /api/devices` when the group opens and every 5 seconds while
   it shows. It shows this computer's address, the address for other devices with **Copy the
@@ -1319,6 +1578,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   with the notice's text, at most 3 at once and then one "And N more". The first snapshot after the
   page opens only notes what is already there. Clicking one opens the tile, or Tasks. A test button
   sends one.
+- **Waiting for you:** an attention item of kind `ask` reads "Waiting for you" and opens the
+  session's side panel; it has no ×, because it goes away once answered or given back.
 - Polling: `/api/snapshot` every 2.5 s with `If-None-Match`, paused while the tab is hidden. With
   pop-ups on, a hidden tab still asks every 15 s (browsers may slow that to once a minute).
 - Reduced motion: no packets, no dash animation, solid glowing lines instead.

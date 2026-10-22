@@ -142,7 +142,7 @@ test('the snapshot carries a weak ETag of its JSON without the time', () => {
   assert.equal(snap.etag, `W/"${crypto.createHash('sha1').update(untimed).digest('hex')}"`);
   assert.equal(snap.json, json);
   assert.equal(json.includes('etag'), false);
-  assert.deepEqual(Object.keys(snap), ['version', 'now', 'sources', 'nodes', 'edges', 'events', 'counts', 'attention', 'tasks', 'mail', 'hiddenSessions', 'actions']);
+  assert.deepEqual(Object.keys(snap), ['version', 'now', 'sources', 'nodes', 'edges', 'events', 'counts', 'attention', 'asks', 'tasks', 'mail', 'hiddenSessions', 'actions']);
   assert.ok(snap.nodes.some((n) => n.key === CLAUDE_KEY));
   assert.ok(snap.nodes.some((n) => n.key === CODEX_KEY));
 });
@@ -296,16 +296,19 @@ test('dismissed notices hide until something newer happens, and are kept in the 
 
 test('the snapshot offers the window buttons only when turned on and Pleni runs on Windows', () => {
   const make = (settings, platform) => createStore({ settings: cleanSettings(settings), roots: ROOTS, now: clock(), factories: fakes().factories, platform });
-  const all = { actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true } };
-  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false };
+  const all = { actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true, send: true } };
+  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false };
   assert.deepEqual(make({}, 'win32').snapshot().actions, off);
   assert.deepEqual(make({ actions: { openTerminal: true } }, 'win32').snapshot().actions, { ...off, openTerminal: true });
   assert.deepEqual(make({ actions: { rollover: true } }, 'win32').snapshot().actions, { ...off, rollover: true });
   assert.deepEqual(make({ actions: { newAgent: true } }, 'win32').snapshot().actions, { ...off, newAgent: true });
   assert.deepEqual(make({ actions: { teleport: true } }, 'win32').snapshot().actions, { ...off, teleport: true });
-  assert.deepEqual(make(all, 'win32').snapshot().actions, all.actions);
+  assert.deepEqual(make({ actions: { send: true } }, 'win32').snapshot().actions, { ...off, send: true });
+  assert.deepEqual(make(all, 'win32').snapshot().actions, { ...all.actions, answers: false });
   assert.deepEqual(make(all, 'linux').snapshot().actions, off);
   assert.deepEqual(make(all, 'darwin').snapshot().actions, off);
+  // Answering questions makes no window, so it is not only for Windows.
+  assert.deepEqual(make({ actions: { answers: true } }, 'linux').snapshot().actions, { ...off, answers: true });
 });
 
 test('turning Open in PowerShell on keeps the sources and shows at once', () => {

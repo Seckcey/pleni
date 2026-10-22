@@ -3,8 +3,9 @@
 Status: proposal. Step 1 of the plan, the relay waking the planner's Codex thread, is built in
 `relay/`, and so is **agent mail** (step 7, below), which lets the other Codex threads message each
 other without the Codex app; Pleni shows that mail. **Roll over** and **New agent** (step 4) are built in Pleni (see
-below). **Send** (step 3) is set aside: the owner would rather open sessions in command-line windows
-and type there. Its design stays below as a record. The rest is not built yet.
+below). **Send** (step 3) and **Claude Code questions, plans and permission prompts** (step 5) are
+built too: the owner asked for them in October 2026, so a team can run with no Codex or Claude app
+open. The rest is not built yet.
 
 ## What we want
 
@@ -189,14 +190,17 @@ sends nothing and the rule about free text does not come up.
 A first message typed in Pleni would be free text, like Send (step 3), so it is not built: the
 person types it in the window.
 
-## Step 3: Send a message (set aside)
+## Step 3: Send a message (built)
 
-The owner chose not to build this in October 2026. Sessions open in PowerShell windows instead
-(Open in PowerShell and New agent), where the person types. The design stays here in case that
-changes.
-
-Send is free text: whatever the person types goes to a session that can run commands. So it needs
-the owner's yes and a change to the rule in `CLAUDE.md` and `AGENTS.md` before it is built.
+First set aside, then asked for by the owner in October 2026: with no Codex or Claude app running,
+the person still wants to type to a session from Pleni. Send is free text: whatever the person types
+goes to a session that can run commands. So it came with the owner's yes and a change to the rule
+in `CLAUDE.md` and `AGENTS.md`. What was built differs from the design below in a few places: the
+tab is called Chat; Claude Code's turn uses `--output-format json` (one answer at the end, so a
+Pleni that stops mid-turn does not cut the turn short) and `--permission-mode dontAsk` for "read and
+answer"; Codex's output is not read at all (its exit code tells how the turn ended); and the record
+is `sent.jsonl`. The answers to the three questions below: yes; "read and answer" by default, with a
+setting for "also change files"; and this computer only. `docs/architecture.md` describes it.
 
 **What the person sees.** A session's side panel gets a **Chat** tab: the last messages between the
 person and the session (Pleni already reads them, as short snippets when `content` is `snippets`),
@@ -254,16 +258,22 @@ Claude Code runs **hooks** before tools are used, and a hook may be an HTTP call
 answer (up to 10 minutes by default, configurable). Hooks set in the user's Claude settings also
 apply to the Claude desktop app.
 
-- **Questions and plans.** A `PreToolUse` hook on `AskUserQuestion` returns
+- **Questions.** A `PreToolUse` hook on `AskUserQuestion` returns
   `permissionDecision: "allow"` with `updatedInput` holding the answers, for example
-  `{ "questions": [...], "answers": { "Which framework?": "React" } }`. The same hook on
-  `ExitPlanMode` approves a plan. (The docs show the question format; the plan format needs a
-  test.)
+  `{ "questions": [...], "answers": { "Which framework?": "React" } }`.
+- **Plans.** A `PermissionRequest` hook on `ExitPlanMode` approves a plan with
+  `"decision": { "behavior": "allow", "updatedInput": <the input it was given> }`. Without the input
+  handed back, Claude Code 2.1.307 ignores the yes. `"deny"` with a message keeps it planning.
 - **Permission prompts.** A `PermissionRequest` hook returns
   `{ "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": { "behavior": "allow" } } }`
   or `"deny"` with a message.
-- **If Pleni is not running**, the hook call fails and Claude Code goes on as if there were no
-  hook: the normal question or prompt appears in the app. That is the safe default.
+- **If Pleni is not running**, the hook call fails: Claude Code shows a short "hook error" line,
+  and the normal question or prompt appears in the app. That is the safe default.
+- **Tested** (2026-10-22) with Claude Code 2.1.307 on Linux, in a real terminal window and with
+  `claude -p`, against a stand-in for the model: all of the above works. A question waits in Pleni
+  only; a plan or a prompt shows in the window too, and Claude Code does not tell the hook when it
+  is answered there. In `claude -p`, Claude Code turns questions and plans off, and in "don't ask"
+  mode it refuses prompts without calling the hook.
 
 The hard part is **who answers first**. While the hook waits, the app does not show its own
 question. So Pleni must not hold every question hostage. The design:
@@ -292,8 +302,9 @@ Otherwise the Send button is off and says why ("This session is open in the Clau
 there."). A message to a session kept running in the background is delivered as its next turn, as
 the docs describe.
 
-Each send starts a paid turn on the user's plan. The resumed turn starts in the normal
-`claude -p` permission mode, so the permission hook above is what lets it ask before risky steps.
+Each send starts a paid turn on the user's plan. As built, a sent turn runs in "don't ask" mode
+("Read files and answer": anything that would need a yes is refused) or "accept edits" mode ("Also
+change files in its folder"), and only in the second do its permission prompts reach Pleni's hook.
 
 ### What does not work
 
@@ -368,10 +379,10 @@ sessions can run commands on the computer. So:
 | Step | What | Size | State |
 | --- | --- | --- | --- |
 | 1 | The relay wakes the planner's Codex thread (above) | Medium, outside Pleni | Built |
-| 2 | Tests on a spare computer: Claude hooks in the desktop app (HTTP hooks, secret header, what the app shows while a hook waits, the `ExitPlanMode` answer format), and the Codex app server questions above | Small | |
-| 3 | Send a message to idle sessions, Claude and Codex, with the safety checks | Medium | Set aside: the owner prefers command-line windows. Roll over's fixed handoff request is built |
+| 2 | Tests on a spare computer: Claude hooks in the desktop app (HTTP hooks, secret header, what the app shows while a hook waits, the `ExitPlanMode` answer format), and the Codex app server questions above | Small | Claude Code's hooks tested with Claude Code 2.1.307 in a terminal window (see above); the desktop app and the Codex checks are still to do |
+| 3 | Send a message to idle sessions, Claude and Codex, with the safety checks | Medium | Built (`src/send.js`, the Chat tab) |
 | 4 | **New agent:** choose Claude Code or Codex and a name; Pleni opens it in a PowerShell window in the folder of a session on the map, the same way as Open in PowerShell. The first message is typed there | Medium | Built |
-| 5 | Claude questions, plans and permission prompts through hooks, with the "Connect" step, the switch per session, and the answer controls | Large | |
+| 5 | Claude questions, plans and permission prompts through hooks, with the "Connect" step, the switch per session, and the answer controls | Large | Built (`src/answers.js`), this computer only, and tested end to end with Claude Code 2.1.307; the desktop-app check of step 2 is still to do |
 | 6 | Codex answers and messages through the app server, with `codex exec resume` as the fallback | Large, depends on step 2 | |
 | 7 | Move other Codex threads from app messaging to mailboxes, each with a wake (a relay) | Large, per team | Built: agent mail and its wakes in the relay, and Pleni shows the mail |
 | 8 | Actions from the phone: second confirmation | Medium | |

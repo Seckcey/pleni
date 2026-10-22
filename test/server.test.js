@@ -9,6 +9,7 @@ import { GITHUB_MESSAGES } from '../src/github.js';
 import { NEW_MESSAGES } from '../src/newagent.js';
 import { OPEN_MESSAGES } from '../src/open.js';
 import { ROLL_MESSAGES } from '../src/rollover.js';
+import { SEND_MESSAGES, createSender } from '../src/send.js';
 import { browserCommand, createServer, keyFile, loadOrCreateKey, newKey, readBuild, readKeyFile } from '../src/server.js';
 
 const CSP = "default-src 'none'; script-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; " +
@@ -119,6 +120,8 @@ async function startServer(t, options = {}) {
     ...(options.platform ? { platform: options.platform } : {}),
     ...(options.spawnProcess ? { spawnProcess: options.spawnProcess } : {}),
     ...(options.github ? { github: options.github } : {}),
+    ...(options.sender ? { sender: options.sender } : {}),
+    ...(options.hookKey ? { hookKey: options.hookKey } : {}),
     ...(options.useFileSettings
       ? {}
       : { getSettings: memory.getSettings, saveSettings: memory.saveSettings.bind(memory) }),
@@ -1568,4 +1571,290 @@ test("the Models page reads and saves Claude Code's settings too", async (t) => 
   assert.match(path.basename(ok.json.backups[0]), /^claude-settings-\d{8}-\d{6}\.json$/);
   // The Codex file was not touched by a Claude Code save.
   assert.equal(fs.readFileSync(path.join(dir, 'codex', 'config.toml'), 'utf8'), 'model = "gpt-6-astra"\nmodel_reasoning_effort = "max"\n');
+});
+
+// ---- Send ----
+
+const sendReq = (port, body, headers = {}) => request(port, {
+  method: 'POST',
+  path: '/api/send',
+  headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+  body: JSON.stringify(body),
+});
+
+const SEND_ON = { actions: { send: true } };
+
+// A sender that records what the server passes on, and answers what the test says.
+function recordSender(answer = { ok: true }) {
+  const calls = { info: [], send: [] };
+  return {
+    calls,
+    info(args) {
+      calls.info.push(args);
+      return { ok: true, info: { problem: null, running: false, last: null, mode: 'read' } };
+    },
+    async send(args) {
+      calls.send.push(args);
+      return answer;
+    },
+  };
+}
+
+test('send passes the message, the session and the record file to the sender', async (t) => {
+  const sender = recordSender();
+  const memory = memorySettings(SEND_ON);
+  const { port } = await startServer(t, { store: openStore(tempDir(t)), memory, platform: 'win32', sender });
+  const res = await sendReq(port, { key: SESSION_KEY, text: 'Run the tests.', id: 'page-message-000001' });
+  assert.equal(res.status, 200, res.text);
+  assert.deepEqual(res.json, { ok: true });
+  assert.equal(sender.calls.send.length, 1);
+  const call = sender.calls.send[0];
+  assert.equal(call.key, SESSION_KEY);
+  assert.equal(call.text, 'Run the tests.');
+  assert.equal(call.id, 'page-message-000001');
+  assert.equal(call.settings.actions.send, true);
+  assert.equal(call.logFile, path.join(path.dirname(memory.state.file), 'sent.jsonl'));
+  assert.equal(call.platform, 'win32');
+  const info = await request(port, { path: `/api/send?key=${encodeURIComponent(SESSION_KEY)}` });
+  assert.equal(info.status, 200);
+  assert.deepEqual(info.json, { problem: null, running: false, last: null, mode: 'read' });
+  assert.equal(sender.calls.info[0].key, SESSION_KEY);
+});
+
+test('send needs the key, the page header, the same origin, JSON, and this computer', async (t) => {
+  const sender = recordSender();
+  const settings = { ...SEND_ON, remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } };
+  const { port } = await startServer(t, { store: openStore(tempDir(t)), settings, platform: 'win32', sender });
+  const body = { key: SESSION_KEY, text: 'hello', id: 'page-message-000002' };
+  assertPlainError(await sendReq(port, body, { cookie: undefined }), 401);
+  assertPlainError(await sendReq(port, body, { 'x-pleni': undefined }), 403);
+  assertPlainError(await sendReq(port, body, { origin: 'https://evil.example' }), 403);
+  assertPlainError(await sendReq(port, body, { 'content-type': 'text/plain' }), 415);
+  const remote = { host: 'box.example.ts.net', 'tailscale-user-login': 'ada@example.com' };
+  for (const headers of [remote, { 'x-forwarded-for': '100.64.0.7' }]) {
+    const res = await sendReq(port, body, headers);
+    assertPlainError(res, 403);
+    assert.match(res.json.error, /only on the computer that runs it/);
+    assertPlainError(await request(port, { path: `/api/send?key=${encodeURIComponent(SESSION_KEY)}`, headers }), 403);
+  }
+  assertPlainError(await request(port, { method: 'PUT', path: '/api/send' }), 405);
+  assert.equal(sender.calls.send.length, 0);
+  assert.equal(sender.calls.info.length, 0);
+});
+
+test('send answers a refusal with its status and plain words, and a repeat as done', async (t) => {
+  const refused = recordSender({ ok: false, status: 409, error: SEND_MESSAGES.busy });
+  const a = await startServer(t, { store: openStore(tempDir(t)), settings: SEND_ON, platform: 'win32', sender: refused });
+  const res = await sendReq(a.port, { key: SESSION_KEY, text: 'hello', id: 'page-message-000003' });
+  assertPlainError(res, 409);
+  assert.equal(res.json.error, SEND_MESSAGES.busy);
+  const repeat = recordSender({ ok: true, repeat: true });
+  const b = await startServer(t, { store: openStore(tempDir(t)), settings: SEND_ON, platform: 'win32', sender: repeat });
+  assert.deepEqual((await sendReq(b.port, { key: SESSION_KEY, text: 'hello', id: 'page-message-000003' })).json, { ok: true, repeat: true });
+});
+
+test('the real sender is off by default and works only on Windows', async (t) => {
+  const off = await startServer(t, { store: openStore(tempDir(t)), platform: 'win32', sender: createSender() });
+  const res = await sendReq(off.port, { key: SESSION_KEY, text: 'hello', id: 'page-message-000004' });
+  assertPlainError(res, 403);
+  assert.equal(res.json.error, SEND_MESSAGES.off);
+  const linux = await startServer(t, { store: openStore(tempDir(t)), settings: SEND_ON, platform: 'linux', sender: createSender() });
+  const elsewhere = await request(linux.port, { path: `/api/send?key=${encodeURIComponent(SESSION_KEY)}` });
+  assertPlainError(elsewhere, 409);
+  assert.equal(elsewhere.json.error, SEND_MESSAGES.windowsOnly);
+});
+
+// ---- answering questions ----
+
+const HOOK_SECRET = 'hook-secret-0123456789abcdefghijklmnopqrstuv';
+const SESSION_ID = SESSION_KEY.slice('claude:'.length);
+
+const hookReq = (port, body, headers = {}) => request(port, {
+  method: 'POST',
+  path: '/api/hook',
+  headers: { host: `127.0.0.1:${port}`, cookie: undefined, 'content-type': 'application/json', 'x-pleni-hook': HOOK_SECRET, ...headers },
+  body: typeof body === 'string' ? body : JSON.stringify(body),
+});
+
+const answerReq = (port, path, body, headers = {}) => request(port, {
+  method: 'POST',
+  path,
+  headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+  body: JSON.stringify(body),
+});
+
+const askedQuestion = {
+  session_id: SESSION_ID,
+  hook_event_name: 'PreToolUse',
+  tool_name: 'AskUserQuestion',
+  tool_input: { questions: [{ question: 'Ship it now?', header: 'Ship', multiSelect: false, options: [{ label: 'Yes' }, { label: 'Not yet' }] }] },
+};
+
+const ANSWERING = { actions: { answers: true }, people: { [SESSION_KEY]: { answer: true } } };
+
+// A store that keeps the questions the server hands it, like the real one.
+function answerStore() {
+  const store = fakeStore();
+  store.asks = [];
+  store.setAsks = (list) => {
+    store.asks = list;
+  };
+  return store;
+}
+
+test('a hook call needs the secret, this computer, and JSON', async (t) => {
+  const settings = { ...ANSWERING, remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } };
+  const { port } = await startServer(t, { store: answerStore(), settings, hookKey: HOOK_SECRET });
+  assertPlainError(await hookReq(port, askedQuestion, { 'x-pleni-hook': undefined }), 403);
+  assertPlainError(await hookReq(port, askedQuestion, { 'x-pleni-hook': `${HOOK_SECRET}x` }), 403);
+  assertPlainError(await hookReq(port, askedQuestion, { host: 'box.example.ts.net', 'tailscale-user-login': 'ada@example.com' }), 403);
+  assertPlainError(await hookReq(port, askedQuestion, { 'x-forwarded-for': '100.64.0.7' }), 403);
+  assertPlainError(await hookReq(port, askedQuestion, { 'content-type': 'text/plain' }), 415);
+  assertPlainError(await request(port, { path: '/api/hook' }), 405);
+  // A page's key is not the hook's secret.
+  assertPlainError(await hookReq(port, askedQuestion, { 'x-pleni-hook': undefined, cookie: keyCookie(port) }), 403);
+  // Without a secret at all (the demo), no call is answered.
+  const demo = await startServer(t, { store: answerStore(), settings });
+  assertPlainError(await hookReq(demo.port, askedQuestion), 403);
+});
+
+test('a hook call Pleni does not hold gets no decision at once', async (t) => {
+  const cases = [
+    { settings: { people: { [SESSION_KEY]: { answer: true } } } },               // answering is off
+    { settings: { actions: { answers: true } } },                                // not switched on for this session
+    { settings: { ...ANSWERING, content: 'none' } },                             // no session text shown
+    { settings: ANSWERING, body: { ...askedQuestion, tool_name: 'Bash' } },     // not a question Pleni shows
+    { settings: ANSWERING, body: { ...askedQuestion, hook_event_name: 'PermissionRequest' } }, // a question given back
+    { settings: ANSWERING, body: 'not json' },
+  ];
+  for (const c of cases) {
+    const { port } = await startServer(t, { store: answerStore(), settings: c.settings, hookKey: HOOK_SECRET });
+    const res = await hookReq(port, c.body ?? askedQuestion);
+    assert.equal(res.status, 200, res.text);
+    // An empty answer: Claude Code reads it as a hook that says nothing.
+    assert.equal(res.text, '');
+  }
+});
+
+test('a held question waits for the answer from the page, and the hook gets it', async (t) => {
+  const store = answerStore();
+  const { port } = await startServer(t, { store, settings: ANSWERING, hookKey: HOOK_SECRET });
+  const pending = hookReq(port, askedQuestion);
+  let tries = 0;
+  while (!store.asks.length && tries++ < 500) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(store.asks.length, 1);
+  const [ask] = store.asks;
+  assert.equal(ask.key, SESSION_KEY);
+  assert.equal(ask.kind, 'question');
+  assert.equal(ask.questions[0].question, 'Ship it now?');
+  assertPlainError(await answerReq(port, '/api/answer', { id: ask.id, answer: { answers: ['Yes'] } }, { 'tailscale-user-login': 'ada@example.com' }), 403);
+  assertPlainError(await answerReq(port, '/api/answer', { id: ask.id, answer: { answers: [] } }), 400);
+  assertPlainError(await answerReq(port, '/api/answer', { id: 'f'.repeat(24), answer: { answers: ['Yes'] } }), 404);
+  const ok = await answerReq(port, '/api/answer', { id: ask.id, answer: { answers: ['Not yet'] } });
+  assert.deepEqual(ok.json, { ok: true });
+  const res = await pending;
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json.hookSpecificOutput, {
+    hookEventName: 'PreToolUse',
+    permissionDecision: 'allow',
+    updatedInput: { ...askedQuestion.tool_input, answers: { 'Ship it now?': 'Not yet' } },
+  });
+  assert.deepEqual(store.asks, []);
+});
+
+test('"Answer in the session instead" gives the question back with no decision', async (t) => {
+  const store = answerStore();
+  const { port } = await startServer(t, { store, settings: ANSWERING, hookKey: HOOK_SECRET });
+  const pending = hookReq(port, askedQuestion);
+  let tries = 0;
+  while (!store.asks.length && tries++ < 500) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual((await answerReq(port, '/api/answer', { id: store.asks[0].id, release: true })).json, { ok: true });
+  const res = await pending;
+  assert.equal(res.status, 200);
+  assert.equal(res.text, '');
+});
+
+const askedPlan = {
+  session_id: SESSION_ID,
+  hook_event_name: 'PermissionRequest',
+  tool_name: 'ExitPlanMode',
+  tool_input: { plan: '# Plan\n\n1. Fix the bug.', planFilePath: 'C:\\Users\\ada\\.claude\\plans\\fix.md' },
+};
+
+test('an approved plan goes back to Claude Code with the plan it gave', async (t) => {
+  const store = answerStore();
+  const { port } = await startServer(t, { store, settings: ANSWERING, hookKey: HOOK_SECRET });
+  const pending = hookReq(port, askedPlan);
+  let tries = 0;
+  while (!store.asks.length && tries++ < 500) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(store.asks[0].kind, 'plan');
+  assert.equal(store.asks[0].plan, '# Plan\n\n1. Fix the bug.');
+  assert.deepEqual((await answerReq(port, '/api/answer', { id: store.asks[0].id, answer: { approve: true } })).json, { ok: true });
+  assert.deepEqual((await pending).json, {
+    hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow', updatedInput: askedPlan.tool_input } },
+  });
+});
+
+test('a prompt answered in the session\'s own window leaves Pleni once the map shows it', async (t) => {
+  const store = answerStore();
+  const { port } = await startServer(t, { store, settings: ANSWERING, hookKey: HOOK_SECRET });
+  const asked = { session_id: SESSION_ID, hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'npm test' } };
+  const pending = hookReq(port, asked);
+  let tries = 0;
+  while (!store.asks.length && tries++ < 500) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(store.asks[0].kind, 'permission');
+  const session = store.current.nodes.find((n) => n.key === SESSION_KEY);
+  session.activity = { tool: 'Bash', detail: 'npm test', at: Date.now() };
+  assert.equal((await request(port, { path: '/api/snapshot' })).status, 200);
+  assert.equal(store.asks.length, 1, 'still waiting while the session waits');
+  session.activity = null;
+  assert.equal((await request(port, { path: '/api/snapshot' })).status, 200);
+  const res = await pending;
+  assert.equal(res.status, 200);
+  assert.equal(res.text, '');
+  assert.deepEqual(store.asks, []);
+});
+
+test('a session is switched to answer from Pleni only on this computer, and only a main Claude Code session', async (t) => {
+  const { port, memory } = await startServer(t, { store: answerStore(), settings: { actions: { answers: true } } });
+  assert.deepEqual((await answerReq(port, '/api/answering', { key: SESSION_KEY, on: true })).json, { ok: true });
+  assert.equal(memory.state.settings.people[SESSION_KEY].answer, true);
+  assert.deepEqual((await answerReq(port, '/api/answering', { key: SESSION_KEY, on: false })).json, { ok: true });
+  assert.equal(memory.state.settings.people[SESSION_KEY], undefined);
+  assertPlainError(await answerReq(port, '/api/answering', { key: 'codex:0f8e2c4a-1b3d-4e5f-8a9b-0c1d2e3f4a5b', on: true }), 400);
+  assertPlainError(await answerReq(port, '/api/answering', { key: SESSION_KEY, on: 'yes' }), 400);
+  assertPlainError(await answerReq(port, '/api/answering', { key: 'claude:1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', on: true }), 404);
+  assertPlainError(await answerReq(port, '/api/answering', { key: SESSION_KEY, on: true }, { 'x-forwarded-for': '100.64.0.7' }), 403);
+  assertPlainError(await answerReq(port, '/api/answering', { key: SESSION_KEY, on: true }, { cookie: undefined }), 401);
+});
+
+test('Connect adds Pleni\'s hooks to Claude Code\'s settings and turns answering on; Disconnect undoes both', async (t) => {
+  const dir = tempDir(t);
+  const claude = path.join(dir, 'claude');
+  fs.mkdirSync(claude);
+  fs.writeFileSync(path.join(claude, 'settings.json'), '{\n  "model": "opus"\n}\n');
+  const memory = memorySettings({});
+  memory.state.file = path.join(dir, 'pleni', 'settings.json');
+  memory.state.roots = { ...memory.state.roots, claude };
+  const { port } = await startServer(t, { store: answerStore(), memory, hookKey: HOOK_SECRET });
+  const before = (await request(port, { path: '/api/hooks' })).json;
+  assert.equal(before.on, false);
+  assert.equal(before.connected, false);
+  assert.equal(before.port, port);
+  assert.ok(!JSON.stringify(before).includes(HOOK_SECRET), 'the page never sees the secret');
+  assertPlainError(await request(port, { path: '/api/hooks', headers: { 'x-forwarded-for': '100.64.0.7' } }), 403);
+  assertPlainError(await answerReq(port, '/api/hooks', { connect: true }, { 'tailscale-user-login': 'ada@example.com' }), 403);
+  const done = await answerReq(port, '/api/hooks', { connect: true });
+  assert.equal(done.status, 200, done.text);
+  assert.match(path.basename(done.json.backup), /^claude-settings-\d{8}-\d{6}\.json$/);
+  assert.equal(memory.state.settings.actions.answers, true);
+  const saved = JSON.parse(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8'));
+  assert.equal(saved.model, 'opus');
+  assert.equal(saved.hooks.PreToolUse[0].hooks[0].url, `http://127.0.0.1:${port}/api/hook`);
+  assert.equal(saved.hooks.PreToolUse[0].hooks[0].headers['X-Pleni-Hook'], HOOK_SECRET);
+  assert.equal((await request(port, { path: '/api/hooks' })).json.connected, true);
+  assert.equal((await answerReq(port, '/api/hooks', { connect: false })).status, 200);
+  assert.equal(memory.state.settings.actions.answers, false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8')), { model: 'opus' });
+  assertPlainError(await answerReq(port, '/api/hooks', { connect: 'yes' }), 400);
 });
