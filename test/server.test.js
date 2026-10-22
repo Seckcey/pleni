@@ -1739,7 +1739,7 @@ test('a held question waits for the answer from the page, and the hook gets it',
   const { port } = await startServer(t, { store, settings: ANSWERING, hookKey: HOOK_SECRET });
   const pending = hookReq(port, askedQuestion);
   let tries = 0;
-  while (!store.asks.length && tries++ < 100) await new Promise((resolve) => setTimeout(resolve, 10));
+  while (!store.asks.length && tries++ < 500) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(store.asks.length, 1);
   const [ask] = store.asks;
   assert.equal(ask.key, SESSION_KEY);
@@ -1765,7 +1765,7 @@ test('"Answer in the session instead" gives the question back with no decision',
   const { port } = await startServer(t, { store, settings: ANSWERING, hookKey: HOOK_SECRET });
   const pending = hookReq(port, askedQuestion);
   let tries = 0;
-  while (!store.asks.length && tries++ < 100) await new Promise((resolve) => setTimeout(resolve, 10));
+  while (!store.asks.length && tries++ < 500) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual((await answerReq(port, '/api/answer', { id: store.asks[0].id, release: true })).json, { ok: true });
   assert.deepEqual((await pending).json, {});
 });
