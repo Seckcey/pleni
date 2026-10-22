@@ -6,8 +6,9 @@ what it never does.
 
 ## The short version
 
-- Pleni **reads** session files. It **writes** only in its own folder: its settings, its key, and
-  the list of notices you dismissed. The one exception is the **Models** page, off until you turn
+- Pleni **reads** session files. It **writes** only in its own folder: its settings, its key, the
+  list of notices you dismissed, and, if you set a password, its hash and the list of signed-in
+  devices. The one exception is the **Models** page, off until you turn
   it on: when you choose **Save to Codex** or **Save to Claude Code**, it changes the model and
   effort settings of that tool, after it keeps a copy of the old file (see [below](#models)).
 - Pleni **starts** nothing, unless you turn on **Open in PowerShell**, **Roll over**, **New
@@ -15,12 +16,13 @@ what it never does.
   window. You do the typing, except for Roll over's one short message, which the page shows you
   before you click.
 - Pleni makes **no network calls** of its own. It has no telemetry, no tracking, and no account.
-  Its only sign-in is its own key, which it keeps on your computer.
+  Its only sign-ins are its own key and the password you can set, both kept on your computer.
 - The one way out is **Live GitHub status**, off until you turn it on. Then the GitHub CLI (`gh`)
   on your computer asks GitHub about your pull requests for Pleni (see
   [below](#live-github-status-and-merge)).
-- Pleni opens only on your own computer (`127.0.0.1`), unless you set up remote access yourself,
-  and only for a browser that has the key Pleni prints when it starts.
+- Pleni opens only on your own computer (`127.0.0.1`), unless you turn on Wi-Fi access or set up
+  Tailscale yourself, and only for a browser that signed in with the key Pleni prints when it
+  starts, or with your password.
 - You can turn session text off. Then the page shows only names, tools, and states.
 
 ## What Pleni reads
@@ -50,7 +52,7 @@ read the start of a file once, to find a session's name and where it started.
 | Codex folder, only when you click Open in PowerShell | One empty file, `thread-writer-locks/<thread id>.lock`, which Codex locks while a program writes that thread. Pleni tries to read one byte of it, only to learn whether another window has the thread open |
 | The same two folders, when you click Roll over's buttons | The same small files as for Open in PowerShell, for the same reason |
 | A session's own folder, only while its Roll over section is open | Only whether the handoff note (`HANDOFF-<name>.md`) is there, and when it last changed. Pleni never reads what is in it |
-| Pleni's own folder                      | `settings.json`, `key`, and `dismissed.json` (which notices you dismissed, and when) in Pleni's settings folder, and the copies of Codex's files in `backups/` |
+| Pleni's own folder                      | `settings.json`, `key`, and `dismissed.json` (which notices you dismissed, and when) in Pleni's settings folder, `password` and `devices.json` once you set a password, and the copies of Codex's files in `backups/` |
 | Pleni's own program folder, if it is a git copy | Only `.git/HEAD` and the one branch file it names (or `packed-refs`), to show which commit runs |
 
 From the session files it uses: when each step happened, the working folder, the git branch, the
@@ -109,8 +111,9 @@ recent pop-ups in its notification list until you clear them.
   page (see [below](#models)), and **Connect** and **Disconnect** for **Answer questions**, which add
   and take out Pleni's own two hooks in Claude Code's `settings.json` (see below).
 - It writes nowhere except its own folder (`settings.json`, `key`, `hook-key`, `dismissed.json`, the
-  `backups/` folder of the Models page and of Connect, and `sent.jsonl`, the record of messages
-  sent with **Send messages**). It saves each file safely: it writes a temporary file in
+  `backups/` folder of the Models page and of Connect, `sent.jsonl`, the record of messages
+  sent with **Send messages**, and `password` and `devices.json` for signing in, see
+  [below](#signing-in-with-a-password)). It saves each file safely: it writes a temporary file in
   the same folder, then renames it.
 - When it turns away a device that Tailscale brings, it keeps that device's Tailscale address and
   login in memory (the last 5, never in a file), so Settings → Devices on your computer can offer
@@ -206,9 +209,10 @@ change the models Codex and Claude Code use**. Then:
 
 ## Who can open the page
 
-Pleni listens only on `127.0.0.1`, so only programs on your own computer can reach it. Even there,
-it answers only when the address is `localhost`, `127.0.0.1`, or `[::1]`. This stops a web site
-from tricking your browser into reading Pleni (an attack called DNS rebinding).
+Pleni listens only on `127.0.0.1`, so only programs on your own computer can reach it (unless you
+turn on [Wi-Fi access](#wi-fi-access-and-its-risks)). Even there, it answers only when the address
+is `localhost`, `127.0.0.1`, or `[::1]`. This stops a web site from tricking your browser into
+reading Pleni (an attack called DNS rebinding).
 
 A computer can have more than one account, for example a shared Linux machine or a Windows
 computer that several people sign in to remotely. Every account can reach `127.0.0.1`. So Pleni
@@ -219,10 +223,12 @@ has the key:
 - When you open the address, Pleni gives your browser the key as a cookie that the page's own
   scripts cannot read and that other web sites cannot make your browser send. It then drops the
   key from the address bar.
-- A request without the right key gets `401`. Only `/api/health`, which says just that Pleni is
-  running, and the page's own files (which hold no session data) answer without it.
-- A browser without the key sees a sign-in box. Pasting the key there opens the same address, so
-  it works the same way. The browser can save the key like a password, in its own password store.
+- A request without the right key, or a device's pass, gets `401`. Only `/api/health`, which says
+  just that Pleni is running, signing in itself, and the page's own files (which hold no session
+  data) answer without one.
+- A browser without the key sees a sign-in box. It takes your password, if you set one, or the
+  key. Either way the browser gets a pass of its own, and can save what you typed in its own
+  password store.
 - The key is saved in a file named `key` next to `settings.json`, so the address stays the same
   after a restart. A browser keeps it as a cookie for a year. Pleni never changes the key on its
   own: if it cannot read the key file, or the file is damaged, it stops with a message instead of
@@ -235,6 +241,49 @@ has the key:
 Keep in mind that anyone who can use your computer as you can also open the page, the same way
 they could open the session files themselves.
 
+## Signing in with a password
+
+You can set a password in **Settings → Devices** on your computer, so your other devices can sign
+in without the key.
+
+- Pleni never keeps the password itself. The file `password` holds only a scrambled form of it
+  (an scrypt hash, which is slow to guess from), and how many wrong tries came in a row.
+- Each device that signs in gets a pass of its own, in a cookie that the page's scripts cannot
+  read. The file `devices.json` keeps, for each device, only a scrambled form of its pass, a short
+  name from its browser (for example "iPhone, Safari"), when it signed in, and when it was last used.
+  It never keeps the browser's full details, an address, or a location.
+- **Settings → Devices** lists these devices. **Sign out** next to one ends its pass at once.
+- Wrong passwords slow Pleni down: the first 4 in a row are free, then it waits 1 minute, then 2,
+  4, 8, 16, and at most 30. After 20 in a row it stops taking the password until you turn it back
+  on, on your computer. The count and the wait are kept in the file, so restarting Pleni resets
+  neither.
+- Only your computer's page can set the password, turn Wi-Fi access on or off, see the list of
+  devices, or sign one out.
+
+## Wi-Fi access and its risks
+
+With **Open Pleni on this Wi-Fi** on (Settings → Devices, off until you turn it on, and only while
+a password is set), Pleni also listens on the home-network address of your computer that you chose,
+so a phone on the same Wi-Fi can open it. Before you turn it on, know what it means:
+
+- **No padlock.** The Wi-Fi address is plain `http://`, not HTTPS. What Pleni shows, and the
+  password when a device signs in, travel over your Wi-Fi without encryption of their own. Someone
+  else on the same network could read them. Use it only on a network you trust, like your home
+  Wi-Fi, and never on public Wi-Fi. Tailscale adds that lock if you need it.
+- **Only the address you chose.** Pleni listens only on addresses that start with `10.`, `172.16.`
+  to `172.31.`, or `192.168.`, which only devices on the same network can reach, and only on the
+  one you chose. On another network (a café, a hotel, a work VPN) your computer has another
+  address, so Pleni does not answer there until you choose it. It never listens on an address the
+  internet can reach. It answers only when the browser asks for that same address, which stops web
+  sites from reaching it by DNS rebinding.
+- **The password, not the key.** On the Wi-Fi address Pleni takes only the password. Its key does
+  not work there, so the key never travels without a padlock. A device's pass does, so Pleni lets
+  you sign each device out.
+- **Signed-in devices can look, not act.** A device on the Wi-Fi must sign in first. Then it sees
+  what you see. It cannot send messages, answer questions, merge, change models, or open windows,
+  and it cannot set the password or let in more devices.
+- Wi-Fi access stops when you turn it off, or when you remove the password.
+
 ## Remote access and its risks
 
 You can open Pleni from your phone or another device through `tailscale serve` (see the
@@ -245,16 +294,17 @@ both of these are true:
 - the request carries a Tailscale login (the `Tailscale-User-Login` header) that is on your
   `remote.tailscaleUsers` list.
 
-The other device also needs Pleni's key, the same as your own browser: open the address Pleni
-printed with your Tailscale address in place of `http://localhost:8790`, for example
+The other device also needs to sign in, with your password (see
+[above](#signing-in-with-a-password)) or with Pleni's key: open the address Pleni printed with your
+Tailscale address in place of `http://localhost:8790`, for example
 `https://my-pc.tail1234.ts.net/?t=<key>`.
 
 Before you turn it on, know the risks:
 
 - **Everyone you add sees what you see.** That includes session names, folder names, and, with
   `snippets`, bits of your work. Set `content` to `none` if that is too much.
-- **Everyone you add can change Pleni's settings,** including which folders it reads and who else
-  may open it. Add only yourself, or people you trust with your computer's work.
+- **Everyone you add can change most of Pleni's settings,** including which folders it reads, but
+  not who else may open it. Add only yourself, or people you trust with your computer's work.
 - **Never use `tailscale funnel`.** Funnel puts a page on the open internet.
 - **Use only `tailscale serve` in front of Pleni.** Pleni trusts the `Tailscale-User-Login`
   header because Tailscale sets it. Another proxy that passes that header on from the visitor

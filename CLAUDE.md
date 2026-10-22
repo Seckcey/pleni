@@ -55,6 +55,14 @@ before you change code, and follow its names, shapes, and file paths.
   network calls of its own: only opt-in Live GitHub status reaches GitHub, through `gh` and the
   person's own gh login. Show session text only when `content` is `snippets`, and never show
   thinking text.
+- **Who may open it.** Pleni listens on `127.0.0.1`. Only when the person turns on Wi-Fi access on
+  this computer, and only while a password is set, does it also listen on the home-network
+  addresses of this computer that the person chose (`src/lan.js`: 10.x, 172.16-31.x and
+  192.168.x), never on any other address. Another device signs in with the password (or, except on
+  a Wi-Fi address, the key) and gets a pass of its own (`src/signin.js`). Pleni keeps only hashes of
+  the password and the passes, slows down and then stops wrong tries, and lets only this computer
+  set the password, turn Wi-Fi access on or off, sign devices out, or change who may connect. The
+  buttons that act work only from this computer, never from a Wi-Fi or Tailscale device.
 - **Public repo privacy.** Never put personal names, e-mail addresses, user names, computer names,
   session ids, absolute paths from your computer, or real session content in any file, test,
   commit message, or screenshot. Use made-up examples such as `/home/ada/project` or

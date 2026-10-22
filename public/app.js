@@ -1,5 +1,6 @@
 // Pleni page logic: polls /api/snapshot and draws the map, list, activity, tasks and settings views.
 // Plain ES module, no build step. Every value from the server is escaped or set with textContent.
+import { qrSvg } from './qr.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -65,7 +66,7 @@ const DEFAULTS = {
   people: {},
   projects: {},
   chain: [],
-  remote: { hosts: [], tailscaleUsers: [] },
+  remote: { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] },
   actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false },
   send: { mode: 'read' },
   answers: { waitMinutes: 10 },
@@ -148,24 +149,6 @@ function writeStore(key, value) {
     else localStorage.setItem(key, value);
   } catch {
     // Storage can be blocked (private windows); the page still works without it.
-  }
-}
-
-// Session storage lasts only while this tab is open.
-function readSession(key) {
-  try {
-    return sessionStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function writeSession(key, value) {
-  try {
-    if (value == null) sessionStorage.removeItem(key);
-    else sessionStorage.setItem(key, value);
-  } catch {
-    // Blocked storage only means a wrong key gets no "did not work" message.
   }
 }
 
@@ -265,7 +248,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-ask-send', 'data-ask-approve', 'data-ask-keep', 'data-ask-allow', 'data-ask-deny', 'data-ask-back', 'data-hooks', 'data-merge', 'data-merge-yes', 'data-merge-no', 'data-gh-again', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-ask-send', 'data-ask-approve', 'data-ask-keep', 'data-ask-allow', 'data-ask-deny', 'data-ask-back', 'data-hooks', 'data-merge', 'data-merge-yes', 'data-merge-no', 'data-gh-again', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-pw', 'data-wifi-address', 'data-wifi', 'data-wifi-copy', 'data-device-out', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -803,7 +786,7 @@ function renderFacts() {
   const c = (S.snap && S.snap.counts) || {};
   let live = ['', 'Live'];
   if (S.conn === 'error') live = ['bad', 'Cannot reach Pleni'];
-  else if (S.conn === 'locked') live = ['bad', 'Needs its key'];
+  else if (S.conn === 'locked') live = ['bad', 'Sign in needed'];
   else if (document.hidden) live = ['paused', 'Paused'];
   else if (S.conn === 'starting') live = ['paused', 'Starting'];
   const parts = [`<span class="live ${live[0]}">${live[1]}</span>`];
@@ -865,52 +848,50 @@ function renderNotices() {
 }
 
 // ---- sign-in ----
-// Without the key cookie the API answers 401. The sign-in box takes the key and opens "/?t=<key>",
-// the same address Pleni prints, so the server sets the cookie and sends the browser back to "/".
-// The address to bookmark never carries the key.
-const SIGNIN_TRIED = 'pleni.signin';
-const KEY_TEXT = /^[A-Za-z0-9_-]{16,}$/;
+// Without a pass the API answers 401, and the sign-in box shows. It sends what the person typed (Pleni's
+// password, its key, or a sign-in link) to POST /api/signin. The answer's cookie signs this browser
+// in, and the page starts again.
+let signingIn = false;
+
+// The Wi-Fi address is plain http on another device; Pleni takes only the password there.
+const WIFI_PAGE = !LOCAL_PAGE && location.protocol === 'http:';
 
 function renderSignIn() {
   const box = $('#signin');
   const locked = S.conn === 'locked';
-  // Signed in: forget the try, so a later lock does not blame this key.
-  if (S.conn === 'live' && readSession(SIGNIN_TRIED)) writeSession(SIGNIN_TRIED, null);
   if (box.hidden !== locked) return;
   box.hidden = !locked;
-  if (!locked) return;
-  // Back from a key that did not work: say so once.
-  if (readSession(SIGNIN_TRIED)) {
-    writeSession(SIGNIN_TRIED, null);
-    signInMessage('That key did not work. Check that you copied all of it.');
-  }
+  $('#signin-key-note').hidden = WIFI_PAGE;
   // Only take the focus when nothing else has it, so a sign-in box never pulls it away.
-  if (document.activeElement === document.body) $('#signin-key').focus();
+  if (locked && document.activeElement === document.body) $('#signin-key').focus();
 }
 
-function signInMessage(text) {
+function signInMessage(text, bad = true) {
   $('#signin-msg').textContent = text;
-  if (text) $('#signin-key').setAttribute('aria-invalid', 'true');
+  if (text && bad) $('#signin-key').setAttribute('aria-invalid', 'true');
   else $('#signin-key').removeAttribute('aria-invalid');
 }
 
-// The key alone, or a whole pasted address that holds "?t=<key>".
-function keyFromText(text) {
-  const t = String(text || '').trim();
-  const m = /(?:^|[?&])t=([A-Za-z0-9_-]+)/.exec(t);
-  return m ? m[1] : t;
-}
-
-function signIn() {
-  const key = keyFromText($('#signin-key').value);
-  if (!KEY_TEXT.test(key)) {
-    signInMessage('That is not a key. A key is a long run of letters, digits, "-" and "_".');
-    $('#signin-key').focus();
+async function signIn() {
+  const field = $('#signin-key');
+  if (!field.value.trim()) {
+    signInMessage('Type the password first.');
+    field.focus();
     return;
   }
-  signInMessage('');
-  writeSession(SIGNIN_TRIED, '1');
-  location.assign(`/?t=${encodeURIComponent(key)}`);
+  if (signingIn) return;
+  signingIn = true;
+  signInMessage('Signing in…', false);
+  try {
+    await postJson('/api/signin', { secret: field.value });
+    location.replace('/');
+  } catch (err) {
+    signInMessage(plainError(err));
+    field.focus();
+    field.select();
+  } finally {
+    signingIn = false;
+  }
 }
 
 function storedTheme() {
@@ -1340,7 +1321,7 @@ function renderMap() {
       ? ''
       : '<img src="/brand/pip-thinking.webp" alt="" width="72" height="72"><p>Nobody is working right now.</p><button type="button" class="btn" data-map-mode="all">Show everyone</button>',
   );
-  const foot = S.conn === 'error' ? 'Not live: cannot reach Pleni' : S.conn === 'locked' ? 'Not live: Pleni needs its key' : document.hidden ? 'Paused while this tab is hidden' : `Live · updated ${clock(S.lastOk, true)}`;
+  const foot = S.conn === 'error' ? 'Not live: cannot reach Pleni' : S.conn === 'locked' ? 'Not live: sign in first' : document.hidden ? 'Paused while this tab is hidden' : `Live · updated ${clock(S.lastOk, true)}`;
   setHtml(
     $('#map-foot'),
     `<span>${esc(foot)}</span><span class="${moving ? 'moving' : ''}">${moving ? esc(plural(moving, 'hand-off', 'hand-offs')) + ' moving' : 'No hand-offs moving'}</span>`,
@@ -4158,10 +4139,13 @@ function settingsState() {
 }
 
 // ---- other devices ----
-// On this computer, Settings shows the addresses for other devices, copies the key or a sign-in
-// link, and lists devices Pleni turned away lately, with Allow. It asks again every few seconds
-// while the Devices group is open, so a device that just tried shows up.
+// On this computer, Settings > Devices sets Pleni's password, turns Wi-Fi access on and off (with
+// the addresses and a QR code for each), lists the signed-in devices with Sign out, and keeps the
+// Tailscale setup: its addresses, the key, and devices Pleni turned away lately, with Allow. It asks
+// again every few seconds while the Devices group is open, so a device that just signed in shows up.
+// On another device it shows where Pleni is, and Sign out.
 const DEVICES_REFRESH_MS = 5000;
+const PASSWORD_MIN = 8;
 
 async function loadDevices(force) {
   const st = S.set;
@@ -4182,18 +4166,265 @@ async function loadDevices(force) {
 }
 
 function paintDevices() {
+  setHtml($('#password-box'), passwordHtml());
+  setHtml($('#wifi-box'), wifiHtml());
+  setHtml($('#signed-box'), signedHtml());
   setHtml($('#devices-box'), devicesHtml());
+}
+
+function boxMsgHtml(m) {
+  return m ? `<p class="roll-msg${m.bad ? ' bad' : ''}">${esc(m.text)}</p>` : '';
+}
+
+// The Devices answer, or a line that says it is still coming (or why it did not).
+function devicesOrWait(st) {
+  const d = st && st.devices;
+  if (d) return { d };
+  return { wait: `<p class="help">${esc(st && st.devicesError ? `Could not read this. ${st.devicesError}` : 'Loading…')}</p>` };
+}
+
+function passwordHtml() {
+  const st = S.set;
+  const { d, wait } = devicesOrWait(st);
+  if (!d) return wait;
+  const p = d.password || {};
+  const problem = p.problem ? `<p class="note bad">${esc(p.problem)}</p>` : '';
+  if (!p.set) {
+    return `${problem}<p class="note">No password yet. Set one, and your phone or another computer can sign in to Pleni with it, without the key.</p>${passwordFormHtml(false)}`;
+  }
+  if (st.pwEditing) return passwordFormHtml(true);
+  if (st.pwConfirmRemove) {
+    return '<p class="note"><b>Remove the password?</b> Devices that are signed in stay signed in, but nobody new can sign in with it, and Wi-Fi access stops.</p>' +
+      '<div class="roll-btns"><button type="button" class="btn primary" data-pw="remove-yes">Remove the password</button><button type="button" class="btn" data-pw="cancel">Keep it</button></div>';
+  }
+  if (p.locked) {
+    return '<p class="note bad"><b>Password sign-in is off.</b> Someone typed a wrong password many times in a row, so Pleni stopped taking it. If that was not you, someone may be trying to guess it: set a new password.</p>' +
+      '<div class="roll-btns"><button type="button" class="btn primary" data-pw="unlock">Turn password sign-in back on</button><button type="button" class="btn" data-pw="change">Set a new password</button></div>';
+  }
+  return `<p class="note"><b>A password is set.</b> You set it ${agoHtml(p.at)}. Your other devices sign in with it.</p>` +
+    '<div class="roll-btns"><button type="button" class="btn" data-pw="change">Change the password</button><button type="button" class="btn" data-pw="remove">Remove the password</button></div>';
+}
+
+function passwordFormHtml(change) {
+  return `<div class="srow"><label for="s-pw-new">${change ? 'New password' : 'Password'}</label><div><input class="field" id="s-pw-new" type="password" autocomplete="new-password" spellcheck="false" autocapitalize="off" aria-describedby="s-pw-help"></div>` +
+    `<p class="help" id="s-pw-help">At least ${PASSWORD_MIN} characters. A few words together are easy to remember and hard to guess.</p></div>` +
+    '<div class="srow"><label for="s-pw-again">Type it again</label><div><input class="field" id="s-pw-again" type="password" autocomplete="new-password" spellcheck="false" autocapitalize="off"></div></div>' +
+    `<div class="roll-btns"><button type="button" class="btn primary" data-pw="set">${change ? 'Save the new password' : 'Set the password'}</button>${change ? '<button type="button" class="btn" data-pw="cancel">Cancel</button>' : ''}</div>`;
+}
+
+// Its message sits outside the box, so showing one never clears what the person typed.
+function pwMessage(text, bad = false, field = null) {
+  const el = $('#pw-msg');
+  if (el) {
+    el.textContent = text;
+    el.classList.toggle('bad', !!bad);
+  }
+  if (text) say(text);
+  if (field) field.focus();
+}
+
+async function passwordAction(what) {
+  const st = S.set;
+  if (!st || st.pwBusy) return;
+  if (what === 'change' || what === 'cancel' || what === 'remove') {
+    st.pwEditing = what === 'change';
+    st.pwConfirmRemove = what === 'remove';
+    pwMessage('');
+    paintDevices();
+    const first = $(what === 'change' ? '#s-pw-new' : what === 'remove' ? '[data-pw="remove-yes"]' : '[data-pw="change"]');
+    if (first) first.focus();
+    return;
+  }
+  let body;
+  if (what === 'set') {
+    const a = $('#s-pw-new');
+    const b = $('#s-pw-again');
+    const text = a ? a.value : '';
+    if (Array.from(text).length < PASSWORD_MIN) return pwMessage(`Use at least ${PASSWORD_MIN} characters.`, true, a);
+    if (!b || b.value !== text) return pwMessage('The two passwords are not the same. Type them again.', true, b);
+    body = { password: text };
+  } else if (what === 'remove-yes') {
+    body = { password: null };
+  } else if (what === 'unlock') {
+    body = { unlock: true };
+  } else {
+    return;
+  }
+  st.pwBusy = true;
+  pwMessage(what === 'set' ? 'Saving the password…' : 'Changing it…');
+  try {
+    const res = await postJson('/api/password', body);
+    st.pwEditing = false;
+    st.pwConfirmRemove = false;
+    if (st.devices) Object.assign(st.devices, { password: res.password, lan: res.lan });
+    pwMessage(what === 'set' ? 'Password saved. On your other device, open Pleni and type it there.'
+      : what === 'unlock' ? 'Password sign-in is back on.'
+        : 'Password removed. Devices that are signed in stay signed in.');
+  } catch (err) {
+    pwMessage(`Not changed. ${plainError(err)}`, true);
+  } finally {
+    st.pwBusy = false;
+  }
+  paintDevices();
+  await loadDevices(true);
+}
+
+function wifiHtml() {
+  const st = S.set;
+  const { d, wait } = devicesOrWait(st);
+  if (!d) return wait;
+  if (d.demo) return '<p class="note">The demo does not open to your Wi-Fi.</p>';
+  const p = d.password || {};
+  const lan = d.lan || {};
+  const chosen = Array.isArray(lan.addresses) ? lan.addresses.filter(Boolean) : [];
+  const others = Array.isArray(lan.others) ? lan.others.filter(Boolean) : [];
+  const msg = boxMsgHtml(st.wifiMsg);
+  if (!getPath(st.info.settings, 'remote.lan', false)) {
+    const first = others[0];
+    const start = !p.set ? '<p class="note">Set a password above first.</p>'
+      : !first ? '<p class="note">This computer is not on a Wi-Fi or home network now.</p>'
+        : `<div class="roll-btns"><button type="button" class="btn primary" data-wifi="on" data-wifi-address="${esc(first.address)}">Open Pleni on this Wi-Fi</button></div>` +
+          `<p class="help">Pleni then answers on this computer's address on this network, ${esc(first.address)} (${esc(first.name || 'network')}), and nowhere else. On another network this computer has another address, and Pleni does not answer there until you choose it.</p>`;
+    return '<p class="note">Let your phone, tablet or another computer on the same Wi-Fi open Pleni. They sign in with Pleni\'s password. No Tailscale needed.</p>' + start + msg + WIFI_SAFETY;
+  }
+  if (!p.set) {
+    return '<p class="note bad"><b>Waiting for a password.</b> Wi-Fi access is on, but works only while a password is set. Set one above.</p>' +
+      `<div class="roll-btns"><button type="button" class="btn" data-wifi="off">Turn Wi-Fi access off</button></div>${msg}`;
+  }
+  const ok = chosen.filter((a) => a.ok && a.url);
+  const out = [];
+  if (ok.length) {
+    out.push('<p class="note"><b>On.</b> On your phone, point the camera at the QR code, or open the address. The phone must be on the same Wi-Fi as this computer. Then sign in with the password.</p>', wifiAddressHtml(ok[0], 0));
+    if (ok.length > 1) out.push(`<details class="smore"><summary>More addresses Pleni answers on (${ok.length - 1})</summary>${ok.slice(1).map((a, i) => wifiAddressHtml(a, i + 1)).join('')}</details>`);
+  } else if (others.length) {
+    out.push('<p class="note bad"><b>Pleni does not answer on this network.</b> This computer\'s address changed, or it is on another network now. Choose <b>Open Pleni here</b> only if you trust this network.</p>');
+  } else {
+    out.push('<p class="note bad">This computer is not on a Wi-Fi or home network now. Pleni looks again every 30 seconds.</p>');
+  }
+  for (const a of chosen.filter((x) => !x.ok && x.error)) out.push(`<p class="note bad">Pleni could not open ${esc(a.address)} (${esc(a.error)}). It tries again in 30 seconds.</p>`);
+  if (others.length) {
+    const rows = others.map((a) => `<li><span><code>${esc(a.address)}</code> ${esc(a.name || '')}</span>` +
+      `<button type="button" class="btn${ok.length ? '' : ' primary'}" data-wifi="on" data-wifi-address="${esc(a.address)}">Open Pleni here</button></li>`).join('');
+    out.push(ok.length
+      ? `<details class="smore"><summary>Other addresses of this computer (${others.length})</summary><p class="help">Pleni does not answer on these. Choose one only if your phone cannot open the address above.</p><ul class="knocks">${rows}</ul></details>`
+      : `<ul class="knocks">${rows}</ul>`);
+  }
+  out.push(`<div class="roll-btns"><button type="button" class="btn" data-wifi="off">Turn Wi-Fi access off</button></div>${msg}`);
+  out.push('<p class="help">The first time, Windows may ask whether Node.js may use the network: choose Allow. If your phone still cannot open the address, open Windows Settings, then Network and internet, and check that this Wi-Fi is a private network.</p>' + WIFI_SAFETY);
+  return out.join('');
+}
+
+const WIFI_SAFETY = '<p class="help">The Wi-Fi address has no padlock (it is not HTTPS), so what Pleni shows travels over your Wi-Fi without the extra lock Tailscale adds. Use it on a network you trust, like your home Wi-Fi, not on public Wi-Fi. Sending messages, answering questions and other buttons that act still work only on this computer.</p>';
+
+function wifiAddressHtml(a, i) {
+  let qr = '';
+  try {
+    qr = qrSvg(a.url, { label: `QR code for ${a.url}` });
+  } catch {
+    // An address too long for a QR code still shows as text.
+  }
+  return `<div class="wifi-addr">${qr ? `<div class="wifi-qr">${qr}</div>` : ''}<div class="wifi-text"><p><code>${esc(a.url)}</code></p>` +
+    `<p class="help">${esc(a.name || 'Network')}</p><button type="button" class="btn" data-wifi-copy="${i}">Copy the address</button></div></div>`;
+}
+
+async function setWifi(on, address) {
+  const st = S.set;
+  if (!st || st.wifiBusy) return;
+  st.wifiBusy = true;
+  st.wifiMsg = { text: on ? 'Opening Pleni on this Wi-Fi…' : 'Turning Wi-Fi access off…' };
+  paintDevices();
+  try {
+    const res = await postJson('/api/lan', on && address ? { on, address } : { on });
+    // Settings' own copy follows what the server saved.
+    for (const set of [st.info && st.info.settings, st.draft]) {
+      if (!set || !set.remote) continue;
+      const kept = Array.isArray(set.remote.lanAddresses) ? set.remote.lanAddresses.filter((a) => a !== address) : [];
+      set.remote.lan = on;
+      set.remote.lanAddresses = on ? kept.concat(address ? [address] : []) : [];
+    }
+    if (st.devices) st.devices.lan = res.lan;
+    const found = (res.lan.addresses || []).some((a) => a.ok);
+    st.wifiMsg = { text: !on ? 'Off. Pleni no longer answers on your Wi-Fi.' : found ? 'Wi-Fi access is on.' : 'Wi-Fi access is on, but Pleni found no Wi-Fi address yet.' };
+  } catch (err) {
+    st.wifiMsg = { text: `Not changed. ${plainError(err)}`, bad: true };
+  } finally {
+    st.wifiBusy = false;
+    say(st.wifiMsg.text);
+  }
+  paintDevices();
+  await loadDevices(true);
+}
+
+async function copyWifi(index) {
+  const st = S.set;
+  const list = st && st.devices && st.devices.lan && Array.isArray(st.devices.lan.addresses) ? st.devices.lan.addresses.filter((a) => a && a.ok && a.url) : [];
+  const a = list[index];
+  if (!a) return;
+  try {
+    await navigator.clipboard.writeText(a.url);
+    st.wifiMsg = { text: 'Copied the address.' };
+  } catch {
+    st.wifiMsg = { text: 'The browser did not allow copying. Select the address and copy it yourself.', bad: true };
+  }
+  say(st.wifiMsg.text);
+  paintDevices();
+}
+
+function signedHtml() {
+  const st = S.set;
+  const { d, wait } = devicesOrWait(st);
+  if (!d) return wait;
+  const list = Array.isArray(d.devices) ? d.devices : [];
+  const problem = d.devicesProblem ? `<p class="note bad">${esc(d.devicesProblem)}</p>` : '';
+  const help = '<p class="help">Sign out a device you lost or no longer use; it has to sign in again. A browser that opened a sign-in link with the key is not listed here. To sign all of those out, start Pleni once with --new-key.</p>';
+  const msg = boxMsgHtml(st.signedMsg);
+  if (!list.length) return `${problem}<p class="note">No device has signed in with the password yet.</p>${msg}${help}`;
+  const rows = list.map((x) => `<li><span><b>${esc(x.name)}</b>, signed in with the ${x.via === 'key' ? 'key' : 'password'} ${agoHtml(x.at)}, last used ${agoHtml(x.seen)}</span>` +
+    `<button type="button" class="btn" data-device-out="${esc(x.id)}">Sign out</button></li>`).join('');
+  return `${problem}<ul class="knocks">${rows}</ul><div class="roll-btns"><button type="button" class="btn" data-device-out="all">Sign out every device</button></div>${msg}${help}`;
+}
+
+async function signOutDevice(id) {
+  const st = S.set;
+  if (!st || st.signedBusy) return;
+  st.signedBusy = true;
+  try {
+    const res = await postJson('/api/devices', { remove: id });
+    st.signedMsg = { text: id !== 'all' ? 'Signed out. That device has to sign in again.'
+      : res.removed ? `Signed out ${plural(res.removed, 'device', 'devices')}. Each can sign in again with the password.` : 'No device was signed in.' };
+  } catch (err) {
+    st.signedMsg = { text: `Not signed out. ${plainError(err)}`, bad: true };
+  } finally {
+    st.signedBusy = false;
+    say(st.signedMsg.text);
+  }
+  await loadDevices(true);
+}
+
+// Sign out on this device (not the computer that runs Pleni): its pass stops working, and the page
+// starts again at the sign-in box.
+async function signOutHere() {
+  const st = settingsState();
+  try {
+    await postJson('/api/signout', {});
+    location.replace('/');
+  } catch (err) {
+    st.signOutMsg = { text: `Not signed out. ${plainError(err)}`, bad: true };
+    say(st.signOutMsg.text);
+    paintDevices();
+  }
 }
 
 function devicesHtml() {
   const st = S.set;
   const here = `${location.origin}/`;
   if (!LOCAL_PAGE) {
-    return `<p>You are using Pleni at <code>${esc(here)}</code>. Bookmark this page to come back: in Chrome, press Ctrl+D.</p>` +
-      '<p class="help">The key and the list of devices show only on the computer that runs Pleni.</p>';
+    return `<p>You are using Pleni at <code>${esc(here)}</code>. Bookmark this page to come back.</p>` +
+      `<div class="roll-btns"><button type="button" class="btn" id="s-signout">Sign out of this device</button></div>${boxMsgHtml(st && st.signOutMsg)}` +
+      '<p class="help">Sign out on a device other people use. You can sign in again with the password. The password, Wi-Fi access and the list of signed-in devices are set on the computer that runs Pleni.</p>';
   }
   const d = st && st.devices;
-  if (!d) return `<p class="help">${esc(st && st.devicesError ? `Could not read this. ${st.devicesError}` : 'Loading…')}</p>`;
+  if (!d) return devicesOrWait(st).wait;
   const addresses = Array.isArray(d.addresses) ? d.addresses : [];
   const waiting = (Array.isArray(d.knocks) ? d.knocks : []).filter((k) => k && !k.allowed);
   const out = [`<p>On this computer: <code>${esc(here)}</code></p>`];
@@ -4205,7 +4436,7 @@ function devicesHtml() {
     );
   } else {
     out.push(
-      '<p>No other device is set up yet. To set one up:</p><ol class="steps">' +
+      '<p>Tailscale works away from home too. To set up a device with it:</p><ol class="steps">' +
         `<li>On this computer, in PowerShell, run <code>tailscale serve --bg ${esc(location.port || String(getPath(st.draft, 'port', 8790)))}</code>. It shows an address such as <code>https://my-pc.tail1234.ts.net</code>.</li>` +
         '<li>Open that address on your other device, with Tailscale on. Pleni turns it away the first time, and it shows up here.</li>' +
         '<li>Choose <b>Allow</b> next to it. Then reload the page there.</li></ol>',
@@ -4221,10 +4452,10 @@ function devicesHtml() {
     );
   }
   out.push(
-    '<p>The first time, Pleni on the other device asks for its key.</p>' +
+    '<p>The first time, Pleni on the other device asks you to sign in. Type the password, or paste the key.</p>' +
       '<div class="roll-btns"><button type="button" class="btn" id="s-key-copy">Copy the key</button>' +
       (addresses.length ? '<button type="button" class="btn" id="s-link-copy">Copy a sign-in link</button>' : '') +
-      '</div><p class="help">Paste the key there. A sign-in link holds the key: open it once on the other device and it signs in by itself. Keep both private, like a password.</p>' +
+      '</div><p class="help">A sign-in link holds the key: open it once on the other device and it signs in by itself. Keep the key and the link private, like a password.</p>' +
       `<p class="roll-msg${st.devicesMsg && st.devicesMsg.bad ? ' bad' : ''}">${st.devicesMsg ? esc(st.devicesMsg.text) : ''}</p>`,
   );
   return out.join('');
@@ -5180,16 +5411,25 @@ function renderSettingsForm() {
       <div id="hooks-box">${hooksHtml()}</div>
       ${numberRow('s-answer-wait', 'Hold a question for', 'answers.waitMinutes', 1, 60, 'Minutes. Then the session asks in its own window again.')}
     </section>`)}
-    ${group('devices', 'Opening Pleni from another device, and where its settings are kept.', `
-    <section class="panel" aria-labelledby="s-h-link" data-find="address url link bookmark key sign in phone laptop chrome allow"><h2 id="s-h-link">Open Pleni on another device</h2>
+    ${group('devices', 'Opening Pleni on your phone or another computer, and where its settings are kept.', `
+    ${LOCAL_PAGE ? `<section class="panel" aria-labelledby="s-h-password" data-find="password sign in phone tablet laptop wrong tries lock"><h2 id="s-h-password">Password</h2>
+      <div id="password-box">${passwordHtml()}</div><p class="roll-msg" id="pw-msg" role="status"></p>
+    </section>
+    <section class="panel" aria-labelledby="s-h-wifi" data-find="wifi wi-fi home network lan phone tablet laptop qr code scan address"><h2 id="s-h-wifi">On this Wi-Fi</h2>
+      <div id="wifi-box">${wifiHtml()}</div>
+    </section>
+    <section class="panel" aria-labelledby="s-h-signed" data-find="signed in devices sign out remove lost phone"><h2 id="s-h-signed">Signed-in devices</h2>
+      <div id="signed-box">${signedHtml()}</div>
+    </section>` : ''}
+    <section class="panel" aria-labelledby="s-h-link" data-find="address url link bookmark key sign in out phone laptop chrome allow tailscale"><h2 id="s-h-link">${LOCAL_PAGE ? 'Through Tailscale' : 'This device'}</h2>
       <div id="devices-box">${devicesHtml()}</div>
     </section>
-    <section class="panel" aria-labelledby="s-h-remote" data-find="phone tablet laptop remote tailscale proxy port host login"><h2 id="s-h-remote">Other devices</h2>
-      <p class="note">Pleni only lets in the host names and Tailscale logins listed here. <b>Allow</b> above fills both in for you.</p>
+    ${LOCAL_PAGE ? `<section class="panel" aria-labelledby="s-h-remote" data-find="phone tablet laptop remote tailscale proxy port host login"><h2 id="s-h-remote">Allowed through Tailscale</h2>
+      <p class="note">Through Tailscale, Pleni only lets in the host names and Tailscale logins listed here. <b>Allow</b> above fills both in for you.</p>
       ${textRow('s-hosts', 'Allowed host names', 'remote.hosts', { kind: 'words', placeholder: 'pleni.example.ts.net', help: 'Separate names with commas. Up to 20.' })}
       ${textRow('s-users', 'Allowed Tailscale logins', 'remote.tailscaleUsers', { kind: 'words', placeholder: 'ada@example.com', help: 'Separate logins with commas. Up to 20.' })}
       ${numberRow('s-port', 'Port', 'port', 1024, 65535, 'Pleni uses a new port the next time it starts.')}
-    </section>
+    </section>` : ''}
     ${st.info.file ? `<section class="panel" aria-labelledby="s-h-file" data-find="file json saved where"><h2 id="s-h-file">Settings file</h2><p class="note">Saved on this computer in <code>${esc(st.info.file)}</code>.</p></section>` : ''}`)}
     <div class="btnrow">
       <button type="submit" class="btn primary" id="s-save">Save settings</button>
@@ -5579,6 +5819,12 @@ settingsBox.addEventListener('keydown', (ev) => {
   // Enter in a search box searches, and the Models section has its own Save button: neither
   // should save the whole form.
   if (ev.key === 'Enter' && (ev.target.id === 's-people-search' || ev.target.id === 's-find' || ev.target.closest('[data-models]'))) ev.preventDefault();
+  // Enter in a password field sets the password; the password is never part of the settings.
+  if (ev.key === 'Enter' && (ev.target.id === 's-pw-new' || ev.target.id === 's-pw-again')) {
+    ev.preventDefault();
+    passwordAction('set');
+    return;
+  }
   if (ev.key === 'Escape' && ev.target.id === 's-find' && ev.target.value) {
     ev.preventDefault();
     ev.target.value = '';
@@ -5680,6 +5926,11 @@ document.addEventListener('click', (ev) => {
   if (el.id === 's-key-copy') return copyDevices('key');
   if (el.id === 's-link-copy') return copyDevices('link');
   if (el.dataset.allow) return allowDevice(Number(el.dataset.allow));
+  if (el.dataset.pw) return passwordAction(el.dataset.pw);
+  if (el.dataset.wifi) return setWifi(el.dataset.wifi === 'on', el.dataset.wifiAddress);
+  if (el.dataset.wifiCopy) return copyWifi(Number(el.dataset.wifiCopy));
+  if (el.dataset.deviceOut) return signOutDevice(el.dataset.deviceOut);
+  if (el.id === 's-signout') return signOutHere();
   if (el.id === 's-chain-add') return addChainRule();
   if (el.dataset.modelsAct) return modelsAction(el.dataset.modelsApp, el.dataset.modelsAct);
   if (el.dataset.chainRemove) return removeChainRule(Number(el.dataset.chainRemove));

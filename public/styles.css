@@ -752,9 +752,16 @@ details.fold > summary { cursor: pointer; color: var(--ui-text-secondary); }
 }
 .sgroup { display: grid; gap: var(--ui-space-6); }
 /* Open Pleni on another device: the addresses, the steps, and the devices turned away. */
-#devices-box > p { margin: var(--ui-space-3) 0 0; }
-#devices-box > p:first-child { margin-top: 0; }
-#devices-box .help { font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+#devices-box > p, #password-box > p, #wifi-box > p, #signed-box > p { margin: var(--ui-space-3) 0 0; }
+#devices-box > p:first-child, #password-box > p:first-child, #wifi-box > p:first-child, #signed-box > p:first-child { margin-top: 0; }
+#devices-box .help, #password-box .help, #wifi-box .help, #signed-box .help { font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+/* A Wi-Fi address with its QR code. The code stays black on white in both themes, for cameras. */
+.wifi-addr { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-4) var(--ui-space-6); margin-top: var(--ui-space-4); }
+.wifi-qr { flex: 0 0 auto; line-height: 0; }
+.wifi-qr .qr { width: 196px; height: 196px; max-width: 60vw; max-height: 60vw; border-radius: var(--ui-radius-md); }
+.wifi-text { min-width: 0; }
+.wifi-text p { margin: 0 0 var(--ui-space-2); overflow-wrap: anywhere; }
+.wifi-text code { font-size: var(--ui-font-md); }
 .addr-list, .knocks { list-style: none; margin: var(--ui-space-3) 0 0; padding: 0; display: grid; gap: var(--ui-space-3); }
 .addr-list li, .knocks li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3) var(--ui-space-5); }
 .addr-list code, .knocks code { font-size: var(--ui-font-md); }
