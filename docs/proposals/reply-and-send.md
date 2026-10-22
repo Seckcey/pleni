@@ -3,8 +3,8 @@
 Status: proposal. Step 1 of the plan, the relay waking the planner's Codex thread, is built in
 `relay/`, and so is **agent mail** (step 7, below), which lets the other Codex threads message each
 other without the Codex app; Pleni shows that mail. **Roll over** and **New agent** (step 4) are built in Pleni (see
-below). **Send** (step 3) is set aside: the owner would rather open sessions in command-line windows
-and type there. Its design stays below as a record. The rest is not built yet.
+below). **Send** (step 3) is built too: the owner asked for it in October 2026, so a team can run
+with no Codex or Claude app open. The rest is not built yet.
 
 ## What we want
 
@@ -189,14 +189,17 @@ sends nothing and the rule about free text does not come up.
 A first message typed in Pleni would be free text, like Send (step 3), so it is not built: the
 person types it in the window.
 
-## Step 3: Send a message (set aside)
+## Step 3: Send a message (built)
 
-The owner chose not to build this in October 2026. Sessions open in PowerShell windows instead
-(Open in PowerShell and New agent), where the person types. The design stays here in case that
-changes.
-
-Send is free text: whatever the person types goes to a session that can run commands. So it needs
-the owner's yes and a change to the rule in `CLAUDE.md` and `AGENTS.md` before it is built.
+First set aside, then asked for by the owner in October 2026: with no Codex or Claude app running,
+the person still wants to type to a session from Pleni. Send is free text: whatever the person types
+goes to a session that can run commands. So it came with the owner's yes and a change to the rule
+in `CLAUDE.md` and `AGENTS.md`. What was built differs from the design below in a few places: the
+tab is called Chat; Claude Code's turn uses `--output-format json` (one answer at the end, so a
+Pleni that stops mid-turn does not cut the turn short) and `--permission-mode dontAsk` for "read and
+answer"; Codex's output is not read at all (its exit code tells how the turn ended); and the record
+is `sent.jsonl`. The answers to the three questions below: yes; "read and answer" by default, with a
+setting for "also change files"; and this computer only. `docs/architecture.md` describes it.
 
 **What the person sees.** A session's side panel gets a **Chat** tab: the last messages between the
 person and the session (Pleni already reads them, as short snippets when `content` is `snippets`),
@@ -369,7 +372,7 @@ sessions can run commands on the computer. So:
 | --- | --- | --- | --- |
 | 1 | The relay wakes the planner's Codex thread (above) | Medium, outside Pleni | Built |
 | 2 | Tests on a spare computer: Claude hooks in the desktop app (HTTP hooks, secret header, what the app shows while a hook waits, the `ExitPlanMode` answer format), and the Codex app server questions above | Small | |
-| 3 | Send a message to idle sessions, Claude and Codex, with the safety checks | Medium | Set aside: the owner prefers command-line windows. Roll over's fixed handoff request is built |
+| 3 | Send a message to idle sessions, Claude and Codex, with the safety checks | Medium | Built (`src/send.js`, the Chat tab) |
 | 4 | **New agent:** choose Claude Code or Codex and a name; Pleni opens it in a PowerShell window in the folder of a session on the map, the same way as Open in PowerShell. The first message is typed there | Medium | Built |
 | 5 | Claude questions, plans and permission prompts through hooks, with the "Connect" step, the switch per session, and the answer controls | Large | |
 | 6 | Codex answers and messages through the app server, with `codex exec resume` as the fallback | Large, depends on step 2 | |

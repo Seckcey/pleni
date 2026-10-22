@@ -296,13 +296,14 @@ test('dismissed notices hide until something newer happens, and are kept in the 
 
 test('the snapshot offers the window buttons only when turned on and Pleni runs on Windows', () => {
   const make = (settings, platform) => createStore({ settings: cleanSettings(settings), roots: ROOTS, now: clock(), factories: fakes().factories, platform });
-  const all = { actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true } };
-  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false };
+  const all = { actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true, send: true } };
+  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false };
   assert.deepEqual(make({}, 'win32').snapshot().actions, off);
   assert.deepEqual(make({ actions: { openTerminal: true } }, 'win32').snapshot().actions, { ...off, openTerminal: true });
   assert.deepEqual(make({ actions: { rollover: true } }, 'win32').snapshot().actions, { ...off, rollover: true });
   assert.deepEqual(make({ actions: { newAgent: true } }, 'win32').snapshot().actions, { ...off, newAgent: true });
   assert.deepEqual(make({ actions: { teleport: true } }, 'win32').snapshot().actions, { ...off, teleport: true });
+  assert.deepEqual(make({ actions: { send: true } }, 'win32').snapshot().actions, { ...off, send: true });
   assert.deepEqual(make(all, 'win32').snapshot().actions, all.actions);
   assert.deepEqual(make(all, 'linux').snapshot().actions, off);
   assert.deepEqual(make(all, 'darwin').snapshot().actions, off);

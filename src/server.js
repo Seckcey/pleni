@@ -22,6 +22,7 @@ import { GITHUB_MESSAGES, createGithub } from './github.js';
 import { MODELS_MESSAGES, createModelSaver, readClaudeModels, readCodexModels } from './models.js';
 import { demoClaudeModels, demoGithub, demoModels } from './demo.js';
 import { rollover, rolloverInfo } from './rollover.js';
+import { createSender, sendLogFile } from './send.js';
 
 const BIND_HOST = '127.0.0.1';
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -108,6 +109,7 @@ const MESSAGES = {
   rollRemote: 'A session can be rolled over only on the computer that runs Pleni, not from another device.',
   newRemote: 'A new agent can be started only on the computer that runs Pleni, not from another device.',
   teleportRemote: 'A cloud session can be brought here only on the computer that runs Pleni, not from another device.',
+  sendRemote: 'A message can be sent from Pleni only on the computer that runs it, not from another device.',
   mergeRemote: 'A pull request can be merged from Pleni only on the computer that runs it, not from another device.',
   devicesRemote: "Pleni's key and the devices it turned away show only on the computer that runs Pleni.",
   hostPage: 'Pleni does not answer requests for this address yet.\n\nIf this is your own device: on the computer that runs Pleni, open Pleni, go to Settings, then Devices, and choose Allow next to this device. Then reload this page.\n',
@@ -197,9 +199,9 @@ export function loadOrCreateKey(file, { renew = false, tries, pause } = {}) {
 // Without them, settings are read from and saved to the usual settings file.
 // `key` is the secret every API request needs (see keyAllowed); a new one is made when it is left out.
 // `platform` and `spawnProcess` are for Open in PowerShell (see src/open.js), `github` for live
-// GitHub status (see src/github.js) and `modelSaver` for the Models page (see src/models.js); tests
-// replace them.
-export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null, github = null, modelSaver = null }) {
+// GitHub status (see src/github.js), `modelSaver` for the Models page (see src/models.js) and
+// `sender` for Send (see src/send.js); tests replace them.
+export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null, github = null, modelSaver = null, sender = null }) {
   if (typeof key !== 'string' || !KEY_RE.test(key)) {
     throw new Error('The server key must be at least 16 letters, digits, "-" or "_".');
   }
@@ -218,6 +220,7 @@ export function createServer({ store, getSettings, saveSettings, publicDir = PUB
     opens: openLimits(),
     github: github ?? createGithub(),
     models: modelSaver ?? createModelSaver(),
+    sender: sender ?? createSender(spawnProcess ? { spawn: spawnProcess } : {}),
     knocks: new Map(),
   };
   return http.createServer((req, res) => {
@@ -287,6 +290,7 @@ async function handle(app, req, res) {
     if (pathname === '/api/rollover') return postRollover(app, req, res, host);
     if (pathname === '/api/new') return postNewAgent(app, req, res, host);
     if (pathname === '/api/teleport') return postTeleport(app, req, res, host);
+    if (pathname === '/api/send') return postSend(app, req, res, host);
     if (pathname === '/api/github/merge') return postMerge(app, req, res, host);
     if (pathname === '/api/models') return postModels(app, req, res, host);
     return postSettings(app, req, res, host);
@@ -298,6 +302,7 @@ async function handle(app, req, res) {
   if (pathname === '/api/snapshot') return sendSnapshot(app, req, res);
   if (pathname === '/api/session') return sendSession(app, req, res, new URLSearchParams(query));
   if (pathname === '/api/rollover') return sendRollover(app, req, res, host, new URLSearchParams(query));
+  if (pathname === '/api/send') return sendSendInfo(app, req, res, host, new URLSearchParams(query));
   if (pathname === '/api/devices') return sendDevices(app, req, res, host);
   if (pathname === '/api/github') return sendGithub(app, req, res, host, new URLSearchParams(query));
   if (pathname === '/api/mail') return sendMail(app, req, res, new URLSearchParams(query));
@@ -306,7 +311,7 @@ async function handle(app, req, res) {
 }
 
 function allowedMethods(pathname) {
-  if (pathname === '/api/settings' || pathname === '/api/rollover' || pathname === '/api/models') return ['GET', 'HEAD', 'POST'];
+  if (pathname === '/api/settings' || pathname === '/api/rollover' || pathname === '/api/models' || pathname === '/api/send') return ['GET', 'HEAD', 'POST'];
   if (['/api/placement', '/api/dismiss', '/api/watch', '/api/hide', '/api/open', '/api/new', '/api/teleport', '/api/github/merge'].includes(pathname)) return ['POST'];
   if (PAGE_FILES.has(pathname) || API_GET.has(pathname)) return READ_ONLY;
   if (/^\/brand\/[^/]+$/.test(pathname)) return READ_ONLY;
@@ -685,6 +690,36 @@ async function postTeleport(app, req, res, host) {
     ...(app.spawnProcess ? { spawn: app.spawnProcess } : {}),
   });
   if (result.ok) return sendJson(req, res, 200, { ok: true });
+  return sendError(req, res, result.status, result.error);
+}
+
+// Send a message: GET /api/send?key=<key> answers what the page shows before a send ({ problem,
+// running, last, mode }), and POST /api/send { key, text, id } sends one message as a hidden turn of
+// that session. Both work only on this computer, like Open in PowerShell; src/send.js makes the other
+// checks. The message goes to the program's standard input and is not kept.
+function sendSendInfo(app, req, res, host, params) {
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.sendRemote);
+  const result = app.sender.info({ key: params.get('key'), settings: app.readSettings().settings, store: app.store, platform: app.platform });
+  if (result.ok) return sendJson(req, res, 200, result.info);
+  return sendError(req, res, result.status, result.error);
+}
+
+async function postSend(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, MESSAGES.sendRemote);
+  const state = app.readSettings();
+  const result = await app.sender.send({
+    key: body.key,
+    text: body.text,
+    id: body.id,
+    settings: state.settings,
+    roots: state.roots ?? {},
+    store: app.store,
+    logFile: sendLogFile(state.file ?? settingsFile()),
+    platform: app.platform,
+  });
+  if (result.ok) return sendJson(req, res, 200, result.repeat ? { ok: true, repeat: true } : { ok: true });
   return sendError(req, res, result.status, result.error);
 }
 

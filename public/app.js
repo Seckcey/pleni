@@ -66,7 +66,8 @@ const DEFAULTS = {
   projects: {},
   chain: [],
   remote: { hosts: [], tailscaleUsers: [] },
-  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false },
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false },
+  send: { mode: 'read' },
   github: { live: false, merge: false, mergeMethod: 'squash' },
   models: { edit: false },
   alerts: { stoppedMinutes: 15 },
@@ -2233,7 +2234,7 @@ function setInert(on) {
 function openDrawer(key, opener) {
   const prev = S.drawer;
   if (prev) leaveDrawer();
-  S.drawer = { key, tab: 'now', events: [], next: null, loaded: false, error: null, busy: false, frame: '', pick: null, opener: prev ? prev.opener : opener || document.activeElement };
+  S.drawer = { key, tab: 'now', events: [], next: null, loaded: false, error: null, busy: false, frame: '', pick: null, send: newSendState(key), opener: prev ? prev.opener : opener || document.activeElement };
   $('#layer').hidden = false;
   setInert(true);
   renderDrawerParts();
@@ -2263,10 +2264,11 @@ function focusables(root) {
 
 const DRAWER_TABS = {
   session: [['now', 'Now'], ['details', 'Details'], ['handoffs', 'Hand-offs']],
+  chat: [['now', 'Now'], ['chat', 'Chat'], ['details', 'Details'], ['handoffs', 'Hand-offs']],
   relay: [['now', 'Overview'], ['details', 'Details'], ['handoffs', 'Hand-offs']],
   group: [['now', 'Overview'], ['details', 'Details']],
 };
-const DRAWER_ABOUT = { session: 'About this session', relay: 'About the relay', group: 'About this group' };
+const DRAWER_ABOUT = { session: 'About this session', chat: 'About this session', relay: 'About the relay', group: 'About this group' };
 
 // The frame (title, Reports to menu, tabs, empty panels) is rebuilt only when the kind of drawer
 // changes. The message under the menu, and the one under the tabs that says a "Needs you" was
@@ -2297,7 +2299,7 @@ function drawerFrame(frame) {
       )
       .join('') +
     '</div>' +
-    (frame === 'session'
+    (frame === 'session' || frame === 'chat'
       ? '<p class="dplace-done dnote" id="d-note"><span id="d-note-msg" role="status"></span><button type="button" class="btn" id="d-note-undo" data-undo aria-describedby="d-note-msg" hidden>Undo</button></p>'
       : '') +
     tabs.map(([id]) => `<div role="tabpanel" id="dpanel-${id}" aria-labelledby="dtab-${id}" tabindex="0"${id === d.tab ? '' : ' hidden'}></div>`).join('')
@@ -2314,6 +2316,7 @@ function selectTab(id, focus) {
     if (on && focus) t.focus();
   }
   for (const p of $$('#drawer [role="tabpanel"]')) p.hidden = p.id !== `dpanel-${id}`;
+  if (id === 'chat') sendLoad();
 }
 
 function renderDrawerParts() {
@@ -2321,7 +2324,7 @@ function renderDrawerParts() {
   if (!d) return;
   const n = S.index && S.index.byKey.get(d.key);
   const group = !!n && !isSession(n);
-  const frame = !group ? 'session' : isRelay(n) ? 'relay' : 'group';
+  const frame = !group ? (canSend(n) ? 'chat' : 'session') : isRelay(n) ? 'relay' : 'group';
   const drawer = $('#drawer');
   if (d.frame !== frame) {
     const hadFocus = drawer.contains(document.activeElement);
@@ -2350,6 +2353,7 @@ function renderDrawerParts() {
     setHtml($('#dpanel-now'), sessionNowHtml(n, d));
     setHtml($('#dpanel-details'), n ? detailsHtml(n) : '<p class="empty">No details: this session is not listed right now.</p>');
     setHtml($('#dpanel-handoffs'), handoffsHtml(d.key));
+    if (frame === 'chat') paintChat(n, d);
   }
 }
 
@@ -2771,6 +2775,186 @@ async function teleportHere(btn) {
     showMoved({ key: here, spot: 'note', bad: true, fadeMs: OPEN_ERROR_MS, text: `Not opened. ${plainError(err)}` });
   } finally {
     opening.delete(`teleport:${key}`);
+  }
+}
+
+// ---- Send a message ----
+// The Chat tab of a main Claude Code session or Codex thread, on this computer, when Send is on. The
+// person types a message and Pleni sends it as one hidden turn of that session, the same as typing it
+// there (src/send.js): the message goes to the program's standard input, never onto a command line.
+// The answer shows here as Pleni reads it from the session's own file, like every other event.
+
+const SEND_REFRESH_MS = 4000; // how often the open Chat tab asks whether a message can go out
+const MAX_SEND = 8000; // the longest message the server takes
+const SEND_COUNT_FROM = 7000; // the count shows from here on
+const drafts = new Map(); // session key -> a message typed but not sent yet, kept while the page is open
+
+function canSend(n) {
+  return !!n && LOCAL_PAGE && !!(S.snap && S.snap.actions && S.snap.actions.send) && n.kind === 'session' && ROLL_KEY.test(n.key);
+}
+
+function newSendState(key) {
+  return { text: drafts.get(key) || '', id: null, busy: false, msg: null, info: null, at: 0, loading: false, loadError: null, waiting: false, result: null };
+}
+
+// One id per message, so a send that is tried again after a lost answer is not sent twice.
+function newSendId() {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// The tab is built once; afterwards only the conversation and the lines under the box change, so a
+// repaint never touches what the person is typing.
+function chatFrameHtml() {
+  return (
+    '<div class="dchat">' +
+    '<ol class="dev dchat-log" id="d-chat-log" aria-label="Conversation"></ol>' +
+    '<div class="dchat-form">' +
+    '<label for="d-chat-text">Message</label>' +
+    `<textarea class="field" id="d-chat-text" rows="4" maxlength="${MAX_SEND}" aria-describedby="d-chat-help d-chat-state"></textarea>` +
+    '<div class="roll-btns"><button type="button" class="btn primary" id="d-chat-send">Send</button><span class="dchat-count" id="d-chat-count"></span></div>' +
+    '<p class="help" id="d-chat-help"></p>' +
+    '<p class="roll-msg" id="d-chat-state" role="status"></p>' +
+    '</div></div>'
+  );
+}
+
+function paintChat(n, d) {
+  const panel = $('#dpanel-chat');
+  if (!panel) return;
+  const s = d.send;
+  if (!$('.dchat-form', panel)) {
+    panel.innerHTML = chatFrameHtml();
+    $('#d-chat-text').value = s.text;
+  }
+  if (d.tab === 'chat' && !s.loading && Date.now() - s.at > SEND_REFRESH_MS) sendLoad();
+  const log = $('#d-chat-log');
+  const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
+  if (setHtml(log, chatLogHtml(n, d)) && atEnd) log.scrollTop = log.scrollHeight;
+  setText($('#d-chat-help'), sendHelp(n, s));
+  const state = sendState(s);
+  const line = $('#d-chat-state');
+  setText(line, state.text);
+  line.classList.toggle('bad', !!state.bad);
+  const btn = $('#d-chat-send');
+  btn.setAttribute('aria-disabled', String(!!sendBlocked(s)));
+  setText(btn, s.busy ? 'Sending…' : 'Send');
+  const length = ($('#d-chat-text').value || '').length;
+  setText($('#d-chat-count'), length >= SEND_COUNT_FROM ? `${length} of ${MAX_SEND} characters` : '');
+}
+
+// The messages to the session and its answers, oldest first, newest at the bottom.
+function chatLogHtml(n, d) {
+  if (d.error) return `<li class="empty">Could not load the conversation. ${esc(d.error)}</li>`;
+  if (!d.loaded) return '<li class="empty">Loading the conversation…</li>';
+  const said = d.events.filter((e) => (e.kind === 'user' || e.kind === 'assistant' || e.kind === 'error') && e.text);
+  if (!said.length) {
+    return d.events.length
+      ? '<li class="empty">Nothing to show here. Snippets are turned off in Settings, or there are no messages yet.</li>'
+      : '<li class="empty">No messages yet.</li>';
+  }
+  const label = (e) => (e.kind === 'user' ? 'Message' : e.kind === 'error' ? 'Error' : titleOf(n));
+  return said
+    .slice(-60)
+    .map((e) => `<li class="k-${e.kind}">${timeHtml(e.at, clock(e.at, true)) || '<span></span>'}<div><span class="k">${esc(label(e))}</span><div class="tx">${esc(e.text)}</div></div></li>`)
+    .join('');
+}
+
+function sendHelp(n, s) {
+  const plan = n.platform === 'codex' ? 'ChatGPT' : 'Claude';
+  const what = s.info && s.info.mode === 'edit'
+    ? 'It may read files, answer, and change files in its folder.'
+    : 'It may read files and answer. It cannot change files (Settings, Buttons).';
+  return `Pleni sends it as one turn of this session, as if you typed it there, and the answer shows above. ${what} Each message uses your ${plan} plan. Ctrl+Enter sends.`;
+}
+
+// Why the Send button would not send now, or ''.
+function sendBlocked(s) {
+  if (s.busy) return 'Sending…';
+  if (!s.info) return '';
+  if (s.info.running) return 'Pleni is still waiting for the answer to your last message.';
+  return s.info.problem || '';
+}
+
+// The line under the box: what happened to the last message, else why a message cannot go out now.
+function sendState(s) {
+  if (s.busy) return { text: 'Sending…' };
+  if (s.msg && s.msg.bad) return s.msg;
+  if (s.waiting) return { text: 'Sent. Pleni is waiting for the answer…' };
+  if (s.result === 'ok') return { text: 'Answered. The answer is above.' };
+  if (s.result === 'bad') return { text: 'The turn ended with an error. Open the session to see what happened.', bad: true };
+  if (s.msg) return s.msg;
+  if (s.loadError) return { text: `Pleni could not check this session just now. ${s.loadError}`, bad: true };
+  if (s.info && s.info.problem) return { text: s.info.problem };
+  return { text: '' };
+}
+
+async function sendLoad() {
+  const d = S.drawer;
+  const s = d && d.send;
+  if (!s || s.loading || d.frame !== 'chat') return;
+  s.loading = true;
+  try {
+    const info = await getJson(`/api/send?key=${encodeURIComponent(d.key)}`);
+    if (S.drawer !== d) return;
+    s.info = info && typeof info === 'object' ? info : null;
+    s.loadError = null;
+    if (s.waiting && s.info && !s.info.running) {
+      s.waiting = false;
+      s.result = s.info.last ? (s.info.last.ok ? 'ok' : 'bad') : null;
+      say(sendState(s).text);
+    }
+  } catch (err) {
+    if (S.drawer === d) s.loadError = plainError(err);
+  } finally {
+    s.loading = false;
+    s.at = Date.now();
+    if (S.drawer === d && d.frame === 'chat') paintChat(S.index && S.index.byKey.get(d.key), d);
+  }
+}
+
+async function sendChat() {
+  const d = S.drawer;
+  const s = d && d.send;
+  if (!s || s.busy) return;
+  const n = S.index && S.index.byKey.get(d.key);
+  const box = $('#d-chat-text');
+  const text = (box ? box.value : s.text).trim();
+  const refuse = (msg) => {
+    s.msg = { text: msg, bad: true };
+    paintChat(n, d);
+    say(msg);
+    if (box) box.focus();
+  };
+  if (!text) return refuse('Type a message first.');
+  if (text.length > MAX_SEND) return refuse(`This message is too long. Keep it to ${MAX_SEND} characters or fewer.`);
+  const blocked = sendBlocked(s);
+  if (blocked) return refuse(blocked);
+  s.id = s.id || newSendId();
+  s.busy = true;
+  s.msg = null;
+  s.result = null;
+  paintChat(n, d);
+  try {
+    const body = await postJson('/api/send', { key: d.key, text, id: s.id });
+    s.id = null;
+    s.text = '';
+    drafts.delete(d.key);
+    if (S.drawer === d && box) box.value = '';
+    s.waiting = true;
+    s.msg = { text: body && body.repeat ? 'This message was sent already. Pleni is waiting for the answer…' : 'Sent. Pleni is waiting for the answer…' };
+  } catch (err) {
+    s.msg = { text: `Not sent. ${plainError(err)}`, bad: true };
+  } finally {
+    s.busy = false;
+    say(s.msg.text);
+    if (S.drawer === d) {
+      s.at = 0; // ask again at once
+      paintChat(S.index && S.index.byKey.get(d.key), d);
+      if (box && !s.msg.bad) box.focus();
+      fetchDrawerEvents();
+    }
   }
 }
 
@@ -3441,6 +3625,11 @@ function say(text) {
 
 const drawerBox = $('#drawer');
 drawerBox.addEventListener('keydown', (ev) => {
+  if (ev.target.id === 'd-chat-text' && ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+    ev.preventDefault();
+    sendChat();
+    return;
+  }
   if (ev.target.id === 'd-new-name' && ev.key === 'Enter') {
     ev.preventDefault();
     newStart();
@@ -3456,6 +3645,20 @@ drawerBox.addEventListener('keydown', (ev) => {
   }
 });
 drawerBox.addEventListener('input', (ev) => {
+  if (ev.target.id === 'd-chat-text' && S.drawer) {
+    const d = S.drawer;
+    const s = d.send;
+    s.text = ev.target.value;
+    if (s.text) drafts.set(d.key, s.text);
+    else drafts.delete(d.key);
+    s.id = null; // a changed message is a new message
+    if (!s.busy) {
+      s.msg = null;
+      s.result = null;
+    }
+    paintChat(S.index && S.index.byKey.get(d.key), d);
+    return;
+  }
   const a = S.drawer && S.drawer.newAgent;
   if (!a || ev.target.id !== 'd-new-name') return;
   a.name = ev.target.value;
@@ -4665,13 +4868,19 @@ function renderSettingsForm() {
       ${numberRow('s-roll-squeezes', 'Squeezed at least', 'rollSoon.squeezes', 0, 100, 'Times its history was squeezed into a summary.')}
       ${numberRow('s-roll-days', 'Older than', 'rollSoon.days', 0, 365, 'Days since the session started.')}
     </section>`)}
-    ${group('buttons', 'Buttons that open and start sessions in PowerShell windows. Off until you turn them on.', `
+    ${group('buttons', 'Buttons that open and start sessions in PowerShell windows, and the message box. Off until you turn them on.', `
     <section class="panel" aria-labelledby="s-h-open" data-find="buttons powershell terminal window resume roll over windows new agent start team cloud teleport web"><h2 id="s-h-open">Open sessions</h2>
       ${checkRow('s-open', 'Open in PowerShell', 'actions.openTerminal', 'Show the Open in PowerShell button', 'Opens a session in a new PowerShell window, so you can see it and type to it. Pleni never types into it. Windows only, this computer only. It will not open a session that is already open in another window.')}
       ${checkRow('s-new', 'New agent', 'actions.newAgent', 'Show the New agent button', 'Starts a new Claude Code or Codex session in the folder of a session you pick, in a new PowerShell window. You type its first message there. Windows only, this computer only.')}
       ${checkRow('s-teleport', 'Bring a cloud session here', 'actions.teleport', 'Show the Bring a cloud session here button', 'Opens a PowerShell window in a Claude Code session\'s folder that runs claude --teleport, so you can pick one of your claude.ai cloud sessions and go on with it on this computer, where Pleni shows it. That folder must hold the same repository with no unsaved changes, and the cloud session\'s branch must be pushed. Windows only, this computer only.')}
       ${checkRow('s-roll', 'Roll over', 'actions.rollover', 'Show the Roll over button', 'Starts a fresh session with the same name, from a handoff note the old one writes. Each step opens a window and sends one short message, which the side panel shows first. Windows only, this computer only, for sessions with a name of their own. It will not send to a session that is busy or open in another window.')}
       ${st.info.platform && st.info.platform !== 'win32' ? '<p class="note">This computer does not run Windows, so these buttons will not show here yet.</p>' : ''}
+    </section>
+    <section class="panel" aria-labelledby="s-h-send" data-find="send message prompt chat type talk answer turn hidden background"><h2 id="s-h-send">Send messages</h2>
+      <p class="note">Type a message to a Claude Code session or Codex thread in its side panel, under Chat. Pleni sends it as one turn of that session, as if you typed it there, and shows the answer. Each message uses your Claude or ChatGPT plan, like typing it yourself.</p>
+      ${checkRow('s-send', 'Send messages', 'actions.send', 'Show the Chat tab with a message box', 'Pleni runs the session\'s own program in the background, once for each message, and hands it your message. It never sends to a session that is working, or open in a window or an app. Windows only, this computer only, for main sessions.')}
+      ${selectRow('s-send-mode', 'A sent message may', 'send.mode', [['read', 'Read files and answer'], ['edit', 'Also change files in its folder']], 'Read files and answer is the safest: anything else that would need your yes is turned down. Either way, what the session\'s own settings forbid stays forbidden.')}
+      ${st.info.platform && st.info.platform !== 'win32' ? '<p class="note">This computer does not run Windows, so the message box will not show here yet.</p>' : ''}
     </section>`)}
     ${group('devices', 'Opening Pleni from another device, and where its settings are kept.', `
     <section class="panel" aria-labelledby="s-h-link" data-find="address url link bookmark key sign in phone laptop chrome allow"><h2 id="s-h-link">Open Pleni on another device</h2>
@@ -5132,6 +5341,7 @@ document.addEventListener('click', (ev) => {
   }
   if (el.dataset.roll) return rollClick(el.dataset.roll);
   if (el.dataset.new) return newClick(el.dataset.new);
+  if (el.id === 'd-chat-send') return sendChat();
   if (el.dataset.hide) return hideNode(el.dataset.hide, el.dataset.title || keyName(el.dataset.hide));
   if (el.dataset.copy === 'new-rename') return newCopy();
   if (el.dataset.mailCopy) return mailCopy(Number(el.dataset.mailCopy));

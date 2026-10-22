@@ -20,8 +20,10 @@ session here** turned on, a button opens a window in a Claude Code session's fol
 `claude --teleport`, where the person picks a claude.ai cloud session to go on with on this
 computer. With **Live GitHub status** turned on (also off by default), Pleni runs the GitHub CLI
 (`gh`) to read the pull requests of the repositories its sessions work in, and with **Merge** on as
-well, it merges one on this computer after the person confirms (see `src/github.js` below).
-Sending other work and approving actions come later and will get their own design.
+well, it merges one on this computer after the person confirms (see `src/github.js` below). With **Send messages** turned on
+(also off by default, Windows only), the person types a message to an idle Claude Code session or
+Codex thread in its side panel, and Pleni sends it as one hidden turn of that session, with the
+message on the program's standard input (see `src/send.js` below).
 
 ## Ground rules
 
@@ -35,9 +37,11 @@ Sending other work and approving actions come later and will get their own desig
 - **Read-only.** Pleni reads; it does not write anywhere on this computer except its own settings
   file, and, with the opt-in Models page, the model and effort values in Codex's `config.toml` and
   Claude Code's `settings.json`, and the worker type files in their `agents` folders (see Models). It starts no program except the opt-in Open in PowerShell, Roll over, New agent and Bring a
-  cloud session here windows, only when the person clicks for one, and the GitHub CLI (`gh`) for
-  the opt-in Live GitHub status. The only messages it sends are Roll over's two fixed ones, and the
-  only change it makes elsewhere is a merge on GitHub that the person confirms.
+  cloud session here windows, only when the person clicks for one, the GitHub CLI (`gh`) for
+  the opt-in Live GitHub status, and, with the opt-in Send messages, one hidden `claude -p` or
+  `codex exec` turn per message the person sends. The only messages it sends are Roll over's two
+  fixed ones and the ones the person types for Send, and the only change it makes elsewhere is a
+  merge on GitHub that the person confirms.
 - **Private by default.** Nothing leaves the computer, except what the opt-in Live GitHub status
   asks GitHub through `gh`. No telemetry, and no network calls of Pleni's own. The page shows short
   snippets of session text only when `content` is `"snippets"` (the default); `"none"` shows only
@@ -64,6 +68,7 @@ src/store.js            owns the sources, polls them, caches the snapshot
 src/open.js             Open in PowerShell: a Claude Code session or Codex thread in a new window (opt-in, Windows)
 src/rollover.js         Roll over: a handoff note from a long session, then a new one with its name (opt-in, Windows)
 src/newagent.js         New agent: a new named session in the folder of one on the map (opt-in, Windows)
+src/send.js             Send: one message to an idle session, as a hidden turn of it (opt-in, Windows)
 src/github.js           Live GitHub status and Merge, through the GitHub CLI, gh (opt-in)
 src/models.js           the Models page: Codex's and Claude Code's models and effort, read always, changed on request (opt-in)
 src/toml.js             a small TOML reader and one-line editor for src/models.js
@@ -107,7 +112,8 @@ export const DEFAULTS = {
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
-  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false }, // the window buttons; each true only when set to true
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false }, // the window buttons and Send; each true only when set to true
+  send: { mode: 'read' },                              // what a sent message may do: 'read' | 'edit'
   github: { live: false, merge: false, mergeMethod: 'squash' }, // Live GitHub status, the Merge button, 'squash' | 'merge' | 'rebase'
   models: { edit: false },                             // the Models page may change Codex's and Claude Code's model settings (this computer only)
   alerts: { stoppedMinutes: 15 },                      // a watched tile counts as stopped after this long without work
@@ -124,7 +130,8 @@ Exports:
   `activeMinutes` 1–240, `recentHours` 1–720, `staleMinutes` 5–1440, `stoppedMinutes` 1–1440), arrays
   de-duplicated, node keys validated with `isNodeKey`, roots must be absolute paths or `null`.
   `people[key].watch` is kept only when it is exactly `true`, and so are `actions.*`, `github.live`,
-  `github.merge` and `models.edit`.
+  `github.merge` and `models.edit`. `send.mode` is `'edit'` only when it is exactly that, else
+  `'read'`.
 - `loadSettings(file)` returns `{ settings, file, error }` and never throws (a missing file gives
   defaults and no error; a broken file gives defaults and an `error` string).
 - `saveSettings(settings, file)` writes `cleanSettings(settings)` atomically (temp file, then rename),
@@ -467,7 +474,7 @@ Snapshot = {
   tasks: MailboxState['tasks'] | null,
   mail: null | { name, unread, lastAt },  // agent mail: the person's mail name, their new mail, the newest message's time
   hiddenSessions: [{ key, title, platform, kind }],  // recent sessions with Role "Hide it": off the map, named in Settings
-  actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean, teleport: boolean },  // the page may show each button (setting on, Pleni on Windows)
+  actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean, teleport: boolean, send: boolean },  // the page may show each button (setting on, Pleni on Windows)
 }
 SourceInfo = { enabled, ok, error, count }
 Node = {
@@ -612,9 +619,9 @@ export function createStore({ settings, roots, demo = false, now = Date.now, sta
 Creates the enabled sources (or the demo source), polls at most every 2 s on demand, caches the
 snapshot with its JSON and its ETag, and rebuilds when settings change. `snapshot().actions.openTerminal`
 is `settings.actions.openTerminal` and `platform === 'win32'`, and `actions.rollover`,
-`actions.newAgent` and `actions.teleport` the same for their settings. `session(key)` gives what the newest poll knows
+`actions.newAgent`, `actions.teleport` and `actions.send` the same for their settings. `session(key)` gives what the newest poll knows
 about a top-level Claude Code session or a Codex thread (`{ id, cwd, status, entrypoint, kind,
-title, titleSource, model, effort, mode }`) for Open in PowerShell, Roll over and New agent, and
+title, titleSource, model, effort, mode }`) for Open in PowerShell, Roll over, New agent and Send, and
 `null` for anything else and in the demo. The ETag is
 `snapshotTag(snapshot)` from `src/model.js`: `W/"<sha1 of the JSON with now set to 0>"`. `now`
 changes on every build, and the page needs it only to allow for a clock difference, so a snapshot
@@ -800,6 +807,70 @@ export function newAgentCommand(tool, name, systemRoot) // -> { file, args }
   `toolEnv('claude', …)`; Claude Code lists the person's claude.ai cloud sessions there and checks
   its own needs (the same repository, no unsaved changes, the session's branch pushed). Limits:
   `openLimits`, slot `teleport:<from>`.
+
+## Send a message (`src/send.js`)
+
+The person types a message to a Claude Code session or Codex thread in its side panel, and Pleni
+sends it as if the person typed it in the session. It is off until the person turns it on
+(`actions.send`), works only on Windows for now, and the server allows it only for a request made on
+this computer. For each message Pleni starts the session's own program once, hidden, in the
+session's folder, and hands it the message on its standard input. The answer is written to the
+session's own file, where Pleni reads it like any other turn.
+
+```js
+export function createSender({ spawn, now, isAlive, isLocked, processStarts, findProgram })
+// -> { info({ key, settings, store, platform }), send({ key, text, id, settings, roots, store, logFile, platform, env, home }),
+//      running(key), waiting() }
+export function sendHead(key, settings, store, platform)   // the switch, Windows, a main session on the map, not the demo
+export function claudeSendProblem(session, processes), codexSendProblem(session, locked)
+export function cleanMessage(text), messageProblem(text)
+export function sendArgs(tool, id, mode)                   // -> the program's words after its own
+export function findTool(tool, { env, platform, home, isFile, node }) // -> { file, args } | null
+export function claudeOutcome(text, code, sessionId)       // -> { ok, code, otherSession }
+export function sendMode(settings), sendLogFile(settingsPath)
+export const SEND_MESSAGES, SEND_MODES /* ['read', 'edit'] */, MAX_TEXT /* 8000 */, MAX_RUNNING /* 3 */
+```
+
+- **What can get a message:** a main session on the map, `claude:<session id>` or `codex:<thread
+  id>` with kind `session` (not a helper or a reviewer), not in the demo, with a folder
+  `folderProblem` accepts.
+- **The message** is a string, trimmed, with `\r\n` and `\r` made `\n`: 1 to 8,000 characters,
+  well formed, with no control characters but tabs and line breaks. The page makes a one-time `id`
+  for each message (`[A-Za-z0-9_-]{16,64}`); an `id` sent in the last 10 minutes is answered
+  `{ ok: true, repeat: true }` and nothing is sent again.
+- **No two writers.** The same rule as Roll over's ask step: a Claude Code session from the Claude
+  desktop app or VS Code is refused ("send it there"), and so is one that any live Claude Code
+  process has open (`claudeProcesses` and `confirmProcesses`, background sessions included), or
+  that is `working`. A Codex thread another program holds (`codexThreadLocked`, most likely the
+  Codex app) or that is `working` is refused. While a sent turn runs, its command line holds the
+  session id, so the mailbox relay waits for it too.
+- **The command** (`sendArgs`), spawned without a shell, with `cwd` the session's folder, `env` from
+  `toolEnv`, `windowsHide: true` and `detached: true` (a sent turn goes on if Pleni stops):
+  - Claude Code: `claude -p --resume <id> --output-format json --permission-mode dontAsk`, or
+    `acceptEdits` when `send.mode` is `edit`;
+  - Codex: `codex exec --skip-git-repo-check --sandbox read-only resume <id> -`, or
+    `workspace-write` when `send.mode` is `edit`.
+  `dontAsk` and `read-only` let a turn read files and answer; anything that would need the person's
+  yes is turned down. `edit` lets it change files in its folder too. What the session's own
+  settings forbid stays forbidden; Pleni never offers a mode that skips every check.
+- **Finding the program** (`findTool`): `claude.exe` or `codex.exe` in an absolute, local folder on
+  `PATH` (never the current folder or a network share); else, in a `PATH` folder that holds npm's
+  `claude.cmd` or `codex.cmd`, its package's `bin\claude.exe`, or `cli.js` (Claude Code) or
+  `bin\codex.js` (Codex) run by Pleni's own Node.js; else `%USERPROFILE%\.local\bin\claude.exe`.
+  Where it was found is kept for a minute.
+- **The outcome.** Claude Code's standard output is read only for its one `result` line at the end
+  (at most 1 MB): `is_error`, `subtype` and `session_id`, never the answer text. Codex's output is
+  not read: its exit code says how the turn ended. Standard error is not read.
+- **Limits:** one sent turn at a time per session, `MAX_RUNNING` (3) at once in all, a new message
+  to the same session at most every 5 seconds, and 6 messages a minute in all. The limit is taken
+  after every other check.
+- **The record** (`sent.jsonl` next to the settings, `sendLogFile`): one line when a message goes
+  out (`at`, `key`, `tool`, `mode`, `chars`) and one when its turn ends (`endedAt`, `ok`, `code`),
+  the newest 500 lines kept. Never the message or the answer.
+- `info` answers what the page shows before a send, without looking at running programs:
+  `{ problem, running, last: { at, endedAt, ok } | null, mode }`, where `problem` is a plain reason
+  a message cannot go out now (the desktop app or VS Code, or `working`, or Pleni still waiting for
+  the last one).
 
 ## Live GitHub status (`src/github.js`)
 
@@ -991,7 +1062,7 @@ change; it reads an agent file again within a few seconds.
 
 ```js
 export function newKey()  // -> 43 random base64url characters (32 bytes)
-export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess, github, modelSaver })  // -> http.Server
+export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess, github, modelSaver, sender })  // -> http.Server
 export function keyFile(settingsPath)  // -> the "key" file next to the settings file
 export function readKeyFile(file, { tries, pause, read })  // -> { key } | { missing: true } | { problem: 'damaged' | <error code> }
 export function keyFileError(file, problem)  // -> Error with code 'PLENI_KEY_FILE' and a plain message
@@ -1046,6 +1117,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`,
   `POST /api/placement`, `POST /api/dismiss`, `POST /api/watch`, `POST /api/open`,
   `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`, `POST /api/new`, `POST /api/teleport`,
+  `GET /api/send?key=<nodeKey>`, `POST /api/send`,
   `GET /api/devices`, `GET /api/github`, `POST /api/github/merge`, `GET /api/mail`,
   `GET /api/models`, `POST /api/models`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
@@ -1093,6 +1165,14 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `{ ok: true }` or `{ error }` with the status it gives, and shares the server's `openLimits`.
 - **POST /api/teleport** `{ from: nodeKey }` passes the same checks as `/api/open`, then `teleport`
   in `src/newagent.js` makes the rest and opens the window.
+- **GET /api/send?key=<nodeKey>** needs the key cookie and, like `/api/open`, a request from this
+  computer (`403` otherwise). It answers `sender.info`'s `{ problem, running, last, mode }`, or
+  `{ error }` with its status. It starts nothing.
+- **POST /api/send** `{ key, text, id }` passes the same checks as `/api/open`, then `sender.send`
+  in `src/send.js` makes the rest and starts the hidden turn, with `logFile` the `sent.jsonl` next to
+  the settings file. It answers `{ ok: true }` (or `{ ok: true, repeat: true }` for an `id` it has
+  sent already) once the program has started, or `{ error }` with the status it gives.
+  `createServer({ sender })` lets tests replace `createSender()`.
 - **GET /api/github** (`?fresh=1` for Look again) needs the key cookie. It answers `{ on, merge,
   method, error, repos }`. `on` is `settings.github.live`; `merge` is true when `live` and `merge`
   are both on and the request is from this computer (like `/api/open`); `method` is
@@ -1212,6 +1292,19 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   typing goes on while the panel updates. When `snapshot.actions.teleport` is true, on this
   computer, a main Claude Code session's Now tab has **Bring a cloud session here**, which posts
   `/api/teleport`; its answer shows in the status line under the tabs, like Open in PowerShell.
+  When `snapshot.actions.send` is true, on this computer, the side panel of a main Claude Code
+  session or Codex thread has a **Chat** tab after Now: the messages to the session and its answers
+  from the recent events (`user`, `assistant` and `error` events with text, the newest 60, newest at
+  the bottom, kept scrolled to the bottom while the person is there), a **Message** box (at most
+  8,000 characters; the count shows from 7,000) and **Send** (Ctrl+Enter does the same). The tab is
+  built once and only its parts change, so a repaint never touches what the person types; a message
+  not sent yet is kept while the page is open, also when the panel closes. While the tab shows, the
+  page asks `GET /api/send` every 4 seconds, and the line under the box says why a message cannot go
+  out now (the button then has `aria-disabled="true"` and says why when pressed). Send posts
+  `/api/send` with a new one-time `id` for each message (the same `id` again when the person retries
+  the same text), and the line says "Sent. Pleni is waiting for the answer…", then "Answered" or
+  that the turn ended with an error, read out through the page's live region. The help under the
+  box says what a sent message may do (`mode`) and that it uses the person's plan.
   Sessions and the relay have a **Tell me if this stops working**
   box that posts `/api/watch`; Settings' own copy of the settings is updated too, so saving Settings
   later keeps it.
@@ -1224,7 +1317,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   GitHub: Live GitHub status, Merge button, How to merge),
   **Alerts** (Needs you, with `alerts.stoppedMinutes` and the Pop-ups box; Roll over soon, with
   the three `rollSoon` limits), **Buttons** (Open sessions: Open in PowerShell, New agent, Bring a
-  cloud session here and Roll over, and a line when the computer does not run Windows) and **Devices** (Open Pleni on another
+  cloud session here and Roll over, and a line when the computer does not run Windows; Send
+  messages: the `actions.send` box and **A sent message may**, `send.mode`: "Read files and answer"
+  or "Also change files in its folder") and **Devices** (Open Pleni on another
   device; Other devices, the port, and where the settings file is). **Open Pleni on another
   device**, on this computer, asks `GET /api/devices` when the group opens and every 5 seconds while
   it shows. It shows this computer's address, the address for other devices with **Copy the

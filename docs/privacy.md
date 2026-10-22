@@ -107,14 +107,15 @@ recent pop-ups in its notification list until you clear them.
 - It never writes, moves, or deletes anything in the Claude Code, Codex, Claude desktop app, or
   mailbox folders. The one exception is **Save to Codex** and **Save to Claude Code** on the Models
   page (see [below](#models)).
-- It writes nowhere except its own folder (`settings.json`, `key`, `dismissed.json`, and the
-  `backups/` folder of the Models page). It saves each file safely: it writes a temporary file in
+- It writes nowhere except its own folder (`settings.json`, `key`, `dismissed.json`, the
+  `backups/` folder of the Models page, and `sent.jsonl`, the record of messages sent with
+  **Send messages**). It saves each file safely: it writes a temporary file in
   the same folder, then renames it.
 - When it turns away a device that Tailscale brings, it keeps that device's Tailscale address and
   login in memory (the last 5, never in a file), so Settings → Devices on your computer can offer
   **Allow**. Only your computer's page can see this list, and Pleni's key.
 - It never stops a session. It sends nothing to one, except Roll over's two short messages when you
-  click its buttons (see below).
+  click its buttons, and the messages you type with **Send messages** (see below).
 - It starts nothing unless you turn on **Open in PowerShell** (Settings → Buttons, off until
   you turn it on, Windows only) and click the button on this computer. Then it opens one
   PowerShell window that runs `claude --resume` or `codex resume` for that session. Whatever is typed there comes
@@ -130,6 +131,15 @@ recent pop-ups in its notification list until you clear them.
   computer only) opens one PowerShell window in a Claude Code session's folder that runs
   `claude --teleport`. Claude Code itself then talks to claude.ai to list your cloud sessions, as it
   does when you run it yourself. Pleni sends nothing.
+- **Send messages** (Settings → Buttons, off until you turn it on, Windows only, this computer
+  only) sends a message you type in a session's **Chat** tab. Pleni runs that session's own
+  program once, hidden, in its folder (`claude -p --resume` or `codex exec resume`) and hands it
+  your message on its standard input, never on a command line. Claude Code or Codex then sends it to
+  Anthropic or OpenAI, as they do when you type it yourself, and writes the answer into the
+  session's own file, where Pleni reads it. Pleni keeps no copy of your message or the answer: its
+  record, `sent.jsonl`, says only when, to which session, and how the turn ended. It never sends to
+  a session that is working, or open in a window, an app or another program, and it refuses a
+  message from another device.
 - **New agent** (Settings → Buttons, off until you turn it on, Windows only, this computer only)
   opens one PowerShell window in the folder of a session you pick and runs `claude --name <name>`
   or `codex` there. The name you type is held to the same plain marks. Pleni sends the new agent

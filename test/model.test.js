@@ -1238,13 +1238,14 @@ test('a model picked by its exact name beats the words', () => {
 
 test('the snapshot says which window buttons the page may offer', () => {
   const build = (actions) => buildSnapshot({ now: NOW, settings: cleanSettings({}), actions }).actions;
-  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false };
+  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false };
   assert.deepEqual(build(undefined), off);
   assert.deepEqual(build({ openTerminal: true }), { ...off, openTerminal: true });
   assert.deepEqual(build({ rollover: true }), { ...off, rollover: true });
   assert.deepEqual(build({ newAgent: true }), { ...off, newAgent: true });
   assert.deepEqual(build({ teleport: true }), { ...off, teleport: true });
-  assert.deepEqual(build({ openTerminal: 'yes', rollover: 1, newAgent: {}, teleport: 'on' }), off);
+  assert.deepEqual(build({ send: true }), { ...off, send: true });
+  assert.deepEqual(build({ openTerminal: 'yes', rollover: 1, newAgent: {}, teleport: 'on', send: 'yes' }), off);
 });
 
 test('hiddenSessions names the recent sessions the person hid, which are not on the map', () => {

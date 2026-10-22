@@ -9,18 +9,21 @@ before you change code, and follow its names, shapes, and file paths.
   use a technical word, say what it means right after it.
 - **Zero dependencies.** Node.js 22.12 or newer, ES modules, `node:` built-ins only. Never add an
   npm package, not even a dev one. No build step.
-- **Read-only by design.** Pleni writes nowhere on this computer except its own settings file. It
-  never stops a session, and never writes into Claude Code's, Codex's, or a mailbox's folders. It
-  sends nothing to a session except Roll over's two fixed messages (`src/rollover.js`), each in a
-  window the person sees, after a click. The only programs it may start are for the opt-in Open in
+- **Read-only by design.** Pleni writes nowhere on this computer except its own settings folder. It
+  never stops a session, and never writes into Claude Code's, Codex's, or a mailbox's folders. It sends nothing to a session except Roll over's two fixed messages (`src/rollover.js`), each in a
+  window the person sees, after a click, and, with the opt-in Send messages (`src/send.js`, Windows
+  only, this computer only), a message the person typed in a session's Chat tab: one hidden
+  `claude -p --resume` or `codex exec resume` turn per message, started by full path without a
+  shell, with the message on the program's standard input and never on a command line, and only to
+  an idle main session that no window, app or other program has open. Its record, `sent.jsonl` in
+  Pleni's own folder, never holds the message. The only programs it may start are for the opt-in Open in
   PowerShell, Roll over, New agent and Bring a cloud session here buttons (`src/open.js`,
   `src/rollover.js`, `src/newagent.js`, Windows only, this computer only): a window that runs
   `claude --resume`, `codex resume`, `claude --name`, `claude --teleport` or `codex` for the person
-  to type into, and a hidden PowerShell that only asks when a process started. The one other
+  to type into, Send's hidden turns, and a hidden PowerShell that only asks when a process started. The one other
   program is the GitHub CLI for opt-in Live GitHub status (`src/github.js`): `gh pr list`, and
   `gh pr merge` after the person confirms on this computer, run by full path with fixed words and
-  checked values, never through a shell. Sending other work, free text, and approvals need their
-  own design first.
+  checked values, never through a shell. Approvals need their own design first.
 - **The relay is separate.** The `relay/` folder holds the mailbox relay: a Windows PowerShell
   program that writes into a mailbox and starts Claude Code sessions. It is not part of Pleni.
   Pleni never runs it, and it is not in the npm package. Read `relay/README.md` before you change

@@ -27,7 +27,9 @@ export const DEFAULTS = deepFreeze({
   projects: {},
   chain: [], // [{ match, reportsTo, role }] who reports to whom, by session name; first match wins
   remote: { hosts: [], tailscaleUsers: [] },
-  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false }, // the window buttons (Windows, this computer only)
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false }, // the window buttons and Send (Windows, this computer only)
+  // What a message sent from Pleni may do: 'read' (read files and answer) or 'edit' (also change files in its folder).
+  send: { mode: 'read' },
   // Live pull request status through the GitHub CLI (gh), and the Merge button (this computer only).
   github: { live: false, merge: false, mergeMethod: 'squash' },
   // The Models page may change the model and effort lines in Codex's settings (this computer only).
@@ -42,6 +44,7 @@ const CONTENT = ['snippets', 'none'];
 const GROUP_BY = ['project', 'none'];
 const ROLES = ['superintendent', 'coordinator', 'lead', 'worker', 'hidden'];
 const MERGE_METHODS = ['squash', 'merge', 'rebase'];
+const SEND_MODES = ['read', 'edit'];
 const RANGES = {
   port: [1024, 65535],
   activeMinutes: [1, 240],
@@ -116,6 +119,7 @@ export function cleanSettings(raw) {
     chain: cleanChain(r.chain),
     remote: cleanRemote(r.remote),
     actions: cleanActions(r.actions),
+    send: { mode: oneOf(r.send?.mode, SEND_MODES, DEFAULTS.send.mode) },
     github: cleanGithub(r.github),
     models: { edit: cleanBool(r.models?.edit, DEFAULTS.models.edit) },
     alerts: cleanAlerts(r.alerts),
@@ -255,6 +259,7 @@ function cleanActions(raw) {
     rollover: cleanBool(a.rollover, DEFAULTS.actions.rollover),
     newAgent: cleanBool(a.newAgent, DEFAULTS.actions.newAgent),
     teleport: cleanBool(a.teleport, DEFAULTS.actions.teleport),
+    send: cleanBool(a.send, DEFAULTS.actions.send),
   };
 }
 

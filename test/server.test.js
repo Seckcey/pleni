@@ -9,6 +9,7 @@ import { GITHUB_MESSAGES } from '../src/github.js';
 import { NEW_MESSAGES } from '../src/newagent.js';
 import { OPEN_MESSAGES } from '../src/open.js';
 import { ROLL_MESSAGES } from '../src/rollover.js';
+import { SEND_MESSAGES, createSender } from '../src/send.js';
 import { browserCommand, createServer, keyFile, loadOrCreateKey, newKey, readBuild, readKeyFile } from '../src/server.js';
 
 const CSP = "default-src 'none'; script-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; " +
@@ -119,6 +120,7 @@ async function startServer(t, options = {}) {
     ...(options.platform ? { platform: options.platform } : {}),
     ...(options.spawnProcess ? { spawnProcess: options.spawnProcess } : {}),
     ...(options.github ? { github: options.github } : {}),
+    ...(options.sender ? { sender: options.sender } : {}),
     ...(options.useFileSettings
       ? {}
       : { getSettings: memory.getSettings, saveSettings: memory.saveSettings.bind(memory) }),
@@ -1568,4 +1570,95 @@ test("the Models page reads and saves Claude Code's settings too", async (t) => 
   assert.match(path.basename(ok.json.backups[0]), /^claude-settings-\d{8}-\d{6}\.json$/);
   // The Codex file was not touched by a Claude Code save.
   assert.equal(fs.readFileSync(path.join(dir, 'codex', 'config.toml'), 'utf8'), 'model = "gpt-6-astra"\nmodel_reasoning_effort = "max"\n');
+});
+
+// ---- Send ----
+
+const sendReq = (port, body, headers = {}) => request(port, {
+  method: 'POST',
+  path: '/api/send',
+  headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+  body: JSON.stringify(body),
+});
+
+const SEND_ON = { actions: { send: true } };
+
+// A sender that records what the server passes on, and answers what the test says.
+function recordSender(answer = { ok: true }) {
+  const calls = { info: [], send: [] };
+  return {
+    calls,
+    info(args) {
+      calls.info.push(args);
+      return { ok: true, info: { problem: null, running: false, last: null, mode: 'read' } };
+    },
+    async send(args) {
+      calls.send.push(args);
+      return answer;
+    },
+  };
+}
+
+test('send passes the message, the session and the record file to the sender', async (t) => {
+  const sender = recordSender();
+  const memory = memorySettings(SEND_ON);
+  const { port } = await startServer(t, { store: openStore(tempDir(t)), memory, platform: 'win32', sender });
+  const res = await sendReq(port, { key: SESSION_KEY, text: 'Run the tests.', id: 'page-message-000001' });
+  assert.equal(res.status, 200, res.text);
+  assert.deepEqual(res.json, { ok: true });
+  assert.equal(sender.calls.send.length, 1);
+  const call = sender.calls.send[0];
+  assert.equal(call.key, SESSION_KEY);
+  assert.equal(call.text, 'Run the tests.');
+  assert.equal(call.id, 'page-message-000001');
+  assert.equal(call.settings.actions.send, true);
+  assert.equal(call.logFile, path.join(path.dirname(memory.state.file), 'sent.jsonl'));
+  assert.equal(call.platform, 'win32');
+  const info = await request(port, { path: `/api/send?key=${encodeURIComponent(SESSION_KEY)}` });
+  assert.equal(info.status, 200);
+  assert.deepEqual(info.json, { problem: null, running: false, last: null, mode: 'read' });
+  assert.equal(sender.calls.info[0].key, SESSION_KEY);
+});
+
+test('send needs the key, the page header, the same origin, JSON, and this computer', async (t) => {
+  const sender = recordSender();
+  const settings = { ...SEND_ON, remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } };
+  const { port } = await startServer(t, { store: openStore(tempDir(t)), settings, platform: 'win32', sender });
+  const body = { key: SESSION_KEY, text: 'hello', id: 'page-message-000002' };
+  assertPlainError(await sendReq(port, body, { cookie: undefined }), 401);
+  assertPlainError(await sendReq(port, body, { 'x-pleni': undefined }), 403);
+  assertPlainError(await sendReq(port, body, { origin: 'https://evil.example' }), 403);
+  assertPlainError(await sendReq(port, body, { 'content-type': 'text/plain' }), 415);
+  const remote = { host: 'box.example.ts.net', 'tailscale-user-login': 'ada@example.com' };
+  for (const headers of [remote, { 'x-forwarded-for': '100.64.0.7' }]) {
+    const res = await sendReq(port, body, headers);
+    assertPlainError(res, 403);
+    assert.match(res.json.error, /only on the computer that runs it/);
+    assertPlainError(await request(port, { path: `/api/send?key=${encodeURIComponent(SESSION_KEY)}`, headers }), 403);
+  }
+  assertPlainError(await request(port, { method: 'PUT', path: '/api/send' }), 405);
+  assert.equal(sender.calls.send.length, 0);
+  assert.equal(sender.calls.info.length, 0);
+});
+
+test('send answers a refusal with its status and plain words, and a repeat as done', async (t) => {
+  const refused = recordSender({ ok: false, status: 409, error: SEND_MESSAGES.busy });
+  const a = await startServer(t, { store: openStore(tempDir(t)), settings: SEND_ON, platform: 'win32', sender: refused });
+  const res = await sendReq(a.port, { key: SESSION_KEY, text: 'hello', id: 'page-message-000003' });
+  assertPlainError(res, 409);
+  assert.equal(res.json.error, SEND_MESSAGES.busy);
+  const repeat = recordSender({ ok: true, repeat: true });
+  const b = await startServer(t, { store: openStore(tempDir(t)), settings: SEND_ON, platform: 'win32', sender: repeat });
+  assert.deepEqual((await sendReq(b.port, { key: SESSION_KEY, text: 'hello', id: 'page-message-000003' })).json, { ok: true, repeat: true });
+});
+
+test('the real sender is off by default and works only on Windows', async (t) => {
+  const off = await startServer(t, { store: openStore(tempDir(t)), platform: 'win32', sender: createSender() });
+  const res = await sendReq(off.port, { key: SESSION_KEY, text: 'hello', id: 'page-message-000004' });
+  assertPlainError(res, 403);
+  assert.equal(res.json.error, SEND_MESSAGES.off);
+  const linux = await startServer(t, { store: openStore(tempDir(t)), settings: SEND_ON, platform: 'linux', sender: createSender() });
+  const elsewhere = await request(linux.port, { path: `/api/send?key=${encodeURIComponent(SESSION_KEY)}` });
+  assertPlainError(elsewhere, 409);
+  assert.equal(elsewhere.json.error, SEND_MESSAGES.windowsOnly);
 });

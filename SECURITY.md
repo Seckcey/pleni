@@ -43,15 +43,19 @@ These are Pleni's promises, in plain words. A way around any of them is a vulner
   Pleni compares it in constant time. Without it the answer is `401`. A way to read session data
   or change settings without the key, from another account or another program, is a
   vulnerability.
-- **It only reads.** Pleni writes nowhere on your computer except its own settings file, and it
-  never stops a session. It sends a session nothing but Roll over's two fixed messages. It starts
-  programs only when asked: with **Open in PowerShell**, **Roll over**, **New agent** or **Bring a
-  cloud session here** turned on, a click on this computer opens a PowerShell window that runs
-  `claude` or `codex`. Before that, it may run a hidden PowerShell that only asks Windows when a
-  program started. With **Live GitHub status** turned on, it runs the GitHub CLI (`gh`) to read
-  pull requests, and with **Merge** on too, to merge one after you confirm on this computer. A way
-  to make it write, delete, merge, or run anything else, to start a window or gh without the
-  setting, from another device, or with a command line of your choosing, is a vulnerability.
+- **It only reads.** Pleni writes nowhere on your computer except its own settings folder, and it
+  never stops a session. It sends a session nothing but Roll over's two fixed messages and, with
+  **Send messages** turned on, a message you type in a session's Chat tab on this computer: one
+  hidden `claude -p --resume` or `codex exec resume` turn, with your message on the program's
+  standard input, never on its command line, and only to an idle session that nothing else has
+  open. It starts programs only when asked: with **Open in PowerShell**, **Roll over**, **New
+  agent** or **Bring a cloud session here** turned on, a click on this computer opens a PowerShell
+  window that runs `claude` or `codex`. Before that, it may run a hidden PowerShell that only asks
+  Windows when a program started. With **Live GitHub status** turned on, it runs the GitHub CLI
+  (`gh`) to read pull requests, and with **Merge** on too, to merge one after you confirm on this
+  computer. A way to make it write, delete, merge, or run anything else, to start a window, a
+  hidden turn or gh without the setting, from another device, to send to a session that is busy
+  or open elsewhere, or with a command line of your choosing, is a vulnerability.
 - **It never phones home.** Pleni makes no network calls of its own and has no telemetry. Only
   Live GitHub status reaches the internet, through gh, and only when you turn it on.
 - **Session text stays text.** Text from session files is shown as plain text and never run as

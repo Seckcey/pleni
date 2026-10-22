@@ -69,10 +69,12 @@ as passing.
    packages, not even for development or tests. There is no build step: the files in `public/`
    are served as they are.
 3. **Read-only by design.** Pleni never writes anywhere on your computer except its own settings
-   file, and it never stops a session. It sends a session nothing but Roll over's two fixed
-   messages. It may start only the opt-in windows (Open in PowerShell, Roll over, New agent, Bring a
-   cloud session here), which the person types into, and the GitHub CLI (`gh`) for opt-in Live
-   GitHub status. Sending other work and approving actions will get their own design first.
+   folder, and it never stops a session. It sends a session nothing but Roll over's two fixed
+   messages and, with the opt-in Send messages, a message the person typed, as one hidden turn of an
+   idle session that nothing else has open, with the message on the program's standard input. It may
+   start only the opt-in windows (Open in PowerShell, Roll over, New agent, Bring a cloud session
+   here), which the person types into, Send's hidden turns, and the GitHub CLI (`gh`) for opt-in
+   Live GitHub status. Approving actions will get its own design first.
 4. **Private by default.** No telemetry, and nothing loaded from the internet. Pleni makes no
    network calls of its own; only opt-in Live GitHub status reaches GitHub, through `gh`. Session
    text is shown only as text, and only when the `content` setting allows it.

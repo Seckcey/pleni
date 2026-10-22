@@ -27,7 +27,7 @@ const NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi
 const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
 // Settings that only change how the snapshot is drawn. Changing them keeps the
 // sources, so they do not have to read every session file again.
-const VIEW_ONLY = new Set(['displayName', 'titles', 'groupBy', 'modelTiers', 'people', 'projects', 'chain', 'remote', 'port', 'actions', 'alerts', 'models']);
+const VIEW_ONLY = new Set(['displayName', 'titles', 'groupBy', 'modelTiers', 'people', 'projects', 'chain', 'remote', 'port', 'actions', 'send', 'alerts', 'models']);
 const DISMISSED_FILE = 'dismissed.json';
 const MAX_DISMISSED = 1000;
 
@@ -114,6 +114,7 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
       rollover: current.actions.rollover && windows,
       newAgent: current.actions.newAgent && windows,
       teleport: current.actions.teleport && windows,
+      send: current.actions.send && windows,
     };
     const snap = buildSnapshot({ now: t, settings: demo ? demoSettings(current) : current, dismissed, actions, ...polled });
     // Not enumerable, so they never show up in the JSON itself.

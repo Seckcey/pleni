@@ -31,6 +31,15 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **Send messages** (Windows, off until you turn it on in Settings → Buttons): a main Claude Code
+  session or Codex thread gets a **Chat** tab in its side panel, with the conversation and a message
+  box. Pleni sends what you type as one turn of that session, run in the background
+  (`claude -p --resume` or `codex exec resume`), and the answer shows there. The message goes to the
+  program on its standard input, never on a command line. Pleni never sends to a session that is
+  working, or open in a window, an app or another program, and only on the computer that runs it.
+  A sent message may read files and answer; **A sent message may** can also let it change files in
+  its folder. Pleni keeps no copy of the message: `sent.jsonl` in its own folder says only when, to
+  which session, and how the turn ended. A few messages a minute, three turns at once at most.
 - **Who chose a worker's model and effort:** when the sergeant that started a Claude Code worker did
   not choose its model or its effort, the map, the List and its side panel now show "(default)"
   after it, such as "Sonnet 5.5 · max effort (defaults)". Its Details tab shows its worker type and
