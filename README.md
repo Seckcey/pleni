@@ -9,6 +9,7 @@
 
 <p align="center">
   See your Claude Code, Codex, Grok and Kimi Code sessions work together, live in your browser.
+  Send them a message and answer their questions there too.
 </p>
 
 <p align="center">
@@ -41,11 +42,17 @@ Pleni shows you. It reads the files that Claude Code, Codex, Grok and Kimi Code 
 works out who started whom, and draws it as a live map in your browser. Lines light up when work
 is handed down and when a report comes back up.
 
-- **It only looks.** Pleni never stops or types into a session, and it never changes the files it
-  reads. The one exception is a button you can turn on, which opens a session in a PowerShell
-  window for you (see [Open a session in PowerShell](#open-a-session-in-powershell)).
-  Even then, you do the typing. The other is the [Models](#models) page, also off until you turn
-  it on, which changes the models Codex and Claude Code use when you ask it to.
+- **It watches first.** Out of the box, Pleni only looks. It never stops a session, and it never
+  changes the files it reads. Buttons that do more are each off until you turn them on in
+  **Settings → Buttons**, and they act only when you click, on the computer that runs Pleni:
+  [send a session a message](#send-a-message-to-a-session),
+  [answer its questions](#answer-questions-from-pleni),
+  [open it in PowerShell](#open-a-session-in-powershell),
+  [roll it over](#roll-over-a-session) to a fresh session,
+  [start a new agent](#start-a-new-agent), and
+  [bring a cloud session here](#bring-a-cloud-session-to-this-computer). The [Models](#models)
+  page changes the models Codex and Claude Code use, and [Merge](#live-github-status) merges a
+  pull request, only when you ask.
 - **It stays on your computer.** It opens only on your own computer (`127.0.0.1`). It sends
   nothing anywhere. There is no account and no tracking. The only sign-in is Pleni's own key,
   which it keeps on your computer.
@@ -586,10 +593,11 @@ both. Both are made by 8 West Ventures, LLC.
 
 ## What comes next
 
-Version 0.1 watches. It can also open a Claude Code or Codex session in PowerShell for you, roll a
-long session over to a fresh one, start a new agent next to one, send a session a message, and
-answer a Claude Code session's questions, plans and permission prompts. Next: answering Codex
-threads, and doing these from your phone with a second check. The design is in
+Version 0.2 watches, and, when you turn them on, it can open a Claude Code or Codex session in
+PowerShell for you, roll a long session over to a fresh one, start a new agent next to one, send a
+session a message, and answer a Claude Code session's questions, plans and permission prompts.
+Next: answering Codex threads, checking the Claude desktop app with Answer questions, and doing
+these from your phone with a second check. The design is in
 [docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md).
 
 These are plans, not promises. Ideas are welcome in

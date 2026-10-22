@@ -4,7 +4,14 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.2.0 (2026-10-22)
+
+Pleni can now act when you ask, not only watch. Each action happens only when you click, and only
+on the computer that runs Pleni: send a session a message, answer a Claude Code session's
+questions, plans and permission prompts, roll a long session over, start a new agent, open a
+session in PowerShell, bring a cloud session here, change your agents' models, and merge a pull
+request. The buttons are off until you turn them on in Settings. Without them, Pleni only reads,
+as before.
 
 ### Fixed
 

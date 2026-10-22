@@ -1470,7 +1470,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   box that posts `/api/watch`; Settings' own copy of the settings is updated too, so saving Settings
   later keeps it.
 - **Settings:** every field in `DEFAULTS`, saved with `POST /api/settings`. Under the Settings
-  title, the page says which version runs ("This is Pleni 0.1.0 (commit 0c5808a)."). The form is
+  title, the page says which version runs ("This is Pleni 0.2.0 (commit 0c5808a)."). The form is
   split into seven groups, shown as tabs (`role="tablist"`; arrow keys, Home and End move between
   them): **Basics** (You and the map; What the page shows, with Finished for, Call a turn stuck
   after and Reviewers folded under **More choices**), **Team** (Names and roles, Chain of command,
