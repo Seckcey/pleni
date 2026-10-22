@@ -1,0 +1,64 @@
+name: Website
+
+# getplenipo.com (website/): its tests, its build, and the production container it runs as.
+# The updater on Coastline publishes a change only after this check passes (website/README.md).
+on:
+  push:
+    branches: ["**"]
+    paths: ["website/**", "docs/releases/**", "package.json", ".github/workflows/website.yml"]
+  pull_request:
+    paths: ["website/**", "docs/releases/**", "package.json", ".github/workflows/website.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  website:
+    name: Website build and origin checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Each action is pinned to the exact commit it runs; Dependabot proposes updates.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Verify static site
+        working-directory: website
+        run: |
+          npm ci --no-audit --no-fund
+          node --test scripts/*.test.mjs
+          npx tsc --noEmit
+          SOURCE_REVISION="$GITHUB_SHA" node scripts/build.mjs
+      - name: Build and test the production container
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          docker build --build-arg SOURCE_REVISION="$GITHUB_SHA" --build-arg PLENI_VERSION="$version" \
+            -t plenipo-website:ci website
+          PLENIPO_IMAGE=plenipo-website:ci PLENIPO_PORT=14380 docker compose -p plenipo-website-ci -f website/compose.yaml up -d --wait
+          curl --fail http://127.0.0.1:14380/healthz
+          curl --fail http://127.0.0.1:14380/ -o /tmp/plenipo-home.html
+          grep -Fq '<link rel="canonical" href="https://getplenipo.com/"' /tmp/plenipo-home.html
+          grep -Eq '<h1 id="hero-title">[^<]*[^[:space:]<]' /tmp/plenipo-home.html
+          grep -q "What&rsquo;s new in v$version<" /tmp/plenipo-home.html
+          curl --fail http://127.0.0.1:14380/sitemap.xml | grep -q 'https://getplenipo.com/'
+          for page in terms privacy; do
+            curl --fail "http://127.0.0.1:14380/$page/" -o "/tmp/plenipo-$page.html"
+            grep -Fq "<link rel=\"canonical\" href=\"https://getplenipo.com/$page/\"" "/tmp/plenipo-$page.html"
+            grep -Fq 'href="mailto:admin@8westventures.com"' "/tmp/plenipo-$page.html"
+          done
+          curl --fail http://127.0.0.1:14380/release.json | grep -q "\"version\": \"$version\""
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:14380/missing)" = 404
+          for host in plenipo.8westit.com www.getplenipo.com; do
+            for path in '/privacy/?from=old&mode=read' '/brand/pip-icon-192.png?v=1' '/release.json?check=1' '/missing%20page?q=a%2Fb'; do
+              result="$(curl --path-as-is -sS -o /dev/null -w '%{http_code} %{redirect_url}' -H "Host: $host" "http://127.0.0.1:14380$path")"
+              test "$result" = "308 https://getplenipo.com$path"
+            done
+          done
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: getplenipo.com' http://127.0.0.1:14380/privacy/)" = 200
+      - name: Stop CI container
+        if: always()
+        run: PLENIPO_IMAGE=plenipo-website:ci PLENIPO_PORT=14380 docker compose -p plenipo-website-ci -f website/compose.yaml down

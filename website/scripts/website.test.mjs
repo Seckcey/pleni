@@ -1,0 +1,305 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { test } from "node:test";
+import { gzipSync } from "node:zlib";
+import {
+  PLENIPO_LAST_VERSION,
+  buildWebsite,
+  releaseVersion,
+  rootPackage,
+  websiteRoot,
+} from "./build.mjs";
+
+test("production build includes every local asset and valid internal destination", async () => {
+  const output = await mkdtemp(join(tmpdir(), "plenipo-website-"));
+  try {
+    // The repository's own version (whatever the shell may have exported).
+    await buildWebsite(output, { env: {} });
+    const html = await readFile(join(output, "index.html"), "utf8");
+    // All crawler entry points agree on the new public address.
+    for (const file of [
+      "index.html",
+      "terms/index.html",
+      "privacy/index.html",
+      "robots.txt",
+      "sitemap.xml",
+    ]) {
+      const text = await readFile(join(output, file), "utf8");
+      assert.ok(!text.includes("plenipo.8westit.com"), `${file} still names the old website`);
+      assert.ok(text.includes("https://getplenipo.com/"), `${file} misses the canonical website`);
+    }
+    // The page loader requests this bounded local island immediately on entry.
+    // Keep its URLs in data attributes so failed loads can be retried explicitly.
+    for (const type of ["module", "style"]) {
+      const url = html.match(new RegExp(`data-demo-${type}="([^"]+)"`))?.[1];
+      assert.ok(url?.startsWith("/demo/demo-"));
+      const bytes = await readFile(join(output, url.slice(1)));
+      assert.ok(gzipSync(bytes).length < (type === "module" ? 180_000 : 12_000));
+      assert.ok(!html.includes(`src="${url}"`) && !html.includes(`href="${url}"`));
+    }
+    assert.match(html, /No real AI runs/);
+    assert.match(html, /Read the sample without the interactive demo/);
+    const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+    assert.equal(new Set(ids).size, ids.length, "HTML IDs must be unique");
+    for (const [, url] of html.matchAll(/(?:href|src)="([^"]+)"/g)) {
+      if (url.startsWith("#") && url.length > 1) {
+        assert.ok(ids.includes(url.slice(1)), `Missing internal destination: ${url}`);
+      }
+      if (url.startsWith("/") && !url.startsWith("//")) {
+        await access(join(output, url.slice(1).split(/[?#]/)[0]));
+      }
+    }
+    for (const file of ["robots.txt", "sitemap.xml", "site.webmanifest", "main.js", "styles.css"]) {
+      await access(join(output, file));
+    }
+    // Policies must be complete static pages in every build, including a
+    // version override used by the standalone image; no JS or demo is needed.
+    for (const [slug, title] of [
+      ["terms", "Terms of service"],
+      ["privacy", "Privacy statement"],
+    ]) {
+      const page = await readFile(join(output, slug, "index.html"), "utf8");
+      assert.ok(html.includes(`href="/${slug}/"`), `Homepage is missing ${slug}`);
+      assert.ok(page.includes(`<h1>${title}</h1>`));
+      assert.equal([...page.matchAll(/<h1\b/g)].length, 1);
+      assert.ok(page.includes(`href="https://getplenipo.com/${slug}/"`));
+      assert.ok(page.includes('href="mailto:admin@8westventures.com"'));
+      assert.ok(page.includes('href="/terms/"') && page.includes('href="/privacy/"'));
+      assert.ok(!page.includes("<script"), "Reading a policy must not require scripts");
+      for (const [, url] of page.matchAll(/(?:href|src)="([^"]+)"/g)) {
+        if (url.startsWith("/") && !url.startsWith("//")) {
+          await access(join(output, url.slice(1).split(/[?#]/)[0]));
+        }
+      }
+      const sitemap = await readFile(join(output, "sitemap.xml"), "utf8");
+      assert.ok(sitemap.includes(`https://getplenipo.com/${slug}/`));
+      assert.equal(
+        page.match(/href="(\/styles\.css\?v=[^"]+)"/)?.[1],
+        html.match(/href="(\/styles\.css\?v=[^"]+)"/)?.[1],
+        "Policies share the current homepage stylesheet",
+      );
+    }
+    const manifest = JSON.parse(await readFile(join(output, "site.webmanifest"), "utf8"));
+    for (const icon of manifest.icons) {
+      await access(join(output, icon.src.slice(1)));
+    }
+    // A new stylesheet or script gets a new URL; returning visitors cannot keep
+    // a previous release's cached controls or layout after the HTML updates.
+    for (const file of ["styles.css", "main.js"]) {
+      const content = await readFile(join(output, file));
+      const expectedHash = createHash("sha256").update(content).digest("hex").slice(0, 12);
+      assert.ok(html.includes(`"/${file}?v=${expectedHash}"`), `Missing content hash for ${file}`);
+      assert.ok(!html.includes(`"/${file}"`), `Unversioned reference remains for ${file}`);
+      const source = await readFile(resolve(websiteRoot, file));
+      assert.deepEqual(content, source, `Build changed the contents of ${file}`);
+    }
+    const release = JSON.parse(await readFile(join(output, "release.json"), "utf8"));
+    assert.match(release.version, /^\d+\.\d+\.\d+$/);
+    // The version is Pleni's (the repository's package.json), filled in at build time.
+    const product = JSON.parse(await readFile(rootPackage, "utf8")).version;
+    assert.equal(release.version, product);
+    assert.equal(release.downloadUrl, `https://www.npmjs.com/package/pleni/v/${product}`);
+    assert.ok(html.includes(`What&rsquo;s new in v${product}<`));
+    for (const mark of ["__PLENI_VERSION__", "__PLENIPO_VERSION__"]) {
+      assert.ok(!html.includes(mark), `every ${mark} is filled in`);
+    }
+    // Plenipo for Windows, no longer updated, keeps pointing at its last release.
+    const visibleVersions = [...html.matchAll(/data-version>v([^<]+)</g)];
+    assert.equal(visibleVersions.length, 2);
+    assert.ok(visibleVersions.every((match) => match[1] === PLENIPO_LAST_VERSION));
+    const downloads = [...html.matchAll(/data-download\s+href="([^"]+)"/g)];
+    assert.equal(downloads.length, 2);
+    const installer = `https://github.com/Seckcey/plenipo/releases/download/v${PLENIPO_LAST_VERSION}/Plenipo_${PLENIPO_LAST_VERSION}_x64-setup.exe`;
+    assert.ok(downloads.every((match) => match[1] === installer));
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("search metadata describes the actual free releases without fabricated ratings", async () => {
+  const html = await readFile(resolve(websiteRoot, "index.html"), "utf8");
+  assert.equal([...html.matchAll(/<h1\b/g)].length, 1);
+  assert.match(html, /<link rel="canonical" href="https:\/\/getplenipo\.com\/"/);
+  const data = JSON.parse(
+    html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/)[1],
+  );
+  assert.equal(data["@type"], "SoftwareApplication");
+  assert.equal(data.name, "Pleni");
+  assert.equal(data.url, "https://getplenipo.com/");
+  assert.equal(data.image, "https://getplenipo.com/media/pleni-map.webp");
+  assert.equal(data.operatingSystem, "Windows, macOS, Linux");
+  assert.equal(data.offers.price, "0");
+  assert.ok(!("aggregateRating" in data));
+  assert.ok(!("review" in data));
+  assert.match(data.license, /\/LICENSE$/);
+  assert.ok(!/Free\s+<span>Planned<\/span>/.test(html));
+  assert.ok(!/Pro\s+<span>Planned<\/span>/.test(html));
+  for (const path of ["/", "/signin", "/signup", "/account"]) {
+    assert.ok(html.includes(`href="https://account.getplenipo.com${path}"`));
+  }
+  assert.match(html, /Paid purchases are not open yet/);
+  assert.ok(!html.includes("$9") && !html.includes("$99"));
+});
+
+test("Pleni leads the page, and each product links to its own repository", async () => {
+  const html = await readFile(resolve(websiteRoot, "index.html"), "utf8");
+  const hero = html.slice(html.indexOf('<section class="hero"'), html.indexOf('id="pleni"'));
+  assert.match(hero, /<h1 id="hero-title">See your AI team at work\./);
+  assert.ok(hero.includes('href="#get-pleni"'));
+  // The hero shows Pleni's moving tour: silent, looping, with controls to pause it, and a still
+  // map for people who ask for less motion.
+  const tour = hero.match(/<video\b[^>]*>/)?.[0] ?? "";
+  for (const attribute of ["autoplay", "muted", "loop", "playsinline", "controls"]) {
+    assert.match(tour, new RegExp(`\\s${attribute}\\b`), `the tour needs ${attribute}`);
+  }
+  assert.ok(tour.includes('poster="/media/pleni-demo-poster.webp"'));
+  assert.ok(hero.includes('<source src="/media/pleni-demo.mp4" type="video/mp4" />'));
+  assert.ok(hero.includes('src="/media/pleni-map.webp"'));
+  await access(join(websiteRoot, "public", "media", "pleni-demo-poster.webp"));
+  assert.ok(!hero.includes("data-download"), "the Windows download comes after Pleni");
+  for (const repo of ["pleni", "plenipo"]) {
+    assert.ok(html.includes(`href="https://github.com/Seckcey/${repo}"`), `no link to ${repo}`);
+  }
+  // Pleni has no installer: it runs from npm with Node.js.
+  assert.ok(html.includes("<code>npx pleni</code>"));
+  // Plenipo for Windows stays downloadable, and says plainly that it is no longer updated.
+  const desktop = html.slice(html.indexOf('id="desktop"'), html.indexOf('id="product"'));
+  assert.match(
+    desktop,
+    /id="windows-app-status"[^>]*>\s*Plenipo for Windows is no longer being updated/,
+  );
+  assert.ok(desktop.includes("data-download"));
+  // Pleni's structured data comes first and carries its release; Plenipo's follows at its last.
+  const blocks = [
+    ...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g),
+  ].map((match) => JSON.parse(match[1]));
+  assert.deepEqual(
+    blocks.map((data) => data.name),
+    ["Pleni", "Plenipo"],
+  );
+  const [pleni, plenipo] = blocks;
+  assert.equal(pleni["@type"], "SoftwareApplication");
+  assert.equal(pleni.license, "https://github.com/Seckcey/pleni/blob/main/LICENSE");
+  assert.equal(pleni.offers.price, "0");
+  assert.equal(pleni.softwareVersion, "__PLENI_VERSION__");
+  assert.equal(plenipo.softwareVersion, "__PLENIPO_VERSION__");
+  assert.equal(plenipo.url, "https://getplenipo.com/#desktop");
+  assert.ok(!("aggregateRating" in pleni) && !("review" in pleni));
+  // Pleni's new buttons are on the page, and nothing still says it only watches.
+  for (const panel of ["pleni-answer-panel", "pleni-chat-panel"]) {
+    assert.ok(html.includes(`id="${panel}"`), `no ${panel}`);
+  }
+  for (const media of ["pleni-answer.webp", "pleni-chat.webp"]) {
+    await access(join(websiteRoot, "public", "media", media));
+  }
+  // (Plenipo's own sections may still say read-only about its Watch view.)
+  const pleniPart = html.slice(0, html.indexOf('id="desktop"'));
+  assert.ok(!/only watches|It only looks|read-only/i.test(pleniPart), "old read-only words remain");
+  assert.ok(!/It only watches/.test(html), "the questions still say Pleni only watches");
+});
+
+test("the page carries no version typed by hand", async () => {
+  const source = await readFile(resolve(websiteRoot, "index.html"), "utf8");
+  assert.ok(!/\/v\d+\.\d+\.\d+\//.test(source), "a download link carries a typed version");
+  assert.ok(!/data-version>v\d/.test(source), "a version label is typed");
+  assert.ok(!/"softwareVersion":\s*"\d/.test(source), "the structured data's version is typed");
+});
+
+test("PLENI_VERSION wins over the root package.json and must be a release version", async () => {
+  const product = JSON.parse(await readFile(rootPackage, "utf8")).version;
+  assert.equal(await releaseVersion({ env: {} }), product);
+  assert.equal(await releaseVersion({ env: { PLENI_VERSION: "  " } }), product);
+  assert.equal(await releaseVersion({ env: { PLENI_VERSION: " 9.8.7 " } }), "9.8.7");
+  assert.equal(await releaseVersion({ env: { PLENI_VERSION: "9.8.7-beta.1" } }), "9.8.7-beta.1");
+  for (const bad of ["latest", "v9.8.7", "9.8", '9.8.7"><script>', "9.8.7-"]) {
+    await assert.rejects(
+      releaseVersion({ env: { PLENI_VERSION: bad } }),
+      /not a release version/,
+    );
+  }
+  await assert.rejects(
+    releaseVersion({ env: {}, packageFile: join(tmpdir(), "no-such-pleni-package.json") }),
+    /pass PLENI_VERSION/,
+  );
+});
+
+test("a container build fills the page with the version it is given", async () => {
+  const output = await mkdtemp(join(tmpdir(), "plenipo-website-"));
+  try {
+    await buildWebsite(output, { env: { PLENI_VERSION: "9.8.7" } });
+    const html = await readFile(join(output, "index.html"), "utf8");
+    assert.ok(html.includes("What&rsquo;s new in v9.8.7<"));
+    assert.ok(html.includes('"https://www.npmjs.com/package/pleni/v/9.8.7"'));
+    // The Windows app's buttons stay on its last release, whatever Pleni's version is.
+    assert.ok(html.includes(`/releases/download/v${PLENIPO_LAST_VERSION}/`));
+    assert.equal([...html.matchAll(/data-version>v9\.8\.7</g)].length, 0);
+    const release = JSON.parse(await readFile(join(output, "release.json"), "utf8"));
+    assert.equal(release.version, "9.8.7");
+    await access(join(output, "terms", "index.html"));
+    await access(join(output, "privacy", "index.html"));
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("Share my profile is one plain page for every name, never in a search engine", async () => {
+  const output = await mkdtemp(join(tmpdir(), "plenipo-website-"));
+  try {
+    await buildWebsite(output, { env: {} });
+    const page = await readFile(join(output, "c", "index.html"), "utf8");
+    assert.match(page, /<meta name="robots" content="noindex, nofollow" \/>/);
+    assert.match(page, /8 West Ventures, LLC/);
+    // No script in the page itself, and nothing fetched: only the page's own small script.
+    assert.ok(!/<script(?![^>]*src="\/c\/share\.js")/.test(page), "only share.js runs");
+    assert.ok(!/fetch|XMLHttpRequest|https?:\/\//.test(page.replace(/<a href="\/[^"]*"/g, "")));
+    const script = await readFile(join(output, "c", "share.js"), "utf8");
+    assert.ok(
+      !/innerHTML|outerHTML|insertAdjacentHTML|document\.write|fetch|XMLHttpRequest|eval/.test(
+        script,
+      ),
+    );
+    assert.match(script, /textContent/);
+    const sitemap = await readFile(join(output, "sitemap.xml"), "utf8");
+    assert.ok(!sitemap.includes("/c/"), "never in the sitemap");
+    const robots = await readFile(join(output, "robots.txt"), "utf8");
+    assert.match(robots, /^Disallow: \/c\/$/m);
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("the web server gives every name the same share page, marked never to be indexed", async () => {
+  const conf = await readFile(join(websiteRoot, "nginx.conf"), "utf8");
+  assert.match(conf, /location \^~ \/c\/ \{ try_files \$uri \/c\/index\.html; \}/);
+  assert.match(conf, /~\^\/c\/ "noindex, nofollow";/);
+  // At the server's level, so every other security header still applies under /c/.
+  assert.match(conf, /add_header X-Robots-Tag \$robots_tag always;/);
+  assert.ok(!/location \^~ \/c\/ \{[^}]*add_header/.test(conf));
+});
+
+test("the share page's script shows only a Community name, as text", async () => {
+  const script = await readFile(join(websiteRoot, "public", "c", "share.js"), "utf8");
+  const run = (pathname) => {
+    const places = [{ textContent: "someone" }, { textContent: "their Community name" }];
+    const window = { location: { pathname } };
+    const document = { querySelectorAll: () => places };
+    new Function("window", "document", script)(window, document);
+    return places.map((p) => p.textContent);
+  };
+  assert.deepEqual(run("/c/frank-g"), ["@frank-g", "@frank-g"]);
+  for (const pathname of [
+    "/c/",
+    "/c/Frank",
+    "/c/<img src=x onerror=alert(1)>",
+    "/c/%3Cb%3E",
+    "/c/ab",
+    "/c/-frank",
+    "/c/frank-g/more",
+    `/c/${"a".repeat(31)}`,
+  ]) {
+    assert.deepEqual(run(pathname), ["someone", "their Community name"], pathname);
+  }
+});

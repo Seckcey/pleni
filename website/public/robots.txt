@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /release.json
+Disallow: /healthz
+Disallow: /c/
+
+Sitemap: https://getplenipo.com/sitemap.xml

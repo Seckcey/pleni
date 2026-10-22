@@ -27,7 +27,8 @@ const PLACEHOLDER = /^[$%{]/;
 const EMAIL = /[a-z0-9._%+-]{1,64}@[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){0,10}\.[a-z]{2,63}\b/gi;
 const EXAMPLE_DOMAINS = ['example.com', 'example.org', 'example.net'];
 const RESERVED_ENDINGS = ['.example', '.test', '.invalid', '.localhost'];
-const ALLOWED_ADDRESSES = new Set(['noreply@github.com', 'git@github.com']);
+// 8 West Ventures, LLC's public contact, on the website's terms and privacy pages (website/legal).
+const ALLOWED_ADDRESSES = new Set(['noreply@github.com', 'git@github.com', 'admin@8westventures.com']);
 // "logo@2x.png" is a file name, not an address.
 const FILE_ENDINGS = /\.(png|jpe?g|gif|svg|webp|ico|js|mjs|css|json|html?)$/i;
 

@@ -43,7 +43,7 @@
   "scripts": {
     "start": "node bin/pleni.js",
     "demo": "node bin/pleni.js --demo",
-    "test": "node --test",
+    "test": "node --test \"test/**/*.test.js\"",
     "check": "node scripts/check.js"
   }
 }
