@@ -12,8 +12,8 @@ const FEED_PAGE = 150;
 const FL = { W: 268, H: 128, GX: 96, GY: 22, PAD: 48 };
 const ZOOM_MIN = 0.3;
 const ZOOM_MAX = 1.6;
-const VIEWS = ['map', 'list', 'activity', 'mail', 'tasks', 'pulls', 'settings'];
-const VIEW_NAMES = { map: 'Map', list: 'List', activity: 'Activity', mail: 'Mail', tasks: 'Tasks', pulls: 'Pull requests', settings: 'Settings' };
+const VIEWS = ['map', 'list', 'activity', 'mail', 'tasks', 'pulls', 'cloud', 'settings'];
+const VIEW_NAMES = { map: 'Map', list: 'List', activity: 'Activity', mail: 'Mail', tasks: 'Tasks', pulls: 'Pull requests', cloud: 'Cloud', settings: 'Settings' };
 // Kept with the dismissed notices: the newest mail the person marked as read (src/model.js).
 const MAIL_READ_ID = 'you|mailread';
 const STATUS_WORDS = { needs: 'Needs you', working: 'Working', ready: 'Finished', idle: 'Idle', done: 'Done', error: 'Error' };
@@ -71,6 +71,7 @@ const DEFAULTS = {
   send: { mode: 'read' },
   answers: { waitMinutes: 10 },
   github: { live: false, merge: false, mergeMethod: 'squash' },
+  codexCloud: { live: false },
   models: { edit: false },
   alerts: { stoppedMinutes: 15 },
   rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 },
@@ -117,6 +118,8 @@ const S = {
   sayTimer: 0,
   // Live GitHub status: the newest answer, when the page last asked, and the Merge steps.
   gh: { data: null, askedAt: 0, asking: false, error: '', confirm: null, merging: null, msg: null },
+  // The Cloud page: the newest answer from GET /api/cloud and when the page last asked.
+  cloud: { data: null, askedAt: 0, asking: false, error: '' },
   // The Mail page: the newest answer, which list it holds, and a message for the person.
   mail: { data: null, all: false, asking: false, error: '', key: '', msg: null, cmds: [] },
   // Settings > Models: what Codex's settings say, the person's changes, and a message.
@@ -248,7 +251,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-ask-send', 'data-ask-approve', 'data-ask-keep', 'data-ask-allow', 'data-ask-deny', 'data-ask-back', 'data-hooks', 'data-merge', 'data-merge-yes', 'data-merge-no', 'data-gh-again', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-pw', 'data-wifi-address', 'data-wifi', 'data-wifi-copy', 'data-device-out', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-ask-send', 'data-ask-approve', 'data-ask-keep', 'data-ask-allow', 'data-ask-deny', 'data-ask-back', 'data-hooks', 'data-merge', 'data-merge-yes', 'data-merge-no', 'data-gh-again', 'data-cloud-again', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-pw', 'data-wifi-address', 'data-wifi', 'data-wifi-copy', 'data-device-out', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -734,6 +737,8 @@ function setView(v, focus) {
     else a.removeAttribute('aria-current');
   }
   if (v === 'map' && !S.fv.user) S.fv.sig = '';
+  // Opening the Cloud page asks again; the server still reuses an answer under a minute old.
+  if (v === 'cloud') S.cloud.askedAt = 0;
   if (v === 'settings') {
     pickSettingsGroupFromHash();
     loadSettings(false);
@@ -764,6 +769,7 @@ function render() {
   renderSignIn();
   $('#nav-tasks').hidden = !(S.snap && Array.isArray(S.snap.tasks));
   $('#nav-pulls').hidden = !repoGroups().length;
+  $('#nav-cloud').hidden = !cloudOn();
   paintMailNav();
   const asking = (S.snap && S.snap.counts && S.snap.counts.needs) || 0;
   document.title = `${asking ? `(${asking}) ` : ''}${VIEW_NAMES[S.view]} · Pleni`;
@@ -773,6 +779,7 @@ function render() {
   else if (S.view === 'mail') renderMail();
   else if (S.view === 'tasks') renderTasks();
   else if (S.view === 'pulls') renderPulls();
+  else if (S.view === 'cloud') renderCloud();
   else if (S.view === 'settings') {
     paintModels();
     loadDevices(false);
@@ -2204,6 +2211,113 @@ function renderPulls() {
     ? 'Pleni asks GitHub through the GitHub CLI (gh) on the computer that runs it, about once a minute while this page is open. The links open GitHub in a new tab.'
     : 'Pleni only links to GitHub; it sends nothing there. To see checks and reviews here, turn on Live GitHub status in Settings, under Sources.';
   setHtml($('#pulls'), githubBarHtml(gh) + cards.join('') + `<p class="note">${esc(note)}</p>`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// cloud
+// ---------------------------------------------------------------------------------------------
+
+// The Codex cloud tasks of the person, listed by Codex on the computer that runs Pleni (GET
+// /api/cloud, see src/cloud.js). The link shows only while Settings, Sources has it turned on (the
+// snapshot says so). The page asks when it opens and about once a minute while it stays open, and
+// never on another page. It shows titles and status, never what was said in a task.
+const CLOUD_EVERY_MS = 60 * 1000;
+const CLOUD_URL = /^https:\/\/chatgpt\.com\/codex\/tasks\/[A-Za-z0-9_-]{1,100}$/;
+// [words, color] for the status chip of a task.
+const CLOUD_STATUS = {
+  pending: ['Working', 'gh-wait'],
+  ready: ['Ready', 'gh-ok'],
+  applied: ['Applied', 'gh-info'],
+  error: ['Error', 'gh-bad'],
+  unknown: ['Unknown', ''],
+};
+
+const cloudOn = () => !!(S.snap && S.snap.codexCloud && S.snap.codexCloud.live === true);
+
+function askCloudSoon() {
+  if (!S.cloud.asking && !document.hidden && Date.now() - S.cloud.askedAt >= CLOUD_EVERY_MS) askCloud(false);
+}
+
+async function askCloud(fresh) {
+  if (S.cloud.asking) return;
+  S.cloud.asking = true;
+  S.cloud.askedAt = Date.now();
+  try {
+    const data = await getJson(`/api/cloud${fresh ? '?fresh=1' : ''}`);
+    S.cloud.data = data && typeof data === 'object' ? data : null;
+    S.cloud.error = '';
+  } catch (err) {
+    S.cloud.error = plainError(err);
+  } finally {
+    S.cloud.asking = false;
+    S.cloud.askedAt = Date.now();
+    if (S.view === 'cloud') renderCloud();
+  }
+}
+
+// The tasks of the newest answer, checked, newest first.
+function cloudTasks() {
+  const d = S.cloud.data;
+  const list = d && d.on === true && Array.isArray(d.tasks) ? d.tasks : [];
+  const tasks = list.filter((t) => t && typeof t.id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(t.id));
+  return tasks.sort((a, b) => (isTime(b.updatedAt) ? b.updatedAt : 0) - (isTime(a.updatedAt) ? a.updatedAt : 0));
+}
+
+// "3 files · +120 −14", or '' when Codex gave no numbers.
+function cloudChanges(t) {
+  const count = (n) => Number.isSafeInteger(n) && n >= 0;
+  const parts = [];
+  if (count(t.files)) parts.push(plural(t.files, 'file', 'files'));
+  if (count(t.added) && count(t.removed)) parts.push(`+${t.added} −${t.removed}`);
+  return parts.join(' · ');
+}
+
+function cloudTaskHtml(t) {
+  const title = typeof t.title === 'string' && t.title ? t.title : 'Untitled task';
+  const facts = [];
+  if (typeof t.environment === 'string' && t.environment) facts.push(`<span>${esc(t.environment)}</span>`);
+  if (isTime(t.updatedAt)) facts.push(`<span>Updated ${agoHtml(t.updatedAt)}</span>`);
+  const changes = cloudChanges(t);
+  if (changes) facts.push(`<span>${esc(changes)}</span>`);
+  if (t.review === true) facts.push('<span>Has a pull request</span>');
+  if (Number.isSafeInteger(t.attempts) && t.attempts > 1) facts.push(`<span>${t.attempts} tries</span>`);
+  if (typeof t.url === 'string' && CLOUD_URL.test(t.url)) {
+    facts.push(`<a class="ext" href="${esc(t.url)}" target="_blank" rel="noopener noreferrer">Open on chatgpt.com<span class="sr-only">: ${esc(title)} (opens in a new tab)</span></a>`);
+  }
+  return (
+    `<li class="cloud-task"><div class="pull-head"><span class="cloud-title">${esc(title)}</span>${ghPill(CLOUD_STATUS, Object.hasOwn(CLOUD_STATUS, t.status) ? t.status : 'unknown')}</div>` +
+    `<p class="cloud-facts">${facts.join('')}</p></li>`
+  );
+}
+
+function renderCloud() {
+  const meta = $('#cloud-meta');
+  const box = $('#cloud');
+  if (!S.snap) {
+    setText(meta, '');
+    return;
+  }
+  if (!cloudOn()) {
+    setText(meta, '');
+    setHtml(box, '<p class="empty">Codex cloud tasks are turned off. To see them here, turn on "Show my Codex cloud tasks" in Settings, under Sources.</p>');
+    return;
+  }
+  askCloudSoon();
+  const d = S.cloud.data;
+  const tasks = cloudTasks();
+  const error = (d && d.on === true && typeof d.error === 'string' ? d.error : '') || S.cloud.error;
+  const at = d && isTime(d.at) ? d.at : null;
+  setText(meta, d ? plural(tasks.length, 'task', 'tasks') : '');
+  const bar =
+    `<div class="gh-bar"><span>${S.cloud.asking ? 'Asking Codex…' : at ? `${error ? 'Asked Codex' : 'Listed by Codex'} ${agoHtml(at)}` : ''}</span>` +
+    '<button type="button" class="btn" data-cloud-again="1">Look again</button></div>';
+  let body = '';
+  if (error) body = `<p class="note bad">${esc(error)}</p>`;
+  else if (!d) body = S.cloud.asking ? '' : '<p class="empty">Asking Codex…</p>';
+  else if (!tasks.length) body = '<p class="empty">No Codex cloud tasks.</p>';
+  else body = `<ul class="cloud-list" aria-label="Codex cloud tasks, newest first">${tasks.map(cloudTaskHtml).join('')}</ul>`;
+  const note = 'These are your Codex cloud tasks, listed by Codex on this computer. Pleni shows their titles and status, never their messages.';
+  setHtml(box, bar + body + `<p class="note">${esc(note)}</p>`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -5049,6 +5163,18 @@ function mailboxRows() {
   );
 }
 
+// The switch for the Cloud page. Only the computer that runs Pleni can change it; another device
+// sees whether it is on, as plain text.
+function cloudRow() {
+  const help = "Pleni runs codex cloud list about once a minute while the Cloud page is open. Codex, not Pleni, asks OpenAI, with your own Codex login. It needs a ChatGPT sign-in (codex login); an API key does not work. Codex keeps a small error.log in Pleni's folder.";
+  if (LOCAL_PAGE) return checkRow('s-cloud-live', 'Codex cloud tasks', 'codexCloud.live', 'Show my Codex cloud tasks', help);
+  const on = getPath(S.set.draft, 'codexCloud.live', false) === true;
+  return (
+    `<div class="srow"><span class="lbl" id="s-cloud-live-lbl">Codex cloud tasks</span><div><p>Show my Codex cloud tasks: <strong>${on ? 'On' : 'Off'}</strong>. Only the computer that runs Pleni can change this.</p></div>` +
+    `${helpHtml('s-cloud-live', help)}</div>`
+  );
+}
+
 function chainRules(create) {
   const d = S.set.draft;
   if (!Array.isArray(d.chain)) {
@@ -5371,6 +5497,9 @@ function renderSettingsForm() {
       ${sourceRow('codex', 'Codex', 'Read Codex threads', 'Leave the folder empty to use CODEX_HOME, or the .codex folder in your home folder.')}
       ${sourceRow('grok', 'Grok', 'Read Grok sessions', "Pleni reads Grok's session logs in this folder.")}
       ${sourceRow('kimi', 'Kimi Code', 'Read Kimi Code sessions', "Pleni reads Kimi Code's session logs in this folder.")}
+    </section>
+    <section class="panel" aria-labelledby="s-h-cloud" data-find="codex cloud tasks chatgpt openai internet network login web"><h2 id="s-h-cloud">Codex cloud tasks</h2>
+      ${cloudRow()}
     </section>
     <section class="panel" aria-labelledby="s-h-mailbox" data-find="relay planner coordinator tasks notes folder"><h2 id="s-h-mailbox">Mailbox</h2>
       ${mailboxRows()}
@@ -5802,6 +5931,8 @@ async function saveSettings() {
     S.rootsAsked = false;
     S.gh.data = null;
     S.gh.askedAt = 0;
+    S.cloud.data = null;
+    S.cloud.askedAt = 0;
     await loadSettings(true);
     // The Models section may have just been turned on or off.
     if (S.models.data) loadModels(true);
@@ -5883,6 +6014,10 @@ document.addEventListener('click', (ev) => {
   if (el.dataset.ghAgain) {
     askGithub(true);
     return renderPulls();
+  }
+  if (el.dataset.cloudAgain) {
+    askCloud(true);
+    return renderCloud();
   }
   if (el.dataset.roll) return rollClick(el.dataset.roll);
   if (el.dataset.new) return newClick(el.dataset.new);

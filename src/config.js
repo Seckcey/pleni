@@ -37,6 +37,8 @@ export const DEFAULTS = deepFreeze({
   answers: { waitMinutes: 10 },
   // Live pull request status through the GitHub CLI (gh), and the Merge button (this computer only).
   github: { live: false, merge: false, mergeMethod: 'squash' },
+  // The Cloud page lists the person's Codex cloud tasks through `codex cloud list` (this computer only).
+  codexCloud: { live: false },
   // The Models page may change the model and effort lines in Codex's settings (this computer only).
   models: { edit: false },
   alerts: { stoppedMinutes: 15 }, // a watched tile counts as stopped after this long without work
@@ -130,6 +132,7 @@ export function cleanSettings(raw) {
     send: { mode: oneOf(r.send?.mode, SEND_MODES, DEFAULTS.send.mode) },
     answers: { waitMinutes: cleanInt(r.answers?.waitMinutes, DEFAULTS.answers.waitMinutes, RANGES.waitMinutes) },
     github: cleanGithub(r.github),
+    codexCloud: { live: cleanBool(r.codexCloud?.live, DEFAULTS.codexCloud.live) },
     models: { edit: cleanBool(r.models?.edit, DEFAULTS.models.edit) },
     alerts: cleanAlerts(r.alerts),
     rollSoon: cleanRollSoon(r.rollSoon),

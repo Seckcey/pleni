@@ -4,6 +4,19 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **A Cloud page for your Codex cloud tasks.** Off until you tick **Show my Codex cloud tasks** in
+  **Settings → Sources**, on the computer that runs Pleni. It lists your tasks, newest first, with
+  the title, a status (Working, Ready, Applied or Error), the environment, when it changed, the
+  files and lines changed, and a link to open the task on chatgpt.com. Pleni runs `codex cloud
+  list` about once a minute while the page is open. Codex, not Pleni, asks OpenAI, with your own
+  Codex sign-in (`codex login`; an API key does not work). Pleni shows titles and status, never
+  messages. Codex leaves a small `error.log`, with your account id in it, in the `codex-cloud`
+  folder next to Pleni's settings.
+
 ## 0.3.0 (2026-11-02)
 
 Your phone can now open Pleni on your home Wi-Fi, without Tailscale, and every device signs in

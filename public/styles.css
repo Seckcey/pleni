@@ -723,6 +723,12 @@ a.ext::after { content: " \2197"; }
 .merge-buttons { display: flex; flex-wrap: wrap; gap: var(--ui-space-3); margin-top: var(--ui-space-3); }
 .merge-buttons .btn { padding: var(--ui-space-1) var(--ui-space-5); }
 .gh-others { margin: var(--ui-space-5) 0 0; font-size: var(--ui-font-md); }
+/* Cloud: the Codex cloud tasks, one card each. */
+#cloud { display: grid; gap: var(--ui-space-5); max-width: 980px; }
+.cloud-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--ui-space-4); }
+.cloud-task { padding: var(--ui-space-4) var(--ui-space-6); background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); }
+.cloud-title { font-weight: var(--ui-weight-semibold); overflow-wrap: anywhere; }
+.cloud-facts { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--ui-space-2) var(--ui-space-5); margin: var(--ui-space-3) 0 0; font-size: var(--ui-font-sm); color: var(--ui-text-secondary); overflow-wrap: anywhere; }
 .pulls-more { list-style: none; margin: 0; padding: 0; }
 .task.needs { border-color: color-mix(in srgb, var(--ui-warn) 55%, var(--ui-border)); }
 .task-head { display: flex; flex-wrap: wrap; gap: var(--ui-space-3) var(--ui-space-5); align-items: baseline; }

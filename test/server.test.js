@@ -122,6 +122,7 @@ async function startServer(t, options = {}) {
     ...(options.platform ? { platform: options.platform } : {}),
     ...(options.spawnProcess ? { spawnProcess: options.spawnProcess } : {}),
     ...(options.github ? { github: options.github } : {}),
+    ...(options.cloud ? { cloud: options.cloud } : {}),
     ...(options.sender ? { sender: options.sender } : {}),
     ...(options.hookKey ? { hookKey: options.hookKey } : {}),
     ...(options.signin ? { signin: options.signin } : {}),
@@ -1320,6 +1321,99 @@ test('GitHub status in the demo is made up, and asks nothing', async (t) => {
   assert.deepEqual(res.json.repos.map((r) => r.repo), ['example/field-app']);
   assert.ok(res.json.repos[0].pulls.some((p) => p.number === 17 && p.canMerge === true));
   assert.equal(github.calls.length, 0);
+});
+
+// ---- Codex cloud tasks ----
+
+// A stand-in for src/cloud.js that records what the server asks for.
+function fakeCloud() {
+  const fake = {
+    calls: [],
+    async status(args) {
+      fake.calls.push(args);
+      const task = { id: 'task_x1', title: 'Fix the invoice totals', status: 'ready', updatedAt: 5, environment: 'billing-service', files: 3, added: 120, removed: 14, review: true, attempts: 2, url: 'https://chatgpt.com/codex/tasks/task_x1' };
+      return { at: 7, tasks: [task], error: null };
+    },
+  };
+  return fake;
+}
+
+test('Codex cloud tasks are off until they are turned on, and codex is never run while off', async (t) => {
+  const cloud = fakeCloud();
+  const { port } = await startServer(t, { cloud, settings: REMOTE });
+  const res = await request(port, { path: '/api/cloud' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json, { on: false, demo: false, at: null, tasks: [], error: null });
+  assert.equal((await request(port, { path: '/api/cloud?fresh=1' })).json.on, false);
+  assert.equal(cloud.calls.length, 0, 'codex was not asked');
+  assertPlainError(await request(port, { path: '/api/cloud', headers: { cookie: undefined } }), 401);
+  assertPlainError(await request(port, { method: 'POST', path: '/api/cloud' }), 405);
+});
+
+test('Codex cloud tasks come from codex when turned on; Look again asks fresh; another device can read them', async (t) => {
+  const cloud = fakeCloud();
+  const { port } = await startServer(t, { cloud, settings: { ...REMOTE, codexCloud: { live: true } } });
+  const res = await request(port, { path: '/api/cloud' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(Object.keys(res.json), ['on', 'demo', 'at', 'tasks', 'error']);
+  assert.equal(res.json.on, true);
+  assert.equal(res.json.demo, false);
+  assert.equal(res.json.at, 7);
+  assert.equal(res.json.error, null);
+  assert.equal(res.json.tasks[0].title, 'Fix the invoice totals');
+  assert.deepEqual(cloud.calls[0], { fresh: false });
+  await request(port, { path: '/api/cloud?fresh=1' });
+  assert.deepEqual(cloud.calls[1], { fresh: true });
+  const laptop = await request(port, { path: '/api/cloud', headers: FROM_LAPTOP });
+  assert.equal(laptop.status, 200);
+  assert.equal(laptop.json.on, true);
+  assert.equal(laptop.json.tasks.length, 1);
+  assertPlainError(await request(port, { path: '/api/cloud', headers: { ...FROM_LAPTOP, cookie: undefined } }), 401);
+});
+
+test('a plain error from codex reaches the page with no tasks', async (t) => {
+  const cloud = { async status() { return { at: 9, tasks: [], error: 'Pleni could not find Codex on this computer.' }; } };
+  const { port } = await startServer(t, { cloud, settings: { codexCloud: { live: true } } });
+  const res = await request(port, { path: '/api/cloud' });
+  assert.deepEqual(res.json, { on: true, demo: false, at: 9, tasks: [], error: 'Pleni could not find Codex on this computer.' });
+});
+
+test('Codex cloud tasks in the demo are made up, and nothing is run', async (t) => {
+  const cloud = fakeCloud();
+  const { port } = await startServer(t, { store: githubStore(true), cloud, settings: { codexCloud: { live: true } } });
+  const res = await request(port, { path: '/api/cloud' });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.on, true);
+  assert.equal(res.json.demo, true);
+  assert.equal(res.json.error, null);
+  assert.deepEqual([...new Set(res.json.tasks.map((x) => x.status))].sort(), ['applied', 'error', 'pending', 'ready']);
+  assert.ok(res.json.tasks.length >= 4 && res.json.tasks.length <= 5);
+  for (const task of res.json.tasks) assert.equal(task.url, `https://chatgpt.com/codex/tasks/${task.id}`);
+  assert.equal(cloud.calls.length, 0);
+  // The demo shows them even with the switch off, and a save in the demo never changes the switch.
+  const off = await startServer(t, { store: githubStore(true), cloud, settings: {} });
+  const shown = (await request(off.port, { path: '/api/cloud' })).json;
+  assert.equal(shown.on, true);
+  assert.ok(shown.tasks.length >= 4);
+  assert.equal(cloud.calls.length, 0);
+  const saved = await postSettings(off.port, { ...off.memory.state.settings, codexCloud: { live: true } });
+  assert.equal(saved.status, 200);
+  assert.equal(off.memory.state.settings.codexCloud.live, false);
+});
+
+test('only this computer can turn Codex cloud tasks on or off', async (t) => {
+  const { port, memory } = await startServer(t, { cloud: fakeCloud(), settings: REMOTE });
+  const on = { ...memory.state.settings, codexCloud: { live: true } };
+  assert.equal((await postSettings(port, on, FROM_LAPTOP)).status, 200);
+  assert.equal(memory.state.settings.codexCloud.live, false, 'another device cannot turn it on');
+  assert.equal((await postSettings(port, on)).status, 200);
+  assert.equal(memory.state.settings.codexCloud.live, true, 'this computer can');
+  const off = { ...memory.state.settings, codexCloud: { live: false }, displayName: 'Laptop' };
+  assert.equal((await postSettings(port, off, FROM_LAPTOP)).status, 200);
+  assert.equal(memory.state.settings.codexCloud.live, true, 'another device cannot turn it off');
+  assert.equal(memory.state.settings.displayName, 'Laptop', 'its other changes still save');
+  assert.equal((await postSettings(port, off)).status, 200);
+  assert.equal(memory.state.settings.codexCloud.live, false);
 });
 
 test('merge runs only on this computer, with both switches on, for repositories on the map', async (t) => {

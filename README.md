@@ -127,6 +127,8 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   lists the branches your agents work on, who is on each, and links to its pull request on GitHub,
   or to open one. With [Live GitHub status](#live-github-status) on, it also shows each pull
   request's checks and reviews, and a **Merge** button.
+- **Cloud** — shown only when you turn on [Codex cloud tasks](#codex-cloud-tasks). It lists your
+  Codex cloud tasks, newest first, with their title, status and the files they changed.
 - **Settings** — seven short groups: **Basics** (your name, the look, which sessions show),
   **Team** (names, roles, who reports to whom), **Models** (the models and effort your Codex and
   Claude Code agents use, see [Models](#models)), **Sources** (which folders to read, and the
@@ -417,6 +419,24 @@ the repositories your sessions work in.
 says the pull request is ready. Pleni asks you first, then checks once more that nobody pushed
 since you looked. A merge changes your repository on GitHub, so read the pull request first.
 
+## Codex cloud tasks
+
+Pleni can list your Codex cloud tasks on a **Cloud** page. It is off until you turn it on, because
+this reaches the internet. Pleni does not talk to OpenAI itself: it asks Codex on your computer
+(`codex cloud list`), which uses your own Codex sign-in. Pleni never reads Codex's login files.
+
+1. Sign in to Codex with ChatGPT. In a terminal, run `codex login`. An API key does not work.
+2. In Pleni, open **Settings**, then **Sources**. Under **Codex cloud tasks**, tick **Show my Codex
+   cloud tasks**, then choose **Save settings**. Only the computer that runs Pleni can change this.
+3. Open **Cloud**. Each task shows its title and a status (**Working**, **Ready**, **Applied** or
+   **Error**), its environment, when it changed, how many files and lines, and a link to open it
+   on chatgpt.com. **Look again** asks right away.
+
+Pleni asks about once a minute, and only while the Cloud page is open. It shows titles and status,
+never what was said in a task. Codex keeps a small `error.log` file, with your account id in it, in
+the `codex-cloud` folder next to Pleni's settings. Pleni runs only `codex cloud list`, never
+anything that changes a task or your files.
+
 ## Models
 
 **Settings → Models** shows which model and effort your Codex and Claude Code agents start with,
@@ -521,9 +541,10 @@ whether the relay wakes it for its mail. Pleni never sends mail itself.
 - Pop-ups are off until you turn them on. Your browser makes them on your own screen; nothing is
   sent over the internet.
 - It makes no network calls of its own and sends no data about you or your work. There is no
-  telemetry. The one way out is **Live GitHub status**, off until you turn it on: then the GitHub
-  CLI (`gh`) on your computer asks GitHub about your pull requests (see
-  [Live GitHub status](#live-github-status)).
+  telemetry. The ways out are **Live GitHub status** and **Codex cloud tasks**, both off until you
+  turn them on: then the GitHub CLI (`gh`) on your computer asks GitHub about your pull requests
+  (see [Live GitHub status](#live-github-status)), or Codex asks OpenAI for your Codex cloud tasks
+  (see [Codex cloud tasks](#codex-cloud-tasks)).
 - The page shows short bits of session text. If you would rather it did not, turn session text
   off in Settings (the `content` setting, set to `none`). Then you see only names, tools, and
   states.

@@ -1,6 +1,7 @@
 // A made-up cast that moves on its own, for `node bin/pleni.js --demo`, screenshots and tests.
 // Everything is worked out from the clock passed in: the same time always gives the same data.
 import { cleanSettings } from './config.js';
+import { parseTasks } from './cloud.js';
 import { parsePulls } from './github.js';
 
 export const BEAT_MS = 4000;
@@ -279,6 +280,32 @@ export function demoGithub(repos, now = Date.now()) {
   };
 }
 
+// Made-up Codex cloud tasks, as `codex cloud list --json` writes them: every status once.
+const CLOUD_TASKS = [
+  { id: 'task_demo_a1', title: 'Add a refund note to the invoice email', status: 'pending', age: 4, env: 'billing-service', files: 2, added: 31, removed: 4, review: false, tries: 1 },
+  { id: 'task_demo_b2', title: 'Fix the rounding in the monthly invoice total', status: 'ready', age: 95, env: 'billing-service', files: 3, added: 120, removed: 14, review: true, tries: 2 },
+  { id: 'task_demo_c3', title: 'Show the sync time on the field app home screen', status: 'applied', age: 60 * 26, env: 'field-app', files: 1, added: 18, removed: 2, review: true, tries: 1 },
+  { id: 'task_demo_d4', title: 'Speed up the offline photo upload', status: 'error', age: 60 * 50, env: 'field-app', files: null, added: null, removed: null, review: false, tries: 3 },
+  { id: 'task_demo_e5', title: 'Write tests for the late fee rules', status: 'ready', age: 60 * 80, env: 'billing-service', files: 4, added: 210, removed: 0, review: false, tries: 1 },
+];
+
+// The answer GET /api/cloud gives in the demo, in the same shape as src/cloud.js gives it.
+export function demoCloud(now = Date.now()) {
+  const raw = CLOUD_TASKS.map((t) => ({
+    id: t.id,
+    url: `https://chatgpt.com/codex/tasks/${t.id}`,
+    title: t.title,
+    status: t.status,
+    updated_at: new Date(now - t.age * MIN).toISOString(),
+    environment_id: null,
+    environment_label: t.env,
+    summary: { files_changed: t.files, lines_added: t.added, lines_removed: t.removed },
+    is_review: t.review,
+    attempt_total: t.tries,
+  }));
+  return { at: now, tasks: parseTasks(JSON.stringify({ tasks: raw, cursor: null })), error: null };
+}
+
 // What GET /api/models gives in the demo, in the same shape as readCodexModels in src/models.js.
 export function demoModels() {
   const line = (value) => ({ value, set: value !== null, editable: true });
@@ -364,6 +391,8 @@ export function demoSettings(settings) {
   for (const [key, role] of [[PLANNER, 'superintendent'], [COORDINATOR, 'coordinator']]) {
     clean.people[key] = { ...clean.people[key], role: clean.people[key]?.role || role };
   }
+  // The demo always shows the Cloud page, with made-up tasks: it runs nothing.
+  clean.codexCloud = { live: true };
   return clean;
 }
 
