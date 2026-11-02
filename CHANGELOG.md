@@ -4,10 +4,11 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.3.0 (2026-11-02)
 
 Your phone can now open Pleni on your home Wi-Fi, without Tailscale, and every device signs in
-with a password you set, instead of a long key.
+with a password you set, instead of a long key. Away from home, the password works through
+Tailscale.
 
 ### Added
 
