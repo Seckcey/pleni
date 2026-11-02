@@ -70,6 +70,9 @@ npx pleni
 Pleni prints its address, such as `http://localhost:8790/?t=...`. Open that whole address in
 your browser. The part after `?t=` is a secret key that keeps other people who use this computer
 out. Each browser needs the key only once. After that, bookmark `http://localhost:8790/`.
+On the computer that runs Pleni, always use this `localhost` address, even if Tailscale gives it
+another name: Pleni counts any other address as another device, so the buttons that change
+things (New project, Connect, the switches in Settings) only show at `localhost`.
 
 - **The address and the key stay the same.** Pleni saves the key and never changes it on its own.
   To see the address and the key again, run `npx pleni --url`.
