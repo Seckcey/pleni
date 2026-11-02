@@ -183,31 +183,35 @@ test('the command is node and the path on Windows, and the full node path elsewh
 // ---- Settings ----
 
 const NODE = process.execPath;
+// Real folders follow this computer's rules (a Windows folder has backslashes, which Linux's rule refuses).
+const PLATFORM = process.platform;
 const SCRIPT_OF = (dir) => statusFiles(dir).script;
 
 test('Settings tells connected, stale, own status line and unusable files apart', (t) => {
   const root = tempDir(t);
   const dir = tempDir(t);
   const scriptPath = SCRIPT_OF(dir);
-  const setup = () => readStatusSetup({ root, scriptPath, platform: 'linux', execPath: NODE });
+  const setup = () => readStatusSetup({ root, scriptPath, platform: PLATFORM, execPath: NODE });
   const write = (value) => fs.writeFileSync(path.join(root, 'settings.json'), typeof value === 'string' ? value : JSON.stringify(value));
-  assert.equal(readStatusSetup({ root: null, scriptPath, platform: 'linux', execPath: NODE }).error, STATUS_MESSAGES.noRoot);
+  assert.equal(readStatusSetup({ root: null, scriptPath, platform: PLATFORM, execPath: NODE }).error, STATUS_MESSAGES.noRoot);
   // No file yet.
   let state = setup();
   assert.deepEqual([state.ok, state.found, state.connected, state.stale, state.previous], [true, false, false, false, false]);
-  assert.deepEqual(JSON.parse(state.lines), { statusLine: { type: 'command', command: pleniCommand(scriptPath, 'linux', NODE) } });
+  assert.deepEqual(JSON.parse(state.lines), { statusLine: { type: 'command', command: pleniCommand(scriptPath, PLATFORM, NODE) } });
   // The person's own status line stays.
   write({ statusLine: { type: 'command', command: '~/bin/line.sh' } });
   state = setup();
   assert.deepEqual([state.connected, state.stale, state.previous], [false, false, true]);
   // Pleni's.
-  write({ statusLine: { type: 'command', command: pleniCommand(scriptPath, 'linux', NODE) } });
+  write({ statusLine: { type: 'command', command: pleniCommand(scriptPath, PLATFORM, NODE) } });
   state = setup();
   assert.deepEqual([state.ok, state.found, state.connected, state.stale, state.previous], [true, true, true, false, false]);
-  // Pleni's script, but another node or folder.
-  write({ statusLine: { type: 'command', command: pleniCommand(scriptPath, 'linux', '/opt/other/node') } });
-  state = setup();
-  assert.deepEqual([state.connected, state.stale, state.previous], [false, true, false]);
+  // Pleni's script, but another node (off Windows, where the command names node's full path) or folder.
+  if (PLATFORM !== 'win32') {
+    write({ statusLine: { type: 'command', command: pleniCommand(scriptPath, PLATFORM, '/opt/other/node') } });
+    state = setup();
+    assert.deepEqual([state.connected, state.stale, state.previous], [false, true, false]);
+  }
   write({ statusLine: { type: 'command', command: 'node "/home/ada/old/pleni-statusline.mjs"' } });
   assert.equal(setup().stale, true);
   // Files Pleni will not change.
@@ -218,7 +222,7 @@ test('Settings tells connected, stale, own status line and unusable files apart'
   write('{ oops');
   assert.equal(setup().error, STATUS_MESSAGES.notObject);
   // A folder Pleni cannot make a command for.
-  const odd = readStatusSetup({ root, scriptPath: '/home/ada/$x/pleni-statusline.mjs', platform: 'linux', execPath: NODE });
+  const odd = readStatusSetup({ root, scriptPath: '/home/ada/$x/pleni-statusline.mjs', platform: 'linux', execPath: '/usr/bin/node' });
   assert.equal(odd.lines, null);
 });
 
@@ -232,7 +236,7 @@ function saverSetup(t, settingsText) {
   if (settingsText !== null) fs.writeFileSync(file, settingsText);
   let now = 1_700_000_000_000;
   const saver = createStatusSaver({ now: () => now });
-  const where = { root, dir, backupDir: path.join(dir, 'backups'), platform: 'linux', execPath: NODE };
+  const where = { root, dir, backupDir: path.join(dir, 'backups'), platform: PLATFORM, execPath: NODE };
   return { root, dir, file, saver, where, files: statusFiles(dir), tick: (ms = 1000) => { now += ms; } };
 }
 
@@ -249,10 +253,10 @@ test('Connect adds a status line after a copy of the file, and Disconnect takes 
   assert.ok(text.startsWith('{\r\n    "model": "opus"'), 'the old indent and line breaks are kept');
   const saved = JSON.parse(text);
   assert.deepEqual(saved.hooks, { Stop: [] });
-  assert.deepEqual(saved.statusLine, { type: 'command', command: pleniCommand(s.files.script, 'linux', NODE) });
+  assert.deepEqual(saved.statusLine, { type: 'command', command: pleniCommand(s.files.script, PLATFORM, NODE) });
   assert.equal(fs.readFileSync(s.files.script, 'utf8'), scriptText());
   assert.equal(fs.existsSync(s.files.previous), false, 'there was no status line to keep');
-  assert.equal(readStatusSetup({ root: s.root, scriptPath: s.files.script, platform: 'linux', execPath: NODE }).connected, true);
+  assert.equal(readStatusSetup({ root: s.root, scriptPath: s.files.script, platform: PLATFORM, execPath: NODE }).connected, true);
   s.tick();
   fs.writeFileSync(s.files.limits, '{}');
   const off = s.saver.disconnect(s.where);
@@ -266,11 +270,11 @@ test('the person\'s own status line is kept exactly and put back', (t) => {
   const mine = { type: 'command', command: '~/bin/line.sh --short', padding: 2, refreshInterval: 30, hideVimModeIndicator: true, extra: { a: [1, 2, null] } };
   const before = JSON.stringify({ model: 'opus', statusLine: mine, theme: 'dark' }, null, 2) + '\n';
   const s = saverSetup(t, before);
-  assert.equal(readStatusSetup({ root: s.root, scriptPath: s.files.script, platform: 'linux', execPath: NODE }).previous, true);
+  assert.equal(readStatusSetup({ root: s.root, scriptPath: s.files.script, platform: PLATFORM, execPath: NODE }).previous, true);
   assert.equal(s.saver.connect(s.where).ok, true);
   const saved = read(s.file);
   assert.deepEqual(Object.keys(saved), ['model', 'statusLine', 'theme'], 'the key stays where it was');
-  assert.deepEqual(saved.statusLine, { ...mine, command: pleniCommand(s.files.script, 'linux', NODE) });
+  assert.deepEqual(saved.statusLine, { ...mine, command: pleniCommand(s.files.script, PLATFORM, NODE) });
   assert.deepEqual(read(s.files.previous), mine);
   // Connect again: nothing in the file changes, the saved old line stays the person's, the script is made fresh.
   fs.writeFileSync(s.files.script, '// old script\n');
@@ -374,7 +378,7 @@ test('Pleni refuses unsafe files, paths, and too many changes in a minute', (t) 
 
 test('Pleni writes the script again at start only when connected and different', (t) => {
   const s = saverSetup(t, '{}');
-  const args = { root: s.root, dir: s.dir, platform: 'linux', execPath: NODE };
+  const args = { root: s.root, dir: s.dir, platform: PLATFORM, execPath: NODE };
   assert.equal(upgradeScript(args), false, 'not connected: nothing is written');
   assert.equal(fs.existsSync(s.files.script), false);
   assert.equal(s.saver.connect(s.where).ok, true);
