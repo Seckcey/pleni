@@ -4,6 +4,16 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Projects.** A new **Projects** page groups your sessions by folder. A project is a name, a
+  folder on your computer, and (if you like) a GitHub repository. Each project shows which sessions
+  work in its folder, or in a folder inside it, and how many are working, need you, or are idle.
+  Click a project to see its sessions. A Codex or `_worktrees` copy of a project counts as part of
+  it. Add, change and delete projects on the computer that runs Pleni; another device can only look.
+
 ## 0.3.0 (2026-11-02)
 
 Your phone can now open Pleni on your home Wi-Fi, without Tailscale, and every device signs in

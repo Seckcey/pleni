@@ -117,6 +117,12 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   quiet.
 - **List** — the same sessions as a table, grouped by project, with filters. It also works well
   with a screen reader.
+- **Projects** — a project is a name, a folder on your computer, and (if you like) a GitHub
+  repository. Choose **New project** and type those. Pleni then shows, on one card, the sessions
+  working in that folder or in a folder inside it, and how many are working, need you, or are
+  idle. Click a project to see its sessions in a table. Pleni only remembers the project. It never
+  changes your files or your sessions. You can add, change and delete projects only on the computer
+  that runs Pleni.
 - **Activity** — every hand-off, newest first.
 - **Mail** — shown when your agents use agent mail (see below). It shows every message between you
   and your agents in full, newest first, marks the new ones, and gives the command to answer each.

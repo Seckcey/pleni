@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { cleanSettings } from '../src/config.js';
-import { PULSE_MS, buildSnapshot, modelLabel, modelTier, projectName } from '../src/model.js';
+import { PULSE_MS, buildSnapshot, inFolder, modelLabel, modelTier, projectName } from '../src/model.js';
 
 const NOW = Date.UTC(2026, 0, 15, 12, 0, 0);
 const MIN = 60000;
@@ -372,7 +372,7 @@ test('nodes carry tier, model label and session fields', () => {
   assert.equal(node(s, 'you').tier, null);
   assert.deepEqual(Object.keys(lead), [
     'key', 'parent', 'platform', 'kind', 'title', 'subtitle', 'rank', 'role', 'tier', 'model', 'modelLabel',
-    'effort', 'workerType', 'chosen', 'status', 'startedAt', 'lastAt', 'activity', 'lastText', 'needs', 'project', 'projectLabel', 'entrypoint',
+    'effort', 'workerType', 'chosen', 'status', 'startedAt', 'lastAt', 'activity', 'lastText', 'needs', 'project', 'projectLabel', 'projectIds', 'entrypoint',
     'hidden', 'archived', 'named', 'placement', 'memory', 'rollSoon', 'github', 'mail', 'watched', 'answering',
   ]);
   assert.deepEqual(Object.keys(node(s, 'you')), Object.keys(lead));
@@ -1513,4 +1513,174 @@ test('mail the person marked as read in Pleni stops counting as new', () => {
   assert.deepEqual(all.mail, { name: 'Ada', unread: 0, lastAt: NOW - MIN });
   assert.equal(all.attention.some((a) => a.kind === 'mail'), false);
   assert.equal(snap({ codex: mailTeam() }).mail, null, 'no mailbox, no mail');
+});
+
+// ---- projects ----
+
+const APP = { id: 'proj0001', name: 'App', folder: '/home/ada/code/app', repo: 'example/app' };
+const FAR = 'claude:dddddddd-0000-4000-8000-000000000001';
+const BETA = { id: 'proj0002', name: 'Beta', folder: '/home/ada/code/beta', repo: null };
+
+test('inFolder is true for the folder itself and for folders inside it', () => {
+  assert.equal(inFolder('/home/ada/code/app', '/home/ada/code/app', 'linux'), true);
+  assert.equal(inFolder('/home/ada/code/app/src/lib', '/home/ada/code/app', 'linux'), true);
+  assert.equal(inFolder('/home/ada/code/app/', '/home/ada/code/app', 'linux'), true);
+  assert.equal(inFolder('/home/ada/code/app', '/home/ada/code/app/', 'linux'), true);
+  assert.equal(inFolder('/home/ada//code///app/src', '/home/ada/code/app', 'linux'), true);
+  assert.equal(inFolder('/home/ada/code', '/home/ada/code/app', 'linux'), false, 'a parent is not inside');
+  assert.equal(inFolder('/anything', '/', 'linux'), true, 'a bare root holds everything');
+});
+
+test('inFolder does not match a sibling that starts with the same letters', () => {
+  assert.equal(inFolder('/a/apple', '/a/app', 'linux'), false);
+  assert.equal(inFolder('/a/app-old/src', '/a/app', 'linux'), false);
+  assert.equal(inFolder('C:\\a\\apple', 'C:\\a\\app', 'win32'), false);
+});
+
+test('inFolder takes backslashes and the Windows long-path prefix', () => {
+  assert.equal(inFolder('C:\\Users\\ada\\app\\src', 'C:\\Users\\ada\\app', 'win32'), true);
+  assert.equal(inFolder('C:/Users/ada/app/src', 'C:\\Users\\ada\\app\\', 'win32'), true);
+  assert.equal(inFolder('\\\\?\\C:\\Users\\ada\\app\\src', 'C:\\Users\\ada\\app', 'win32'), true);
+  assert.equal(inFolder('\\\\?\\UNC\\server\\share\\app\\src', '\\\\server\\share\\app', 'win32'), true);
+  assert.equal(inFolder('C:\\x', 'C:\\', 'win32'), true, 'a drive root holds its folders');
+});
+
+test('inFolder ignores case on Windows and macOS, and for drive letters, but not on Linux', () => {
+  assert.equal(inFolder('C:\\USERS\\Ada\\App\\src', 'c:\\users\\ada\\app', 'win32'), true);
+  assert.equal(inFolder('/Users/Ada/App/src', '/users/ada/app', 'darwin'), true);
+  assert.equal(inFolder('/home/ada/App', '/home/ada/app', 'linux'), false);
+  assert.equal(inFolder('/home/ada/app', '/home/ada/app', 'linux'), true);
+  assert.equal(inFolder('c:/Users/Ada/App', 'C:/users/ada/app', 'linux'), true, 'a drive path is compared without case anywhere');
+});
+
+test('inFolder is false for anything that is not a folder path', () => {
+  for (const bad of [null, undefined, '', '   ', 42, {}]) {
+    assert.equal(inFolder(bad, '/home/ada/app', 'linux'), false);
+    assert.equal(inFolder('/home/ada/app', bad, 'linux'), false);
+  }
+});
+
+test('sessions carry the ids of the projects whose folder holds them, in project list order', () => {
+  const s = snap({
+    settings: { projectList: [BETA, APP, { id: 'proj0003', name: 'Code', folder: '/home/ada/code', repo: null }] },
+    claude: [
+      session(LEAD, { cwd: '/home/ada/code/app/packages/web' }),
+      session(OTHER, { cwd: '/home/ada/code/beta' }),
+      session(FAR, { cwd: '/home/ada/other/app' }),
+    ],
+  });
+  assert.deepEqual(node(s, LEAD).projectIds, ['proj0001', 'proj0003']);
+  assert.deepEqual(node(s, OTHER).projectIds, ['proj0002', 'proj0003']);
+  assert.deepEqual(node(s, FAR).projectIds, []);
+});
+
+test('a Claude worktree inside the repository belongs to its project', () => {
+  const s = snap({
+    settings: { projectList: [APP] },
+    claude: [session(LEAD, { cwd: '/home/ada/code/app/.claude/worktrees/fix-login' })],
+  });
+  assert.deepEqual(node(s, LEAD).projectIds, ['proj0001']);
+});
+
+test('a Codex worktree is found through the repository named in its .git file', (t) => {
+  const dir = tempDir(t);
+  const repo = path.join(dir, 'code', 'app');
+  const gitdir = path.join(repo, '.git', 'worktrees', 'app');
+  fs.mkdirSync(gitdir, { recursive: true });
+  const tree = path.join(dir, 'home', '.codex', 'worktrees', '7f3a', 'app');
+  fs.mkdirSync(tree, { recursive: true });
+  fs.writeFileSync(path.join(tree, '.git'), `gitdir: ${gitdir}\n`);
+  const spare = path.join(dir, '_worktrees', 'app-fix');
+  fs.mkdirSync(spare, { recursive: true });
+  fs.writeFileSync(path.join(spare, '.git'), `gitdir: ${gitdir}\n`);
+
+  const s = snap({
+    settings: { projectList: [{ ...APP, folder: repo }, { ...BETA, folder: path.join(dir, 'code', 'beta') }] },
+    claude: [session(LEAD, { cwd: tree }), session(OTHER, { cwd: path.join(spare, 'src') })],
+  });
+  assert.deepEqual(node(s, LEAD).projectIds, ['proj0001']);
+  assert.deepEqual(node(s, OTHER).projectIds, ['proj0001']);
+});
+
+test('a worktree whose .git file names another repository does not match by name', (t) => {
+  const dir = tempDir(t);
+  const gitdir = path.join(dir, 'code', 'other', '.git', 'worktrees', 'app');
+  fs.mkdirSync(gitdir, { recursive: true });
+  const tree = path.join(dir, 'home', '.codex', 'worktrees', '7f3a', 'app');
+  fs.mkdirSync(tree, { recursive: true });
+  fs.writeFileSync(path.join(tree, '.git'), `gitdir: ${gitdir}\n`);
+  // The folder is called "app", but the .git file says the repository is "other".
+  const s = snap({ settings: { projectList: [{ ...APP, folder: '/home/ada/code/app' }] }, claude: [session(LEAD, { cwd: tree })] });
+  assert.deepEqual(node(s, LEAD).projectIds, []);
+});
+
+test('a Codex worktree with no readable .git file falls back to the repository name', () => {
+  const s = snap({
+    settings: { projectList: [APP, BETA] },
+    claude: [
+      session(LEAD, { cwd: '/home/ada/.codex/worktrees/7f3a/app' }),
+      session(OTHER, { cwd: '/home/ada/.codex/worktrees/7f3a/App/src' }),
+    ],
+  });
+  assert.deepEqual(node(s, LEAD).projectIds, ['proj0001']);
+  assert.deepEqual(node(s, OTHER).projectIds, [], 'on Linux the name is compared with case');
+  // A plain folder with the same name is not a worktree, so the name alone does not match.
+  const plain = snap({ settings: { projectList: [APP] }, claude: [session(LEAD, { cwd: '/srv/elsewhere/app' })] });
+  assert.deepEqual(node(plain, LEAD).projectIds, []);
+});
+
+test('a helper with no folder takes the project ids of its boss', () => {
+  const s = snap({
+    settings: { projectList: [APP, BETA] },
+    claude: [
+      session(LEAD, { cwd: '/home/ada/code/app' }),
+      session(HELPER, { parentKey: LEAD, kind: 'agent', cwd: null }),
+      session(NESTED, { parentKey: HELPER, kind: 'agent', cwd: null }),
+      session(OTHER, { cwd: null }),
+    ],
+  });
+  assert.deepEqual(node(s, HELPER).projectIds, ['proj0001']);
+  assert.deepEqual(node(s, NESTED).projectIds, ['proj0001']);
+  assert.deepEqual(node(s, OTHER).projectIds, []);
+});
+
+test('a session with no folder and no parent key takes the project ids of the boss a chain rule gave it', () => {
+  const colonel = 'codex:dddddddd-0000-4000-8000-000000000012';
+  const sergeant = 'codex:dddddddd-0000-4000-8000-000000000013';
+  const s = snap({
+    settings: {
+      projectList: [APP, BETA],
+      groupBy: 'none',
+      chain: [{ match: 'Colonel', reportsTo: 'you', role: null }, { match: 'Sergeant', reportsTo: 'Colonel', role: null }],
+    },
+    codex: [
+      session(colonel, { title: '***Colonel - Suite', cwd: '/home/ada/code/app' }),
+      session(sergeant, { title: '**Sergeant Lark', cwd: null }),
+    ],
+  });
+  assert.equal(node(s, sergeant).parent, colonel);
+  assert.deepEqual(node(s, sergeant).projectIds, ['proj0001']);
+});
+
+test('every node has projectIds, and the other tiles have none', () => {
+  const s = snap({ settings: { projectList: [APP] }, ...cast() });
+  for (const n of s.nodes) assert.ok(Array.isArray(n.projectIds), n.key);
+  assert.deepEqual(node(s, 'you').projectIds, []);
+  assert.deepEqual(node(s, 'project:alpha').projectIds, []);
+});
+
+test('the snapshot lists the projects without their folders', () => {
+  const s = snap({ settings: { projectList: [APP, BETA] }, ...cast() });
+  assert.deepEqual(s.projects, [
+    { id: 'proj0001', name: 'App', repo: 'example/app' },
+    { id: 'proj0002', name: 'Beta', repo: null },
+  ]);
+  assert.equal(JSON.stringify(s).includes('/home/ada/code/app'), false, 'a project folder never reaches the snapshot');
+  assert.deepEqual(snap({ ...cast() }).projects, []);
+});
+
+test('inFolder tidies ".." in a typed folder, but never climbs above a drive', () => {
+  assert.equal(inFolder('/home/ada/app/src', '/home/ada/code/../app'), true);
+  assert.equal(inFolder('/home/ada/code/app', '/home/ada/code/../app'), false);
+  assert.equal(inFolder('C:\\Users\\ada\\app', 'C:\\..\\Users\\ada\\app', 'win32'), true);
 });

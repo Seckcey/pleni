@@ -361,6 +361,15 @@ export function demoSettings(settings) {
   const clean = cleanSettings(settings);
   clean.sources.mailbox.planner = PLANNER;
   clean.sources.mailbox.coordinator = COORDINATOR;
+  // Always the two made-up projects: the demo never shows the person's own projects (its pictures
+  // go on the website) and never changes them. The Codex worktree under HOME matches Field app by
+  // its repository name, because its folder is not on this disk.
+  clean.projectList = cleanSettings({
+    projectList: [
+      { id: 'demobilling01', name: 'Billing service', folder: BILLING, repo: GITHUB.billing },
+      { id: 'demofieldapp1', name: 'Field app', folder: FIELD, repo: GITHUB.field },
+    ],
+  }).projectList;
   for (const [key, role] of [[PLANNER, 'superintendent'], [COORDINATOR, 'coordinator']]) {
     clean.people[key] = { ...clean.people[key], role: clean.people[key]?.role || role };
   }

@@ -29,6 +29,7 @@
     <ul>
       <li><a href="#/" data-view="map">Map</a></li>
       <li><a href="#/list" data-view="list">List</a></li>
+      <li><a href="#/projects" data-view="projects">Projects</a></li>
       <li><a href="#/activity" data-view="activity">Activity</a></li>
       <li id="nav-mail" hidden><a href="#/mail" data-view="mail">Mail<span class="nav-count" id="nav-mail-count" hidden></span></a></li>
       <li id="nav-tasks" hidden><a href="#/tasks" data-view="tasks">Tasks</a></li>
@@ -106,6 +107,18 @@
     <div class="attention" id="list-attention"></div>
     <div class="chips" id="list-filters" role="group" aria-label="Show sessions that are"></div>
     <div id="list-body"></div>
+  </section>
+
+  <section class="view" id="view-projects" aria-labelledby="projects-title" hidden>
+    <div class="view-head">
+      <div>
+        <h1 id="projects-title" tabindex="-1">Projects</h1>
+        <p class="meta" id="projects-meta"></p>
+      </div>
+    </div>
+    <div id="projects-msg" role="status"></div>
+    <div id="projects-form"></div>
+    <div id="projects-body"></div>
   </section>
 
   <section class="view" id="view-activity" aria-labelledby="activity-title" hidden>
