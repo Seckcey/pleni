@@ -65,7 +65,9 @@ These are Pleni's promises, in plain words. A way around any of them is a vulner
   window that runs `claude` or `codex`. Before that, it may run a hidden PowerShell that only asks
   Windows when a program started. With **Live GitHub status** turned on, it runs the GitHub CLI
   (`gh`) to read pull requests, and with **Merge** on too, to merge one after you confirm on this
-  computer. With **Answer questions** connected, Claude Code's hooks ask Pleni first, at
+  computer. With **Show my Codex cloud tasks** turned on, it runs the Codex program, only as
+  `codex cloud list --json --limit 20`, by its full path, with no shell, from a private folder of
+  Pleni's own (never `codex cloud diff`, `apply` or `exec`). With **Answer questions** connected, Claude Code's hooks ask Pleni first, at
   `127.0.0.1` with a secret only Pleni and Claude Code's settings file hold; Pleni answers a
   question, a plan or a permission prompt only with what you chose on this computer, and every
   other call with no decision. With **Connect for plan limits**, Claude Code runs Pleni's status line
@@ -73,11 +75,12 @@ These are Pleni's promises, in plain words. A way around any of them is a vulner
   the status line command you had before, the way Claude Code did (in your shell, with the same
   input, for at most 10 seconds). Pleni never reads a login key. A way to make it write, delete, merge, or run anything else (the
   script may run only your own old status line), to
-  start a window, a hidden turn or gh without the setting, from another device, to send to a
+  start a window, a hidden turn, gh or codex without the setting, from another device, to send to a
   session that is busy or open elsewhere, to answer a hook call for you, or with a command line of
   your choosing, is a vulnerability.
 - **It never phones home.** Pleni makes no network calls of its own and has no telemetry. Only
-  Live GitHub status reaches the internet, through gh, and only when you turn it on.
+  Live GitHub status (through gh) and Codex cloud tasks (through codex, with your own Codex
+  login, which Pleni never reads) reach the internet, and only when you turn them on.
 - **Session text stays text.** Text from session files is shown as plain text and never run as
   code in the page. The page allows only its own scripts and styles. A way to run a script
   through session content, a file name, or a setting is a vulnerability.

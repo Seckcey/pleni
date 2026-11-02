@@ -98,6 +98,8 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
       send: actions?.send === true,
       answers: actions?.answers === true,
     },
+    // Whether the Cloud page is turned on, so the page knows to show its link.
+    codexCloud: { live: s.codexCloud.live },
   };
 }
 

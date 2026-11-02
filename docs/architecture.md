@@ -20,7 +20,10 @@ session here** turned on, a button opens a window in a Claude Code session's fol
 `claude --teleport`, where the person picks a claude.ai cloud session to go on with on this
 computer. With **Live GitHub status** turned on (also off by default), Pleni runs the GitHub CLI
 (`gh`) to read the pull requests of the repositories its sessions work in, and with **Merge** on as
-well, it merges one on this computer after the person confirms (see `src/github.js` below). With **Send messages** turned on
+well, it merges one on this computer after the person confirms (see `src/github.js` below). With
+**Show my Codex cloud tasks** turned on (also off by default), Pleni runs the Codex program
+(`codex cloud list --json --limit 20`) to list the person's Codex cloud tasks on the Cloud page
+(see `src/cloud.js` below). With **Send messages** turned on
 (also off by default, Windows only), the person types a message to an idle Claude Code session or
 Codex thread in its side panel, and Pleni sends it as one hidden turn of that session, with the
 message on the program's standard input (see `src/send.js` below). With **Answer questions**
@@ -47,12 +50,14 @@ I run this?" waits on the page until the person answers it there or in the sessi
   and, with the opt-in Connect of Answer questions, Pleni's own two hooks in Claude Code's
   `settings.json` (see Answer questions). It starts no program except the opt-in Open in PowerShell, Roll over, New agent and Bring a
   cloud session here windows, only when the person clicks for one, the GitHub CLI (`gh`) for
-  the opt-in Live GitHub status, and, with the opt-in Send messages, one hidden `claude -p` or
+  the opt-in Live GitHub status, the Codex CLI (`codex cloud list`, never `diff`, `apply` or
+  `exec`) for the opt-in Codex cloud tasks, and, with the opt-in Send messages, one hidden `claude -p` or
   `codex exec` turn per message the person sends. The only messages it sends are Roll over's two
   fixed ones and the ones the person types for Send, and the only change it makes elsewhere is a
   merge on GitHub that the person confirms.
 - **Private by default.** Nothing leaves the computer, except what the opt-in Live GitHub status
-  asks GitHub through `gh`, and the page itself for your own signed-in devices (through Tailscale,
+  asks GitHub through `gh`, what the opt-in Codex cloud tasks ask OpenAI through `codex` (with the
+  person's own Codex login, which Pleni never reads), and the page itself for your own signed-in devices (through Tailscale,
   or over your Wi-Fi with Wi-Fi access). No telemetry, and no network calls of Pleni's own. The page shows short
   snippets of session text only when `content` is `"snippets"` (the default); `"none"` shows only
   tool names and states.
@@ -81,6 +86,7 @@ src/newagent.js         New agent: a new named session in the folder of one on t
 src/send.js             Send: one message to an idle session, as a hidden turn of it (opt-in, Windows)
 src/answers.js          Answer questions: Claude Code's hooks ask Pleni first; Connect and Disconnect (opt-in)
 src/github.js           Live GitHub status and Merge, through the GitHub CLI, gh (opt-in)
+src/cloud.js            Codex cloud tasks for the Cloud page, through the Codex CLI, codex (opt-in)
 src/models.js           the Models page: Codex's and Claude Code's models and effort, read always, changed on request (opt-in)
 src/toml.js             a small TOML reader and one-line editor for src/models.js
 src/usage.js            Usage: tokens used in the last 7 days per tool, and Codex's plan limits, read from session files (read-only)
@@ -134,6 +140,7 @@ export const DEFAULTS = {
   send: { mode: 'read' },                              // what a sent message may do: 'read' | 'edit'
   answers: { waitMinutes: 10 },                        // how long Pleni holds a question (1-60) before the session asks in its own window
   github: { live: false, merge: false, mergeMethod: 'squash' }, // Live GitHub status, the Merge button, 'squash' | 'merge' | 'rebase'
+  codexCloud: { live: false },                         // the Cloud page lists the Codex cloud tasks (codex cloud list); true only when set to true
   models: { edit: false },                             // the Models page may change Codex's and Claude Code's model settings (this computer only)
   alerts: { stoppedMinutes: 15 },                      // a watched tile counts as stopped after this long without work
   rollSoon: { memoryPercent: 70, squeezes: 2, days: 7 }, // "Roll over soon" limits (0-100, 0-100, 0-365); 0 turns one off
@@ -149,7 +156,7 @@ Exports:
   `activeMinutes` 1–240, `recentHours` 1–720, `staleMinutes` 5–1440, `stoppedMinutes` 1–1440), arrays
   de-duplicated, node keys validated with `isNodeKey`, roots must be absolute paths or `null`.
   `people[key].watch` and `people[key].answer` are kept only when exactly `true`, and so are `actions.*`, `github.live`,
-  `github.merge` and `models.edit`. `send.mode` is `'edit'` only when it is exactly that, else
+  `github.merge`, `codexCloud.live` and `models.edit`. `send.mode` is `'edit'` only when it is exactly that, else
   `'read'`. `answers.waitMinutes` is clamped to 1–60.
 - `projectList` (`cleanProjectList(raw)`, also exported) keeps arrays only, at most 50 entries, each
   exactly `{ id, name, folder, repo }`. `id` is a string of 8–32 lower-case letters and digits (the
@@ -506,6 +513,7 @@ Snapshot = {
   projects: [{ id, name, repo }],  // the Projects page, in projectList order; never a folder path (the folder stays in settings)
   actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean, teleport: boolean, send: boolean, answers: boolean },  // the page may show each button (setting on, Pleni on Windows; answers on any system)
   asks: Ask[],  // the questions Pleni holds for the person (src/answers.js), oldest first
+  codexCloud: { live: boolean },  // settings.codexCloud.live: the page shows the Cloud link only while it is true
 }
 SourceInfo = { enabled, ok, error, count }
 Node = {
@@ -1097,6 +1105,54 @@ export const GITHUB_MESSAGES, MAX_REPOS /* 12 */, MERGE_METHODS /* ['squash', 'm
   `--admin`, `--auto` or `--delete-branch`. After a merge, the next look asks GitHub again. It
   answers `{ ok: true }` or `{ ok: false, status, error }`.
 
+## Codex cloud tasks (`src/cloud.js`)
+
+Off until `settings.codexCloud.live`, which only this computer can change. Pleni never talks to
+OpenAI itself: it runs the Codex program (`codex`) on the computer that runs Pleni, which asks
+OpenAI with the person's own Codex login. Pleni never reads `auth.json` or any key. The command is
+experimental in Codex; this is the one Pleni runs, and no other (never `cloud diff`, `cloud apply`,
+`cloud exec` or `codex apply`).
+
+```js
+export function createCodexCloud({ execFile, env, platform, folder, now, find, home })  // -> { status }
+export function findCodex(env, platform, { home, size, node, isExecutable })  // -> { file, args } | null
+export function parseTasks(text)  // -> Task[] | null (null: not { tasks: [...] })
+export function cloudOutcome(err, stdout, stderr)  // -> { ok, stdout, error }
+export function cloudFolder(settingsFile)  // -> <settings folder>/codex-cloud | null
+export const CLOUD_MESSAGES, CLOUD_ARGS, MAX_TASKS /* 20 */
+Task = {
+  id,           // /^[A-Za-z0-9_-]{1,100}$/; a task with any other id is dropped
+  title,        // plain text, control characters removed, at most 200 characters, else "Untitled task"
+  status,       // 'pending' | 'ready' | 'applied' | 'error' | 'unknown'
+  updatedAt,    // ms or null (from updated_at, an RFC 3339 time)
+  environment,  // plain text, at most 100 characters, or null (environment_label)
+  files, added, removed,  // non-negative integers or null (summary.files_changed, lines_added, lines_removed)
+  review,       // boolean: the task has pull requests (is_review)
+  attempts,     // integer >= 1 or null (attempt_total)
+  url,          // https://chatgpt.com/codex/tasks/<id>, built by Pleni from the checked id; the url field is never used
+}
+```
+
+- **Finding codex:** on Windows, `findTool('codex')` from `src/send.js` (codex.exe on PATH, or npm's
+  codex.cmd with its package's `bin/codex.js` run by Pleni's own Node.js). On macOS and Linux, the
+  first `codex` in a folder on PATH that is an executable regular file or a link to one (an npm
+  install is a small script behind a link, so there is no size rule). Only absolute local folders
+  count, never the current folder or a network share. A found path is kept for three minutes.
+- **Asking:** `codex cloud list --json --limit 20` by `execFile`, never through a shell, with
+  `NO_COLOR=1` added to the person's environment, `windowsHide`, a 30 second timeout and at most
+  1 MB of output. Every word is fixed: nothing from a request reaches the command line. Every
+  `codex cloud` command appends an `error.log` (with the account id inside) to its current folder,
+  so the run's folder is `codex-cloud` inside Pleni's settings folder, made with mode `0700`.
+- **The answer** is `{ tasks, cursor }`. Pleni keeps at most 20 tasks and no message text (the
+  list has none). Pleni does not page with `cursor`.
+- **Errors**, in plain words, and never the words Codex wrote to its error output (they may hold an
+  account id): no codex found; not signed in with ChatGPT (an API-key login is refused by Codex with
+  exit code 1 and "Not signed in"); too slow; an answer that is not the JSON above (Codex may be too
+  old for `cloud list --json`); anything else.
+- **Keeping:** `status({ fresh })` -> `{ at, tasks, error }` reuses the last answer for 60 seconds;
+  `fresh` (Look again) asks again only when the last answer is more than 15 seconds old. Two pages
+  asking at once share one run. Answers are in memory only.
+
 ## Models (`src/models.js`, `src/toml.js`, `src/frontmatter.js`)
 
 The Models page shows the model and effort Codex and Claude Code agents start with, and with
@@ -1449,7 +1505,7 @@ export function createLan({ makeServer, isOn, allowed, port, addresses, every })
 
 ```js
 export function newKey()  // -> 43 random base64url characters (32 bytes)
-export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess, github, modelSaver, sender, asks, hookSaver, hookKey, signin, lanAddresses, lanPort, usage, statusSaver })  // -> http.Server
+export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess, github, modelSaver, sender, asks, hookSaver, hookKey, signin, lanAddresses, lanPort, usage, statusSaver, cloud })  // -> http.Server
 export function keyFile(settingsPath)  // -> the "key" file next to the settings file
 export function readKeyFile(file, { tries, pause, read })  // -> { key } | { missing: true } | { problem: 'damaged' | <error code> }
 export function keyFileError(file, problem)  // -> Error with code 'PLENI_KEY_FILE' and a plain message
@@ -1526,7 +1582,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `GET /api/send?key=<nodeKey>`, `POST /api/send`, `POST /api/hook`, `POST /api/answer`,
   `POST /api/answering`, `GET /api/hooks`, `POST /api/hooks`, `POST /api/signin`,
   `POST /api/signout`, `POST /api/password`, `POST /api/lan`, `GET /api/devices`,
-  `POST /api/devices`, `GET /api/github`, `POST /api/github/merge`, `GET /api/mail`,
+  `POST /api/devices`, `GET /api/github`, `POST /api/github/merge`, `GET /api/cloud`, `GET /api/mail`,
   `GET /api/models`, `POST /api/models`, `GET /api/usage`, `GET /api/statusline`,
   `POST /api/statusline`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
@@ -1629,6 +1685,15 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `error` and `repos` come from `github.status` for the repositories on the map (`node.github`,
   reviewers left out), or from `demoGithub` in the demo. Another device gets the same status, with
   `merge: false`. `createServer({ github })` lets tests replace `createGithub()`.
+- **GET /api/cloud** (`?fresh=1` for Look again) needs the key cookie and answers any signed-in
+  device `{ on, demo, at, tasks, error }`. `on` is `settings.codexCloud.live` (always true in the
+  demo). When it is false, the answer is `{ on: false, demo, at: null, tasks: [], error: null }`
+  and codex is never run. Otherwise `at`, `tasks` and `error` come from `cloud.status({ fresh })`
+  (see `src/cloud.js`), or from `demoCloud(now)` in the demo, which runs nothing. `POST
+  /api/settings` from a request that is not from this computer keeps the saved `codexCloud` (like
+  `remote`), so only this computer can turn the Cloud page on or off, and so does every save in the
+  demo. `createServer({ cloud })` lets tests replace
+  `createCodexCloud()`, which runs codex from `codex-cloud` next to the settings file.
 - **GET /api/mail** (`?all=1` for every message) needs the key cookie. It answers `{ on: false, name:
   null, readAt: null, messages: [] }` without agent mail, else `{ on: true, name, readAt, messages }`
   from `store.mail({ all })`: the person's mail name, the `you|mailread` time (or null), and up to
@@ -1698,6 +1763,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 
 - Hash routes: `#/` map (default), `#/list`, `#/projects` and `#/projects/<id>`, `#/activity`, `#/tasks` (only with a mailbox),
   `#/pulls` (shown in the menu only when a session on the map is in a GitHub repository),
+  `#/cloud` (shown only while `snapshot.codexCloud.live` is true),
   `#/settings`, and `#/settings/<group>` for one group of settings (`basics`, `team`, `models`,
   `sources`, `alerts`, `buttons` or `devices`).
 - **Pop-out windows:** **Pop out** in the Map and List headers, and the pop-out button in a side
@@ -1832,6 +1898,17 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   **Merge now**, **Cancel**) and posts `/api/github/merge` with the commit id the page showed. The
   answer shows in the row, takes the focus, and is read out. One that cannot be merged yet says why.
   Saving Settings drops the last answer, so the view asks again.
+- **Cloud:** the person's Codex cloud tasks, newest first, from `GET /api/cloud`. The page asks when
+  it opens and then once a minute while it stays open and visible, never on another page; **Look
+  again** asks with `?fresh=1`. Each task shows its title, a status chip in plain words (`pending`
+  "Working", `ready` "Ready", `applied` "Applied", `error` "Error", else "Unknown"), the environment
+  name, "Updated" with the List's ago words, "3 files · +120 −14", "Has a pull request" when
+  `review` is true, "N tries" when `attempts` is more than 1, and **Open on chatgpt.com** (a new tab,
+  `rel="noopener noreferrer"`, only for an address of the form
+  `https://chatgpt.com/codex/tasks/<id>`). A note says that Pleni shows titles and status, never
+  messages. Empty: "No Codex cloud tasks." An error shows its plain message and **Look again**.
+  While the setting is off, the link is hidden and the page says so. Saving Settings drops the last
+  answer.
 - **Drawer:** clicking a tile opens the session's details and live recent events from
   `/api/session`. Esc closes it; focus is trapped while open and returned afterwards. When
   `snapshot.actions.openTerminal` is true and the page itself was opened on this computer
@@ -1893,7 +1970,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   them): **Basics** (You and the map; What the page shows, with Finished for, Call a turn stuck
   after and Reviewers folded under **More choices**), **Team** (Names and roles, Chain of command,
   Projects, Ranks by model with its words folded), **Models** (Codex models, see below), **Sources** (Where Pleni looks, Mailbox,
-  GitHub: Live GitHub status, Merge button, How to merge),
+  GitHub: Live GitHub status, Merge button, How to merge; Codex cloud tasks: **Show my Codex cloud
+  tasks**, `codexCloud.live`, a checkbox on this computer and read-only text on another device),
   **Alerts** (Needs you, with `alerts.stoppedMinutes` and the Pop-ups box; Roll over soon, with
   the three `rollSoon` limits), **Buttons** (Open sessions: Open in PowerShell, New agent, Bring a
   cloud session here and Roll over, and a line when the computer does not run Windows; Send
@@ -2061,7 +2139,10 @@ at high effort, workers on GPT-6 Astra, and two worker types, and made-up Claude
 (`demoClaudeModels()`): sergeants on Opus at high effort, workers on Sonnet, and two worker types;
 saving them is refused. The Usage popup shows made-up token counts for the last 7 days and
 made-up limits for Claude Code and Codex (`demoUsage(now)`, in the shape `createUsage().read()` gives).
-Each scripted
+saving them is refused. `demoSettings` turns Codex cloud tasks on, so the demo always has a Cloud
+page with five made-up tasks about the billing service and the field app, one of each status
+(`demoCloud(now)`, in the shape `src/cloud.js` gives, run through `parseTasks`); nothing is run,
+and a settings save in the demo keeps the saved `codexCloud` as it is. Each scripted
 letter is kept once, at the last time the loop sent it, so the Mail page shows no copies.
 `demoSettings` also puts in two made-up projects, always, in place of any saved ones: Billing
 service (`demobilling01`) and Field app (`demofieldapp1`), with their made-up repositories, so the

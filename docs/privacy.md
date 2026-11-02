@@ -17,9 +17,10 @@ what it never does.
   before you click.
 - Pleni makes **no network calls** of its own. It has no telemetry, no tracking, and no account.
   Its only sign-ins are its own key and the password you can set, both kept on your computer.
-- The one way out is **Live GitHub status**, off until you turn it on. Then the GitHub CLI (`gh`)
-  on your computer asks GitHub about your pull requests for Pleni (see
-  [below](#live-github-status-and-merge)).
+- The ways out are **Live GitHub status** and **Codex cloud tasks**, both off until you turn them
+  on. Then the GitHub CLI (`gh`) on your computer asks GitHub about your pull requests for Pleni
+  (see [below](#live-github-status-and-merge)), or the Codex program asks OpenAI for the list of
+  your Codex cloud tasks (see [below](#codex-cloud-tasks)).
 - Pleni opens only on your own computer (`127.0.0.1`), unless you turn on Wi-Fi access or set up
   Tailscale yourself, and only for a browser that signed in with the key Pleni prints when it
   starts, or with your password.
@@ -63,7 +64,8 @@ squeezed into a summary and by how much.
 
 Pleni also reads a few settings from your environment: `PLENI_PORT`, `PLENI_HOME`,
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and the usual system folders (`APPDATA` on Windows,
-`XDG_CONFIG_HOME` on Linux). With Live GitHub status on, it also reads `PATH`, to find gh.
+`XDG_CONFIG_HOME` on Linux). With Live GitHub status or Codex cloud tasks on, it also reads
+`PATH`, to find gh or codex.
 
 The [README](../README.md#where-it-looks) lists the usual folders for each system.
 
@@ -173,7 +175,8 @@ recent pop-ups in its notification list until you clear them.
   or `codex` there. The name you type is held to the same plain marks. Pleni sends the new agent
   nothing: you type its first message.
 - It makes no network calls of its own. It sends no telemetry, usage counts, or crash reports.
-  Only Live GitHub status reaches the internet, through gh, and only when you turn it on.
+  Only Live GitHub status (through gh) and Codex cloud tasks (through codex) reach the internet,
+  and only when you turn them on.
 - The page loads nothing from the internet. Its scripts, styles, and pictures all come from Pleni
   itself, and the page's security rules block anything else.
 - It never puts stack traces or file contents in error messages.
@@ -199,6 +202,30 @@ Live GitHub status is off until you turn it on in **Settings → Sources**. Then
   words and checked values, never through a shell (a program that reads commands), and in your
   temporary folder, away from your projects.
 - What GitHub does with what it receives is covered by GitHub's own privacy rules.
+
+## Codex cloud tasks
+
+Codex cloud tasks are off until you tick **Show my Codex cloud tasks** in **Settings → Sources**
+on the computer that runs Pleni. Another device cannot turn them on. Then:
+
+- Pleni runs the Codex program (`codex`) on that computer, with the fixed words `cloud list
+  --json --limit 20`, never through a shell (a program that reads commands). Codex, not Pleni,
+  asks OpenAI, with your own Codex login. Pleni never reads Codex's login files or any key. It
+  needs a ChatGPT sign-in (`codex login`); an API key does not work.
+- It asks only while the Cloud page is open, about once a minute, and shows the answer to every
+  device that may open Pleni. It never runs `codex cloud diff`, `apply` or `exec`.
+- What it shows, for up to 20 tasks: the title, the status (working, ready, applied or error), the
+  environment name, when it was updated, how many files changed and how many lines were added and
+  removed, whether it has a pull request, how many tries it had, and a link to the task on
+  chatgpt.com. Pleni builds that link itself from the task's id. It never shows or keeps what was
+  said in a task, because Codex's list does not hold it.
+- Pleni keeps the last list in memory only, reuses it for a minute, and writes none of it to a file.
+- Codex writes a small file named `error.log` in the folder it runs from, and that file holds your
+  account id. So Pleni runs Codex from a folder of its own, `codex-cloud`, inside Pleni's
+  settings folder, never from a project. Delete the file whenever you like.
+- Pleni finds `codex` in the folders on your `PATH` (on Windows, like Send does), never in the
+  current folder.
+- What OpenAI does with what it receives is covered by OpenAI's own privacy rules.
 
 ## Models
 

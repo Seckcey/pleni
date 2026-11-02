@@ -31,7 +31,11 @@ before you change code, and follow its names, shapes, and file paths.
   only the person's previous status line command. The one other
   program is the GitHub CLI for opt-in Live GitHub status (`src/github.js`): `gh pr list`, and
   `gh pr merge` after the person confirms on this computer, run by full path with fixed words and
-  checked values, never through a shell. It answers a Claude Code session's question, plan or permission prompt only with what the person
+  checked values, never through a shell. The last program is the Codex CLI for opt-in Codex cloud
+  tasks (`src/cloud.js`): `codex cloud list --json --limit 20`, by full path with fixed words,
+  never through a shell, from a folder of Pleni's own (`codex-cloud` in its settings folder, where
+  Codex leaves its `error.log`), never `codex cloud diff`, `apply` or `exec`. It answers a Claude
+  Code session's question, plan or permission prompt only with what the person
   chose on this computer, through the opt-in hooks of Answer questions (`src/answers.js`): Connect
   adds Pleni's own two hooks to Claude Code's `settings.json`, with the same care as the Models page,
   and Disconnect takes exactly those out. The hooks call Pleni only on this computer, with a secret
@@ -61,8 +65,9 @@ before you change code, and follow its names, shapes, and file paths.
   adds its notes as `docs/releases/vX.Y.Z.md`, which the site shows under What's new.
 - **Private by default.** No telemetry, and nothing loaded from the internet. Pleni makes no
   network calls of its own: only opt-in Live GitHub status reaches GitHub, through `gh` and the
-  person's own gh login. Show session text only when `content` is `snippets`, and never show
-  thinking text.
+  person's own gh login, and opt-in Codex cloud tasks reach OpenAI, through `codex` and the
+  person's own Codex login (Pleni never reads Codex's login files). Show session text only when `content` is `snippets`, and
+  never show thinking text.
 - **Who may open it.** Pleni listens on `127.0.0.1`. Only when the person turns on Wi-Fi access on
   this computer, and only while a password is set, does it also listen on the home-network
   addresses of this computer that the person chose (`src/lan.js`: 10.x, 172.16-31.x and

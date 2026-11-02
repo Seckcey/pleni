@@ -76,6 +76,7 @@ test('cleanSettings keeps good values', () => {
     send: { mode: 'edit' },
     answers: { waitMinutes: 25 },
     github: { live: true, merge: true, mergeMethod: 'rebase' },
+    codexCloud: { live: true },
     models: { edit: true },
     alerts: { stoppedMinutes: 20 },
     rollSoon: { memoryPercent: 80, squeezes: 0, days: 10 },
@@ -162,6 +163,14 @@ test('GitHub stays off unless turned on with a real true, and merges one of thre
   assert.deepEqual(cleanSettings({ github: { live: true, other: true } }).github, { ...off, live: true });
   for (const method of ['squash', 'merge', 'rebase']) assert.equal(cleanSettings({ github: { mergeMethod: method } }).github.mergeMethod, method);
   for (const method of ['admin', 'SQUASH', '--squash', 1]) assert.equal(cleanSettings({ github: { mergeMethod: method } }).github.mergeMethod, 'squash', String(method));
+});
+
+test('Codex cloud tasks stay off unless turned on with a real true', () => {
+  assert.deepEqual(cleanSettings({}).codexCloud, { live: false });
+  assert.ok(Object.isFrozen(DEFAULTS.codexCloud));
+  for (const live of ['true', 1, null, {}, []]) assert.deepEqual(cleanSettings({ codexCloud: { live } }).codexCloud, { live: false }, String(live));
+  assert.deepEqual(cleanSettings({ codexCloud: 'on' }).codexCloud, { live: false });
+  assert.deepEqual(cleanSettings({ codexCloud: { live: true, other: 1 } }).codexCloud, { live: true });
 });
 
 test('cleanSettings clamps and rounds numbers', () => {

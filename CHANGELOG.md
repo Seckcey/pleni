@@ -32,6 +32,14 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   keeps showing, and Disconnect puts it back). Claude Code then hands Pleni its limits after each
   reply, for Pro, Max and Ultra plans. Grok and Kimi Code save no limits, so their cards say where
   to look: type `/usage` in the tool.
+- **A Cloud page for your Codex cloud tasks.** Off until you tick **Show my Codex cloud tasks** in
+  **Settings → Sources**, on the computer that runs Pleni. It lists your tasks, newest first, with
+  the title, a status (Working, Ready, Applied or Error), the environment, when it changed, the
+  files and lines changed, and a link to open the task on chatgpt.com. Pleni runs `codex cloud
+  list` about once a minute while the page is open. Codex, not Pleni, asks OpenAI, with your own
+  Codex sign-in (`codex login`; an API key does not work). Pleni shows titles and status, never
+  messages. Codex leaves a small `error.log`, with your account id in it, in the `codex-cloud`
+  folder next to Pleni's settings.
 
 ## 0.3.0 (2026-11-02)
 

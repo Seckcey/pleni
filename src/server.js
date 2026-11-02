@@ -18,9 +18,10 @@ import { stripBom } from './jsonl.js';
 import { snapshotTag } from './model.js';
 import { openLimits, openSession } from './open.js';
 import { newAgent, teleport } from './newagent.js';
+import { cloudFolder, createCodexCloud } from './cloud.js';
 import { GITHUB_MESSAGES, createGithub } from './github.js';
 import { MODELS_MESSAGES, createModelSaver, readClaudeModels, readCodexModels } from './models.js';
-import { demoClaudeModels, demoGithub, demoModels, demoUsage } from './demo.js';
+import { demoClaudeModels, demoCloud, demoGithub, demoModels, demoUsage } from './demo.js';
 import { rollover, rolloverInfo } from './rollover.js';
 import { createSender, sendLogFile } from './send.js';
 import {
@@ -101,7 +102,7 @@ const BRAND_NAME = /^[a-z0-9][a-z0-9._-]*\.(png|svg|ico|webp)$/;
 // Names such as "nul.png" or "com1.svg" are devices, not files, on Windows.
 const WINDOWS_DEVICE = /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/;
 const BRAND_TYPES = { png: 'image/png', svg: 'image/svg+xml', ico: 'image/x-icon', webp: 'image/webp' };
-const API_GET = new Set(['/api/health', '/api/snapshot', '/api/session', '/api/devices', '/api/github', '/api/mail', '/api/models', '/api/usage']);
+const API_GET = new Set(['/api/health', '/api/snapshot', '/api/session', '/api/devices', '/api/github', '/api/cloud', '/api/mail', '/api/models', '/api/usage']);
 // Only the health check answers without signing in: it says nothing but "Pleni is running". Signing
 // in itself (POST /api/signin) is how a browser gets in.
 const OPEN_API = new Set(['/api/health']);
@@ -240,13 +241,13 @@ export function loadOrCreateKey(file, { renew = false, tries, pause } = {}) {
 // Without them, settings are read from and saved to the usual settings file.
 // `key` is the secret every API request needs (see keyAllowed); a new one is made when it is left out.
 // `platform` and `spawnProcess` are for Open in PowerShell (see src/open.js), `github` for live
-// GitHub status (see src/github.js), `modelSaver` for the Models page (see src/models.js) and
+// GitHub status (see src/github.js), `cloud` for Codex cloud tasks (see src/cloud.js), `modelSaver` for the Models page (see src/models.js) and
 // `sender` for Send (see src/send.js), `usage` for the Usage popup (see src/usage.js), `statusSaver` for Connect for plan limits (see src/statusline.js), and `asks` and `hookSaver` for answering questions (see
 // src/answers.js); tests replace them. `hookKey` is the secret Claude Code's hooks send; without it,
 // no hook call is answered. `signin` keeps the password and the signed-in devices (src/signin.js;
 // in memory only when left out), and `lanAddresses` and `lanPort` let tests stand in for this
 // computer's Wi-Fi addresses and port (src/lan.js).
-export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null, github = null, modelSaver = null, sender = null, asks = null, hookSaver = null, hookKey = null, signin = null, lanAddresses = null, lanPort = null, usage = null, statusSaver = null }) {
+export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null, github = null, modelSaver = null, sender = null, asks = null, hookSaver = null, hookKey = null, signin = null, lanAddresses = null, lanPort = null, usage = null, statusSaver = null, cloud = null }) {
   if (typeof key !== 'string' || !KEY_RE.test(key)) {
     throw new Error('The server key must be at least 16 letters, digits, "-" or "_".');
   }
@@ -264,6 +265,7 @@ export function createServer({ store, getSettings, saveSettings, publicDir = PUB
     spawnProcess,
     opens: openLimits(),
     github: github ?? createGithub(),
+    cloud: cloud ?? createCodexCloud({ folder: () => cloudFolder(app.readSettings().file) }),
     models: modelSaver ?? createModelSaver(),
     sender: sender ?? createSender(spawnProcess ? { spawn: spawnProcess } : {}),
     asks: null,
@@ -412,6 +414,7 @@ async function handle(app, req, res) {
   if (pathname === '/api/statusline') return sendStatusline(app, req, res, host);
   if (pathname === '/api/devices') return sendDevices(app, req, res, host);
   if (pathname === '/api/github') return sendGithub(app, req, res, host, new URLSearchParams(query));
+  if (pathname === '/api/cloud') return sendCloud(app, req, res, new URLSearchParams(query));
   if (pathname === '/api/mail') return sendMail(app, req, res, new URLSearchParams(query));
   if (pathname === '/api/models') return sendModels(app, req, res, host);
   if (pathname === '/api/usage') return sendUsage(app, req, res, new URLSearchParams(query));
@@ -673,16 +676,19 @@ async function settingsPayload(app, state) {
 // project list (names and folders on this computer) changes only on this computer too, and never in
 // the demo, whose projects are made up. actions.limits changes only through Connect and Disconnect
 // (POST /api/statusline).
+// The same goes for Codex cloud tasks (codexCloud): turning them on makes Pleni run codex on this
+// computer, so only this computer can change that switch, and the demo never changes the saved one.
 async function postSettings(app, req, res, host) {
   const body = await readJsonPost(req, res, host);
   if (body === undefined) return undefined;
   const clean = cleanSettings(body);
-  const { remote, actions, projectList } = app.readSettings().settings;
+  const { remote, actions, projectList, codexCloud } = app.readSettings().settings;
   const here = isLocalRequest(host, req);
   // Plan limits are switched only by Connect and Disconnect (POST /api/statusline), never by a save.
   clean.actions.limits = actions.limits === true;
   clean.remote = here ? { ...clean.remote, lan: remote.lan, lanAddresses: remote.lanAddresses } : structuredClone(remote);
   if (!here || app.store.demo) clean.projectList = structuredClone(projectList);
+  if (!here || app.store.demo) clean.codexCloud = structuredClone(codexCloud);
   return saveAndReload(app, req, res, clean, (state) => settingsPayload(app, state));
 }
 
@@ -1062,6 +1068,19 @@ async function sendGithub(app, req, res, host, params) {
   const repos = reposOnMap(app.store);
   const answer = app.store.demo ? demoGithub(repos) : await app.github.status({ repos, fresh: params.get('fresh') === '1' });
   return sendJson(req, res, 200, { ...base, ...answer });
+}
+
+// The Cloud page: { on, demo, at, tasks, error }, the person's Codex cloud tasks as src/cloud.js lists
+// them, for any signed-in device. When settings.codexCloud.live is off, codex is never run.
+// `?fresh=1` is the Look again button.
+async function sendCloud(app, req, res, params) {
+  const demo = app.store.demo === true;
+  // The demo always shows its made-up tasks; everywhere else the switch must be on.
+  if (!demo && app.readSettings().settings.codexCloud?.live !== true) {
+    return sendJson(req, res, 200, { on: false, demo, at: null, tasks: [], error: null });
+  }
+  const answer = demo ? demoCloud(Date.now()) : await app.cloud.status({ fresh: params.get('fresh') === '1' });
+  return sendJson(req, res, 200, { on: true, demo, at: answer.at, tasks: answer.tasks, error: answer.error });
 }
 
 // Merge: { repo: 'owner/name', number, head: '<commit id the page showed>' }. Only on this computer;

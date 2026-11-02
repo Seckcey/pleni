@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cleanSettings, isNodeKey } from '../src/config.js';
-import { BEAT_MS, DEMO_KEYS, createDemoSource, demoSettings } from '../src/demo.js';
+import { BEAT_MS, DEMO_KEYS, createDemoSource, demoCloud, demoSettings } from '../src/demo.js';
 import { buildSnapshot } from '../src/model.js';
 
 const NOW = Date.UTC(2026, 0, 15, 12, 3, 7);
@@ -146,6 +146,7 @@ test('each demo letter shows once, however long the demo has run', () => {
 
 test('demoSettings wires the mailbox and keeps your own choices', () => {
   const settings = demoSettings(cleanSettings({ people: { [DEMO_KEYS.coordinator]: { label: 'Main', role: 'lead' } } }));
+  assert.equal(settings.codexCloud.live, true, 'the demo always has a Cloud page, with made-up tasks');
   assert.equal(settings.sources.mailbox.planner, DEMO_KEYS.planner);
   assert.equal(settings.sources.mailbox.coordinator, DEMO_KEYS.coordinator);
   assert.deepEqual(settings.people[DEMO_KEYS.coordinator], { label: 'Main', role: 'lead' });
@@ -184,4 +185,20 @@ test('demoSettings always shows its two made-up projects, never the person\'s ow
   assert.deepEqual(cleanSettings(settings), settings);
   const own = [{ id: 'mine0001', name: 'Mine', folder: '/home/ada/code/mine', repo: null }];
   assert.deepEqual(demoSettings(cleanSettings({ projectList: own })).projectList, settings.projectList);
+});
+
+test('the demo\'s Codex cloud tasks are made up, checked, newest first, and cover every status', () => {
+  const answer = demoCloud(NOW);
+  assert.equal(answer.error, null);
+  assert.equal(answer.at, NOW);
+  assert.ok(answer.tasks.length >= 4 && answer.tasks.length <= 5);
+  assert.deepEqual([...new Set(answer.tasks.map((t) => t.status))].sort(), ['applied', 'error', 'pending', 'ready']);
+  const times = answer.tasks.map((t) => t.updatedAt);
+  assert.deepEqual(times, [...times].sort((a, b) => b - a));
+  for (const task of answer.tasks) {
+    assert.match(task.id, /^[A-Za-z0-9_-]+$/);
+    assert.equal(task.url, `https://chatgpt.com/codex/tasks/${task.id}`);
+    assert.ok(task.updatedAt < NOW);
+  }
+  assert.deepEqual(demoCloud(NOW), answer, 'the same time gives the same tasks');
 });
