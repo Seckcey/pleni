@@ -651,13 +651,17 @@ async function settingsPayload(app, state) {
 // without the browser asking first, and that request is refused, so the header plus the Origin
 // check also stops cross-site saves.
 // Who may open Pleni from another device changes only on this computer, and Wi-Fi access only with
-// its own switch (POST /api/lan), so another device keeps the remote settings as they are.
+// its own switch (POST /api/lan), so another device keeps the remote settings as they are. The
+// project list (names and folders on this computer) changes only on this computer too, and never in
+// the demo, whose projects are made up.
 async function postSettings(app, req, res, host) {
   const body = await readJsonPost(req, res, host);
   if (body === undefined) return undefined;
   const clean = cleanSettings(body);
-  const { remote } = app.readSettings().settings;
-  clean.remote = isLocalRequest(host, req) ? { ...clean.remote, lan: remote.lan, lanAddresses: remote.lanAddresses } : structuredClone(remote);
+  const { remote, projectList } = app.readSettings().settings;
+  const here = isLocalRequest(host, req);
+  clean.remote = here ? { ...clean.remote, lan: remote.lan, lanAddresses: remote.lanAddresses } : structuredClone(remote);
+  if (!here || app.store.demo) clean.projectList = structuredClone(projectList);
   return saveAndReload(app, req, res, clean, (state) => settingsPayload(app, state));
 }
 

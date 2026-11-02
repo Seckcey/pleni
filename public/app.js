@@ -12,8 +12,8 @@ const FEED_PAGE = 150;
 const FL = { W: 268, H: 128, GX: 96, GY: 22, PAD: 48 };
 const ZOOM_MIN = 0.3;
 const ZOOM_MAX = 1.6;
-const VIEWS = ['map', 'list', 'activity', 'mail', 'tasks', 'pulls', 'settings'];
-const VIEW_NAMES = { map: 'Map', list: 'List', activity: 'Activity', mail: 'Mail', tasks: 'Tasks', pulls: 'Pull requests', settings: 'Settings' };
+const VIEWS = ['map', 'list', 'projects', 'activity', 'mail', 'tasks', 'pulls', 'settings'];
+const VIEW_NAMES = { map: 'Map', list: 'List', projects: 'Projects', activity: 'Activity', mail: 'Mail', tasks: 'Tasks', pulls: 'Pull requests', settings: 'Settings' };
 // Kept with the dismissed notices: the newest mail the person marked as read (src/model.js).
 const MAIL_READ_ID = 'you|mailread';
 const STATUS_WORDS = { needs: 'Needs you', working: 'Working', ready: 'Finished', idle: 'Idle', done: 'Done', error: 'Error' };
@@ -65,6 +65,7 @@ const DEFAULTS = {
   },
   people: {},
   projects: {},
+  projectList: [],
   chain: [],
   remote: { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] },
   actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false },
@@ -125,6 +126,9 @@ const S = {
   mail: { data: null, all: false, asking: false, error: '', key: '', msg: null, cmds: [] },
   // Settings > Models: what Codex's settings say, the person's changes, and a message.
   models: { data: null, error: '', busy: false, drafts: {}, msgs: {}, addOpen: {} },
+  // The Projects page: the open form (kept here, so a repaint never resets it), a message, and the
+  // project waiting for "Delete this project?".
+  proj: { form: null, msg: null, confirm: null, sig: '', v: 0, focus: '' },
 };
 
 const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
@@ -876,6 +880,7 @@ function render() {
   document.title = `${asking ? `(${asking}) ` : ''}${pageName()} · Pleni`;
   if (S.view === 'map') renderMap();
   else if (S.view === 'list') renderList();
+  else if (S.view === 'projects') renderProjects();
   else if (S.view === 'activity') renderActivity();
   else if (S.view === 'mail') renderMail();
   else if (S.view === 'tasks') renderTasks();
@@ -1828,6 +1833,8 @@ function rowHtml(n, depth) {
   );
 }
 
+const LIST_HEAD = '<thead><tr><th scope="col">Session</th><th scope="col">Status</th><th scope="col">Doing now or last said</th><th scope="col">Model</th><th scope="col">Last active</th></tr></thead>';
+
 function renderList() {
   if (!S.snap) {
     setHtml($('#list-body'), '<p class="empty">Reading your sessions…</p>');
@@ -1875,10 +1882,468 @@ function renderList() {
   setHtml(
     $('#list-body'),
     `<div class="table-wrap"><table class="list"><caption class="sr-only">Sessions grouped by project</caption>` +
-      '<thead><tr><th scope="col">Session</th><th scope="col">Status</th><th scope="col">Doing now or last said</th><th scope="col">Model</th><th scope="col">Last active</th></tr></thead>' +
+      LIST_HEAD +
       `${bodies.join('')}</table></div>`,
   );
 }
+
+// ---------------------------------------------------------------------------------------------
+// projects
+// ---------------------------------------------------------------------------------------------
+
+// A project is a name, a folder on this computer and an optional GitHub repository. The snapshot
+// names the project and which sessions belong to it (node.projectIds) but never holds the folder.
+// The folder comes from GET /api/settings, and only the computer that runs Pleni may change it.
+const PROJECT_ID = /^[a-z0-9]{8,32}$/;
+const MAX_PROJECT_FOLDER = 500;
+const MAX_PROJECT_LIST = 50;
+const PROJECT_ONLY_HERE = 'Projects can be added and changed only on the computer that runs Pleni.';
+const PROJECT_DEMO = 'In the demo, the projects are made up, so they cannot be changed.';
+
+// New, Edit and Delete: only on this computer, and never in the demo.
+function canChangeProjects() {
+  return LOCAL_PAGE && !(S.snap && S.snap.demo === true);
+}
+
+// Why New, Edit and Delete are missing, or '' when they are there.
+function projectsNoteHtml() {
+  if (S.snap && S.snap.demo === true) return `<p class="note">${esc(PROJECT_DEMO)}</p>`;
+  return LOCAL_PAGE ? '' : `<p class="note">${esc(PROJECT_ONLY_HERE)}</p>`;
+}
+const PROJECT_FIELDS = { 'pf-name': 'name', 'pf-folder': 'folder', 'pf-repo': 'repo' };
+
+// #/projects is all projects, #/projects/<id> is one.
+function projectRoute() {
+  const m = /^#\/projects(?:\/([^/?#]*))?/.exec(location.hash);
+  if (!m || !m[1]) return { id: null };
+  let id = m[1];
+  try {
+    id = decodeURIComponent(id);
+  } catch {
+    // Keep it as typed; it will not match a project.
+  }
+  return { id };
+}
+
+function projectList() {
+  const list = S.snap && Array.isArray(S.snap.projects) ? S.snap.projects : [];
+  return list.filter((p) => p && typeof p.id === 'string' && PROJECT_ID.test(p.id) && typeof p.name === 'string');
+}
+
+// The List's rows for the sessions working in one project. A row is indented only when the session
+// it reports to is also shown.
+function projectRows(id) {
+  if (!S.index) return [];
+  const shown = new Map();
+  const rows = [];
+  for (const r of sessionRows(S.index)) {
+    if (!Array.isArray(r.n.projectIds) || !r.n.projectIds.includes(id)) continue;
+    const parentDepth = shown.get(r.n.parent);
+    const depth = parentDepth === undefined ? 0 : parentDepth + 1;
+    shown.set(r.n.key, depth);
+    rows.push({ n: r.n, depth });
+  }
+  return rows;
+}
+
+function projectCountsHtml(rows) {
+  const c = { working: 0, needs: 0, idle: 0, error: 0 };
+  for (const r of rows) {
+    const s = statusOf(r.n);
+    if (s === 'working') c.working++;
+    else if (s === 'needs') c.needs++;
+    else if (s === 'error') c.error++;
+    else c.idle++;
+  }
+  const parts = [];
+  if (c.working) parts.push(`<span class="c-working">${c.working} working</span>`);
+  if (c.needs) parts.push(`<span class="c-needs">${needYou(c.needs)}</span>`);
+  if (c.idle) parts.push(`<span>${c.idle} idle</span>`);
+  if (c.error) parts.push(`<span class="c-error">${plural(c.error, 'error', 'errors')}</span>`);
+  return parts.join(' · ');
+}
+
+function projectLastAt(rows) {
+  let at = null;
+  for (const r of rows) if (isTime(r.n.lastAt) && (at === null || r.n.lastAt > at)) at = r.n.lastAt;
+  return at;
+}
+
+function projectRepoHtml(p) {
+  return typeof p.repo === 'string' && GITHUB_PATH.test(p.repo) ? `<span class="links">${githubLink(p.repo, '', p.repo)}</span>` : '';
+}
+
+function projectSummaryHtml(rows) {
+  if (!rows.length) return '<p class="pcounts quiet">No sessions in this folder right now.</p>';
+  const at = projectLastAt(rows);
+  return `<p class="pcounts">${projectCountsHtml(rows)}</p>${at ? `<p class="quiet plast">Last active ${agoHtml(at)}</p>` : ''}`;
+}
+
+function renderProjects() {
+  const route = projectRoute();
+  const st = S.proj;
+  syncProjectForm(route);
+  if (st.msg && st.msg.id !== route.id) st.msg = null;
+  if (st.confirm && st.confirm !== route.id) st.confirm = null;
+  paintProjectForm();
+  setHtml($('#projects-msg'), st.msg ? `<p class="saved ${esc(st.msg.kind)}">${esc(st.msg.text)}</p>` : '');
+  const body = $('#projects-body');
+  if (!S.snap) {
+    setText($('#projects-meta'), '');
+    setHtml(body, '<p class="empty">Reading your projects…</p>');
+    focusProjectPart();
+    return;
+  }
+  const list = projectList();
+  const project = route.id === null ? null : list.find((p) => p.id === route.id);
+  if (route.id !== null) {
+    setText($('#projects-meta'), project ? plural(projectRows(project.id).length, 'session', 'sessions') : '');
+    setHtml(body, project ? oneProjectHtml(project) : goneProjectHtml());
+  } else {
+    setText($('#projects-meta'), list.length ? plural(list.length, 'project', 'projects') : '');
+    setHtml(body, allProjectsHtml(list));
+  }
+  focusProjectPart();
+}
+
+// After the form opens or closes, focus goes where the person was working.
+function focusProjectPart() {
+  const want = S.proj.focus;
+  if (!want) return;
+  const target = $(want);
+  if (!target || target.closest('[hidden]')) return;
+  S.proj.focus = '';
+  target.focus();
+}
+
+function newProjectButton() {
+  return canChangeProjects() ? '<p class="pbar"><button type="button" class="btn primary" id="proj-new" data-proj="new">New project</button></p>' : '';
+}
+
+function allProjectsHtml(list) {
+  const here = projectsNoteHtml();
+  if (!list.length) {
+    return `<p class="empty">No projects yet. A project groups the sessions that work in one folder.</p>${newProjectButton()}${here}`;
+  }
+  const cards = list.map((p) => {
+    const rows = projectRows(p.id);
+    return (
+      `<li class="project"><div class="repo-head"><h2><a href="#/projects/${esc(p.id)}">${esc(p.name)}</a></h2>${projectRepoHtml(p)}</div>` +
+      `${projectSummaryHtml(rows)}</li>`
+    );
+  });
+  return `${newProjectButton()}<ul class="projects">${cards.join('')}</ul>${here}`;
+}
+
+function goneProjectHtml() {
+  return '<p class="empty">This project is gone. It may have been deleted.</p><p><a href="#/projects">All projects</a></p>';
+}
+
+function oneProjectHtml(p) {
+  const rows = projectRows(p.id);
+  const ask = S.proj.confirm === p.id;
+  const buttons = canChangeProjects()
+    ? `<div class="pbar"><button type="button" class="btn" id="proj-edit" data-proj="edit" data-id="${esc(p.id)}">Edit</button>` +
+      `<button type="button" class="btn" id="proj-delete" data-proj="delete" data-id="${esc(p.id)}"${ask ? ' hidden' : ''}>Delete</button></div>`
+    : projectsNoteHtml();
+  const confirm = ask
+    ? '<div class="panel pconfirm" role="group" aria-labelledby="pc-ask"><p id="pc-ask">Delete this project? Pleni only forgets it. No files or sessions change.</p>' +
+      `<div class="pbar"><button type="button" class="btn" id="pc-yes" data-proj="delete-yes" data-id="${esc(p.id)}">Delete</button>` +
+      '<button type="button" class="btn" id="pc-keep" data-proj="delete-no">Keep it</button></div></div>'
+    : '';
+  const table = rows.length
+    ? `<div class="table-wrap"><table class="list"><caption class="sr-only">Sessions working in ${esc(p.name)}</caption>${LIST_HEAD}<tbody>${rows.map((r) => rowHtml(r.n, r.depth)).join('')}</tbody></table></div>`
+    : '';
+  return (
+    '<p class="pback"><a href="#/projects">All projects</a></p>' +
+    `<div class="repo-head"><h2 class="ptitle">${esc(p.name)}</h2>${projectRepoHtml(p)}</div>` +
+    `${buttons}${confirm}${rows.length ? `<p class="pcounts">${projectCountsHtml(rows)}</p>` : '<p class="pcounts quiet">No sessions in this folder right now.</p>'}${table}`
+  );
+}
+
+// ---- the form ----
+
+function newProjectForm(mode, id, entry) {
+  S.proj.v++;
+  return { mode, id, name: entry.name, folder: entry.folder, repo: entry.repo || '', errors: {}, msg: null, busy: false, v: S.proj.v };
+}
+
+// The form belongs to one page: a new project to the list, an edit to that project.
+function syncProjectForm(route) {
+  const f = S.proj.form;
+  if (f && (f.mode === 'new' ? route.id !== null : f.id !== route.id)) S.proj.form = null;
+}
+
+// The form's inputs are drawn only when the form opens, closes or shows an error, never on the
+// 4-second poll, so what the person is typing is never reset.
+function paintProjectForm() {
+  const st = S.proj;
+  const f = st.form;
+  const sig = f ? `${f.mode}:${f.id}:${f.v}` : '';
+  if (sig === st.sig) return;
+  st.sig = sig;
+  const slot = $('#projects-form');
+  painted.delete(slot);
+  setHtml(slot, f ? projectFormHtml(f) : '');
+}
+
+function formField(f, key, id, label, help, extra = '') {
+  const err = f.errors[key];
+  const described = `${id}-help${err ? ` ${id}-err` : ''}`;
+  return (
+    `<div class="prow"><label for="${id}">${esc(label)}</label>` +
+    `<input class="field" id="${id}" type="text" value="${esc(f[key])}" autocomplete="off" spellcheck="false" autocapitalize="off"${extra}` +
+    `${err ? ' aria-invalid="true"' : ''} aria-describedby="${described}">` +
+    `<p class="help" id="${id}-help">${esc(help)}</p>` +
+    `${err ? `<p class="field-error" id="${id}-err">${esc(err)}</p>` : ''}</div>`
+  );
+}
+
+function projectFormHtml(f) {
+  return (
+    `<form class="panel pform" id="pform" novalidate aria-labelledby="pf-title"><h2 id="pf-title">${f.mode === 'new' ? 'New project' : 'Edit project'}</h2>` +
+    formField(f, 'name', 'pf-name', 'Name', `Up to ${MAX_NAME} letters.`) +
+    formField(f, 'folder', 'pf-folder', 'Folder on this computer', 'Pleni shows the sessions working in this folder or in a folder inside it.') +
+    formField(f, 'repo', 'pf-repo', 'GitHub repository (optional)', 'Type it as owner/name, such as example/app. You can also paste the github.com address.') +
+    '<div class="pbar"><button type="submit" class="btn primary" id="pf-save">Save</button>' +
+    '<button type="button" class="btn" id="pf-cancel" data-proj="cancel">Cancel</button>' +
+    `<span id="pf-msg" role="status">${f.msg ? `<span class="saved ${esc(f.msg.kind)}">${esc(f.msg.text)}</span>` : ''}</span></div></form>`
+  );
+}
+
+function setFormMsg(kind, text) {
+  const f = S.proj.form;
+  if (f) f.msg = text ? { kind, text } : null;
+  const el = $('#pf-msg');
+  if (el) setHtml(el, text ? `<span class="saved ${esc(kind)}">${esc(text)}</span>` : '');
+}
+
+function closeProjectForm(focusId) {
+  S.proj.form = null;
+  S.proj.focus = focusId ? `#${focusId}` : '';
+  renderProjects();
+}
+
+// "https://github.com/example/app" and "example/app.git" both become "example/app". Returns
+// { repo, bad }: repo is '' when empty.
+function readRepo(text) {
+  let v = text.trim();
+  if (!v) return { repo: '', bad: false };
+  const m = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/\s?#]+)\/([^/\s?#]+)/i.exec(v);
+  if (m) v = `${m[1]}/${m[2].replace(/\.git$/i, '')}`;
+  const plain = GITHUB_PATH.test(v) && v.split('/').every((part) => part !== '.' && part !== '..');
+  return { repo: plain ? v : '', bad: !plain };
+}
+
+function projectProblems(f) {
+  const errors = {};
+  const name = f.name.trim();
+  const folder = f.folder.trim();
+  if (!name) errors.name = 'Type a name for this project.';
+  else if (Array.from(name).length > MAX_NAME) errors.name = `Type ${MAX_NAME} letters or fewer. This name has ${Array.from(name).length}.`;
+  if (!folder || !FULL_PATH.test(folder)) {
+    errors.folder = 'Type the full path of the folder, such as /home/ada/project or C:\\Users\\ada\\project.';
+  } else if (folder.length > MAX_PROJECT_FOLDER) {
+    errors.folder = `Type ${MAX_PROJECT_FOLDER} letters or fewer. This path has ${folder.length}.`;
+  } else if (/\p{Cc}/u.test(folder)) {
+    errors.folder = 'The path has a character that cannot be used. Type it again.';
+  }
+  if (readRepo(f.repo).bad) errors.repo = 'Type the repository as owner/name, such as example/app. A github.com address works too.';
+  return errors;
+}
+
+function randomProjectId(taken) {
+  const letters = '0123456789abcdefghijklmnopqrstuvwxyz';
+  for (;;) {
+    const id = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => letters[b % letters.length]).join('');
+    if (!taken.has(id)) return id;
+  }
+}
+
+// ---- saving ----
+
+async function postSettingsObject(settings) {
+  const res = await fetch('/api/settings', {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json', 'X-Pleni': 'settings' },
+    body: JSON.stringify(settings),
+  });
+  const body = await readJson(res);
+  if (!res.ok) throw answerError(res, body);
+  return body;
+}
+
+// Gets the saved settings, changes only projectList with `change(list)`, saves them all, and
+// returns the list Pleni kept. Pleni's Settings page, if it was opened, learns the new list too.
+async function changeProjectList(change) {
+  const info = await getJson('/api/settings');
+  if (!info || typeof info.settings !== 'object' || info.settings === null) throw new Error('Pleni sent settings this page cannot read.');
+  const settings = info.settings;
+  const list = Array.isArray(settings.projectList) ? settings.projectList : [];
+  settings.projectList = change(list);
+  const body = await postSettingsObject(settings);
+  const kept = body && body.settings && Array.isArray(body.settings.projectList) ? body.settings.projectList : [];
+  if (S.set && S.set.info && S.set.info.settings) {
+    S.set.info.settings.projectList = clone(kept);
+    if (S.set.draft) S.set.draft.projectList = clone(kept);
+  }
+  S.etag = null;
+  await pollNow().catch(() => {});
+  return kept;
+}
+
+// What Pleni changed in the project it kept, in plain words.
+function projectChanges(sent, kept) {
+  const out = [];
+  if (kept.name !== sent.name) out.push(`the name is now "${kept.name}"`);
+  if (kept.folder !== sent.folder) out.push('the folder was changed');
+  if (sent.repo && !kept.repo) out.push('the GitHub repository was left out because it is not a repository name');
+  else if ((kept.repo || null) !== (sent.repo || null)) out.push(`the GitHub repository is now ${kept.repo}`);
+  return out;
+}
+
+async function saveProject() {
+  const f = S.proj.form;
+  if (!f || f.busy) return;
+  f.errors = projectProblems(f);
+  if (Object.keys(f.errors).length) {
+    S.proj.v++;
+    f.v = S.proj.v;
+    f.msg = null;
+    S.proj.focus = `#pf-${Object.keys(f.errors)[0]}`;
+    paintProjectForm();
+    focusProjectPart();
+    return;
+  }
+  const entry = { id: f.id, name: f.name.trim(), folder: f.folder.trim(), repo: readRepo(f.repo).repo || null };
+  f.busy = true;
+  const button = $('#pf-save');
+  if (button) button.disabled = true;
+  setFormMsg('', 'Saving…');
+  try {
+    const isNew = f.mode === 'new';
+    const kept = await changeProjectList((list) => {
+      if (isNew) {
+        if (list.length >= MAX_PROJECT_LIST) throw new Error(`Pleni keeps up to ${MAX_PROJECT_LIST} projects. Delete one first.`);
+        entry.id = randomProjectId(new Set(list.map((x) => x && x.id)));
+        return [...list, entry];
+      }
+      if (!list.some((x) => x && x.id === entry.id)) throw new Error('This project is gone. It may have been deleted.');
+      return list.map((x) => (x && x.id === entry.id ? entry : x));
+    });
+    const got = kept.find((x) => x && x.id === entry.id);
+    if (!got) throw new Error('Pleni did not keep it. Check that the folder is a full path on the computer that runs Pleni.');
+    const changed = projectChanges(entry, got);
+    S.proj.msg = {
+      id: isNew ? null : entry.id,
+      kind: changed.length ? 'dirty' : 'ok',
+      text: changed.length ? `Saved. Pleni changed what you typed: ${changed.join('; ')}.` : 'Saved.',
+    };
+    closeProjectForm(f.mode === 'new' ? 'proj-new' : 'proj-edit');
+  } catch (err) {
+    f.busy = false;
+    if (button) button.disabled = false;
+    setFormMsg('err', `Not saved. ${plainError(err)}`);
+  }
+}
+
+async function editProject(id) {
+  const st = S.proj;
+  st.msg = { id, kind: '', text: 'Loading…' };
+  renderProjects();
+  try {
+    const info = await getJson('/api/settings');
+    const list = info && info.settings && Array.isArray(info.settings.projectList) ? info.settings.projectList : [];
+    const entry = list.find((x) => x && x.id === id);
+    if (!entry) throw new Error('This project is gone. It may have been deleted.');
+    st.msg = null;
+    st.form = newProjectForm('edit', id, { name: String(entry.name || ''), folder: String(entry.folder || ''), repo: entry.repo || '' });
+    st.focus = '#pf-name';
+  } catch (err) {
+    st.msg = { id, kind: 'err', text: `Could not open the project. ${plainError(err)}` };
+  }
+  renderProjects();
+}
+
+async function deleteProject(id) {
+  const st = S.proj;
+  st.confirm = null;
+  st.msg = { id, kind: '', text: 'Deleting…' };
+  renderProjects();
+  try {
+    await changeProjectList((list) => {
+      if (!list.some((x) => x && x.id === id)) throw new Error('This project is gone. It may have been deleted.');
+      return list.filter((x) => !x || x.id !== id);
+    });
+    st.msg = { id: null, kind: 'ok', text: 'Deleted. Pleni only forgot the project. No files or sessions changed.' };
+    st.form = null;
+    location.hash = '#/projects';
+  } catch (err) {
+    st.msg = { id, kind: 'err', text: `Not deleted. ${plainError(err)}` };
+  }
+  renderProjects();
+}
+
+function projectClick(what, id) {
+  const st = S.proj;
+  if (!canChangeProjects() && what !== 'cancel') return;
+  if (what === 'new') {
+    if (st.form) {
+      const first = $('#pf-name');
+      if (first) first.focus();
+      return;
+    }
+    st.msg = null;
+    st.form = newProjectForm('new', null, { name: '', folder: '', repo: '' });
+    st.focus = '#pf-name';
+    renderProjects();
+  } else if (what === 'edit') {
+    if (st.form) return $('#pf-name') && $('#pf-name').focus();
+    editProject(id);
+  } else if (what === 'cancel') {
+    closeProjectForm(st.form && st.form.mode === 'new' ? 'proj-new' : 'proj-edit');
+  } else if (what === 'delete') {
+    st.confirm = id;
+    renderProjects();
+    const keep = $('#pc-keep');
+    if (keep) keep.focus();
+  } else if (what === 'delete-no') {
+    st.confirm = null;
+    renderProjects();
+    const again = $('#proj-delete');
+    if (again) again.focus();
+  } else if (what === 'delete-yes') {
+    deleteProject(id);
+  }
+}
+
+const projectsForm = $('#projects-form');
+projectsForm.addEventListener('input', (ev) => {
+  const f = S.proj.form;
+  const key = PROJECT_FIELDS[ev.target.id];
+  if (!f || !key) return;
+  f[key] = ev.target.value;
+  if (f.errors[key]) {
+    // Take the error away in place, so the box the person is typing in stays as it is.
+    delete f.errors[key];
+    ev.target.removeAttribute('aria-invalid');
+    ev.target.setAttribute('aria-describedby', `${ev.target.id}-help`);
+    const note = $(`#${ev.target.id}-err`);
+    if (note) note.remove();
+  }
+  if (f.msg) setFormMsg('', '');
+});
+projectsForm.addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  saveProject();
+});
+projectsForm.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && S.proj.form && !S.proj.form.busy) {
+    ev.preventDefault();
+    projectClick('cancel');
+  }
+});
 
 // ---------------------------------------------------------------------------------------------
 // activity
@@ -6020,6 +6485,7 @@ document.addEventListener('click', (ev) => {
     $('#main').focus();
     return;
   }
+  if (el.dataset.proj) return projectClick(el.dataset.proj, el.dataset.id);
   if (el.hasAttribute('data-undo')) return undoMove();
   // A drag across the map must not also open the tile it ended on.
   if (el.closest('#map-canvas') && S.dragUntil > Date.now()) return;
@@ -6098,6 +6564,8 @@ document.addEventListener('click', (ev) => {
   }
   if (el.id === 's-defaults' && S.set && S.set.draft) {
     S.set.draft = clone(DEFAULTS);
+    // The project list is not a setting on this page; Restore defaults must not wipe it.
+    S.set.draft.projectList = clone((S.set.info && S.set.info.settings.projectList) || []);
     S.set.msg = { kind: 'dirty', text: 'The defaults are in the form. Choose Save settings to keep them.' };
     renderSettingsForm();
   }
