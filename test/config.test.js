@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   DEFAULTS,
+  cleanProjectList,
   cleanSettings,
   configDir,
   isNodeKey,
@@ -68,9 +69,10 @@ test('cleanSettings keeps good values', () => {
     },
     people: { you: { label: 'Ada' }, [`claude:${UUID}`]: { label: 'Builder', role: 'coordinator', watch: true, answer: true }, relay: { watch: true } },
     projects: { pleni: { label: 'Pleni', hidden: false } },
+    projectList: [{ id: 'abcd1234ef56', name: 'App', folder: '/home/ada/code/app', repo: 'example/app' }],
     chain: [{ match: 'Sergeant', reportsTo: 'Colonel', role: 'coordinator' }, { match: 'Colonel', reportsTo: 'you', role: null }],
     remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'], lan: true, lanAddresses: ['192.168.1.23'] },
-    actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true, send: true, answers: true },
+    actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true, send: true, answers: true, limits: true },
     send: { mode: 'edit' },
     answers: { waitMinutes: 25 },
     github: { live: true, merge: true, mergeMethod: 'rebase' },
@@ -120,10 +122,10 @@ test('alerts: the stopped time stays in range, and only a real true watches a ti
 });
 
 test('the window buttons stay off unless each is turned on with a real true', () => {
-  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false };
+  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false, limits: false };
   assert.deepEqual(cleanSettings({}).actions, off);
   for (const value of ['true', 1, null, {}, []]) {
-    assert.deepEqual(cleanSettings({ actions: { openTerminal: value, rollover: value, newAgent: value, teleport: value, send: value, answers: value } }).actions, off, String(value));
+    assert.deepEqual(cleanSettings({ actions: { openTerminal: value, rollover: value, newAgent: value, teleport: value, send: value, answers: value, limits: value } }).actions, off, String(value));
   }
   assert.deepEqual(cleanSettings({ actions: 'on' }).actions, off);
   assert.deepEqual(cleanSettings({ actions: { openTerminal: true, other: true } }).actions, { ...off, openTerminal: true });
@@ -552,4 +554,68 @@ test('rollSoon limits are whole numbers in range, and 0 turns one off', () => {
   assert.deepEqual(cleanSettings({ rollSoon: { memoryPercent: 150, squeezes: -3, days: 3.6 } }).rollSoon, { memoryPercent: 100, squeezes: 0, days: 4 });
   assert.deepEqual(cleanSettings({ rollSoon: { memoryPercent: '80', squeezes: null } }).rollSoon, { memoryPercent: 70, squeezes: 2, days: 7 });
   assert.deepEqual(cleanSettings({ rollSoon: 'soon' }).rollSoon, { memoryPercent: 70, squeezes: 2, days: 7 });
+});
+
+test('cleanProjectList keeps good entries as exactly { id, name, folder, repo }', () => {
+  const list = cleanProjectList([
+    { id: 'abcd1234', name: '  Billing  ', folder: ' /home/ada/code/billing ', repo: ' example/billing ', extra: 'dropped' },
+    { id: 'zz99zz99zz99', name: 'Field app', folder: '/home/ada/code/field', repo: null },
+  ]);
+  assert.deepEqual(list, [
+    { id: 'abcd1234', name: 'Billing', folder: '/home/ada/code/billing', repo: 'example/billing' },
+    { id: 'zz99zz99zz99', name: 'Field app', folder: '/home/ada/code/field', repo: null },
+  ]);
+  assert.deepEqual(DEFAULTS.projectList, []);
+  assert.deepEqual(cleanSettings({}).projectList, []);
+  for (const bad of [null, undefined, 'x', {}, 7]) assert.deepEqual(cleanProjectList(bad), []);
+});
+
+test('cleanProjectList drops what cannot be used', () => {
+  const good = { id: 'abcd1234', name: 'App', folder: '/home/ada/code/app', repo: null };
+  const list = cleanProjectList([
+    { ...good, id: 'abcd0001', name: '   ' },
+    { ...good, id: 'abcd0002', name: undefined },
+    { ...good, id: 'abcd0003', folder: 'code/app' },
+    { ...good, id: 'abcd0004', folder: `/home/ada/${'a'.repeat(500)}` },
+    { ...good, id: 'abcd0005', folder: '/home/ada/co\u0000de' },
+    { ...good, id: 'abcd0006', folder: 42 },
+    { ...good, id: 'BAD ID!' },
+    { ...good, id: 'short' },
+    { ...good, id: 'x'.repeat(33) },
+    { ...good, id: 7 },
+    'text',
+    null,
+    good,
+    { ...good, name: 'Same id again' },
+  ]);
+  assert.deepEqual(list, [good]);
+  // A folder of exactly 500 characters is kept.
+  const edge = `/${'a'.repeat(499)}`;
+  assert.equal(cleanProjectList([{ ...good, folder: edge }])[0].folder, edge);
+});
+
+test('cleanProjectList turns a bad repository into null and keeps the entry', () => {
+  const repo = (value) => cleanProjectList([{ id: 'abcd1234', name: 'App', folder: '/home/ada/code/app', repo: value }])[0].repo;
+  assert.equal(repo('example/app'), 'example/app');
+  for (const bad of ['app', 'a/b/c', 'https://github.com/example/app', 'example/', '/app', 'exa mple/app', '../app', './app', 'example/..', '', 5, {}, undefined]) {
+    assert.equal(repo(bad), null, String(bad));
+  }
+});
+
+test('cleanProjectList keeps at most 50 entries and clips a long name', () => {
+  const many = Array.from({ length: 60 }, (_, i) => ({ id: `proj${String(i).padStart(4, '0')}`, name: `P${i}`, folder: `/home/ada/code/p${i}`, repo: null }));
+  const kept = cleanProjectList(many);
+  assert.equal(kept.length, 50);
+  assert.equal(kept[49].id, 'proj0049');
+  const long = cleanProjectList([{ id: 'abcd1234', name: 'n'.repeat(120), folder: '/home/ada/code/app', repo: null }]);
+  assert.equal(Array.from(long[0].name).length, 80);
+});
+
+test('a saved project list survives cleaning and is part of cleanSettings', () => {
+  const projectList = [{ id: 'abcd1234', name: 'App', folder: '/home/ada/code/app', repo: 'example/app' }];
+  const clean = cleanSettings({ projectList });
+  assert.deepEqual(clean.projectList, projectList);
+  assert.deepEqual(cleanSettings(clean), clean);
+  // The older "projects" map (labels and hiding, by folder name) is a different thing.
+  assert.deepEqual(cleanSettings({ projects: { app: { label: 'App' } } }).projects, { app: { label: 'App' } });
 });

@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { cleanSettings } from '../src/config.js';
+import { cleanSettings, resolveRoots } from '../src/config.js';
+import { buildSnapshot } from '../src/model.js';
+import { createStore } from '../src/store.js';
 import { GITHUB_MESSAGES } from '../src/github.js';
 import { NEW_MESSAGES } from '../src/newagent.js';
 import { OPEN_MESSAGES } from '../src/open.js';
@@ -126,6 +128,7 @@ async function startServer(t, options = {}) {
     ...(options.sender ? { sender: options.sender } : {}),
     ...(options.hookKey ? { hookKey: options.hookKey } : {}),
     ...(options.signin ? { signin: options.signin } : {}),
+    ...(options.usage ? { usage: options.usage } : {}),
     // Tests never look at this computer's real network: no Wi-Fi address unless a test stands one in.
     lanAddresses: options.lanAddresses ?? (() => []),
     lanPort: 0,
@@ -1601,6 +1604,81 @@ test("GET /api/models reads Codex's model lines, and says where they can be chan
   assertPlainError(await request(port, { method: 'PUT', path: '/api/models' }), 405);
 });
 
+// ---- Usage ----
+
+test('GET /api/usage answers the shape, from made-up files, and any signed-in device may read it', async (t) => {
+  const dir = tempDir(t, 'pleni-usage-server-');
+  const day = new Date();
+  day.setHours(9, 0, 0, 0);
+  const line = JSON.stringify({
+    type: 'assistant',
+    uuid: 'u1',
+    timestamp: day.toISOString(),
+    message: { id: 'msg_1', model: 'claude-x', usage: { input_tokens: 11, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 4 } },
+  });
+  fs.mkdirSync(path.join(dir, 'claude', 'projects', 'p'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'claude', 'projects', 'p', '0a1b2c3d-1111-2222-3333-444455556666.jsonl'), `${line}\n`);
+  const memory = memorySettings(REMOTE);
+  memory.state.roots = { claude: path.join(dir, 'claude'), codex: path.join(dir, 'codex') };
+  const { port } = await startServer(t, { memory });
+  const res = await request(port, { path: '/api/usage' });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.demo, false);
+  assert.equal(typeof res.json.at, 'number');
+  assert.deepEqual(Object.keys(res.json.tools), ['claude', 'codex', 'grok', 'kimi']);
+  const claude = res.json.tools.claude;
+  assert.deepEqual(claude.today, { input: 11, output: 5, cacheRead: 100, cacheWrite: 4, total: 20 });
+  assert.equal(claude.days.length, 7);
+  assert.equal(claude.on, true);
+  assert.equal(claude.limits, null);
+  assert.match(res.json.tools.codex.error, /Codex/);
+  const laptop = await request(port, { path: '/api/usage?fresh=1', headers: FROM_LAPTOP });
+  assert.equal(laptop.status, 200);
+  assert.equal(laptop.json.tools.claude.today.total, 20);
+  const head = await request(port, { method: 'HEAD', path: '/api/usage' });
+  assert.equal(head.status, 200);
+  assertPlainError(await request(port, { path: '/api/usage', headers: { cookie: undefined } }), 401);
+  assertPlainError(await request(port, { method: 'POST', path: '/api/usage' }), 405);
+  assertPlainError(await request(port, { method: 'PUT', path: '/api/usage' }), 405);
+});
+
+test('GET /api/usage says whether Connect for plan limits is on', async (t) => {
+  const off = await startServer(t, { memory: memorySettings(REMOTE) });
+  assert.equal((await request(off.port, { path: '/api/usage' })).json.limitsOn, false);
+  const on = await startServer(t, { memory: memorySettings({ ...REMOTE, actions: { limits: true } }) });
+  assert.equal((await request(on.port, { path: '/api/usage' })).json.limitsOn, true);
+});
+
+test('a normal settings save never turns plan limits on or off', async (t) => {
+  for (const [headers, from] of [[FROM_LAPTOP, 'a laptop'], [{}, 'this computer']]) {
+    const on = memorySettings({ ...REMOTE, actions: { limits: true } });
+    const a = await startServer(t, { memory: on });
+    for (const actions of [{}, { limits: false }, { limits: true, send: true }]) {
+      assert.equal((await postSettings(a.port, { ...REMOTE, actions }, headers)).status, 200, from);
+      assert.equal(on.state.settings.actions.limits, true, `${from} ${JSON.stringify(actions)}`);
+    }
+    const off = memorySettings(REMOTE);
+    const b = await startServer(t, { memory: off });
+    assert.equal((await postSettings(b.port, { ...REMOTE, actions: { limits: true } }, headers)).status, 200, from);
+    assert.equal(off.state.settings.actions.limits, false, from);
+  }
+});
+
+test('GET /api/usage in the demo answers made-up numbers and reads no folder', async (t) => {
+  const store = fakeStore();
+  store.demo = true;
+  const usage = { read() { throw new Error('the demo must not read files'); } };
+  const { port } = await startServer(t, { store, usage });
+  const res = await request(port, { path: '/api/usage' });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.demo, true);
+  assert.equal(res.json.tools.claude.limits.from, 'statusLine');
+  assert.equal(res.json.tools.codex.limits.from, 'files');
+  assert.equal(res.json.tools.grok.limits, null);
+  assert.equal(res.json.tools.kimi.limits, null);
+  assert.equal(res.json.tools.claude.days.length, 7);
+});
+
 test('Save to Codex works only on this computer, with the switch on, and keeps a copy', async (t) => {
   const { dir, codex, memory, store } = modelsSetup(t, { models: { edit: true } });
   const { port } = await startServer(t, { store, memory });
@@ -1960,6 +2038,68 @@ test('Connect adds Pleni\'s hooks to Claude Code\'s settings and turns answering
   assertPlainError(await answerReq(port, '/api/hooks', { connect: 'yes' }), 400);
 });
 
+test('Connect for plan limits adds the status line, turns limits on, and Disconnect puts the old line back', async (t) => {
+  const dir = tempDir(t);
+  const claude = path.join(dir, 'claude');
+  fs.mkdirSync(claude);
+  const mine = { type: 'command', command: '~/bin/line.sh', padding: 1 };
+  const original = JSON.stringify({ model: 'opus', statusLine: mine }, null, 2) + '\n';
+  fs.writeFileSync(path.join(claude, 'settings.json'), original);
+  const memory = memorySettings({});
+  memory.state.file = path.join(dir, 'pleni', 'settings.json');
+  memory.state.roots = { ...memory.state.roots, claude };
+  const { port } = await startServer(t, { memory });
+  const before = (await request(port, { path: '/api/statusline' })).json;
+  assert.equal(before.on, false);
+  assert.equal(before.connected, false);
+  assert.equal(before.previous, true);
+  assert.equal(before.demo, false);
+  assertPlainError(await request(port, { path: '/api/statusline', headers: { 'x-forwarded-for': '100.64.0.7' } }), 403);
+  assertPlainError(await request(port, { path: '/api/statusline', headers: FROM_LAPTOP }), 403);
+  assertPlainError(await answerReq(port, '/api/statusline', { connect: true }, { 'tailscale-user-login': 'ada@example.com' }), 403);
+  assertPlainError(await answerReq(port, '/api/statusline', { connect: true }, { 'x-forwarded-for': '100.64.0.7' }), 403);
+  assertPlainError(await answerReq(port, '/api/statusline', { connect: 'yes' }), 400);
+  assertPlainError(await request(port, { method: 'PUT', path: '/api/statusline' }), 405);
+  assert.equal(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8'), original, 'the refused calls changed nothing');
+  // Limits are not read while Connect is off, even if the file is there.
+  const files = path.join(dir, 'pleni');
+  const done = await answerReq(port, '/api/statusline', { connect: true });
+  assert.equal(done.status, 200, done.text);
+  assert.match(path.basename(done.json.backup), /^claude-settings-\d{8}-\d{6}\.json$/);
+  assert.equal(memory.state.settings.actions.limits, true);
+  assert.equal(fs.existsSync(path.join(files, 'pleni-statusline.mjs')), true);
+  const saved = JSON.parse(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8'));
+  assert.equal(saved.model, 'opus');
+  assert.equal(saved.statusLine.padding, 1);
+  assert.match(saved.statusLine.command, /pleni-statusline\.mjs"$/);
+  const after = (await request(port, { path: '/api/statusline' })).json;
+  assert.deepEqual([after.on, after.connected, after.stale], [true, true, false]);
+  // The Usage popup shows what the status line saved.
+  fs.writeFileSync(path.join(files, 'claude-limits.json'), JSON.stringify({ v: 1, at: Date.now(), windows: [{ name: 'five_hour', minutes: 300, usedPercent: 33, resetsAt: Date.now() + 3600000 }] }));
+  const usage = (await request(port, { path: '/api/usage?fresh=1' })).json;
+  assert.equal(usage.tools.claude.limits.from, 'statusLine');
+  assert.equal(usage.tools.claude.limits.windows[0].usedPercent, 33);
+  const off = await answerReq(port, '/api/statusline', { connect: false });
+  assert.equal(off.status, 200, off.text);
+  assert.equal(memory.state.settings.actions.limits, false);
+  assert.equal(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8'), original);
+  assert.equal(fs.existsSync(path.join(files, 'claude-limits.json')), false);
+  assert.equal((await request(port, { path: '/api/usage?fresh=1' })).json.tools.claude.limits, null);
+});
+
+test('the status line is not connected in the demo, which shows a made-up state', async (t) => {
+  const store = fakeStore();
+  store.demo = true;
+  const { port, memory } = await startServer(t, { store });
+  const res = await request(port, { path: '/api/statusline' });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.demo, true);
+  assert.deepEqual([res.json.on, res.json.connected, res.json.file], [false, false, null]);
+  assert.match(res.json.lines, /pleni-statusline\.mjs/);
+  assertPlainError(await answerReq(port, '/api/statusline', { connect: true }), 409);
+  assert.equal(memory.state.settings.actions.limits, false);
+});
+
 // ---- signing in with a password, and Wi-Fi access ----
 
 // A small scrypt cost keeps these tests fast.
@@ -2282,4 +2422,96 @@ test('the demo never opens to the Wi-Fi', async (t) => {
   const { port } = await startServer(t, { store, signin, lanAddresses: WIFI });
   assertPlainError(await pageReq(port, '/api/lan', { on: true }), 409);
   assert.equal((await request(port, { path: '/api/devices' })).json.demo, true);
+});
+
+// ---- projects ----
+
+const PROJECT_ONE = { id: 'proj0001', name: 'App', folder: '/home/ada/code/app', repo: 'example/app' };
+const PROJECT_TWO = { id: 'proj0002', name: 'Beta', folder: '/home/ada/code/beta', repo: null };
+
+// A store that builds the real snapshot from the saved settings, with one session in the first project.
+function projectStore(memory) {
+  const store = fakeStore();
+  let settings = memory.state.settings;
+  const session = {
+    platform: 'claude', key: SESSION_KEY, id: SESSION_KEY.slice(7), parentKey: null, kind: 'session', title: 'Build the thing',
+    titleSource: null, cwd: '/home/ada/code/app/src', branch: 'main', entrypoint: 'cli', model: 'claude-opus-5-5', effort: null,
+    startedAt: 1000, lastAt: 2000, status: 'working', activity: null, lastText: null, links: [], archived: false,
+  };
+  store.snapshot = () => buildSnapshot({ now: 3000, settings, claude: { ok: true, error: null, root: '/home/ada/.claude', sessions: [session] } });
+  store.reload = (next) => {
+    settings = next;
+  };
+  return store;
+}
+
+test('POST /api/settings from this computer saves the project list, and the snapshot shows it', async (t) => {
+  const memory = memorySettings();
+  const { port } = await startServer(t, { memory, store: projectStore(memory) });
+  const res = await postSettings(port, { projectList: [PROJECT_ONE, PROJECT_TWO, { id: 'x', name: 'Bad id' }] });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json.settings.projectList, [PROJECT_ONE, PROJECT_TWO]);
+  assert.deepEqual(memory.state.settings.projectList, [PROJECT_ONE, PROJECT_TWO]);
+
+  const shown = await request(port, { path: '/api/settings' });
+  assert.deepEqual(shown.json.settings.projectList, [PROJECT_ONE, PROJECT_TWO]);
+
+  const snapshot = await request(port, { path: '/api/snapshot' });
+  assert.deepEqual(snapshot.json.projects, [
+    { id: 'proj0001', name: 'App', repo: 'example/app' },
+    { id: 'proj0002', name: 'Beta', repo: null },
+  ]);
+  const mine = snapshot.json.nodes.find((n) => n.key === SESSION_KEY);
+  assert.deepEqual(mine.projectIds, ['proj0001']);
+  assert.equal(snapshot.text.includes('/home/ada/code/app'), false, 'the folder is not in the snapshot');
+});
+
+test('POST /api/settings from another device keeps the saved project list', async (t) => {
+  const memory = memorySettings({ projectList: [PROJECT_ONE] });
+  const { port } = await startServer(t, { memory, settings: { remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } } });
+  memory.state.settings = cleanSettings({ projectList: [PROJECT_ONE], remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } });
+  const attempt = { displayName: 'Grace', projectList: [PROJECT_TWO] };
+  for (const headers of [FROM_LAPTOP, { 'x-forwarded-for': '100.64.0.7' }]) {
+    const res = await postSettings(port, attempt, headers);
+    assert.equal(res.status, 200, JSON.stringify(headers));
+    assert.deepEqual(res.json.settings.projectList, [PROJECT_ONE]);
+    assert.equal(res.json.settings.displayName, 'Grace', 'the other settings still save');
+    assert.deepEqual(memory.state.settings.projectList, [PROJECT_ONE]);
+  }
+  const wipe = await postSettings(port, { projectList: [] }, FROM_LAPTOP);
+  assert.deepEqual(wipe.json.settings.projectList, [PROJECT_ONE]);
+});
+
+test('the demo snapshot has two made-up projects, and Field app holds the Codex worktree', async (t) => {
+  const settings = cleanSettings({});
+  const store = createStore({ settings, roots: resolveRoots(settings), demo: true, now: () => Date.UTC(2026, 0, 15, 12, 3, 7) });
+  t.after(() => store.close());
+  const { port } = await startServer(t, { store, memory: memorySettings() });
+  const snapshot = await request(port, { path: '/api/snapshot' });
+  assert.deepEqual(snapshot.json.projects, [
+    { id: 'demobilling01', name: 'Billing service', repo: 'example/billing-service' },
+    { id: 'demofieldapp1', name: 'Field app', repo: 'example/field-app' },
+  ]);
+  const withIds = (id) => snapshot.json.nodes.filter((n) => n.projectIds.includes(id)).map((n) => n.title);
+  assert.ok(withIds('demobilling01').includes('Billing API refactor'));
+  assert.ok(withIds('demofieldapp1').includes('Login screen polish'), 'a Claude worktree inside the folder');
+  assert.ok(withIds('demofieldapp1').includes('Offline sync spike'), 'a Codex worktree, by repository name');
+  assert.equal(snapshot.text.includes('/home/ada'), false);
+  assert.equal(snapshot.json.demo, true);
+});
+
+test('the demo never changes the saved project list, and never shows it', async (t) => {
+  const own = { id: 'mine0001', name: 'Mine', folder: '/home/ada/code/mine', repo: null };
+  const settings = cleanSettings({ projectList: [own] });
+  const store = createStore({ settings, roots: resolveRoots(settings), demo: true, now: () => Date.UTC(2026, 0, 15, 12, 3, 7) });
+  t.after(() => store.close());
+  const memory = memorySettings({ projectList: [own] });
+  const { port } = await startServer(t, { store, memory });
+  const snapshot = await request(port, { path: '/api/snapshot' });
+  assert.deepEqual(snapshot.json.projects.map((p) => p.id), ['demobilling01', 'demofieldapp1']);
+  assert.equal(snapshot.text.includes('Mine'), false);
+  const res = await postSettings(port, { displayName: 'Grace', projectList: [] });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.settings.displayName, 'Grace');
+  assert.deepEqual(memory.state.settings.projectList, [own]);
 });

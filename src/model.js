@@ -34,12 +34,14 @@ const gitCache = new Map();
 // `actions` says which actions the page may offer: { openTerminal, rollover, newAgent, teleport, send }, each true when that
 // button is turned on and can work on this computer.
 // `asks` are the questions Pleni holds for the person (src/answers.js), as createAsks().list() gives them.
-export function buildSnapshot({ now, settings, claude = null, codex = null, grok = null, kimi = null, mailbox = null, dismissed = null, actions = null, asks = null } = {}) {
+export function buildSnapshot({ now, settings, claude = null, codex = null, grok = null, kimi = null, mailbox = null, dismissed = null, actions = null, asks = null, demo = false } = {}) {
   const s = cleanSettings(settings);
   const ctx = {
     now: Number.isFinite(now) ? now : Date.now(),
     settings: s,
     snippets: s.content === 'snippets',
+    projectFolders: projectFolders(s.projectList),
+    projectIdsByCwd: new Map(),
   };
   const box = isObject(mailbox) ? mailbox : null;
   const all = collectSessions([claude, codex, grok, kimi]);
@@ -55,6 +57,7 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
   ctx.mailReadAt = hidden(MAIL_READ_ID);
   const agentMail = agentMailParts(box, tree, all, links.pairs, ctx);
   const nodes = tree.order.map((key) => tree.nodes.get(key));
+  shareProjectIds(tree.nodes, all);
   markWatched(nodes, ctx);
   const sessionNodes = nodes.filter((node) => KINDS.includes(node.kind));
   // A dismissed ask stops showing as "Needs you" until a newer one comes.
@@ -66,6 +69,8 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
   return {
     version: 1,
     now: ctx.now,
+    // The page shows made-up data and offers no changes that only make sense for real data.
+    demo: demo === true,
     sources: {
       claude: sourceInfo(claude, sessionsOf(claude).length),
       codex: sourceInfo(codex, sessionsOf(codex).length),
@@ -83,6 +88,8 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
     tasks,
     mail: agentMail.summary,
     hiddenSessions: hiddenSessions(all, ctx),
+    // The Projects page: no folder here, only the name and the repository.
+    projects: s.projectList.map(({ id, name, repo }) => ({ id, name, repo })),
     actions: {
       openTerminal: actions?.openTerminal === true,
       rollover: actions?.rollover === true,
@@ -108,12 +115,17 @@ export function snapshotTag(snapshot) {
 // The last folder of `cwd`, or the repository folder when `cwd` is inside a worktrees folder.
 export function projectName(cwd) {
   if (typeof cwd !== 'string' || !cwd.trim()) return NO_PROJECT;
-  const clean = cwd.trim().replace(/^\\\\\?\\(UNC\\)?/i, (m) => (m.length > 4 ? '//' : '')).replace(/\\/g, '/');
-  const prefix = clean.startsWith('//') ? '//' : clean.startsWith('/') ? '/' : '';
-  const parts = clean.split('/').filter((part) => part && part !== '.');
+  const { prefix, parts } = pathParts(cwd);
   if (parts.length === 0) return NO_PROJECT;
   const name = worktreeRepo(parts, prefix) || parts[parts.length - 1];
   return clipName(name);
+}
+
+// A folder path split into its parts. `prefix` is '//' for a network folder, '/' for an absolute one.
+function pathParts(cwd) {
+  const clean = cwd.trim().replace(/^\\\\\?\\(UNC\\)?/i, (m) => (m.length > 4 ? '//' : '')).replace(/\\/g, '/');
+  const prefix = clean.startsWith('//') ? '//' : clean.startsWith('/') ? '/' : '';
+  return { prefix, parts: clean.split('/').filter((part) => part && part !== '.') };
 }
 
 function worktreeRepo(parts, prefix) {
@@ -134,28 +146,35 @@ function worktreeRepo(parts, prefix) {
 // A worktree has a `.git` file that points into `<repo>/.git/worktrees/<name>`.
 // Only local absolute folders are read: a network share could stall every snapshot.
 function gitRepoName(dirParts, prefix) {
+  return gitInfo(dirParts, prefix).name;
+}
+
+// { name, folder } of the repository a worktree belongs to, or nulls. Never throws.
+function gitInfo(dirParts, prefix) {
+  const none = { name: null, folder: null };
   const local = prefix === '/' || (process.platform === 'win32' && /^[a-z]:$/i.test(dirParts[0]));
-  if (!local) return null;
+  if (!local) return none;
   const dir = prefix + dirParts.join('/');
   if (gitCache.has(dir)) return gitCache.get(dir);
-  let name = null;
+  let info = none;
   try {
     const file = `${dir}/.git`;
     // stat first: a pipe or a huge file must not block or fill memory.
     const stat = fs.statSync(file);
-    if (stat.isFile() && stat.size <= 4096) name = repoFromGitFile(fs.readFileSync(file, 'utf8'), dirParts);
+    if (stat.isFile() && stat.size <= 4096) info = repoFromGitFile(fs.readFileSync(file, 'utf8'), dirParts, prefix);
   } catch {
     // Not a worktree, or it was removed: the caller falls back to the folder name.
   }
   if (gitCache.size >= GIT_CACHE_MAX) gitCache.clear();
-  gitCache.set(dir, name);
-  return name;
+  gitCache.set(dir, info);
+  return info;
 }
 
 // `gitdir:` may be relative to the worktree folder (git worktree add --relative-paths).
-function repoFromGitFile(text, dirParts) {
+function repoFromGitFile(text, dirParts, prefix = '/') {
+  const none = { name: null, folder: null };
   const match = /^gitdir:\s*(.+)$/m.exec(text);
-  if (!match) return null;
+  if (!match) return none;
   const target = match[1].trim().replace(/\\/g, '/');
   const absolute = target.startsWith('/') || /^[a-z]:/i.test(target);
   const parts = [];
@@ -163,10 +182,120 @@ function repoFromGitFile(text, dirParts) {
     if (part === '..') parts.pop();
     else if (part && part !== '.') parts.push(part);
   }
+  const root = absolute ? (target.startsWith('//') ? '//' : target.startsWith('/') ? '/' : '') : prefix;
   const at = parts.map((part) => part.toLowerCase()).lastIndexOf('worktrees');
-  if (at >= 2 && parts[at - 1].toLowerCase() === '.git') return parts[at - 2];
-  if (at >= 1 && /.\.git$/i.test(parts[at - 1])) return parts[at - 1].slice(0, -4);
+  if (at >= 2 && parts[at - 1].toLowerCase() === '.git') return { name: parts[at - 2], folder: root + parts.slice(0, at - 1).join('/') };
+  if (at >= 1 && /.\.git$/i.test(parts[at - 1])) return { name: parts[at - 1].slice(0, -4), folder: root + parts.slice(0, at).join('/') };
+  return none;
+}
+
+// ---- projects ----
+
+// True when `cwd` is `folder` or inside it. Both are tidied first: backslashes become /, repeated /
+// collapse, a trailing / goes (a bare root stays). Case is ignored on Windows and macOS, and for
+// any path that starts with a drive letter. /a/app does not hold /a/apple.
+export function inFolder(cwd, folder, platform = process.platform) {
+  const a = tidyFolder(cwd);
+  const b = tidyFolder(folder);
+  return a !== '' && b !== '' && within(a, b, caseless(platform, a, b));
+}
+
+function tidyFolder(value) {
+  if (typeof value !== 'string') return '';
+  const { prefix, parts: raw } = pathParts(value);
+  // A typed folder may hold "..": /home/ada/code/../app is /home/ada/app. A drive letter stays.
+  const parts = [];
+  for (const part of raw) {
+    if (part !== '..') parts.push(part);
+    else if (parts.length && !(parts.length === 1 && !prefix && /^[a-z]:$/i.test(parts[0]))) parts.pop();
+  }
+  if (parts.length === 0) return prefix ? '/' : '';
+  return (prefix ? '/' : '') + parts.join('/') + (!prefix && parts.length === 1 && /^[a-z]:$/i.test(parts[0]) ? '/' : '');
+}
+
+function caseless(platform, ...paths) {
+  return platform === 'win32' || platform === 'darwin' || paths.some((p) => /^[a-z]:/i.test(p));
+}
+
+function within(cwd, folder, nocase) {
+  const c = nocase ? cwd.toLowerCase() : cwd;
+  const f = nocase ? folder.toLowerCase() : folder;
+  if (c === f) return true;
+  return c.startsWith(f.endsWith('/') ? f : `${f}/`);
+}
+
+// A Codex or _worktrees folder is not inside its repository. This is the folder to read the
+// worktree's .git file in, and the repository name to fall back on; null for any other folder.
+function worktreeSpot(parts) {
+  const lower = parts.map((part) => part.toLowerCase());
+  for (let i = 0; i < parts.length; i++) {
+    if (lower[i] === '.codex' && lower[i + 1] === 'worktrees' && parts[i + 3]) return { dirParts: parts.slice(0, i + 4), name: parts[i + 3] };
+    if (lower[i] === '.claude' && lower[i + 1] === 'worktrees' && i > 0) return null;
+    if (lower[i] === '_worktrees' && parts[i + 1]) return { dirParts: parts.slice(0, i + 2), name: null };
+  }
   return null;
+}
+
+// The ids of every project whose folder holds `cwd`, in list order. A worktree outside its
+// repository belongs to the repository's project: found from its .git file, else by the repository
+// name matching the last part of the project's folder.
+function projectIdsFor(cwd, ctx) {
+  if (typeof cwd !== 'string' || !cwd.trim() || ctx.projectFolders.length === 0) return [];
+  const cached = ctx.projectIdsByCwd.get(cwd);
+  if (cached) return cached;
+  const platform = process.platform;
+  const here = tidyFolder(cwd);
+  const { prefix, parts } = pathParts(cwd);
+  const spot = worktreeSpot(parts);
+  let home = null;
+  let name = null;
+  if (spot) {
+    const info = gitInfo(spot.dirParts, prefix);
+    home = info.folder ? tidyFolder(info.folder) : null;
+    name = info.name || projectName(cwd);
+  }
+  const ids = [];
+  for (const project of ctx.projectFolders) {
+    const nocase = caseless(platform, here, project.folder);
+    let hit = here !== '' && within(here, project.folder, nocase);
+    if (!hit && home) hit = within(home, project.folder, caseless(platform, home, project.folder));
+    if (!hit && spot && !home && name) hit = sameName(name, project.last, caseless(platform, project.folder));
+    if (hit) ids.push(project.id);
+  }
+  if (ctx.projectIdsByCwd.size >= GIT_CACHE_MAX) ctx.projectIdsByCwd.clear();
+  ctx.projectIdsByCwd.set(cwd, ids);
+  return ids;
+}
+
+function sameName(a, b, nocase) {
+  return nocase ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function projectFolders(list) {
+  return list.map((project) => {
+    const folder = tidyFolder(project.folder);
+    return { id: project.id, folder, last: folder.split('/').filter(Boolean).pop() ?? '' };
+  }).filter((project) => project.folder !== '');
+}
+
+// A helper with no folder of its own works where its boss works.
+function shareProjectIds(nodes, all) {
+  const done = new Map();
+  const idsOf = (key, depth = 0) => {
+    if (done.has(key)) return done.get(key);
+    const node = nodes.get(key);
+    if (!node || !KINDS.includes(node.kind)) return [];
+    let ids = node.projectIds;
+    if (!all.get(key)?.cwd && depth < 32) {
+      const parent = node.parent;
+      if (parent && parent !== key && !key.startsWith('mailbox:')) ids = idsOf(parent, depth + 1);
+    }
+    done.set(key, ids);
+    return ids;
+  };
+  for (const [key, node] of nodes) {
+    if (KINDS.includes(node.kind)) node.projectIds = [...idsOf(key)];
+  }
 }
 
 function clipName(name) {
@@ -603,6 +732,7 @@ function sessionNode(session, project, ctx, rule = null) {
     needs: session.needs && { ...session.needs, text: snippets ? session.needs.text : null },
     project,
     projectLabel: entry(settings.projects, project)?.label || project,
+    projectIds: session.key.startsWith('mailbox:') ? [] : projectIdsFor(session.cwd, ctx),
     entrypoint: session.entrypoint,
     hidden: false,
     archived: false,
@@ -676,7 +806,7 @@ function groupNode({ key, parent, platform, kind, title, rank, project = null })
   return {
     key, parent, platform, kind, title, subtitle: null, rank, role: null, tier: null,
     model: null, modelLabel: null, effort: null, workerType: null, chosen: null, status: null, startedAt: null, lastAt: null,
-    activity: null, lastText: null, needs: null, project, projectLabel: project, entrypoint: null, hidden: false, archived: false,
+    activity: null, lastText: null, needs: null, project, projectLabel: project, projectIds: [], entrypoint: null, hidden: false, archived: false,
     named: false, placement: null, memory: null, rollSoon: null, github: null, mail: null,
   };
 }

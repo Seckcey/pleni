@@ -12,8 +12,8 @@ const FEED_PAGE = 150;
 const FL = { W: 268, H: 128, GX: 96, GY: 22, PAD: 48 };
 const ZOOM_MIN = 0.3;
 const ZOOM_MAX = 1.6;
-const VIEWS = ['map', 'list', 'activity', 'mail', 'tasks', 'pulls', 'cloud', 'settings'];
-const VIEW_NAMES = { map: 'Map', list: 'List', activity: 'Activity', mail: 'Mail', tasks: 'Tasks', pulls: 'Pull requests', cloud: 'Cloud', settings: 'Settings' };
+const VIEWS = ['map', 'list', 'projects', 'activity', 'mail', 'tasks', 'pulls', 'cloud', 'settings'];
+const VIEW_NAMES = { map: 'Map', list: 'List', projects: 'Projects', activity: 'Activity', mail: 'Mail', tasks: 'Tasks', pulls: 'Pull requests', cloud: 'Cloud', settings: 'Settings' };
 // Kept with the dismissed notices: the newest mail the person marked as read (src/model.js).
 const MAIL_READ_ID = 'you|mailread';
 const STATUS_WORDS = { needs: 'Needs you', working: 'Working', ready: 'Finished', idle: 'Idle', done: 'Done', error: 'Error' };
@@ -65,9 +65,10 @@ const DEFAULTS = {
   },
   people: {},
   projects: {},
+  projectList: [],
   chain: [],
   remote: { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] },
-  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false },
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false, limits: false },
   send: { mode: 'read' },
   answers: { waitMinutes: 10 },
   github: { live: false, merge: false, mergeMethod: 'squash' },
@@ -87,6 +88,9 @@ const ICONS = {
   group: '<path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h4l2 2h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/>',
   relay: '<path d="M4 8h13.5M14 4.5 17.5 8 14 11.5M20 16H6.5M10 12.5 6.5 16l3.5 3.5"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  popout: '<path d="M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/>',
+  full: '<path d="M14 4h6v6M20 4l-6 6M10 20H4v-6M4 20l6-6"/>',
+  fullExit: '<path d="M20 4l-6 6M14 5v5h5M4 20l6-6M10 19v-5H5"/>',
 };
 
 const S = {
@@ -102,6 +106,7 @@ const S = {
   aboutNow: null, // the same, from the newest answer
   mapMode: readStore('pleni.mapMode') === 'all' ? 'all' : 'working',
   fv: { x: 0, y: 0, k: 1, user: false, sig: '' },
+  popout: null, // { kind: 'map' | 'list' | 'session', key } when this window is a pop-out (popoutFromHash)
   layout: null,
   layoutSig: '',
   dragUntil: 0,
@@ -124,6 +129,9 @@ const S = {
   mail: { data: null, all: false, asking: false, error: '', key: '', msg: null, cmds: [] },
   // Settings > Models: what Codex's settings say, the person's changes, and a message.
   models: { data: null, error: '', busy: false, drafts: {}, msgs: {}, addOpen: {} },
+  // The Projects page: the open form (kept here, so a repaint never resets it), a message, and the
+  // project waiting for "Delete this project?".
+  proj: { form: null, msg: null, confirm: null, sig: '', v: 0, focus: '' },
 };
 
 const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
@@ -251,7 +259,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-ask-send', 'data-ask-approve', 'data-ask-keep', 'data-ask-allow', 'data-ask-deny', 'data-ask-back', 'data-hooks', 'data-merge', 'data-merge-yes', 'data-merge-no', 'data-gh-again', 'data-cloud-again', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-pw', 'data-wifi-address', 'data-wifi', 'data-wifi-copy', 'data-device-out', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-ask-send', 'data-ask-approve', 'data-ask-keep', 'data-ask-allow', 'data-ask-deny', 'data-ask-back', 'data-hooks', 'data-limits', 'data-merge', 'data-merge-yes', 'data-merge-no', 'data-gh-again', 'data-cloud-again', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-pw', 'data-wifi-address', 'data-wifi', 'data-wifi-copy', 'data-device-out', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -585,7 +593,8 @@ async function pollOnce() {
       S.snap = body;
       S.index = indexSnapshot(body);
       S.etag = res.headers.get('ETag');
-      checkAlerts();
+      // A pop-out window leaves alerts to the main window, so each alert shows once.
+      if (!S.popout) checkAlerts();
       if (isTime(body.now)) S.skew = Date.now() - body.now;
     }
     noteVersion(res.headers.get('X-Pleni-Version'), res.headers.get('X-Pleni-Build'));
@@ -752,10 +761,315 @@ function setView(v, focus) {
 }
 
 window.addEventListener('hashchange', () => {
+  // A pop-out window shows one thing for its whole life.
+  if (S.popout) return;
+  closeUsage(false);
   const v = viewFromHash();
   if (!v) return;
+  if (mapFull()) leaveFull();
   closeDrawer();
   setView(v, true);
+});
+
+// ---------- pop-out windows ----------
+// The map, the list, or a session's panel can open in a window of their own. That window is this
+// same page with "?popout" in its address ("#/map?popout", "#/list?popout" or
+// "#/session/<key>?popout"). It polls Pleni by itself, so it stays live, and shows only that part.
+
+function popoutFromHash() {
+  const m = /^#\/(map|list|session)(?:\/([^?]*))?\?popout$/.exec(location.hash);
+  if (!m) return null;
+  if (m[1] !== 'session') return { kind: m[1], key: null };
+  let key = '';
+  try {
+    key = decodeURIComponent(m[2] || '');
+  } catch {
+    return null;
+  }
+  return key ? { kind: 'session', key } : null;
+}
+
+function startPopout(p) {
+  S.popout = p;
+  document.body.classList.add('popout', `popout-${p.kind}`);
+}
+
+// The window's title: the view, or in a session's own window, that session's name.
+function pageName() {
+  if (!(S.popout && S.popout.kind === 'session' && S.drawer)) return VIEW_NAMES[S.view];
+  const n = S.index && S.index.byKey.get(S.drawer.key);
+  return n ? titleOf(n) : keyName(S.drawer.key);
+}
+
+const POPOUT_SIZE = { map: [1200, 820], list: [980, 820], session: [760, 900] };
+
+function popOut(kind) {
+  const key = kind === 'session' ? S.drawer && S.drawer.key : null;
+  if (!POPOUT_SIZE[kind] || (kind === 'session' && !key)) return;
+  const hash = key ? `#/session/${encodeURIComponent(key)}?popout` : `#/${kind}?popout`;
+  const [w, h] = POPOUT_SIZE[kind];
+  // One window per view or session: popping out the same one again brings that window forward.
+  const name = `pleni-${kind}${key ? `-${key.replace(/[^A-Za-z0-9]/g, '').slice(-40)}` : ''}`;
+  const win = window.open(`${location.origin}/${hash}`, name, `popup,width=${w},height=${h}`);
+  if (win) win.focus();
+  else showMoved({ key: null, text: 'Your browser blocked the new window. Allow pop-ups for this page, then try again.', bad: true, fadeMs: 8000 });
+}
+
+// ---------- the Usage popup ----------
+// A dialog with one card per AI tool: tokens used (read from the session files on this computer)
+// and plan limits when the tool or Pleni's Claude Code status line knows them. GET /api/usage is
+// asked when it opens and then every minute while it stays open. A new answer repaints only when
+// the words changed, and keeps the scroll place, so reading is never interrupted.
+
+const USAGE_REFRESH_MS = 60000;
+const USAGE_TOOLS = [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code']];
+const USAGE_LIMIT_PAGES = { claude: 'https://claude.ai/settings/usage', codex: 'https://chatgpt.com/codex/settings/usage' };
+const USAGE = { open: false, data: null, error: '', busy: false, timer: 0, run: 0, opener: null, leaving: false };
+
+// 900 -> "900", 1200 -> "1.2k", 250000 -> "250k", 1200000 -> "1.2 million".
+function tokenWords(value) {
+  const n = Math.max(0, Math.round(num(value)));
+  if (n < 1000) return String(n);
+  if (n < 999500) {
+    const k = n / 1000;
+    return `${k < 10 ? f1(k) : Math.round(k)}k`;
+  }
+  const [size, word] = n < 999500000 ? [1e6, 'million'] : [1e9, 'billion'];
+  const m = n / size;
+  return `${m < 100 ? f1(m) : Math.round(m)} ${word}`;
+}
+
+function tokenCount(value, atLeast) {
+  const n = Math.max(0, Math.round(num(value)));
+  return `${atLeast ? 'at least ' : ''}${tokenWords(n)} ${n === 1 ? 'token' : 'tokens'}`;
+}
+
+function limitName(w) {
+  if (w.name === 'five_hour' || w.minutes === 300) return '5-hour limit';
+  if (w.name === 'seven_day' || w.minutes === 10080) return 'Weekly limit';
+  if (w.name === 'spend_limit') return 'Spending limit';
+  const m = w.minutes;
+  if (!Number.isFinite(m) || m <= 0) return 'Limit';
+  if (m % 1440 === 0) return `${m / 1440}-day limit`;
+  if (m % 60 === 0) return `${m / 60}-hour limit`;
+  return `${m}-minute limit`;
+}
+
+// "at 4:30 PM" for later today, "Mon 9:00 AM" within the week, "Nov 9, 9:00 AM" past that.
+function whenWords(ms, now) {
+  if (new Date(ms).toDateString() === new Date(now).toDateString()) return `at ${clock(ms)}`;
+  const opts = ms - now < 6 * 86400000 ? { weekday: 'short', hour: 'numeric', minute: '2-digit' } : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+  return new Date(ms).toLocaleString([], opts);
+}
+
+function limitHtml(w, id, now) {
+  const name = limitName(w);
+  if (isTime(w.resetsAt) && w.resetsAt <= now) {
+    return `<div class="u-limit"><p class="u-words"><b>${esc(name)}:</b> Reset ${esc(whenWords(w.resetsAt, now))}. The new number comes with the next reply.</p></div>`;
+  }
+  const pct = Math.round(Math.min(100, Math.max(0, num(w.usedPercent))));
+  const level = pct >= 95 ? ' hot' : pct >= 80 ? ' warm' : '';
+  const reset = isTime(w.resetsAt) ? `, resets ${whenWords(w.resetsAt, now)}` : '';
+  return `<div class="u-limit"><p class="u-words" id="${id}"><b>${esc(name)}:</b> ${pct}% used${esc(reset)}</p>` +
+    `<div class="u-bar${level}" role="meter" aria-label="${esc(name)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-valuetext="${pct}% used"><span style="width:${pct}%"></span></div></div>`;
+}
+
+function usageLimitsHtml(key, name, t, now, limitsOn = false) {
+  const L = t.limits;
+  const windows = L && Array.isArray(L.windows) ? L.windows.filter((w) => w && typeof w === 'object') : [];
+  if (windows.length) {
+    const from = L.from === 'statusLine' ? "Claude Code's status line" : `${name}'s own files`;
+    const at = isTime(L.at) ? `As of ${new Date(L.at).toDateString() === new Date(now).toDateString() ? clock(L.at) : stamp(L.at)}, from ${from}` : `From ${from}`;
+    return `<div class="u-limits">${windows.map((w, i) => limitHtml(w, `usage-${key}-w${i}`, now)).join('')}<p class="u-src">${esc(at)}</p></div>`;
+  }
+  if (key === 'claude' && limitsOn) {
+    return `<div class="u-limits"><p>Connected. Your limits show here after Claude Code's next reply in a trusted folder (Pro, Max and Ultra plans only).</p>` +
+      `<p><a href="${USAGE_LIMIT_PAGES.claude}" id="usage-claude-site" target="_blank" rel="noopener noreferrer">See them on claude.ai</a><span class="sr-only"> (opens in a new tab)</span></p></div>`;
+  }
+  if (key === 'claude') {
+    const connect = LOCAL_PAGE
+      ? `Connect Claude Code to see your plan limits here. <a href="#/settings/buttons" id="usage-connect">Go to Connect in Settings</a>.`
+      : 'Connect Claude Code to see your plan limits here. Connect it on the computer that runs Pleni.';
+    return `<div class="u-limits"><p>${connect}</p><p class="u-src">Limits show up after your next reply in Claude Code. They are there for Pro, Max and Ultra plans.</p>` +
+      `<p><a href="${USAGE_LIMIT_PAGES.claude}" id="usage-claude-site" target="_blank" rel="noopener noreferrer">See them on claude.ai</a><span class="sr-only"> (opens in a new tab)</span></p></div>`;
+  }
+  if (key === 'codex') {
+    return `<div class="u-limits"><p>Codex saves its limits after each reply. None in the last 7 days.</p>` +
+      `<p><a href="${USAGE_LIMIT_PAGES.codex}" id="usage-codex-site" target="_blank" rel="noopener noreferrer">See them on chatgpt.com</a><span class="sr-only"> (opens in a new tab)</span></p></div>`;
+  }
+  return `<div class="u-limits"><p>${esc(name)} does not save plan limits on this computer. In ${esc(name)}, type /usage.</p></div>`;
+}
+
+function usageTokensHtml(t) {
+  if (t.error) return `<p class="note bad">${esc(t.error)}</p>`;
+  const part = (label, v) => {
+    const x = v && typeof v === 'object' ? v : {};
+    const line = `<p class="u-line"><b>${label}:</b> ${esc(tokenCount(x.total, t.atLeast === true))}</p>`;
+    if (!(x.total > 0) && !(x.cacheRead > 0)) return line;
+    // A part that is zero is left out: Codex, for one, never reports what it saved to memory.
+    const bits = [`Sent ${tokenWords(x.input)}`, `written back ${tokenWords(x.output)}`];
+    if (x.cacheWrite > 0) bits.push(`saved to memory ${tokenWords(x.cacheWrite)}`);
+    if (x.cacheRead > 0) bits.push(`read again from memory ${tokenWords(x.cacheRead)} (not counted)`);
+    return `${line}<p class="u-split">${bits.join(' · ')}</p>`;
+  };
+  const cut = t.atLeast === true ? '<p class="u-split">Pleni stopped reading early, so these numbers are at least this much.</p>' : '';
+  return `<div class="u-tokens">${part('Today', t.today)}${part('Last 7 days', t.week)}${cut}</div>`;
+}
+
+function usageCardHtml(key, name, t, now, limitsOn = false) {
+  const plan = t.limits && typeof t.limits.plan === 'string' && /^[\w -]{1,24}$/.test(t.limits.plan) ? ` <span class="u-plan">${esc(cap(t.limits.plan))} plan</span>` : '';
+  return `<section class="u-card" aria-labelledby="usage-h-${key}"><h3 class="u-name" id="usage-h-${key}"><span class="mark mk-${key}" aria-hidden="true">${svgIcon(ICONS[key])}</span>${esc(name)}${plan}</h3>` +
+    `${usageLimitsHtml(key, name, t, now, limitsOn)}${usageTokensHtml(t)}</section>`;
+}
+
+function usageHtml() {
+  const d = USAGE.data;
+  if (!d) return USAGE.error ? `<p class="note bad">Pleni could not read your usage. ${esc(USAGE.error)}</p>` : '<p class="empty">Reading your usage…</p>';
+  const now = serverNow();
+  const tools = d.tools && typeof d.tools === 'object' ? d.tools : {};
+  const cards = [];
+  for (const [key, name] of USAGE_TOOLS) {
+    const t = own(tools, key);
+    if (t && typeof t === 'object' && t.on === true) cards.push(usageCardHtml(key, name, t, now, d.limitsOn === true));
+  }
+  const stale = USAGE.error ? `<p class="note bad">Pleni could not refresh these numbers. ${esc(USAGE.error)} It will try again in a minute.</p>` : '';
+  const none = cards.length ? '' : '<p class="empty">Every AI tool is turned off in Settings, under Sources, so there is nothing to count.</p>';
+  const demo = d.demo ? '<p class="note">These are made-up numbers from the demo.</p>' : '';
+  return `${stale}${demo}${cards.join('')}${none}<p class="note u-foot">Pleni counts tokens from the session files on this computer. It never asks the AI companies. Each tool counts tokens its own way, so compare a tool with itself.</p>`;
+}
+
+function paintUsage() {
+  const body = $('#usage-body');
+  const top = body.scrollTop;
+  if (setHtml(body, usageHtml())) body.scrollTop = top;
+}
+
+async function loadUsage() {
+  if (USAGE.busy) return;
+  const run = USAGE.run;
+  USAGE.busy = true;
+  try {
+    const data = await getJson('/api/usage');
+    if (run !== USAGE.run) return;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Pleni got an answer it could not read.');
+    USAGE.data = data;
+    USAGE.error = '';
+  } catch (err) {
+    if (run !== USAGE.run) return;
+    USAGE.error = plainError(err);
+  } finally {
+    if (run === USAGE.run) USAGE.busy = false;
+  }
+  if (USAGE.open) paintUsage();
+}
+
+function openUsage(opener) {
+  const dlg = $('#usage');
+  if (!dlg || dlg.open) return;
+  USAGE.open = true;
+  USAGE.run++;
+  USAGE.busy = false;
+  USAGE.data = null;
+  USAGE.error = '';
+  USAGE.opener = opener || null;
+  USAGE.leaving = false;
+  paintUsage();
+  $('#usage-body').scrollTop = 0;
+  dlg.showModal();
+  clearInterval(USAGE.timer);
+  USAGE.timer = setInterval(() => {
+    if (!document.hidden) loadUsage();
+  }, USAGE_REFRESH_MS);
+  loadUsage();
+}
+
+// `back` false when the person is leaving for another page (the Settings link), so focus is not
+// pulled back to the button.
+function closeUsage(back = true) {
+  const dlg = $('#usage');
+  if (!dlg || !dlg.open) return;
+  USAGE.leaving = !back;
+  dlg.close();
+}
+
+$('#usage').addEventListener('close', () => {
+  USAGE.open = false;
+  USAGE.run++;
+  USAGE.busy = false;
+  clearInterval(USAGE.timer);
+  const opener = USAGE.opener;
+  USAGE.opener = null;
+  if (opener && opener.isConnected && !USAGE.leaving) opener.focus({ preventScroll: true });
+});
+
+// A press that starts inside the box and ends on the dim area (a text selection, a scroll bar) must
+// not close it, so the dim area counts only when the press began there too.
+let usageDown = false;
+$('#usage').addEventListener('pointerdown', (ev) => {
+  usageDown = ev.target === ev.currentTarget;
+});
+
+$('#usage').addEventListener('click', (ev) => {
+  // The dim area around the box is the dialog itself. A click from the keyboard has no press (detail 0).
+  const dim = ev.target === ev.currentTarget && (usageDown || ev.detail === 0);
+  usageDown = false;
+  if (dim || ev.target.closest('[data-usage-close]')) return closeUsage();
+  if (ev.target.closest('a[href^="#/"]')) closeUsage(false);
+});
+
+// ---------- full screen ----------
+// The map alone fills the screen, with its legend and buttons. Where the browser has no full-screen
+// mode (an iPhone), it fills the browser window instead. Esc, F or the button leaves it.
+
+function mapFull() {
+  return document.body.classList.contains('map-full');
+}
+
+// The button keeps one name, and aria-pressed says whether it is on; the tooltip says what a click does.
+function fullLabel() {
+  return document.fullscreenEnabled ? 'Full screen' : 'Fill the window';
+}
+
+function setMapFull(on) {
+  document.body.classList.toggle('map-full', on);
+  const btn = $('[data-zoom="full"]');
+  if (btn) {
+    btn.setAttribute('aria-label', fullLabel());
+    btn.setAttribute('aria-pressed', String(on));
+    btn.title = on ? (document.fullscreenEnabled ? 'Leave full screen' : 'Stop filling the window') : fullLabel();
+    btn.innerHTML = svgIcon(on ? ICONS.fullExit : ICONS.full);
+  }
+}
+
+function toggleFull() {
+  if (!mapFull()) {
+    if (S.view !== 'map') return;
+    setMapFull(true);
+    if (document.fullscreenEnabled && !document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+    return;
+  }
+  leaveFull();
+}
+
+// Leaves full screen, the browser's own as well.
+function leaveFull() {
+  setMapFull(false);
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+
+// In the browser's own full screen, the browser takes Esc: it leaves full screen without a key event
+// the page sees, so an open side panel stays open until the next Esc.
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && mapFull()) setMapFull(false);
+});
+
+document.addEventListener('keydown', (ev) => {
+  // The side panel's own Esc runs first and marks the event; only a second Esc leaves full screen.
+  // Esc while carrying a tile only puts the tile back.
+  if (ev.key === 'Escape' && !ev.defaultPrevented && !S.drawer && !USAGE.open && mapFull() && !$('#map-canvas').classList.contains('moving')) {
+    ev.preventDefault();
+    toggleFull();
+  }
 });
 
 function render() {
@@ -772,9 +1086,10 @@ function render() {
   $('#nav-cloud').hidden = !cloudOn();
   paintMailNav();
   const asking = (S.snap && S.snap.counts && S.snap.counts.needs) || 0;
-  document.title = `${asking ? `(${asking}) ` : ''}${VIEW_NAMES[S.view]} · Pleni`;
+  document.title = `${asking ? `(${asking}) ` : ''}${pageName()} · Pleni`;
   if (S.view === 'map') renderMap();
   else if (S.view === 'list') renderList();
+  else if (S.view === 'projects') renderProjects();
   else if (S.view === 'activity') renderActivity();
   else if (S.view === 'mail') renderMail();
   else if (S.view === 'tasks') renderTasks();
@@ -784,6 +1099,7 @@ function render() {
     paintModels();
     loadDevices(false);
     loadHooks(false);
+    loadLimits(false);
   }
   if (S.drawer) renderDrawerParts();
   announce();
@@ -1400,6 +1716,7 @@ function zoomAt(px, py, k) {
 }
 
 function zoomButton(kind) {
+  if (kind === 'full') return toggleFull();
   if (kind === 'fit') {
     S.fv.sig = '';
     if (fitView()) S.fv.sig = S.layoutSig;
@@ -1652,6 +1969,8 @@ function panBy(dx, dy) {
       '-': () => zoom(0.8),
       _: () => zoom(0.8),
       0: () => zoomButton('fit'),
+      f: () => toggleFull(),
+      F: () => toggleFull(),
     };
     const act = Object.hasOwn(keys, ev.key) ? keys[ev.key] : null;
     if (!act) return;
@@ -1725,6 +2044,8 @@ function rowHtml(n, depth) {
   );
 }
 
+const LIST_HEAD = '<thead><tr><th scope="col">Session</th><th scope="col">Status</th><th scope="col">Doing now or last said</th><th scope="col">Model</th><th scope="col">Last active</th></tr></thead>';
+
 function renderList() {
   if (!S.snap) {
     setHtml($('#list-body'), '<p class="empty">Reading your sessions…</p>');
@@ -1772,10 +2093,468 @@ function renderList() {
   setHtml(
     $('#list-body'),
     `<div class="table-wrap"><table class="list"><caption class="sr-only">Sessions grouped by project</caption>` +
-      '<thead><tr><th scope="col">Session</th><th scope="col">Status</th><th scope="col">Doing now or last said</th><th scope="col">Model</th><th scope="col">Last active</th></tr></thead>' +
+      LIST_HEAD +
       `${bodies.join('')}</table></div>`,
   );
 }
+
+// ---------------------------------------------------------------------------------------------
+// projects
+// ---------------------------------------------------------------------------------------------
+
+// A project is a name, a folder on this computer and an optional GitHub repository. The snapshot
+// names the project and which sessions belong to it (node.projectIds) but never holds the folder.
+// The folder comes from GET /api/settings, and only the computer that runs Pleni may change it.
+const PROJECT_ID = /^[a-z0-9]{8,32}$/;
+const MAX_PROJECT_FOLDER = 500;
+const MAX_PROJECT_LIST = 50;
+const PROJECT_ONLY_HERE = 'Projects can be added and changed only on the computer that runs Pleni.';
+const PROJECT_DEMO = 'In the demo, the projects are made up, so they cannot be changed.';
+
+// New, Edit and Delete: only on this computer, and never in the demo.
+function canChangeProjects() {
+  return LOCAL_PAGE && !(S.snap && S.snap.demo === true);
+}
+
+// Why New, Edit and Delete are missing, or '' when they are there.
+function projectsNoteHtml() {
+  if (S.snap && S.snap.demo === true) return `<p class="note">${esc(PROJECT_DEMO)}</p>`;
+  return LOCAL_PAGE ? '' : `<p class="note">${esc(PROJECT_ONLY_HERE)}</p>`;
+}
+const PROJECT_FIELDS = { 'pf-name': 'name', 'pf-folder': 'folder', 'pf-repo': 'repo' };
+
+// #/projects is all projects, #/projects/<id> is one.
+function projectRoute() {
+  const m = /^#\/projects(?:\/([^/?#]*))?/.exec(location.hash);
+  if (!m || !m[1]) return { id: null };
+  let id = m[1];
+  try {
+    id = decodeURIComponent(id);
+  } catch {
+    // Keep it as typed; it will not match a project.
+  }
+  return { id };
+}
+
+function projectList() {
+  const list = S.snap && Array.isArray(S.snap.projects) ? S.snap.projects : [];
+  return list.filter((p) => p && typeof p.id === 'string' && PROJECT_ID.test(p.id) && typeof p.name === 'string');
+}
+
+// The List's rows for the sessions working in one project. A row is indented only when the session
+// it reports to is also shown.
+function projectRows(id) {
+  if (!S.index) return [];
+  const shown = new Map();
+  const rows = [];
+  for (const r of sessionRows(S.index)) {
+    if (!Array.isArray(r.n.projectIds) || !r.n.projectIds.includes(id)) continue;
+    const parentDepth = shown.get(r.n.parent);
+    const depth = parentDepth === undefined ? 0 : parentDepth + 1;
+    shown.set(r.n.key, depth);
+    rows.push({ n: r.n, depth });
+  }
+  return rows;
+}
+
+function projectCountsHtml(rows) {
+  const c = { working: 0, needs: 0, idle: 0, error: 0 };
+  for (const r of rows) {
+    const s = statusOf(r.n);
+    if (s === 'working') c.working++;
+    else if (s === 'needs') c.needs++;
+    else if (s === 'error') c.error++;
+    else c.idle++;
+  }
+  const parts = [];
+  if (c.working) parts.push(`<span class="c-working">${c.working} working</span>`);
+  if (c.needs) parts.push(`<span class="c-needs">${needYou(c.needs)}</span>`);
+  if (c.idle) parts.push(`<span>${c.idle} idle</span>`);
+  if (c.error) parts.push(`<span class="c-error">${plural(c.error, 'error', 'errors')}</span>`);
+  return parts.join(' · ');
+}
+
+function projectLastAt(rows) {
+  let at = null;
+  for (const r of rows) if (isTime(r.n.lastAt) && (at === null || r.n.lastAt > at)) at = r.n.lastAt;
+  return at;
+}
+
+function projectRepoHtml(p) {
+  return typeof p.repo === 'string' && GITHUB_PATH.test(p.repo) ? `<span class="links">${githubLink(p.repo, '', p.repo)}</span>` : '';
+}
+
+function projectSummaryHtml(rows) {
+  if (!rows.length) return '<p class="pcounts quiet">No sessions in this folder right now.</p>';
+  const at = projectLastAt(rows);
+  return `<p class="pcounts">${projectCountsHtml(rows)}</p>${at ? `<p class="quiet plast">Last active ${agoHtml(at)}</p>` : ''}`;
+}
+
+function renderProjects() {
+  const route = projectRoute();
+  const st = S.proj;
+  syncProjectForm(route);
+  if (st.msg && st.msg.id !== route.id) st.msg = null;
+  if (st.confirm && st.confirm !== route.id) st.confirm = null;
+  paintProjectForm();
+  setHtml($('#projects-msg'), st.msg ? `<p class="saved ${esc(st.msg.kind)}">${esc(st.msg.text)}</p>` : '');
+  const body = $('#projects-body');
+  if (!S.snap) {
+    setText($('#projects-meta'), '');
+    setHtml(body, '<p class="empty">Reading your projects…</p>');
+    focusProjectPart();
+    return;
+  }
+  const list = projectList();
+  const project = route.id === null ? null : list.find((p) => p.id === route.id);
+  if (route.id !== null) {
+    setText($('#projects-meta'), project ? plural(projectRows(project.id).length, 'session', 'sessions') : '');
+    setHtml(body, project ? oneProjectHtml(project) : goneProjectHtml());
+  } else {
+    setText($('#projects-meta'), list.length ? plural(list.length, 'project', 'projects') : '');
+    setHtml(body, allProjectsHtml(list));
+  }
+  focusProjectPart();
+}
+
+// After the form opens or closes, focus goes where the person was working.
+function focusProjectPart() {
+  const want = S.proj.focus;
+  if (!want) return;
+  const target = $(want);
+  if (!target || target.closest('[hidden]')) return;
+  S.proj.focus = '';
+  target.focus();
+}
+
+function newProjectButton() {
+  return canChangeProjects() ? '<p class="pbar"><button type="button" class="btn primary" id="proj-new" data-proj="new">New project</button></p>' : '';
+}
+
+function allProjectsHtml(list) {
+  const here = projectsNoteHtml();
+  if (!list.length) {
+    return `<p class="empty">No projects yet. A project groups the sessions that work in one folder.</p>${newProjectButton()}${here}`;
+  }
+  const cards = list.map((p) => {
+    const rows = projectRows(p.id);
+    return (
+      `<li class="project"><div class="repo-head"><h2><a href="#/projects/${esc(p.id)}">${esc(p.name)}</a></h2>${projectRepoHtml(p)}</div>` +
+      `${projectSummaryHtml(rows)}</li>`
+    );
+  });
+  return `${newProjectButton()}<ul class="projects">${cards.join('')}</ul>${here}`;
+}
+
+function goneProjectHtml() {
+  return '<p class="empty">This project is gone. It may have been deleted.</p><p><a href="#/projects">All projects</a></p>';
+}
+
+function oneProjectHtml(p) {
+  const rows = projectRows(p.id);
+  const ask = S.proj.confirm === p.id;
+  const buttons = canChangeProjects()
+    ? `<div class="pbar"><button type="button" class="btn" id="proj-edit" data-proj="edit" data-id="${esc(p.id)}">Edit</button>` +
+      `<button type="button" class="btn" id="proj-delete" data-proj="delete" data-id="${esc(p.id)}"${ask ? ' hidden' : ''}>Delete</button></div>`
+    : projectsNoteHtml();
+  const confirm = ask
+    ? '<div class="panel pconfirm" role="group" aria-labelledby="pc-ask"><p id="pc-ask">Delete this project? Pleni only forgets it. No files or sessions change.</p>' +
+      `<div class="pbar"><button type="button" class="btn" id="pc-yes" data-proj="delete-yes" data-id="${esc(p.id)}">Delete</button>` +
+      '<button type="button" class="btn" id="pc-keep" data-proj="delete-no">Keep it</button></div></div>'
+    : '';
+  const table = rows.length
+    ? `<div class="table-wrap"><table class="list"><caption class="sr-only">Sessions working in ${esc(p.name)}</caption>${LIST_HEAD}<tbody>${rows.map((r) => rowHtml(r.n, r.depth)).join('')}</tbody></table></div>`
+    : '';
+  return (
+    '<p class="pback"><a href="#/projects">All projects</a></p>' +
+    `<div class="repo-head"><h2 class="ptitle">${esc(p.name)}</h2>${projectRepoHtml(p)}</div>` +
+    `${buttons}${confirm}${rows.length ? `<p class="pcounts">${projectCountsHtml(rows)}</p>` : '<p class="pcounts quiet">No sessions in this folder right now.</p>'}${table}`
+  );
+}
+
+// ---- the form ----
+
+function newProjectForm(mode, id, entry) {
+  S.proj.v++;
+  return { mode, id, name: entry.name, folder: entry.folder, repo: entry.repo || '', errors: {}, msg: null, busy: false, v: S.proj.v };
+}
+
+// The form belongs to one page: a new project to the list, an edit to that project.
+function syncProjectForm(route) {
+  const f = S.proj.form;
+  if (f && (f.mode === 'new' ? route.id !== null : f.id !== route.id)) S.proj.form = null;
+}
+
+// The form's inputs are drawn only when the form opens, closes or shows an error, never on the
+// 4-second poll, so what the person is typing is never reset.
+function paintProjectForm() {
+  const st = S.proj;
+  const f = st.form;
+  const sig = f ? `${f.mode}:${f.id}:${f.v}` : '';
+  if (sig === st.sig) return;
+  st.sig = sig;
+  const slot = $('#projects-form');
+  painted.delete(slot);
+  setHtml(slot, f ? projectFormHtml(f) : '');
+}
+
+function formField(f, key, id, label, help, extra = '') {
+  const err = f.errors[key];
+  const described = `${id}-help${err ? ` ${id}-err` : ''}`;
+  return (
+    `<div class="prow"><label for="${id}">${esc(label)}</label>` +
+    `<input class="field" id="${id}" type="text" value="${esc(f[key])}" autocomplete="off" spellcheck="false" autocapitalize="off"${extra}` +
+    `${err ? ' aria-invalid="true"' : ''} aria-describedby="${described}">` +
+    `<p class="help" id="${id}-help">${esc(help)}</p>` +
+    `${err ? `<p class="field-error" id="${id}-err">${esc(err)}</p>` : ''}</div>`
+  );
+}
+
+function projectFormHtml(f) {
+  return (
+    `<form class="panel pform" id="pform" novalidate aria-labelledby="pf-title"><h2 id="pf-title">${f.mode === 'new' ? 'New project' : 'Edit project'}</h2>` +
+    formField(f, 'name', 'pf-name', 'Name', `Up to ${MAX_NAME} letters.`) +
+    formField(f, 'folder', 'pf-folder', 'Folder on this computer', 'Pleni shows the sessions working in this folder or in a folder inside it.') +
+    formField(f, 'repo', 'pf-repo', 'GitHub repository (optional)', 'Type it as owner/name, such as example/app. You can also paste the github.com address.') +
+    '<div class="pbar"><button type="submit" class="btn primary" id="pf-save">Save</button>' +
+    '<button type="button" class="btn" id="pf-cancel" data-proj="cancel">Cancel</button>' +
+    `<span id="pf-msg" role="status">${f.msg ? `<span class="saved ${esc(f.msg.kind)}">${esc(f.msg.text)}</span>` : ''}</span></div></form>`
+  );
+}
+
+function setFormMsg(kind, text) {
+  const f = S.proj.form;
+  if (f) f.msg = text ? { kind, text } : null;
+  const el = $('#pf-msg');
+  if (el) setHtml(el, text ? `<span class="saved ${esc(kind)}">${esc(text)}</span>` : '');
+}
+
+function closeProjectForm(focusId) {
+  S.proj.form = null;
+  S.proj.focus = focusId ? `#${focusId}` : '';
+  renderProjects();
+}
+
+// "https://github.com/example/app" and "example/app.git" both become "example/app". Returns
+// { repo, bad }: repo is '' when empty.
+function readRepo(text) {
+  let v = text.trim();
+  if (!v) return { repo: '', bad: false };
+  const m = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/\s?#]+)\/([^/\s?#]+)/i.exec(v);
+  if (m) v = `${m[1]}/${m[2].replace(/\.git$/i, '')}`;
+  const plain = GITHUB_PATH.test(v) && v.split('/').every((part) => part !== '.' && part !== '..');
+  return { repo: plain ? v : '', bad: !plain };
+}
+
+function projectProblems(f) {
+  const errors = {};
+  const name = f.name.trim();
+  const folder = f.folder.trim();
+  if (!name) errors.name = 'Type a name for this project.';
+  else if (Array.from(name).length > MAX_NAME) errors.name = `Type ${MAX_NAME} letters or fewer. This name has ${Array.from(name).length}.`;
+  if (!folder || !FULL_PATH.test(folder)) {
+    errors.folder = 'Type the full path of the folder, such as /home/ada/project or C:\\Users\\ada\\project.';
+  } else if (folder.length > MAX_PROJECT_FOLDER) {
+    errors.folder = `Type ${MAX_PROJECT_FOLDER} letters or fewer. This path has ${folder.length}.`;
+  } else if (/\p{Cc}/u.test(folder)) {
+    errors.folder = 'The path has a character that cannot be used. Type it again.';
+  }
+  if (readRepo(f.repo).bad) errors.repo = 'Type the repository as owner/name, such as example/app. A github.com address works too.';
+  return errors;
+}
+
+function randomProjectId(taken) {
+  const letters = '0123456789abcdefghijklmnopqrstuvwxyz';
+  for (;;) {
+    const id = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => letters[b % letters.length]).join('');
+    if (!taken.has(id)) return id;
+  }
+}
+
+// ---- saving ----
+
+async function postSettingsObject(settings) {
+  const res = await fetch('/api/settings', {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json', 'X-Pleni': 'settings' },
+    body: JSON.stringify(settings),
+  });
+  const body = await readJson(res);
+  if (!res.ok) throw answerError(res, body);
+  return body;
+}
+
+// Gets the saved settings, changes only projectList with `change(list)`, saves them all, and
+// returns the list Pleni kept. Pleni's Settings page, if it was opened, learns the new list too.
+async function changeProjectList(change) {
+  const info = await getJson('/api/settings');
+  if (!info || typeof info.settings !== 'object' || info.settings === null) throw new Error('Pleni sent settings this page cannot read.');
+  const settings = info.settings;
+  const list = Array.isArray(settings.projectList) ? settings.projectList : [];
+  settings.projectList = change(list);
+  const body = await postSettingsObject(settings);
+  const kept = body && body.settings && Array.isArray(body.settings.projectList) ? body.settings.projectList : [];
+  if (S.set && S.set.info && S.set.info.settings) {
+    S.set.info.settings.projectList = clone(kept);
+    if (S.set.draft) S.set.draft.projectList = clone(kept);
+  }
+  S.etag = null;
+  await pollNow().catch(() => {});
+  return kept;
+}
+
+// What Pleni changed in the project it kept, in plain words.
+function projectChanges(sent, kept) {
+  const out = [];
+  if (kept.name !== sent.name) out.push(`the name is now "${kept.name}"`);
+  if (kept.folder !== sent.folder) out.push('the folder was changed');
+  if (sent.repo && !kept.repo) out.push('the GitHub repository was left out because it is not a repository name');
+  else if ((kept.repo || null) !== (sent.repo || null)) out.push(`the GitHub repository is now ${kept.repo}`);
+  return out;
+}
+
+async function saveProject() {
+  const f = S.proj.form;
+  if (!f || f.busy) return;
+  f.errors = projectProblems(f);
+  if (Object.keys(f.errors).length) {
+    S.proj.v++;
+    f.v = S.proj.v;
+    f.msg = null;
+    S.proj.focus = `#pf-${Object.keys(f.errors)[0]}`;
+    paintProjectForm();
+    focusProjectPart();
+    return;
+  }
+  const entry = { id: f.id, name: f.name.trim(), folder: f.folder.trim(), repo: readRepo(f.repo).repo || null };
+  f.busy = true;
+  const button = $('#pf-save');
+  if (button) button.disabled = true;
+  setFormMsg('', 'Saving…');
+  try {
+    const isNew = f.mode === 'new';
+    const kept = await changeProjectList((list) => {
+      if (isNew) {
+        if (list.length >= MAX_PROJECT_LIST) throw new Error(`Pleni keeps up to ${MAX_PROJECT_LIST} projects. Delete one first.`);
+        entry.id = randomProjectId(new Set(list.map((x) => x && x.id)));
+        return [...list, entry];
+      }
+      if (!list.some((x) => x && x.id === entry.id)) throw new Error('This project is gone. It may have been deleted.');
+      return list.map((x) => (x && x.id === entry.id ? entry : x));
+    });
+    const got = kept.find((x) => x && x.id === entry.id);
+    if (!got) throw new Error('Pleni did not keep it. Check that the folder is a full path on the computer that runs Pleni.');
+    const changed = projectChanges(entry, got);
+    S.proj.msg = {
+      id: isNew ? null : entry.id,
+      kind: changed.length ? 'dirty' : 'ok',
+      text: changed.length ? `Saved. Pleni changed what you typed: ${changed.join('; ')}.` : 'Saved.',
+    };
+    closeProjectForm(f.mode === 'new' ? 'proj-new' : 'proj-edit');
+  } catch (err) {
+    f.busy = false;
+    if (button) button.disabled = false;
+    setFormMsg('err', `Not saved. ${plainError(err)}`);
+  }
+}
+
+async function editProject(id) {
+  const st = S.proj;
+  st.msg = { id, kind: '', text: 'Loading…' };
+  renderProjects();
+  try {
+    const info = await getJson('/api/settings');
+    const list = info && info.settings && Array.isArray(info.settings.projectList) ? info.settings.projectList : [];
+    const entry = list.find((x) => x && x.id === id);
+    if (!entry) throw new Error('This project is gone. It may have been deleted.');
+    st.msg = null;
+    st.form = newProjectForm('edit', id, { name: String(entry.name || ''), folder: String(entry.folder || ''), repo: entry.repo || '' });
+    st.focus = '#pf-name';
+  } catch (err) {
+    st.msg = { id, kind: 'err', text: `Could not open the project. ${plainError(err)}` };
+  }
+  renderProjects();
+}
+
+async function deleteProject(id) {
+  const st = S.proj;
+  st.confirm = null;
+  st.msg = { id, kind: '', text: 'Deleting…' };
+  renderProjects();
+  try {
+    await changeProjectList((list) => {
+      if (!list.some((x) => x && x.id === id)) throw new Error('This project is gone. It may have been deleted.');
+      return list.filter((x) => !x || x.id !== id);
+    });
+    st.msg = { id: null, kind: 'ok', text: 'Deleted. Pleni only forgot the project. No files or sessions changed.' };
+    st.form = null;
+    location.hash = '#/projects';
+  } catch (err) {
+    st.msg = { id, kind: 'err', text: `Not deleted. ${plainError(err)}` };
+  }
+  renderProjects();
+}
+
+function projectClick(what, id) {
+  const st = S.proj;
+  if (!canChangeProjects() && what !== 'cancel') return;
+  if (what === 'new') {
+    if (st.form) {
+      const first = $('#pf-name');
+      if (first) first.focus();
+      return;
+    }
+    st.msg = null;
+    st.form = newProjectForm('new', null, { name: '', folder: '', repo: '' });
+    st.focus = '#pf-name';
+    renderProjects();
+  } else if (what === 'edit') {
+    if (st.form) return $('#pf-name') && $('#pf-name').focus();
+    editProject(id);
+  } else if (what === 'cancel') {
+    closeProjectForm(st.form && st.form.mode === 'new' ? 'proj-new' : 'proj-edit');
+  } else if (what === 'delete') {
+    st.confirm = id;
+    renderProjects();
+    const keep = $('#pc-keep');
+    if (keep) keep.focus();
+  } else if (what === 'delete-no') {
+    st.confirm = null;
+    renderProjects();
+    const again = $('#proj-delete');
+    if (again) again.focus();
+  } else if (what === 'delete-yes') {
+    deleteProject(id);
+  }
+}
+
+const projectsForm = $('#projects-form');
+projectsForm.addEventListener('input', (ev) => {
+  const f = S.proj.form;
+  const key = PROJECT_FIELDS[ev.target.id];
+  if (!f || !key) return;
+  f[key] = ev.target.value;
+  if (f.errors[key]) {
+    // Take the error away in place, so the box the person is typing in stays as it is.
+    delete f.errors[key];
+    ev.target.removeAttribute('aria-invalid');
+    ev.target.setAttribute('aria-describedby', `${ev.target.id}-help`);
+    const note = $(`#${ev.target.id}-err`);
+    if (note) note.remove();
+  }
+  if (f.msg) setFormMsg('', '');
+});
+projectsForm.addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  saveProject();
+});
+projectsForm.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && S.proj.form && !S.proj.form.busy) {
+    ev.preventDefault();
+    projectClick('cancel');
+  }
+});
 
 // ---------------------------------------------------------------------------------------------
 // activity
@@ -2324,6 +3103,38 @@ function renderCloud() {
 // drawer
 // ---------------------------------------------------------------------------------------------
 
+// True in a window that shows one session's panel as its whole page.
+function popoutSession() {
+  return !!S.popout && S.popout.kind === 'session';
+}
+
+// The browser closes only a window a page opened. A pasted, saved or restored pop-out address is a
+// plain tab, which stays open: it becomes Pleni's normal page instead.
+function closePopout() {
+  window.close();
+  setTimeout(() => {
+    if (window.closed) return;
+    history.replaceState(null, '', `${location.pathname}${location.search}#/map`);
+    location.reload();
+  }, 200);
+}
+
+// In a pop-out, a link to another page of Pleni opens in the main window (or a new tab), so the
+// pop-out keeps showing its one thing.
+function openInMain(hash) {
+  try {
+    const main = window.opener;
+    if (main && !main.closed && main.location.origin === location.origin) {
+      main.location.hash = hash;
+      main.focus();
+      return;
+    }
+  } catch {
+    // The window that opened this one shows another site now.
+  }
+  window.open(`${location.origin}/${hash}`, '_blank', 'noopener');
+}
+
 function setInert(on) {
   for (const el of [$('.skip'), $('.appbar'), $('#main')]) el.inert = on;
 }
@@ -2377,7 +3188,8 @@ function drawerFrame(frame) {
   return (
     `<div class="dhead"><span class="mark" id="drawer-mark" aria-hidden="true"></span>` +
     '<div class="dtitles"><h2 id="drawer-title"></h2><p class="dsub" id="drawer-sub"></p></div>' +
-    `<button type="button" class="icon-btn" data-close aria-label="Close the details">${svgIcon(ICONS.close)}</button></div>` +
+    (S.popout ? '' : `<button type="button" class="icon-btn" data-popout="session" aria-label="Open in a window of its own" title="Open in a window of its own">${svgIcon(ICONS.popout)}</button>`) +
+    `<button type="button" class="icon-btn" data-close aria-label="${popoutSession() ? 'Close this window' : 'Close the details'}">${svgIcon(ICONS.close)}</button></div>` +
     '<div class="dstatus" id="drawer-status"></div>' +
     (frame === 'group'
       ? ''
@@ -3311,6 +4123,95 @@ async function setHooks(connect) {
   await pollNow().catch(() => {});
 }
 
+// Settings, Buttons: Plan limits from Claude Code. Connect adds Pleni's status line to Claude Code's
+// settings file (src/statusline.js); it hands the 5-hour and weekly numbers to Pleni after each reply.
+async function loadLimits(force) {
+  const st = S.set;
+  if (!LOCAL_PAGE || !st || !st.info) return;
+  const shown = S.view === 'settings' && (st.group === 'buttons' || !!st.find);
+  if (!force && (!shown || st.limitsBusy || Date.now() - (st.limitsAt || 0) < DEVICES_REFRESH_MS)) return;
+  st.limitsBusy = true;
+  try {
+    st.limits = await getJson('/api/statusline');
+    st.limitsError = '';
+  } catch (err) {
+    st.limitsError = plainError(err);
+  } finally {
+    st.limitsBusy = false;
+    st.limitsAt = Date.now();
+  }
+  paintLimits();
+}
+
+function paintLimits() {
+  setHtml($('#limits-box'), limitsHtml());
+}
+
+function limitsHtml() {
+  const st = S.set;
+  if (!LOCAL_PAGE) return '<p class="note">Only on the computer that runs Pleni.</p>';
+  if (st.limitsError) return `<p class="note bad">Pleni could not check Claude Code's settings. ${esc(st.limitsError)}</p>`;
+  const l = st.limits;
+  if (!l) return '<p class="note">Checking Claude Code\'s settings…</p>';
+  if (l.demo) return '<p class="note">The demo has no Claude Code to connect.</p>';
+  const msg = st.limitsMsg ? `<p class="roll-msg${st.limitsMsg.bad ? ' bad' : ''}" role="status">${esc(st.limitsMsg.text)}</p>` : '';
+  const keeps = l.previous ? ' Your own status line keeps showing.' : '';
+  let state;
+  let button;
+  if (!l.ok) {
+    state = `<p class="note bad">${esc(l.error || 'Pleni could not read Claude Code\'s settings.')}</p>`;
+    button = '';
+  } else if (l.connected && l.on) {
+    state = `<p class="note"><b>On.</b> Pleni's status line is in Claude Code's settings. The Usage window shows your limits after Claude Code's next reply.${keeps}</p>`;
+    button = '<button type="button" class="btn" data-limits="off">Disconnect</button>';
+  } else if (l.on && !l.connected && !l.stale) {
+    state = `<p class="note"><b>Needs Connect again.</b> Connect is on, but Pleni's status line is no longer in Claude Code's settings.${l.previous ? ' A status line of your own is there now.' : ''}</p>`;
+    button = '<button type="button" class="btn primary" data-limits="on">Connect again</button> <button type="button" class="btn" data-limits="off">Disconnect</button>';
+  } else if (l.connected || l.stale || l.on) {
+    state = '<p class="note"><b>Needs Connect again.</b> Pleni\'s status line in Claude Code\'s settings is from another time or another place, so no limits reach this Pleni.</p>';
+    button = '<button type="button" class="btn primary" data-limits="on">Connect again</button> <button type="button" class="btn" data-limits="off">Disconnect</button>';
+  } else {
+    state = `<p class="note"><b>Off.</b> Claude Code's plan limits do not show in the Usage window yet.${keeps}</p>`;
+    button = '<button type="button" class="btn primary" data-limits="on">Connect plan limits</button>';
+  }
+  const lines = l.lines ? `<details class="dask-lines"><summary>The lines Connect adds</summary><pre>${esc(l.lines)}</pre><p class="help">This is the only thing Connect adds to Claude Code's settings file.</p></details>` : '';
+  const file = l.file ? `<p class="help">Claude Code's settings file: <code>${esc(l.file)}</code></p>` : '';
+  return `${state}${button ? `<div class="roll-btns">${button}</div>` : ''}${msg}${file}${lines}`;
+}
+
+async function setLimits(connect) {
+  const st = S.set;
+  if (!st || st.limitsChanging) return;
+  st.limitsChanging = true;
+  st.limitsMsg = { text: connect ? 'Connecting…' : 'Disconnecting…' };
+  paintLimits();
+  try {
+    const res = await postJson('/api/statusline', { connect });
+    for (const s of [st.info && st.info.settings, st.draft]) if (s && s.actions) s.actions.limits = connect;
+    st.limitsMsg = {
+      text: connect
+        ? 'Connected. Your limits show in the Usage window after Claude Code\'s next reply in a trusted folder.'
+        : res && res.note ? `Disconnected. ${res.note}` : "Disconnected. Pleni took its status line out of Claude Code's settings.",
+    };
+  } catch (err) {
+    st.limitsMsg = { text: `${connect ? 'Not connected' : 'Not disconnected'}. ${plainError(err)}`, bad: true };
+  } finally {
+    st.limitsChanging = false;
+    say(st.limitsMsg.text);
+  }
+  // The button that was pressed may be gone after the repaint (Connect leaves only Disconnect, and
+  // the other way round): keep the keyboard in the box.
+  const box = $('#limits-box');
+  const had = !!box && box.contains(document.activeElement);
+  await loadLimits(true);
+  await pollNow().catch(() => {});
+  const now = $('#limits-box');
+  if (had && now && (!document.activeElement || document.activeElement === document.body)) {
+    const first = now.querySelector('button');
+    if (first) first.focus({ preventScroll: true });
+  }
+}
+
 // ---- Roll over soon ----
 // The reasons come from Pleni (settings.rollSoon): memory nearly full, squeezed often, or old.
 
@@ -3550,6 +4451,8 @@ async function hideNode(key, title) {
   }
   keepPersonField(key, 'role', 'hidden'); // so saving Settings later keeps it
   hiding.delete(key);
+  // A session window shows only this panel, so with the session hidden it has nothing left to show.
+  if (S.drawer && S.drawer.key === key && popoutSession()) return closePopout();
   if (S.drawer && S.drawer.key === key) closeDrawer();
   await pollNow().catch(() => {});
   showMoved({ key, spot: 'note', text: `Hidden from the map: "${title}". To show it again later, go to Settings, then Team.`, undo: () => unhideNode(key, title, before) });
@@ -3683,6 +4586,8 @@ async function fetchDrawerEvents() {
 document.addEventListener('keydown', (ev) => {
   if (!S.drawer) return;
   if (ev.key === 'Escape') {
+    // A session's own window is that panel; Esc leaves it open.
+    if (popoutSession()) return;
     ev.preventDefault();
     closeDrawer();
     return;
@@ -5034,6 +5939,7 @@ async function loadSettings(force) {
   loadDevices(true);
   loadModels(false);
   loadHooks(true);
+  loadLimits(true);
 }
 
 function getPath(obj, path, fallback) {
@@ -5539,6 +6445,10 @@ function renderSettingsForm() {
       <p class="note">Answer a Claude Code session's questions, approve its plans and allow or deny its tools here, instead of in its own window. Turn it on for a session in its side panel. A message you send with Pleni asks no questions, but with Also change files in its folder, its "may I run this?" prompts come here.</p>
       <div id="hooks-box">${hooksHtml()}</div>
       ${numberRow('s-answer-wait', 'Hold a question for', 'answers.waitMinutes', 1, 60, 'Minutes. Then the session asks in its own window again.')}
+    </section>
+    <section class="panel" aria-labelledby="s-h-limits" data-find="plan limits usage status line statusline claude code connect five hour 5-hour weekly percent pro max ultra"><h2 id="s-h-limits">Plan limits from Claude Code</h2>
+      <p class="note">Claude Code tells a status line how much of your 5-hour and weekly plan you have used, after each reply. Connect adds a small Pleni status line to Claude Code's settings file, so the Usage window can show those numbers. Pleni keeps a copy of the file first, in its backups folder, and changes nothing else in it. Your own status line keeps showing. Disconnect puts it back. This works for Pro, Max and Ultra plans. Claude Code runs a status line only in a folder you trust.</p>
+      <div id="limits-box">${limitsHtml()}</div>
     </section>`)}
     ${group('devices', 'Opening Pleni on your phone or another computer, and where its settings are kept.', `
     ${LOCAL_PAGE ? `<section class="panel" aria-labelledby="s-h-password" data-find="password sign in phone tablet laptop wrong tries lock"><h2 id="s-h-password">Password</h2>
@@ -5601,7 +6511,10 @@ function selectSettingsGroup(id, focus) {
   applySettingsView();
   if (id === 'devices') loadDevices(true);
   if (id === 'models') loadModels(true);
-  if (id === 'buttons') loadHooks(true);
+  if (id === 'buttons') {
+    loadHooks(true);
+    loadLimits(true);
+  }
   if (focus) $(`#stab-${id}`).focus();
 }
 
@@ -5989,6 +6902,14 @@ $('#signin').addEventListener('submit', (ev) => {
 // ---------------------------------------------------------------------------------------------
 
 document.addEventListener('click', (ev) => {
+  if (S.popout && ev.button === 0 && !(ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey)) {
+    const link = ev.target.closest('a[href^="#/"]');
+    if (link) {
+      ev.preventDefault();
+      openInMain(link.getAttribute('href'));
+      return;
+    }
+  }
   const el = ev.target.closest('button, a.skip');
   if (!el) return;
   if (el.matches('a.skip')) {
@@ -5996,10 +6917,13 @@ document.addEventListener('click', (ev) => {
     $('#main').focus();
     return;
   }
+  if (el.dataset.proj) return projectClick(el.dataset.proj, el.dataset.id);
   if (el.hasAttribute('data-undo')) return undoMove();
   // A drag across the map must not also open the tile it ended on.
   if (el.closest('#map-canvas') && S.dragUntil > Date.now()) return;
-  if (el.hasAttribute('data-close')) return closeDrawer();
+  if (el.hasAttribute('data-close')) return popoutSession() ? closePopout() : closeDrawer();
+  if (el.dataset.popout) return popOut(el.dataset.popout);
+  if (el.hasAttribute('data-usage')) return openUsage(el);
   if (el.id === 'theme-toggle') return toggleTheme();
   if (el.dataset.zoom) return zoomButton(el.dataset.zoom);
   if (el.dataset.mapMode) return setMapMode(el.dataset.mapMode);
@@ -6027,6 +6951,7 @@ document.addEventListener('click', (ev) => {
     if (id) return answerAsk(id, what);
   }
   if (el.dataset.hooks) return setHooks(el.dataset.hooks === 'on');
+  if (el.dataset.limits) return setLimits(el.dataset.limits === 'on');
   if (el.dataset.hide) return hideNode(el.dataset.hide, el.dataset.title || keyName(el.dataset.hide));
   if (el.dataset.copy === 'new-rename') return newCopy();
   if (el.dataset.mailCopy) return mailCopy(Number(el.dataset.mailCopy));
@@ -6077,6 +7002,8 @@ document.addEventListener('click', (ev) => {
   }
   if (el.id === 's-defaults' && S.set && S.set.draft) {
     S.set.draft = clone(DEFAULTS);
+    // The project list is not a setting on this page; Restore defaults must not wipe it.
+    S.set.draft.projectList = clone((S.set.info && S.set.info.settings.projectList) || []);
     S.set.msg = { kind: 'dirty', text: 'The defaults are in the form. Choose Save settings to keep them.' };
     renderSettingsForm();
   }
@@ -6087,5 +7014,9 @@ document.addEventListener('click', (ev) => {
 // ---------------------------------------------------------------------------------------------
 
 applyTheme();
+const startedPopout = popoutFromHash();
+if (startedPopout) startPopout(startedPopout);
 setView(viewFromHash() || 'map', false);
+if (startedPopout && startedPopout.kind === 'session') openDrawer(startedPopout.key, null);
+setMapFull(false);
 poll();

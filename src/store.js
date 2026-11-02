@@ -118,7 +118,7 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
       send: current.actions.send && windows,
       answers: current.actions.answers,
     };
-    const snap = buildSnapshot({ now: t, settings: demo ? demoSettings(current) : current, dismissed, actions, asks, ...polled });
+    const snap = buildSnapshot({ now: t, settings: demo ? demoSettings(current) : current, dismissed, actions, asks, demo, ...polled });
     // Not enumerable, so they never show up in the JSON itself.
     Object.defineProperties(snap, { etag: { value: snapshotTag(snap) }, json: { value: JSON.stringify(snap) } });
     cache = { at: t, snapshot: snap };

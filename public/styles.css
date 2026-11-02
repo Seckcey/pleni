@@ -312,6 +312,8 @@ h1, h2, h3 { line-height: var(--ui-leading-tight); }
 .btn:hover { border-color: var(--ui-control-border); }
 .btn.primary { background: var(--ui-accent-fill); color: var(--ui-on-accent); border-color: var(--ui-accent-fill); }
 .btn.primary:hover { background: var(--ui-accent); }
+.btn-ic { display: inline-flex; align-items: center; gap: var(--ui-space-3); }
+.btn-ic svg { width: 16px; height: 16px; flex: none; }
 .link { background: none; border: 0; padding: 0; color: var(--ui-accent); font-weight: var(--ui-weight-medium); text-decoration: underline; text-underline-offset: 2px; }
 .icon-btn {
   display: inline-grid; place-items: center; width: 34px; height: 34px; flex: none;
@@ -364,6 +366,7 @@ main:focus { outline: none; }
 .view-head h1 { font-size: 22px; font-weight: var(--ui-weight-semibold); margin: 0; }
 .view-head h1:focus { outline: none; }
 .view-head .meta { margin: var(--ui-space-2) 0 0; color: var(--ui-text-secondary); font-size: var(--ui-font-md); }
+.view-tools { display: flex; align-items: center; gap: var(--ui-space-4); flex-wrap: wrap; }
 .panel { background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); padding: var(--ui-space-6); }
 .empty { color: var(--ui-text-muted); padding: var(--ui-space-5) 0; }
 .seg { display: inline-flex; gap: var(--ui-space-1); padding: 3px; background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); }
@@ -846,9 +849,32 @@ table.mtypes select.field { max-width: 15rem; }
 .saved.err { color: var(--ui-error-text); }
 .saved.dirty { color: var(--ui-warn-text); }
 
+/* Projects: one card per project, the one-project page, and the New project / Edit form. */
+ul.projects { list-style: none; margin: var(--ui-space-5) 0 0; padding: 0; display: grid; gap: var(--ui-space-5); grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); }
+.project { min-width: 0; padding: var(--ui-space-5) var(--ui-space-6); background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); }
+.project h2, .ptitle { margin: 0; font-size: var(--ui-font-lg); overflow-wrap: anywhere; }
+.pcounts { margin: var(--ui-space-3) 0 0; }
+.pcounts .c-working { color: var(--ui-ok-text); }
+.pcounts .c-needs { color: var(--ui-warn-text); }
+.pcounts .c-error { color: var(--ui-error-text); }
+.plast { margin: var(--ui-space-2) 0 0; font-size: var(--ui-font-sm); }
+.pback { margin: var(--ui-space-5) 0 var(--ui-space-3); }
+.pbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3) var(--ui-space-5); margin: var(--ui-space-5) 0 0; }
+.pform { margin-top: var(--ui-space-5); max-width: 720px; }
+.pform h2 { margin: 0 0 var(--ui-space-3); font-size: var(--ui-font-lg); }
+.prow { display: grid; gap: var(--ui-space-2); padding: var(--ui-space-4) 0; min-width: 0; }
+.prow label { font-weight: var(--ui-weight-semibold); }
+.prow .field { max-width: none; }
+.prow .help { margin: 0; font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+.prow .field-error { margin: 0; }
+.pconfirm { margin-top: var(--ui-space-5); max-width: 720px; }
+.pconfirm p { margin: 0; }
+#projects-msg .saved { margin: var(--ui-space-4) 0 0; }
+
 /* ---------- drawer ---------- */
 
 .layer { position: fixed; inset: 0; z-index: 40; }
+.dhead .icon-btn + .icon-btn { margin-left: calc(var(--ui-space-3) - var(--ui-space-5)); }
 .scrim { position: absolute; inset: 0; background: var(--ui-scrim); }
 .drawer {
   position: absolute; top: 0; right: 0; bottom: 0; width: min(720px, 100vw); overflow: auto;
@@ -997,7 +1023,64 @@ ul.kids .t { font-weight: var(--ui-weight-semibold); overflow: hidden; text-over
 .toast-text { min-width: 0; overflow-wrap: anywhere; }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 6px); } }
 
+/* ---------- Usage popup ---------- */
+
+.usage {
+  width: min(640px, calc(100vw - 24px)); max-width: none; max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px);
+  padding: 0; overflow: hidden; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius-lg);
+  background: var(--ui-surface); color: var(--ui-text-primary); box-shadow: var(--ui-elevation-3);
+}
+.usage::backdrop { background: var(--ui-scrim); }
+.usage-box { display: flex; flex-direction: column; max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); }
+.usage-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ui-space-5); padding: var(--ui-space-6) var(--ui-space-6) var(--ui-space-4); border-bottom: 1px solid var(--ui-border); }
+.usage-head h2 { margin: 0; font-size: var(--ui-font-xl); }
+.usage-head .meta { margin: var(--ui-space-1) 0 0; color: var(--ui-text-secondary); font-size: var(--ui-font-md); }
+.usage-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: var(--ui-space-5) var(--ui-space-6) var(--ui-space-6); display: grid; gap: var(--ui-space-5); align-content: start; }
+.usage-body > p { margin: 0; }
+.u-card { background: var(--ui-surface-raised); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); padding: var(--ui-space-5) var(--ui-space-6); min-width: 0; overflow-wrap: anywhere; }
+.u-name { display: flex; align-items: center; flex-wrap: wrap; gap: var(--ui-space-4); margin: 0 0 var(--ui-space-4); font-size: var(--ui-font-lg); }
+.u-plan { font-size: var(--ui-font-sm); font-weight: var(--ui-weight-regular); color: var(--ui-text-muted); }
+.u-limits { display: grid; gap: var(--ui-space-4); margin-bottom: var(--ui-space-5); }
+.u-limits p, .u-tokens p { margin: 0; }
+.u-limit { display: grid; gap: var(--ui-space-2); }
+.u-words { color: var(--ui-text-primary); }
+.u-bar { height: 8px; overflow: hidden; border-radius: var(--ui-radius-pill); background: var(--ui-surface-sunken); border: 1px solid var(--ui-border-strong); }
+.u-bar > span { display: block; height: 100%; min-width: 2px; background: var(--ui-accent); }
+.u-bar.warm > span { background: var(--ui-warn); }
+.u-bar.hot > span { background: var(--ui-error); }
+.u-src, .u-split { font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+.u-tokens { display: grid; gap: var(--ui-space-1); padding-top: var(--ui-space-4); border-top: 1px solid var(--ui-border); }
+.u-line { margin-top: var(--ui-space-3) !important; }
+.u-line:first-child { margin-top: 0 !important; }
+.u-limits a, .u-foot a { color: var(--ui-accent-strong); }
+.u-foot { margin: 0; }
+
 /* ---------- small screens ---------- */
+
+/* ---------- full screen and pop-out windows ---------- */
+
+/* Full screen: the map alone fills the screen (or the window where there is no full screen). */
+body.map-full .skip, body.map-full .appbar, body.map-full #notices,
+body.map-full #view-map .view-head, body.map-full #map-attention, body.map-full #map-welcome,
+body.map-full #flows, body.map-full #map-help, body.map-full .map-foot { display: none; }
+body.map-full main { max-width: none; padding: 0; }
+body.map-full .map { margin: 0; border: 0; border-radius: 0; }
+body.map-full .map-canvas { height: 100vh; height: 100dvh; }
+
+/* A pop-out window shows one view, or one session's panel, and nothing else. */
+/* Notices stay: "Cannot reach Pleni" is a pop-out's only sign that what it shows is old. */
+body.popout .skip, body.popout .appbar, body.popout .attention, body.popout [data-popout] { display: none; }
+body.popout main { padding-top: var(--ui-space-5); }
+body.popout-map .map-canvas { height: clamp(320px, calc(100vh - 150px), 2000px); }
+body.popout-map #map-help { display: none; }
+/* A session window keeps main only for its notices and the sign-in box. */
+body.popout-session main { padding: 0; }
+body.popout-session main > .view { display: none; }
+body.popout-session .notices:not(:empty), body.popout-session .signin:not([hidden]) { margin: var(--ui-space-5); }
+body.popout-session .layer { position: static; }
+body.popout-session .scrim { display: none; }
+/* overflow: visible lets the panel's header stick to the top of the window while the page scrolls. */
+body.popout-session .drawer { position: static; width: auto; min-height: 100vh; overflow: visible; border-left: 0; box-shadow: none; }
 
 @media (max-width: 860px) {
   .appbar { flex-wrap: wrap; gap: var(--ui-space-4) var(--ui-space-5); padding: var(--ui-space-4) var(--ui-space-5); }

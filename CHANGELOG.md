@@ -8,6 +8,30 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **Full screen for the map.** A new button under the zoom buttons (or the `F` key) shows only the
+  map, with its legend and buttons. Esc or the button leaves it. On a phone without full screen, the
+  map fills the browser window.
+- **Pop out.** The Map and the List each have a **Pop out** button, and a session's side panel has
+  one in its header. Each opens in a window of its own that stays live, for a second screen. A
+  session's window is that session's page; its close button closes the window. A link to another
+  page of Pleni opens in the main window, and "Cannot reach Pleni" still shows in a pop-out.
+- **Projects.** A new **Projects** page groups your sessions by folder. A project is a name, a
+  folder on your computer, and (if you like) a GitHub repository. Each project shows which sessions
+  work in its folder, or in a folder inside it, and how many are working, need you, or are idle.
+  Click a project to see its sessions. A Codex or `_worktrees` copy of a project counts as part of
+  it. Add, change and delete projects on the computer that runs Pleni; another device can only look.
+- **Usage.** A **Usage** button in the Map and List headers (and in their pop-out windows) opens a
+  window with one card for each AI tool: Claude Code, Codex, Grok and Kimi Code. Each card shows
+  the tokens used today and in the last 7 days, read from the session files on this computer.
+  Pleni uses no login key and never asks the AI companies. It keeps the window up to date while
+  it is open.
+- **Plan limits in Usage.** Codex saves its 5-hour and weekly limits in its own session files, so
+  Pleni shows them with the time they were saved. For Claude Code, an opt-in **Plan limits from
+  Claude Code** part in **Settings → Buttons** adds a small Pleni status line to Claude Code's
+  settings file (a copy of the file goes to Pleni's backups folder first, your own status line
+  keeps showing, and Disconnect puts it back). Claude Code then hands Pleni its limits after each
+  reply, for Pro, Max and Ultra plans. Grok and Kimi Code save no limits, so their cards say where
+  to look: type `/usage` in the tool.
 - **A Cloud page for your Codex cloud tasks.** Off until you tick **Show my Codex cloud tasks** in
   **Settings → Sources**, on the computer that runs Pleni. It lists your tasks, newest first, with
   the title, a status (Working, Ready, Applied or Error), the environment, when it changed, the
