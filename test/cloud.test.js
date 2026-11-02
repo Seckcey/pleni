@@ -75,7 +75,21 @@ test('on Windows, codex is found like Send finds it, including npm\'s codex.cmd'
   assert.equal(findCodex({ PATH: '\\\\server\\share;relative' }, 'win32', { size: () => 5_000_000, node, home: 'C:\\Users\\ada' }), null, 'no network share, no relative folder');
 });
 
-test('on Linux, codex is the first executable file on PATH, or a link to one', (t) => {
+// The PATH walk itself, with made-up folders, on every computer.
+test('on macOS and Linux, codex is the first codex on PATH that can run', () => {
+  const ready = new Set(['/usr/local/bin/codex', '/home/ada/.npm-global/bin/codex']);
+  const isExecutable = (file) => ready.has(file);
+  const find = (PATH, platform = 'linux') => findCodex({ PATH }, platform, { isExecutable });
+  assert.deepEqual(find('/usr/bin:/usr/local/bin:/home/ada/.npm-global/bin'), { file: '/usr/local/bin/codex', args: [] });
+  assert.deepEqual(find('/home/ada/.npm-global/bin:/usr/local/bin', 'darwin'), { file: '/home/ada/.npm-global/bin/codex', args: [] });
+  assert.equal(find('.:bin::relative/bin'), null, 'never the current folder or a relative one');
+  assert.equal(find('/usr/bin'), null);
+});
+
+// Real links and run bits, which only macOS and Linux have.
+const POSIX_ONLY = { skip: process.platform === 'win32' && 'needs macOS or Linux file links and run bits' };
+
+test('on Linux, codex is the first executable file on PATH, or a link to one', POSIX_ONLY, (t) => {
   const dir = tempDir(t);
   const bin = path.join(dir, 'bin');
   const lib = path.join(dir, 'lib', 'codex', 'bin');
@@ -92,7 +106,7 @@ test('on Linux, codex is the first executable file on PATH, or a link to one', (
   assert.deepEqual(findCodex({ PATH: `${other}:${bin}` }, 'darwin'), { file: path.join(other, 'codex'), args: [] });
 });
 
-test('on Linux, a file that cannot run, a broken link, a folder and a relative folder do not count', (t) => {
+test('on Linux, a file that cannot run, a broken link, a folder and a relative folder do not count', POSIX_ONLY, (t) => {
   const dir = tempDir(t);
   const plain = path.join(dir, 'plain');
   const broken = path.join(dir, 'broken');
