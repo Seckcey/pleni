@@ -1503,10 +1503,35 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `#/pulls` (shown in the menu only when a session on the map is in a GitHub repository),
   `#/settings`, and `#/settings/<group>` for one group of settings (`basics`, `team`, `models`,
   `sources`, `alerts`, `buttons` or `devices`).
+- **Pop-out windows:** **Pop out** in the Map and List headers, and the pop-out button in a side
+  panel's header, open that view or that panel in a window of its own (`window.open`, named
+  `pleni-map`, `pleni-list` or `pleni-session-<key letters>`, so popping out the same one again
+  brings that window forward; a blocked window says so in the notice at the bottom). The window is
+  this same page with `#/map?popout`, `#/list?popout` or `#/session/<encoded key>?popout`
+  (`popoutFromHash`, read once at start into `S.popout`). It polls Pleni by itself, so it stays
+  live. It hides the app bar, the Needs you blocks and the Pop out buttons, but keeps the notices
+  (such as "Cannot reach Pleni") and the sign-in box. It ignores address changes, and leaves alerts
+  to the main window (no `checkAlerts`). A link to another page of Pleni (`#/...`) opens in the
+  window that opened the pop-out, or in a new tab when that window is gone. A session's window
+  shows that panel as the whole page, not as a dialog: Esc does not close it, its close button
+  ("Close this window") closes the window, and the window's title is the session's name. Hiding
+  that session closes its window. When the browser will not close the window (a pasted or restored
+  pop-out address opens a plain tab), the tab turns into Pleni's normal page at `#/map`.
+- **Full screen:** the fourth map button (`data-zoom="full"`, `aria-pressed`), or `F` when the map
+  has focus, adds `body.map-full`, which hides everything but the map, its legend and its buttons,
+  and asks the browser for full screen (`document.documentElement.requestFullscreen`, so a tile's
+  side panel still shows). Where the browser has no full screen (`document.fullscreenEnabled`
+  false, as on an iPhone), the map fills the window instead; the button is then named "Fill the
+  window". The button, `F` or Esc leaves it. When the map only fills the window, Esc closes an open
+  side panel first, and Esc while carrying a tile only puts the tile back. In the browser's own full
+  screen, the browser takes Esc: it leaves full screen (`fullscreenchange`), and an open side panel
+  stays open until the next Esc. Changing the view leaves full screen too, the browser's included.
+  The map refits on its own when the person has not moved it.
 - **Map:** a left-to-right tidy tree of tiles (`W 268 × H 128`, gaps 96 × 22, padding 48) joined by
   rounded orthogonal lines. A line glows while its edge is `active`; three small packets travel down
   (planner/parent → child, teal) or up (child → parent, purple). Pan with drag, zoom with Ctrl+wheel,
-  pinch, the `+`/`−`/fit buttons, and the keyboard (`+`, `-`, `0`, arrow keys) when the map has focus.
+  pinch, the `+`/`−`/fit buttons, and the keyboard (`+`, `-`, `0`, arrow keys, `F` for full screen)
+  when the map has focus.
   The view refits only when the content no longer fits and the person has not moved it. A
   Working/Everyone switch (remembered in `localStorage` as `pleni.mapMode`) hides quiet sessions.
   Dragging a session or relay tile more than 6 px onto another tile (or onto the person) posts
