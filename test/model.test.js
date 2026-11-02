@@ -1623,7 +1623,9 @@ test('a Codex worktree with no readable .git file falls back to the repository n
     ],
   });
   assert.deepEqual(node(s, LEAD).projectIds, ['proj0001']);
-  assert.deepEqual(node(s, OTHER).projectIds, [], 'on Linux the name is compared with case');
+  // The name is compared without case on Windows and macOS (as their folders are), with case elsewhere.
+  const caseless = process.platform === 'win32' || process.platform === 'darwin';
+  assert.deepEqual(node(s, OTHER).projectIds, caseless ? ['proj0001'] : [], 'the name follows this computer\'s case rule');
   // A plain folder with the same name is not a worktree, so the name alone does not match.
   const plain = snap({ settings: { projectList: [APP] }, claude: [session(LEAD, { cwd: '/srv/elsewhere/app' })] });
   assert.deepEqual(node(plain, LEAD).projectIds, []);
