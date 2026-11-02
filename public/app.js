@@ -68,7 +68,7 @@ const DEFAULTS = {
   projectList: [],
   chain: [],
   remote: { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] },
-  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false },
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false, limits: false },
   send: { mode: 'read' },
   answers: { waitMinutes: 10 },
   github: { live: false, merge: false, mergeMethod: 'squash' },
@@ -256,7 +256,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-ask-send', 'data-ask-approve', 'data-ask-keep', 'data-ask-allow', 'data-ask-deny', 'data-ask-back', 'data-hooks', 'data-merge', 'data-merge-yes', 'data-merge-no', 'data-gh-again', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-pw', 'data-wifi-address', 'data-wifi', 'data-wifi-copy', 'data-device-out', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-ask-send', 'data-ask-approve', 'data-ask-keep', 'data-ask-allow', 'data-ask-deny', 'data-ask-back', 'data-hooks', 'data-limits', 'data-merge', 'data-merge-yes', 'data-merge-no', 'data-gh-again', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-pw', 'data-wifi-address', 'data-wifi', 'data-wifi-copy', 'data-device-out', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -758,6 +758,7 @@ function setView(v, focus) {
 window.addEventListener('hashchange', () => {
   // A pop-out window shows one thing for its whole life.
   if (S.popout) return;
+  closeUsage(false);
   const v = viewFromHash();
   if (!v) return;
   if (mapFull()) leaveFull();
@@ -809,6 +810,208 @@ function popOut(kind) {
   else showMoved({ key: null, text: 'Your browser blocked the new window. Allow pop-ups for this page, then try again.', bad: true, fadeMs: 8000 });
 }
 
+// ---------- the Usage popup ----------
+// A dialog with one card per AI tool: tokens used (read from the session files on this computer)
+// and plan limits when the tool or Pleni's Claude Code status line knows them. GET /api/usage is
+// asked when it opens and then every minute while it stays open. A new answer repaints only when
+// the words changed, and keeps the scroll place, so reading is never interrupted.
+
+const USAGE_REFRESH_MS = 60000;
+const USAGE_TOOLS = [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code']];
+const USAGE_LIMIT_PAGES = { claude: 'https://claude.ai/settings/usage', codex: 'https://chatgpt.com/codex/settings/usage' };
+const USAGE = { open: false, data: null, error: '', busy: false, timer: 0, run: 0, opener: null, leaving: false };
+
+// 900 -> "900", 1200 -> "1.2k", 250000 -> "250k", 1200000 -> "1.2 million".
+function tokenWords(value) {
+  const n = Math.max(0, Math.round(num(value)));
+  if (n < 1000) return String(n);
+  if (n < 999500) {
+    const k = n / 1000;
+    return `${k < 10 ? f1(k) : Math.round(k)}k`;
+  }
+  const [size, word] = n < 999500000 ? [1e6, 'million'] : [1e9, 'billion'];
+  const m = n / size;
+  return `${m < 100 ? f1(m) : Math.round(m)} ${word}`;
+}
+
+function tokenCount(value, atLeast) {
+  const n = Math.max(0, Math.round(num(value)));
+  return `${atLeast ? 'at least ' : ''}${tokenWords(n)} ${n === 1 ? 'token' : 'tokens'}`;
+}
+
+function limitName(w) {
+  if (w.name === 'five_hour' || w.minutes === 300) return '5-hour limit';
+  if (w.name === 'seven_day' || w.minutes === 10080) return 'Weekly limit';
+  if (w.name === 'spend_limit') return 'Spending limit';
+  const m = w.minutes;
+  if (!Number.isFinite(m) || m <= 0) return 'Limit';
+  if (m % 1440 === 0) return `${m / 1440}-day limit`;
+  if (m % 60 === 0) return `${m / 60}-hour limit`;
+  return `${m}-minute limit`;
+}
+
+// "at 4:30 PM" for later today, "Mon 9:00 AM" within the week, "Nov 9, 9:00 AM" past that.
+function whenWords(ms, now) {
+  if (new Date(ms).toDateString() === new Date(now).toDateString()) return `at ${clock(ms)}`;
+  const opts = ms - now < 6 * 86400000 ? { weekday: 'short', hour: 'numeric', minute: '2-digit' } : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+  return new Date(ms).toLocaleString([], opts);
+}
+
+function limitHtml(w, id, now) {
+  const name = limitName(w);
+  if (isTime(w.resetsAt) && w.resetsAt <= now) {
+    return `<div class="u-limit"><p class="u-words"><b>${esc(name)}:</b> Reset ${esc(whenWords(w.resetsAt, now))}. The new number comes with the next reply.</p></div>`;
+  }
+  const pct = Math.round(Math.min(100, Math.max(0, num(w.usedPercent))));
+  const level = pct >= 95 ? ' hot' : pct >= 80 ? ' warm' : '';
+  const reset = isTime(w.resetsAt) ? `, resets ${whenWords(w.resetsAt, now)}` : '';
+  return `<div class="u-limit"><p class="u-words" id="${id}"><b>${esc(name)}:</b> ${pct}% used${esc(reset)}</p>` +
+    `<div class="u-bar${level}" role="meter" aria-label="${esc(name)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-valuetext="${pct}% used"><span style="width:${pct}%"></span></div></div>`;
+}
+
+function usageLimitsHtml(key, name, t, now, limitsOn = false) {
+  const L = t.limits;
+  const windows = L && Array.isArray(L.windows) ? L.windows.filter((w) => w && typeof w === 'object') : [];
+  if (windows.length) {
+    const from = L.from === 'statusLine' ? "Claude Code's status line" : `${name}'s own files`;
+    const at = isTime(L.at) ? `As of ${new Date(L.at).toDateString() === new Date(now).toDateString() ? clock(L.at) : stamp(L.at)}, from ${from}` : `From ${from}`;
+    return `<div class="u-limits">${windows.map((w, i) => limitHtml(w, `usage-${key}-w${i}`, now)).join('')}<p class="u-src">${esc(at)}</p></div>`;
+  }
+  if (key === 'claude' && limitsOn) {
+    return `<div class="u-limits"><p>Connected. Your limits show here after Claude Code's next reply in a trusted folder (Pro, Max and Ultra plans only).</p>` +
+      `<p><a href="${USAGE_LIMIT_PAGES.claude}" id="usage-claude-site" target="_blank" rel="noopener noreferrer">See them on claude.ai</a><span class="sr-only"> (opens in a new tab)</span></p></div>`;
+  }
+  if (key === 'claude') {
+    const connect = LOCAL_PAGE
+      ? `Connect Claude Code to see your plan limits here. <a href="#/settings/buttons" id="usage-connect">Go to Connect in Settings</a>.`
+      : 'Connect Claude Code to see your plan limits here. Connect it on the computer that runs Pleni.';
+    return `<div class="u-limits"><p>${connect}</p><p class="u-src">Limits show up after your next reply in Claude Code. They are there for Pro, Max and Ultra plans.</p>` +
+      `<p><a href="${USAGE_LIMIT_PAGES.claude}" id="usage-claude-site" target="_blank" rel="noopener noreferrer">See them on claude.ai</a><span class="sr-only"> (opens in a new tab)</span></p></div>`;
+  }
+  if (key === 'codex') {
+    return `<div class="u-limits"><p>Codex saves its limits after each reply. None in the last 7 days.</p>` +
+      `<p><a href="${USAGE_LIMIT_PAGES.codex}" id="usage-codex-site" target="_blank" rel="noopener noreferrer">See them on chatgpt.com</a><span class="sr-only"> (opens in a new tab)</span></p></div>`;
+  }
+  return `<div class="u-limits"><p>${esc(name)} does not save plan limits on this computer. In ${esc(name)}, type /usage.</p></div>`;
+}
+
+function usageTokensHtml(t) {
+  if (t.error) return `<p class="note bad">${esc(t.error)}</p>`;
+  const part = (label, v) => {
+    const x = v && typeof v === 'object' ? v : {};
+    const line = `<p class="u-line"><b>${label}:</b> ${esc(tokenCount(x.total, t.atLeast === true))}</p>`;
+    if (!(x.total > 0) && !(x.cacheRead > 0)) return line;
+    // A part that is zero is left out: Codex, for one, never reports what it saved to memory.
+    const bits = [`Sent ${tokenWords(x.input)}`, `written back ${tokenWords(x.output)}`];
+    if (x.cacheWrite > 0) bits.push(`saved to memory ${tokenWords(x.cacheWrite)}`);
+    if (x.cacheRead > 0) bits.push(`read again from memory ${tokenWords(x.cacheRead)} (not counted)`);
+    return `${line}<p class="u-split">${bits.join(' · ')}</p>`;
+  };
+  const cut = t.atLeast === true ? '<p class="u-split">Pleni stopped reading early, so these numbers are at least this much.</p>' : '';
+  return `<div class="u-tokens">${part('Today', t.today)}${part('Last 7 days', t.week)}${cut}</div>`;
+}
+
+function usageCardHtml(key, name, t, now, limitsOn = false) {
+  const plan = t.limits && typeof t.limits.plan === 'string' && /^[\w -]{1,24}$/.test(t.limits.plan) ? ` <span class="u-plan">${esc(cap(t.limits.plan))} plan</span>` : '';
+  return `<section class="u-card" aria-labelledby="usage-h-${key}"><h3 class="u-name" id="usage-h-${key}"><span class="mark mk-${key}" aria-hidden="true">${svgIcon(ICONS[key])}</span>${esc(name)}${plan}</h3>` +
+    `${usageLimitsHtml(key, name, t, now, limitsOn)}${usageTokensHtml(t)}</section>`;
+}
+
+function usageHtml() {
+  const d = USAGE.data;
+  if (!d) return USAGE.error ? `<p class="note bad">Pleni could not read your usage. ${esc(USAGE.error)}</p>` : '<p class="empty">Reading your usage…</p>';
+  const now = serverNow();
+  const tools = d.tools && typeof d.tools === 'object' ? d.tools : {};
+  const cards = [];
+  for (const [key, name] of USAGE_TOOLS) {
+    const t = own(tools, key);
+    if (t && typeof t === 'object' && t.on === true) cards.push(usageCardHtml(key, name, t, now, d.limitsOn === true));
+  }
+  const stale = USAGE.error ? `<p class="note bad">Pleni could not refresh these numbers. ${esc(USAGE.error)} It will try again in a minute.</p>` : '';
+  const none = cards.length ? '' : '<p class="empty">Every AI tool is turned off in Settings, under Sources, so there is nothing to count.</p>';
+  const demo = d.demo ? '<p class="note">These are made-up numbers from the demo.</p>' : '';
+  return `${stale}${demo}${cards.join('')}${none}<p class="note u-foot">Pleni counts tokens from the session files on this computer. It never asks the AI companies. Each tool counts tokens its own way, so compare a tool with itself.</p>`;
+}
+
+function paintUsage() {
+  const body = $('#usage-body');
+  const top = body.scrollTop;
+  if (setHtml(body, usageHtml())) body.scrollTop = top;
+}
+
+async function loadUsage() {
+  if (USAGE.busy) return;
+  const run = USAGE.run;
+  USAGE.busy = true;
+  try {
+    const data = await getJson('/api/usage');
+    if (run !== USAGE.run) return;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Pleni got an answer it could not read.');
+    USAGE.data = data;
+    USAGE.error = '';
+  } catch (err) {
+    if (run !== USAGE.run) return;
+    USAGE.error = plainError(err);
+  } finally {
+    if (run === USAGE.run) USAGE.busy = false;
+  }
+  if (USAGE.open) paintUsage();
+}
+
+function openUsage(opener) {
+  const dlg = $('#usage');
+  if (!dlg || dlg.open) return;
+  USAGE.open = true;
+  USAGE.run++;
+  USAGE.busy = false;
+  USAGE.data = null;
+  USAGE.error = '';
+  USAGE.opener = opener || null;
+  USAGE.leaving = false;
+  paintUsage();
+  $('#usage-body').scrollTop = 0;
+  dlg.showModal();
+  clearInterval(USAGE.timer);
+  USAGE.timer = setInterval(() => {
+    if (!document.hidden) loadUsage();
+  }, USAGE_REFRESH_MS);
+  loadUsage();
+}
+
+// `back` false when the person is leaving for another page (the Settings link), so focus is not
+// pulled back to the button.
+function closeUsage(back = true) {
+  const dlg = $('#usage');
+  if (!dlg || !dlg.open) return;
+  USAGE.leaving = !back;
+  dlg.close();
+}
+
+$('#usage').addEventListener('close', () => {
+  USAGE.open = false;
+  USAGE.run++;
+  USAGE.busy = false;
+  clearInterval(USAGE.timer);
+  const opener = USAGE.opener;
+  USAGE.opener = null;
+  if (opener && opener.isConnected && !USAGE.leaving) opener.focus({ preventScroll: true });
+});
+
+// A press that starts inside the box and ends on the dim area (a text selection, a scroll bar) must
+// not close it, so the dim area counts only when the press began there too.
+let usageDown = false;
+$('#usage').addEventListener('pointerdown', (ev) => {
+  usageDown = ev.target === ev.currentTarget;
+});
+
+$('#usage').addEventListener('click', (ev) => {
+  // The dim area around the box is the dialog itself. A click from the keyboard has no press (detail 0).
+  const dim = ev.target === ev.currentTarget && (usageDown || ev.detail === 0);
+  usageDown = false;
+  if (dim || ev.target.closest('[data-usage-close]')) return closeUsage();
+  if (ev.target.closest('a[href^="#/"]')) closeUsage(false);
+});
+
 // ---------- full screen ----------
 // The map alone fills the screen, with its legend and buttons. Where the browser has no full-screen
 // mode (an iPhone), it fills the browser window instead. Esc, F or the button leaves it.
@@ -858,7 +1061,7 @@ document.addEventListener('fullscreenchange', () => {
 document.addEventListener('keydown', (ev) => {
   // The side panel's own Esc runs first and marks the event; only a second Esc leaves full screen.
   // Esc while carrying a tile only puts the tile back.
-  if (ev.key === 'Escape' && !ev.defaultPrevented && !S.drawer && mapFull() && !$('#map-canvas').classList.contains('moving')) {
+  if (ev.key === 'Escape' && !ev.defaultPrevented && !S.drawer && !USAGE.open && mapFull() && !$('#map-canvas').classList.contains('moving')) {
     ev.preventDefault();
     toggleFull();
   }
@@ -889,6 +1092,7 @@ function render() {
     paintModels();
     loadDevices(false);
     loadHooks(false);
+    loadLimits(false);
   }
   if (S.drawer) renderDrawerParts();
   announce();
@@ -3805,6 +4009,95 @@ async function setHooks(connect) {
   await pollNow().catch(() => {});
 }
 
+// Settings, Buttons: Plan limits from Claude Code. Connect adds Pleni's status line to Claude Code's
+// settings file (src/statusline.js); it hands the 5-hour and weekly numbers to Pleni after each reply.
+async function loadLimits(force) {
+  const st = S.set;
+  if (!LOCAL_PAGE || !st || !st.info) return;
+  const shown = S.view === 'settings' && (st.group === 'buttons' || !!st.find);
+  if (!force && (!shown || st.limitsBusy || Date.now() - (st.limitsAt || 0) < DEVICES_REFRESH_MS)) return;
+  st.limitsBusy = true;
+  try {
+    st.limits = await getJson('/api/statusline');
+    st.limitsError = '';
+  } catch (err) {
+    st.limitsError = plainError(err);
+  } finally {
+    st.limitsBusy = false;
+    st.limitsAt = Date.now();
+  }
+  paintLimits();
+}
+
+function paintLimits() {
+  setHtml($('#limits-box'), limitsHtml());
+}
+
+function limitsHtml() {
+  const st = S.set;
+  if (!LOCAL_PAGE) return '<p class="note">Only on the computer that runs Pleni.</p>';
+  if (st.limitsError) return `<p class="note bad">Pleni could not check Claude Code's settings. ${esc(st.limitsError)}</p>`;
+  const l = st.limits;
+  if (!l) return '<p class="note">Checking Claude Code\'s settings…</p>';
+  if (l.demo) return '<p class="note">The demo has no Claude Code to connect.</p>';
+  const msg = st.limitsMsg ? `<p class="roll-msg${st.limitsMsg.bad ? ' bad' : ''}" role="status">${esc(st.limitsMsg.text)}</p>` : '';
+  const keeps = l.previous ? ' Your own status line keeps showing.' : '';
+  let state;
+  let button;
+  if (!l.ok) {
+    state = `<p class="note bad">${esc(l.error || 'Pleni could not read Claude Code\'s settings.')}</p>`;
+    button = '';
+  } else if (l.connected && l.on) {
+    state = `<p class="note"><b>On.</b> Pleni's status line is in Claude Code's settings. The Usage window shows your limits after Claude Code's next reply.${keeps}</p>`;
+    button = '<button type="button" class="btn" data-limits="off">Disconnect</button>';
+  } else if (l.on && !l.connected && !l.stale) {
+    state = `<p class="note"><b>Needs Connect again.</b> Connect is on, but Pleni's status line is no longer in Claude Code's settings.${l.previous ? ' A status line of your own is there now.' : ''}</p>`;
+    button = '<button type="button" class="btn primary" data-limits="on">Connect again</button> <button type="button" class="btn" data-limits="off">Disconnect</button>';
+  } else if (l.connected || l.stale || l.on) {
+    state = '<p class="note"><b>Needs Connect again.</b> Pleni\'s status line in Claude Code\'s settings is from another time or another place, so no limits reach this Pleni.</p>';
+    button = '<button type="button" class="btn primary" data-limits="on">Connect again</button> <button type="button" class="btn" data-limits="off">Disconnect</button>';
+  } else {
+    state = `<p class="note"><b>Off.</b> Claude Code's plan limits do not show in the Usage window yet.${keeps}</p>`;
+    button = '<button type="button" class="btn primary" data-limits="on">Connect plan limits</button>';
+  }
+  const lines = l.lines ? `<details class="dask-lines"><summary>The lines Connect adds</summary><pre>${esc(l.lines)}</pre><p class="help">This is the only thing Connect adds to Claude Code's settings file.</p></details>` : '';
+  const file = l.file ? `<p class="help">Claude Code's settings file: <code>${esc(l.file)}</code></p>` : '';
+  return `${state}${button ? `<div class="roll-btns">${button}</div>` : ''}${msg}${file}${lines}`;
+}
+
+async function setLimits(connect) {
+  const st = S.set;
+  if (!st || st.limitsChanging) return;
+  st.limitsChanging = true;
+  st.limitsMsg = { text: connect ? 'Connecting…' : 'Disconnecting…' };
+  paintLimits();
+  try {
+    const res = await postJson('/api/statusline', { connect });
+    for (const s of [st.info && st.info.settings, st.draft]) if (s && s.actions) s.actions.limits = connect;
+    st.limitsMsg = {
+      text: connect
+        ? 'Connected. Your limits show in the Usage window after Claude Code\'s next reply in a trusted folder.'
+        : res && res.note ? `Disconnected. ${res.note}` : "Disconnected. Pleni took its status line out of Claude Code's settings.",
+    };
+  } catch (err) {
+    st.limitsMsg = { text: `${connect ? 'Not connected' : 'Not disconnected'}. ${plainError(err)}`, bad: true };
+  } finally {
+    st.limitsChanging = false;
+    say(st.limitsMsg.text);
+  }
+  // The button that was pressed may be gone after the repaint (Connect leaves only Disconnect, and
+  // the other way round): keep the keyboard in the box.
+  const box = $('#limits-box');
+  const had = !!box && box.contains(document.activeElement);
+  await loadLimits(true);
+  await pollNow().catch(() => {});
+  const now = $('#limits-box');
+  if (had && now && (!document.activeElement || document.activeElement === document.body)) {
+    const first = now.querySelector('button');
+    if (first) first.focus({ preventScroll: true });
+  }
+}
+
 // ---- Roll over soon ----
 // The reasons come from Pleni (settings.rollSoon): memory nearly full, squeezed often, or old.
 
@@ -5532,6 +5825,7 @@ async function loadSettings(force) {
   loadDevices(true);
   loadModels(false);
   loadHooks(true);
+  loadLimits(true);
 }
 
 function getPath(obj, path, fallback) {
@@ -6022,6 +6316,10 @@ function renderSettingsForm() {
       <p class="note">Answer a Claude Code session's questions, approve its plans and allow or deny its tools here, instead of in its own window. Turn it on for a session in its side panel. A message you send with Pleni asks no questions, but with Also change files in its folder, its "may I run this?" prompts come here.</p>
       <div id="hooks-box">${hooksHtml()}</div>
       ${numberRow('s-answer-wait', 'Hold a question for', 'answers.waitMinutes', 1, 60, 'Minutes. Then the session asks in its own window again.')}
+    </section>
+    <section class="panel" aria-labelledby="s-h-limits" data-find="plan limits usage status line statusline claude code connect five hour 5-hour weekly percent pro max ultra"><h2 id="s-h-limits">Plan limits from Claude Code</h2>
+      <p class="note">Claude Code tells a status line how much of your 5-hour and weekly plan you have used, after each reply. Connect adds a small Pleni status line to Claude Code's settings file, so the Usage window can show those numbers. Pleni keeps a copy of the file first, in its backups folder, and changes nothing else in it. Your own status line keeps showing. Disconnect puts it back. This works for Pro, Max and Ultra plans. Claude Code runs a status line only in a folder you trust.</p>
+      <div id="limits-box">${limitsHtml()}</div>
     </section>`)}
     ${group('devices', 'Opening Pleni on your phone or another computer, and where its settings are kept.', `
     ${LOCAL_PAGE ? `<section class="panel" aria-labelledby="s-h-password" data-find="password sign in phone tablet laptop wrong tries lock"><h2 id="s-h-password">Password</h2>
@@ -6084,7 +6382,10 @@ function selectSettingsGroup(id, focus) {
   applySettingsView();
   if (id === 'devices') loadDevices(true);
   if (id === 'models') loadModels(true);
-  if (id === 'buttons') loadHooks(true);
+  if (id === 'buttons') {
+    loadHooks(true);
+    loadLimits(true);
+  }
   if (focus) $(`#stab-${id}`).focus();
 }
 
@@ -6491,6 +6792,7 @@ document.addEventListener('click', (ev) => {
   if (el.closest('#map-canvas') && S.dragUntil > Date.now()) return;
   if (el.hasAttribute('data-close')) return popoutSession() ? closePopout() : closeDrawer();
   if (el.dataset.popout) return popOut(el.dataset.popout);
+  if (el.hasAttribute('data-usage')) return openUsage(el);
   if (el.id === 'theme-toggle') return toggleTheme();
   if (el.dataset.zoom) return zoomButton(el.dataset.zoom);
   if (el.dataset.mapMode) return setMapMode(el.dataset.mapMode);
@@ -6514,6 +6816,7 @@ document.addEventListener('click', (ev) => {
     if (id) return answerAsk(id, what);
   }
   if (el.dataset.hooks) return setHooks(el.dataset.hooks === 'on');
+  if (el.dataset.limits) return setLimits(el.dataset.limits === 'on');
   if (el.dataset.hide) return hideNode(el.dataset.hide, el.dataset.title || keyName(el.dataset.hide));
   if (el.dataset.copy === 'new-rename') return newCopy();
   if (el.dataset.mailCopy) return mailCopy(Number(el.dataset.mailCopy));

@@ -68,7 +68,11 @@ These are Pleni's promises, in plain words. A way around any of them is a vulner
   computer. With **Answer questions** connected, Claude Code's hooks ask Pleni first, at
   `127.0.0.1` with a secret only Pleni and Claude Code's settings file hold; Pleni answers a
   question, a plan or a permission prompt only with what you chose on this computer, and every
-  other call with no decision. A way to make it write, delete, merge, or run anything else, to
+  other call with no decision. With **Connect for plan limits**, Claude Code runs Pleni's status line
+  script after each reply. The script saves only the 5-hour and weekly limit numbers, and it runs
+  the status line command you had before, the way Claude Code did (in your shell, with the same
+  input, for at most 10 seconds). Pleni never reads a login key. A way to make it write, delete, merge, or run anything else (the
+  script may run only your own old status line), to
   start a window, a hidden turn or gh without the setting, from another device, to send to a
   session that is busy or open elsewhere, to answer a hook call for you, or with a command line of
   your choosing, is a vulnerability.
