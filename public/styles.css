@@ -1008,14 +1008,19 @@ body.map-full .map { margin: 0; border: 0; border-radius: 0; }
 body.map-full .map-canvas { height: 100vh; height: 100dvh; }
 
 /* A pop-out window shows one view, or one session's panel, and nothing else. */
-body.popout .skip, body.popout .appbar, body.popout #notices, body.popout .attention, body.popout [data-popout] { display: none; }
+/* Notices stay: "Cannot reach Pleni" is a pop-out's only sign that what it shows is old. */
+body.popout .skip, body.popout .appbar, body.popout .attention, body.popout [data-popout] { display: none; }
 body.popout main { padding-top: var(--ui-space-5); }
 body.popout-map .map-canvas { height: clamp(320px, calc(100vh - 150px), 2000px); }
 body.popout-map #map-help { display: none; }
-body.popout-session main { display: none; }
+/* A session window keeps main only for its notices and the sign-in box. */
+body.popout-session main { padding: 0; }
+body.popout-session main > .view { display: none; }
+body.popout-session .notices:not(:empty), body.popout-session .signin:not([hidden]) { margin: var(--ui-space-5); }
 body.popout-session .layer { position: static; }
 body.popout-session .scrim { display: none; }
-body.popout-session .drawer { position: static; width: auto; min-height: 100vh; border-left: 0; box-shadow: none; }
+/* overflow: visible lets the panel's header stick to the top of the window while the page scrolls. */
+body.popout-session .drawer { position: static; width: auto; min-height: 100vh; overflow: visible; border-left: 0; box-shadow: none; }
 
 @media (max-width: 860px) {
   .appbar { flex-wrap: wrap; gap: var(--ui-space-4) var(--ui-space-5); padding: var(--ui-space-4) var(--ui-space-5); }

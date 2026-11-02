@@ -13,7 +13,8 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   map fills the browser window.
 - **Pop out.** The Map and the List each have a **Pop out** button, and a session's side panel has
   one in its header. Each opens in a window of its own that stays live, for a second screen. A
-  session's window is that session's page; its close button closes the window.
+  session's window is that session's page; its close button closes the window. A link to another
+  page of Pleni opens in the main window, and "Cannot reach Pleni" still shows in a pop-out.
 
 ## 0.3.0 (2026-11-02)
 

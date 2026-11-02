@@ -756,7 +756,7 @@ window.addEventListener('hashchange', () => {
   if (S.popout) return;
   const v = viewFromHash();
   if (!v) return;
-  if (mapFull()) setMapFull(false);
+  if (mapFull()) leaveFull();
   closeDrawer();
   setView(v, true);
 });
@@ -813,12 +813,18 @@ function mapFull() {
   return document.body.classList.contains('map-full');
 }
 
+// The button keeps one name, and aria-pressed says whether it is on; the tooltip says what a click does.
+function fullLabel() {
+  return document.fullscreenEnabled ? 'Full screen' : 'Fill the window';
+}
+
 function setMapFull(on) {
   document.body.classList.toggle('map-full', on);
   const btn = $('[data-zoom="full"]');
   if (btn) {
+    btn.setAttribute('aria-label', fullLabel());
     btn.setAttribute('aria-pressed', String(on));
-    btn.title = on ? 'Leave full screen' : 'Full screen';
+    btn.title = on ? (document.fullscreenEnabled ? 'Leave full screen' : 'Stop filling the window') : fullLabel();
     btn.innerHTML = svgIcon(on ? ICONS.fullExit : ICONS.full);
   }
 }
@@ -830,18 +836,25 @@ function toggleFull() {
     if (document.fullscreenEnabled && !document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
     return;
   }
+  leaveFull();
+}
+
+// Leaves full screen, the browser's own as well.
+function leaveFull() {
   setMapFull(false);
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 }
 
-// Esc in the browser's own full screen leaves it without a key event the page sees.
+// In the browser's own full screen, the browser takes Esc: it leaves full screen without a key event
+// the page sees, so an open side panel stays open until the next Esc.
 document.addEventListener('fullscreenchange', () => {
   if (!document.fullscreenElement && mapFull()) setMapFull(false);
 });
 
 document.addEventListener('keydown', (ev) => {
   // The side panel's own Esc runs first and marks the event; only a second Esc leaves full screen.
-  if (ev.key === 'Escape' && !ev.defaultPrevented && !S.drawer && mapFull()) {
+  // Esc while carrying a tile only puts the tile back.
+  if (ev.key === 'Escape' && !ev.defaultPrevented && !S.drawer && mapFull() && !$('#map-canvas').classList.contains('moving')) {
     ev.preventDefault();
     toggleFull();
   }
@@ -2312,6 +2325,33 @@ function popoutSession() {
   return !!S.popout && S.popout.kind === 'session';
 }
 
+// The browser closes only a window a page opened. A pasted, saved or restored pop-out address is a
+// plain tab, which stays open: it becomes Pleni's normal page instead.
+function closePopout() {
+  window.close();
+  setTimeout(() => {
+    if (window.closed) return;
+    history.replaceState(null, '', `${location.pathname}${location.search}#/map`);
+    location.reload();
+  }, 200);
+}
+
+// In a pop-out, a link to another page of Pleni opens in the main window (or a new tab), so the
+// pop-out keeps showing its one thing.
+function openInMain(hash) {
+  try {
+    const main = window.opener;
+    if (main && !main.closed && main.location.origin === location.origin) {
+      main.location.hash = hash;
+      main.focus();
+      return;
+    }
+  } catch {
+    // The window that opened this one shows another site now.
+  }
+  window.open(`${location.origin}/${hash}`, '_blank', 'noopener');
+}
+
 function setInert(on) {
   for (const el of [$('.skip'), $('.appbar'), $('#main')]) el.inert = on;
 }
@@ -3539,6 +3579,8 @@ async function hideNode(key, title) {
   }
   keepPersonField(key, 'role', 'hidden'); // so saving Settings later keeps it
   hiding.delete(key);
+  // A session window shows only this panel, so with the session hidden it has nothing left to show.
+  if (S.drawer && S.drawer.key === key && popoutSession()) return closePopout();
   if (S.drawer && S.drawer.key === key) closeDrawer();
   await pollNow().catch(() => {});
   showMoved({ key, spot: 'note', text: `Hidden from the map: "${title}". To show it again later, go to Settings, then Team.`, undo: () => unhideNode(key, title, before) });
@@ -5963,6 +6005,14 @@ $('#signin').addEventListener('submit', (ev) => {
 // ---------------------------------------------------------------------------------------------
 
 document.addEventListener('click', (ev) => {
+  if (S.popout && ev.button === 0 && !(ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey)) {
+    const link = ev.target.closest('a[href^="#/"]');
+    if (link) {
+      ev.preventDefault();
+      openInMain(link.getAttribute('href'));
+      return;
+    }
+  }
   const el = ev.target.closest('button, a.skip');
   if (!el) return;
   if (el.matches('a.skip')) {
@@ -5973,7 +6023,7 @@ document.addEventListener('click', (ev) => {
   if (el.hasAttribute('data-undo')) return undoMove();
   // A drag across the map must not also open the tile it ended on.
   if (el.closest('#map-canvas') && S.dragUntil > Date.now()) return;
-  if (el.hasAttribute('data-close')) return popoutSession() ? window.close() : closeDrawer();
+  if (el.hasAttribute('data-close')) return popoutSession() ? closePopout() : closeDrawer();
   if (el.dataset.popout) return popOut(el.dataset.popout);
   if (el.id === 'theme-toggle') return toggleTheme();
   if (el.dataset.zoom) return zoomButton(el.dataset.zoom);
@@ -6062,5 +6112,5 @@ const startedPopout = popoutFromHash();
 if (startedPopout) startPopout(startedPopout);
 setView(viewFromHash() || 'map', false);
 if (startedPopout && startedPopout.kind === 'session') openDrawer(startedPopout.key, null);
-if (!document.fullscreenEnabled) $('[data-zoom="full"]').title = 'Fill the window';
+setMapFull(false);
 poll();

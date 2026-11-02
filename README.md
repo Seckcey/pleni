@@ -114,7 +114,7 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   A line glows while work moves along it: teal dots travel down when work is handed out, and
   purple dots travel up when a report comes back. Drag to move around. Use Ctrl + scroll, a
   pinch, or the `+` and `−` buttons to zoom. The **Working** switch hides sessions that are
-  quiet. The **full screen** button (or `F`) shows only the map; Esc leaves it.
+  quiet. The **full screen** button (or `F`) shows only the map; Esc or the button leaves it.
 - **List** — the same sessions as a table, grouped by project, with filters. It also works well
   with a screen reader.
 - **Pop out** — the Map, the List, or one session's side panel can open in a window of its own,
