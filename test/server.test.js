@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { cleanSettings } from '../src/config.js';
+import { cleanSettings, resolveRoots } from '../src/config.js';
+import { buildSnapshot } from '../src/model.js';
+import { createStore } from '../src/store.js';
 import { GITHUB_MESSAGES } from '../src/github.js';
 import { NEW_MESSAGES } from '../src/newagent.js';
 import { OPEN_MESSAGES } from '../src/open.js';
@@ -2326,4 +2328,96 @@ test('the demo never opens to the Wi-Fi', async (t) => {
   const { port } = await startServer(t, { store, signin, lanAddresses: WIFI });
   assertPlainError(await pageReq(port, '/api/lan', { on: true }), 409);
   assert.equal((await request(port, { path: '/api/devices' })).json.demo, true);
+});
+
+// ---- projects ----
+
+const PROJECT_ONE = { id: 'proj0001', name: 'App', folder: '/home/ada/code/app', repo: 'example/app' };
+const PROJECT_TWO = { id: 'proj0002', name: 'Beta', folder: '/home/ada/code/beta', repo: null };
+
+// A store that builds the real snapshot from the saved settings, with one session in the first project.
+function projectStore(memory) {
+  const store = fakeStore();
+  let settings = memory.state.settings;
+  const session = {
+    platform: 'claude', key: SESSION_KEY, id: SESSION_KEY.slice(7), parentKey: null, kind: 'session', title: 'Build the thing',
+    titleSource: null, cwd: '/home/ada/code/app/src', branch: 'main', entrypoint: 'cli', model: 'claude-opus-5-5', effort: null,
+    startedAt: 1000, lastAt: 2000, status: 'working', activity: null, lastText: null, links: [], archived: false,
+  };
+  store.snapshot = () => buildSnapshot({ now: 3000, settings, claude: { ok: true, error: null, root: '/home/ada/.claude', sessions: [session] } });
+  store.reload = (next) => {
+    settings = next;
+  };
+  return store;
+}
+
+test('POST /api/settings from this computer saves the project list, and the snapshot shows it', async (t) => {
+  const memory = memorySettings();
+  const { port } = await startServer(t, { memory, store: projectStore(memory) });
+  const res = await postSettings(port, { projectList: [PROJECT_ONE, PROJECT_TWO, { id: 'x', name: 'Bad id' }] });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json.settings.projectList, [PROJECT_ONE, PROJECT_TWO]);
+  assert.deepEqual(memory.state.settings.projectList, [PROJECT_ONE, PROJECT_TWO]);
+
+  const shown = await request(port, { path: '/api/settings' });
+  assert.deepEqual(shown.json.settings.projectList, [PROJECT_ONE, PROJECT_TWO]);
+
+  const snapshot = await request(port, { path: '/api/snapshot' });
+  assert.deepEqual(snapshot.json.projects, [
+    { id: 'proj0001', name: 'App', repo: 'example/app' },
+    { id: 'proj0002', name: 'Beta', repo: null },
+  ]);
+  const mine = snapshot.json.nodes.find((n) => n.key === SESSION_KEY);
+  assert.deepEqual(mine.projectIds, ['proj0001']);
+  assert.equal(snapshot.text.includes('/home/ada/code/app'), false, 'the folder is not in the snapshot');
+});
+
+test('POST /api/settings from another device keeps the saved project list', async (t) => {
+  const memory = memorySettings({ projectList: [PROJECT_ONE] });
+  const { port } = await startServer(t, { memory, settings: { remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } } });
+  memory.state.settings = cleanSettings({ projectList: [PROJECT_ONE], remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } });
+  const attempt = { displayName: 'Grace', projectList: [PROJECT_TWO] };
+  for (const headers of [FROM_LAPTOP, { 'x-forwarded-for': '100.64.0.7' }]) {
+    const res = await postSettings(port, attempt, headers);
+    assert.equal(res.status, 200, JSON.stringify(headers));
+    assert.deepEqual(res.json.settings.projectList, [PROJECT_ONE]);
+    assert.equal(res.json.settings.displayName, 'Grace', 'the other settings still save');
+    assert.deepEqual(memory.state.settings.projectList, [PROJECT_ONE]);
+  }
+  const wipe = await postSettings(port, { projectList: [] }, FROM_LAPTOP);
+  assert.deepEqual(wipe.json.settings.projectList, [PROJECT_ONE]);
+});
+
+test('the demo snapshot has two made-up projects, and Field app holds the Codex worktree', async (t) => {
+  const settings = cleanSettings({});
+  const store = createStore({ settings, roots: resolveRoots(settings), demo: true, now: () => Date.UTC(2026, 0, 15, 12, 3, 7) });
+  t.after(() => store.close());
+  const { port } = await startServer(t, { store, memory: memorySettings() });
+  const snapshot = await request(port, { path: '/api/snapshot' });
+  assert.deepEqual(snapshot.json.projects, [
+    { id: 'demobilling01', name: 'Billing service', repo: 'example/billing-service' },
+    { id: 'demofieldapp1', name: 'Field app', repo: 'example/field-app' },
+  ]);
+  const withIds = (id) => snapshot.json.nodes.filter((n) => n.projectIds.includes(id)).map((n) => n.title);
+  assert.ok(withIds('demobilling01').includes('Billing API refactor'));
+  assert.ok(withIds('demofieldapp1').includes('Login screen polish'), 'a Claude worktree inside the folder');
+  assert.ok(withIds('demofieldapp1').includes('Offline sync spike'), 'a Codex worktree, by repository name');
+  assert.equal(snapshot.text.includes('/home/ada'), false);
+  assert.equal(snapshot.json.demo, true);
+});
+
+test('the demo never changes the saved project list, and never shows it', async (t) => {
+  const own = { id: 'mine0001', name: 'Mine', folder: '/home/ada/code/mine', repo: null };
+  const settings = cleanSettings({ projectList: [own] });
+  const store = createStore({ settings, roots: resolveRoots(settings), demo: true, now: () => Date.UTC(2026, 0, 15, 12, 3, 7) });
+  t.after(() => store.close());
+  const memory = memorySettings({ projectList: [own] });
+  const { port } = await startServer(t, { store, memory });
+  const snapshot = await request(port, { path: '/api/snapshot' });
+  assert.deepEqual(snapshot.json.projects.map((p) => p.id), ['demobilling01', 'demofieldapp1']);
+  assert.equal(snapshot.text.includes('Mine'), false);
+  const res = await postSettings(port, { displayName: 'Grace', projectList: [] });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.settings.displayName, 'Grace');
+  assert.deepEqual(memory.state.settings.projectList, [own]);
 });

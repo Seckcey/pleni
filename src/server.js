@@ -669,16 +669,20 @@ async function settingsPayload(app, state) {
 // without the browser asking first, and that request is refused, so the header plus the Origin
 // check also stops cross-site saves.
 // Who may open Pleni from another device changes only on this computer, and Wi-Fi access only with
-// its own switch (POST /api/lan), so another device keeps the remote settings as they are. The same
-// goes for actions.limits: only Connect and Disconnect (POST /api/statusline) change it.
+// its own switch (POST /api/lan), so another device keeps the remote settings as they are. The
+// project list (names and folders on this computer) changes only on this computer too, and never in
+// the demo, whose projects are made up. actions.limits changes only through Connect and Disconnect
+// (POST /api/statusline).
 async function postSettings(app, req, res, host) {
   const body = await readJsonPost(req, res, host);
   if (body === undefined) return undefined;
   const clean = cleanSettings(body);
-  const { remote, actions } = app.readSettings().settings;
+  const { remote, actions, projectList } = app.readSettings().settings;
+  const here = isLocalRequest(host, req);
   // Plan limits are switched only by Connect and Disconnect (POST /api/statusline), never by a save.
   clean.actions.limits = actions.limits === true;
-  clean.remote = isLocalRequest(host, req) ? { ...clean.remote, lan: remote.lan, lanAddresses: remote.lanAddresses } : structuredClone(remote);
+  clean.remote = here ? { ...clean.remote, lan: remote.lan, lanAddresses: remote.lanAddresses } : structuredClone(remote);
+  if (!here || app.store.demo) clean.projectList = structuredClone(projectList);
   return saveAndReload(app, req, res, clean, (state) => settingsPayload(app, state));
 }
 

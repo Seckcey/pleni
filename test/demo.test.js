@@ -174,3 +174,14 @@ test('detail returns recent events oldest first and follows the cursor', () => {
   assert.equal(source.detail(error.key, null).events.at(-1).kind, 'error');
   assert.deepEqual(source.detail('claude:00000000-0000-4000-8000-000000000000', null), { events: [], next: null });
 });
+
+test('demoSettings always shows its two made-up projects, never the person\'s own', () => {
+  const settings = demoSettings(cleanSettings({}));
+  assert.deepEqual(settings.projectList.map((p) => [p.id, p.name, p.repo]), [
+    ['demobilling01', 'Billing service', 'example/billing-service'],
+    ['demofieldapp1', 'Field app', 'example/field-app'],
+  ]);
+  assert.deepEqual(cleanSettings(settings), settings);
+  const own = [{ id: 'mine0001', name: 'Mine', folder: '/home/ada/code/mine', repo: null }];
+  assert.deepEqual(demoSettings(cleanSettings({ projectList: own })).projectList, settings.projectList);
+});

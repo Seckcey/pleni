@@ -26,6 +26,8 @@ export const DEFAULTS = deepFreeze({
   },
   people: {},
   projects: {},
+  // The Projects page: [{ id, name, folder, repo }]. Only this computer can change it.
+  projectList: [],
   chain: [], // [{ match, reportsTo, role }] who reports to whom, by session name; first match wins
   remote: { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] },
   // The window buttons and Send (Windows, this computer only), and whether Pleni's hooks are in
@@ -66,6 +68,11 @@ const MAX_PEOPLE = 500;
 const MAX_CHAIN = 50;
 const MAX_NAME = 80;
 const MAX_PROJECTS = 200;
+// The Projects page. A folder is kept short so 50 projects fit the 64 KB limit of a save.
+const MAX_PROJECT_LIST = 50;
+const MAX_PROJECT_FOLDER = 500;
+const PROJECT_ID = /^[a-z0-9]{8,32}$/;
+const REPO_PATH = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 const MAX_REMOTE = 20;
 // The Wi-Fi addresses the person chose; an address changes on another network.
 const MAX_LAN_ADDRESSES = 10;
@@ -125,6 +132,7 @@ export function cleanSettings(raw) {
     sources: cleanSources(r.sources),
     people: cleanPeople(r.people),
     projects: cleanProjects(r.projects),
+    projectList: cleanProjectList(r.projectList),
     chain: cleanChain(r.chain),
     remote: cleanRemote(r.remote),
     actions: cleanActions(r.actions),
@@ -237,6 +245,29 @@ function cleanProjects(raw) {
     if (typeof value.hidden === 'boolean') entry.hidden = value.hidden;
     return entry;
   });
+}
+
+// The Projects page: a name, a folder on this computer and an optional GitHub repository.
+// Each kept entry is exactly { id, name, folder, repo }. A bad repo becomes null; any other bad part drops the entry.
+export function cleanProjectList(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of raw) {
+    if (out.length >= MAX_PROJECT_LIST) break;
+    if (!isObject(item) || typeof item.id !== 'string' || !PROJECT_ID.test(item.id) || seen.has(item.id)) continue;
+    const name = cleanText(item.name, MAX_NAME);
+    const folder = cleanRoot(item.folder, MAX_PROJECT_FOLDER);
+    if (!name || !folder) continue;
+    const repo = typeof item.repo === 'string' && isRepoName(item.repo.trim()) ? item.repo.trim() : null;
+    seen.add(item.id);
+    out.push({ id: item.id, name, folder, repo });
+  }
+  return out;
+}
+
+function isRepoName(value) {
+  return REPO_PATH.test(value) && !value.split('/').some((part) => part === '.' || part === '..');
 }
 
 // Keeps up to `max` entries whose key is valid and whose cleaned value is not empty.
@@ -361,10 +392,10 @@ function cleanKeyOrName(value) {
   return cleanText(key, MAX_NAME) || null;
 }
 
-function cleanRoot(value) {
+function cleanRoot(value, max = MAX_PATH) {
   if (typeof value !== 'string') return null;
   const root = value.trim();
-  if (!root || root.length > MAX_PATH || CONTROL.test(root)) return null;
+  if (!root || root.length > max || CONTROL.test(root)) return null;
   return path.isAbsolute(root) ? root : null;
 }
 

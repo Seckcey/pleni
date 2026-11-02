@@ -52,7 +52,7 @@ read the start of a file once, to find a session's name and where it started.
 | Codex folder, only when you click Open in PowerShell | One empty file, `thread-writer-locks/<thread id>.lock`, which Codex locks while a program writes that thread. Pleni tries to read one byte of it, only to learn whether another window has the thread open |
 | The same two folders, when you click Roll over's buttons | The same small files as for Open in PowerShell, for the same reason |
 | A session's own folder, only while its Roll over section is open | Only whether the handoff note (`HANDOFF-<name>.md`) is there, and when it last changed. Pleni never reads what is in it |
-| Pleni's own folder                      | `settings.json`, `key`, and `dismissed.json` (which notices you dismissed, and when) in Pleni's settings folder, `password` and `devices.json` once you set a password, and the copies of Codex's files in `backups/` |
+| Pleni's own folder                      | `settings.json` (your choices, including your list of projects: each one's name, folder and GitHub repository; the folders are not part of the live view of your sessions), `key`, and `dismissed.json` (which notices you dismissed, and when) in Pleni's settings folder, `password` and `devices.json` once you set a password, and the copies of Codex's files in `backups/` |
 | Pleni's own program folder, if it is a git copy | Only `.git/HEAD` and the one branch file it names (or `packed-refs`), to show which commit runs |
 
 From the session files it uses: when each step happened, the working folder, the git branch, the
@@ -73,6 +73,8 @@ Always:
 
 - Your name (the one you type in Settings; "You" until you change it).
 - Session names, project folder names, git branches, models, and effort.
+- With Projects: the name and GitHub repository of each project you added, and which sessions work
+  in its folder. The folder path is not part of the live view; it is kept in Pleni's settings.
 - Each session's state (Needs you, Working, Finished, Idle, Done, Error), the name of the tool it is
   using, and when it last did something.
 - Who started whom, and when work was handed down or reported back up.

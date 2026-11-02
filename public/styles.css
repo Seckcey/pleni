@@ -843,6 +843,28 @@ table.mtypes select.field { max-width: 15rem; }
 .saved.err { color: var(--ui-error-text); }
 .saved.dirty { color: var(--ui-warn-text); }
 
+/* Projects: one card per project, the one-project page, and the New project / Edit form. */
+ul.projects { list-style: none; margin: var(--ui-space-5) 0 0; padding: 0; display: grid; gap: var(--ui-space-5); grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); }
+.project { min-width: 0; padding: var(--ui-space-5) var(--ui-space-6); background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); }
+.project h2, .ptitle { margin: 0; font-size: var(--ui-font-lg); overflow-wrap: anywhere; }
+.pcounts { margin: var(--ui-space-3) 0 0; }
+.pcounts .c-working { color: var(--ui-ok-text); }
+.pcounts .c-needs { color: var(--ui-warn-text); }
+.pcounts .c-error { color: var(--ui-error-text); }
+.plast { margin: var(--ui-space-2) 0 0; font-size: var(--ui-font-sm); }
+.pback { margin: var(--ui-space-5) 0 var(--ui-space-3); }
+.pbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3) var(--ui-space-5); margin: var(--ui-space-5) 0 0; }
+.pform { margin-top: var(--ui-space-5); max-width: 720px; }
+.pform h2 { margin: 0 0 var(--ui-space-3); font-size: var(--ui-font-lg); }
+.prow { display: grid; gap: var(--ui-space-2); padding: var(--ui-space-4) 0; min-width: 0; }
+.prow label { font-weight: var(--ui-weight-semibold); }
+.prow .field { max-width: none; }
+.prow .help { margin: 0; font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+.prow .field-error { margin: 0; }
+.pconfirm { margin-top: var(--ui-space-5); max-width: 720px; }
+.pconfirm p { margin: 0; }
+#projects-msg .saved { margin: var(--ui-space-4) 0 0; }
+
 /* ---------- drawer ---------- */
 
 .layer { position: fixed; inset: 0; z-index: 40; }

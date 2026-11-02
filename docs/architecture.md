@@ -126,7 +126,8 @@ export const DEFAULTS = {
     mailbox: { enabled: false, root: null, planner: null, coordinator: null }, // planner/coordinator: node key or session name
   },
   people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role, reportsTo?: nodeKey | 'you', watch?: true, answer?: true } }  max 500
-  projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
+  projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200 (renames and hides a folder name on the map; not the Projects page)
+  projectList: [], // the Projects page: [{ id, name, folder, repo }]  max 50, only this computer can change it
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] }, // hosts and logins: each max 20 entries, lower-cased; lan: Wi-Fi access, true only when set to true; lanAddresses: the chosen Wi-Fi addresses, IPv4 only, the newest 10
   actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false, limits: false }, // the window buttons, Send, Answer questions and plan limits (the last two set by Connect and Disconnect); each true only when set to true
@@ -150,6 +151,15 @@ Exports:
   `people[key].watch` and `people[key].answer` are kept only when exactly `true`, and so are `actions.*`, `github.live`,
   `github.merge` and `models.edit`. `send.mode` is `'edit'` only when it is exactly that, else
   `'read'`. `answers.waitMinutes` is clamped to 1–60.
+- `projectList` (`cleanProjectList(raw)`, also exported) keeps arrays only, at most 50 entries, each
+  exactly `{ id, name, folder, repo }`. `id` is a string of 8–32 lower-case letters and digits (the
+  page makes 12 at random); an entry with a bad or repeated id is dropped. `name` is clipped to 80
+  characters, with control characters turned into spaces; an empty name drops the entry. `folder` is
+  an absolute path for the system Pleni runs on, checked like a source `root` but at most 500
+  characters (lower than the 4096 of a root, so 50 projects fit the 64 KB limit of a save), kept
+  trimmed and as typed; a bad one drops the entry. `repo` is `owner/name` (the rule of `isRepoPath`
+  in `src/github.js`); anything else becomes `null` and the entry stays. This is not the older
+  `projects` map above, which renames and hides a folder name that sessions already have.
 - `loadSettings(file)` returns `{ settings, file, error }` and never throws (a missing file gives
   defaults and no error; a broken file gives defaults and an `error` string).
 - `saveSettings(settings, file)` writes `cleanSettings(settings)` atomically (temp file, then rename),
@@ -486,12 +496,14 @@ MailboxState = {
 export function buildSnapshot({ now, settings, claude, codex, mailbox, dismissed, actions })  // any source may be null
 Snapshot = {
   version: 1, now,
+  demo: boolean,   // true only in the demo, where the Projects page offers no New, Edit or Delete
   sources: { claude: SourceInfo, codex: SourceInfo, mailbox: SourceInfo | null },
   nodes: Node[], edges: Edge[], events: Event[], counts: { working, ready, idle, done, error, total },
   attention: [{ id: '<key>|<kind>', key, kind, text, at }],  // at is 0 when unknown
   tasks: MailboxState['tasks'] | null,
   mail: null | { name, unread, lastAt },  // agent mail: the person's mail name, their new mail, the newest message's time
   hiddenSessions: [{ key, title, platform, kind }],  // recent sessions with Role "Hide it": off the map, named in Settings
+  projects: [{ id, name, repo }],  // the Projects page, in projectList order; never a folder path (the folder stays in settings)
   actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean, teleport: boolean, send: boolean, answers: boolean },  // the page may show each button (setting on, Pleni on Windows; answers on any system)
   asks: Ask[],  // the questions Pleni holds for the person (src/answers.js), oldest first
 }
@@ -503,6 +515,7 @@ Node = {
   model, modelLabel, effort, status, startedAt, lastAt, activity, lastText,
   workerType, chosen, // a Claude Code sub-agent's type, and whether its model and effort were chosen for it (Session); else null
   project, entrypoint, hidden, archived,
+  projectIds, // ids of the Projects page projects whose folder holds the session's folder, in projectList order; [] for every node that is not a session (you, project tiles, the relay) and for a mailbox worker run (`mailbox:` key)
   memory,   // main Claude Code session or Codex thread: { used, size, percent, squeezes, squeezesAtLeast, squeezedAt }, else null
   rollSoon, // plain reasons it is due for a roll over ('Memory 87% full', 'Squeezed 3 times', '9 days old'), else null
   github,   // 'owner/name' of the GitHub repository the session works in (src/repos.js), else null
@@ -567,6 +580,21 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
   `/_worktrees/<name>`, Pleni reads that worktree's `.git` pointer file (only on a local drive, only
   when it is a file of at most 4 KB; cached) and takes the repository name from its `gitdir:` line.
   Settings `projects[name].label` renames, `hidden` hides.
+- Project membership (`projectIds`): `inFolder(cwd, folder, platform = process.platform)` is true
+  when `cwd` is the folder or inside it. Both paths are tidied first: trimmed, a `\\?\` or
+  `\\?\UNC\` prefix dropped like `projectName` does, backslashes turned into `/`, repeated `/`
+  collapsed, a trailing `/` dropped (a bare root such as `/` or `C:/` stays). Case is ignored on
+  Windows and macOS and for any path that starts with a drive letter, and kept otherwise. `/a/app`
+  does not hold `/a/apple`. A session's `projectIds` are the ids of all projects that hold its `cwd`,
+  in `projectList` order. A `<repo>/.claude/worktrees/<name>` folder is inside its repository, so it
+  matches as it is. A `<home>/.codex/worktrees/<id>/<repo>` or `<anywhere>/_worktrees/<name>` folder
+  is not: Pleni reads its `.git` file (`gitdir: <repo>/.git/worktrees/<name>`, with the same care as
+  the `_worktrees` name above: local drives only, `stat` first, at most 4 KB, cached, never throws)
+  and the project matches when that repository folder is inside the project's folder. When the file
+  cannot be read, the worktree matches a project whose folder's last part equals the worktree's
+  repository name (`projectName(cwd)`), compared with the same case rule. A session with no `cwd`
+  takes the `projectIds` of its parent session once the tree is built. Every other node has
+  `projectIds: []`, so all nodes have the same shape.
 - GitHub repository (`github`): `githubRepo(cwd)` in `src/repos.js` climbs from the session's
   folder (at most 16 folders, local drives only) to the first `.git`. A folder's git settings are
   `.git/config`; a worktree's `.git` file (at most 4 KB) points to its git folder, whose
@@ -1515,8 +1543,10 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   request host. The body is cleaned with `cleanSettings`, saved, and the store reloaded. Who may
   open Pleni changes only on this computer: `remote.lan` and `remote.lanAddresses` always keep
   their saved values (only `POST /api/lan` changes them), and a request that is not from this
-  computer keeps all of `remote`. `actions.limits` always keeps its saved value too (only `POST
-  /api/statusline` changes it), from any device.
+  computer keeps all of `remote`. The project list (names and folders on this computer) changes only
+  on this computer too: a request that is not from this computer keeps the saved `projectList`, and
+  so does every save in the demo, whose projects are made up. `actions.limits` always keeps its saved
+  value too (only `POST /api/statusline` changes it), from any device.
 - **POST /api/signin** `{ secret }` needs no cookie, but the host gate and the same checks as
   `POST /api/settings`. When `secret` is the key, or a sign-in link that holds it (`?t=<key>` or
   `&t=<key>`), or else the password (`signin.checkPassword`), Pleni adds a device
@@ -1666,7 +1696,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 
 ## Page (`public/`)
 
-- Hash routes: `#/` map (default), `#/list`, `#/activity`, `#/tasks` (only with a mailbox),
+- Hash routes: `#/` map (default), `#/list`, `#/projects` and `#/projects/<id>`, `#/activity`, `#/tasks` (only with a mailbox),
   `#/pulls` (shown in the menu only when a session on the map is in a GitHub repository),
   `#/settings`, and `#/settings/<group>` for one group of settings (`basics`, `team`, `models`,
   `sources`, `alerts`, `buttons` or `devices`).
@@ -1747,6 +1777,29 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   long ago.
 - **List:** a table of sessions grouped by project with status filters; it is also the accessible
   alternative to the map.
+- **Projects:** `#/projects` lists the projects of `snapshot.projects`, one card each: the name
+  (a link to `#/projects/<id>`), the repository as a link to `https://github.com/<repo>` (new tab,
+  `rel="noopener noreferrer"`), what its sessions are doing in the List's words (working, need you,
+  idle, errors) and when the newest was last active; a project with no sessions says "No sessions in
+  this folder right now." With no projects, it says "No projects yet. A project groups the sessions
+  that work in one folder." `#/projects/<id>` has an **All projects** link, the name, the repository
+  link, **Edit** and **Delete**, then the sessions whose `projectIds` hold the id, in the List's
+  table and order (a row is indented only when the session it reports to is also shown); a click
+  opens the side panel as on the List. An id that is not in the snapshot says "This project is gone.
+  It may have been deleted." **New project** and **Edit** open a form on the page (not a pop-up): Name
+  (required, up to 80), Folder on this computer (required, a full path, up to 500 characters; "Pleni
+  shows the sessions working in this folder or in a folder inside it.") and GitHub repository
+  (optional; `owner/name`, and a pasted `https://github.com/owner/name` address is cut down to that).
+  A wrong field gets a plain message under it (`aria-invalid`, `aria-describedby`). Saving reads
+  `GET /api/settings` (the snapshot never has folders), changes only `projectList` (a new entry gets
+  12 random lower-case letters and digits as its id) and posts the whole settings object like the
+  Settings page does, then asks for a new snapshot. It says "Saved.", or "Not saved. <reason>", and
+  names anything Pleni changed in what was sent (a repository it dropped, a name it clipped). The
+  form's text lives in page state, not in the markup that the 4-second poll repaints, so a poll never
+  resets what the person is typing. **Delete** asks first, in place ("Delete this project? Pleni only
+  forgets it. No files or sessions change.", **Delete**, **Keep it**). On another device
+  (not `localhost`) there is no New, Edit or Delete, only "Projects can be added and changed only on
+  the computer that runs Pleni." The Settings page's **Restore defaults** keeps the project list.
 - **Activity:** the event feed, newest first.
 - **Mail:** shown when the mailbox has agent mail (`snapshot.mail`), with the number of new
   messages beside its name. It asks `GET /api/mail` when it shows and again when `snapshot.mail`
@@ -2010,3 +2063,9 @@ saving them is refused. The Usage popup shows made-up token counts for the last 
 made-up limits for Claude Code and Codex (`demoUsage(now)`, in the shape `createUsage().read()` gives).
 Each scripted
 letter is kept once, at the last time the loop sent it, so the Mail page shows no copies.
+`demoSettings` also puts in two made-up projects, always, in place of any saved ones: Billing
+service (`demobilling01`) and Field app (`demofieldapp1`), with their made-up repositories, so the
+demo (and its pictures) never shows the person's own projects. The Codex worktree session joins
+Field app by its repository name, because its folder is not on the disk. The snapshot says
+`demo: true`, so the Projects page offers no New, Edit or Delete there, and a settings save in the
+demo keeps the saved `projectList` as it is.
