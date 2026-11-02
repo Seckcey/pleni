@@ -87,6 +87,9 @@ const ICONS = {
   group: '<path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h4l2 2h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/>',
   relay: '<path d="M4 8h13.5M14 4.5 17.5 8 14 11.5M20 16H6.5M10 12.5 6.5 16l3.5 3.5"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  popout: '<path d="M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/>',
+  full: '<path d="M14 4h6v6M20 4l-6 6M10 20H4v-6M4 20l6-6"/>',
+  fullExit: '<path d="M20 4l-6 6M14 5v5h5M4 20l6-6M10 19v-5H5"/>',
 };
 
 const S = {
@@ -102,6 +105,7 @@ const S = {
   aboutNow: null, // the same, from the newest answer
   mapMode: readStore('pleni.mapMode') === 'all' ? 'all' : 'working',
   fv: { x: 0, y: 0, k: 1, user: false, sig: '' },
+  popout: null, // { kind: 'map' | 'list' | 'session', key } when this window is a pop-out (popoutFromHash)
   layout: null,
   layoutSig: '',
   dragUntil: 0,
@@ -586,7 +590,8 @@ async function pollOnce() {
       S.snap = body;
       S.index = indexSnapshot(body);
       S.etag = res.headers.get('ETag');
-      checkAlerts();
+      // A pop-out window leaves alerts to the main window, so each alert shows once.
+      if (!S.popout) checkAlerts();
       if (isTime(body.now)) S.skew = Date.now() - body.now;
     }
     noteVersion(res.headers.get('X-Pleni-Version'), res.headers.get('X-Pleni-Build'));
@@ -751,10 +756,112 @@ function setView(v, focus) {
 }
 
 window.addEventListener('hashchange', () => {
+  // A pop-out window shows one thing for its whole life.
+  if (S.popout) return;
   const v = viewFromHash();
   if (!v) return;
+  if (mapFull()) leaveFull();
   closeDrawer();
   setView(v, true);
+});
+
+// ---------- pop-out windows ----------
+// The map, the list, or a session's panel can open in a window of their own. That window is this
+// same page with "?popout" in its address ("#/map?popout", "#/list?popout" or
+// "#/session/<key>?popout"). It polls Pleni by itself, so it stays live, and shows only that part.
+
+function popoutFromHash() {
+  const m = /^#\/(map|list|session)(?:\/([^?]*))?\?popout$/.exec(location.hash);
+  if (!m) return null;
+  if (m[1] !== 'session') return { kind: m[1], key: null };
+  let key = '';
+  try {
+    key = decodeURIComponent(m[2] || '');
+  } catch {
+    return null;
+  }
+  return key ? { kind: 'session', key } : null;
+}
+
+function startPopout(p) {
+  S.popout = p;
+  document.body.classList.add('popout', `popout-${p.kind}`);
+}
+
+// The window's title: the view, or in a session's own window, that session's name.
+function pageName() {
+  if (!(S.popout && S.popout.kind === 'session' && S.drawer)) return VIEW_NAMES[S.view];
+  const n = S.index && S.index.byKey.get(S.drawer.key);
+  return n ? titleOf(n) : keyName(S.drawer.key);
+}
+
+const POPOUT_SIZE = { map: [1200, 820], list: [980, 820], session: [760, 900] };
+
+function popOut(kind) {
+  const key = kind === 'session' ? S.drawer && S.drawer.key : null;
+  if (!POPOUT_SIZE[kind] || (kind === 'session' && !key)) return;
+  const hash = key ? `#/session/${encodeURIComponent(key)}?popout` : `#/${kind}?popout`;
+  const [w, h] = POPOUT_SIZE[kind];
+  // One window per view or session: popping out the same one again brings that window forward.
+  const name = `pleni-${kind}${key ? `-${key.replace(/[^A-Za-z0-9]/g, '').slice(-40)}` : ''}`;
+  const win = window.open(`${location.origin}/${hash}`, name, `popup,width=${w},height=${h}`);
+  if (win) win.focus();
+  else showMoved({ key: null, text: 'Your browser blocked the new window. Allow pop-ups for this page, then try again.', bad: true, fadeMs: 8000 });
+}
+
+// ---------- full screen ----------
+// The map alone fills the screen, with its legend and buttons. Where the browser has no full-screen
+// mode (an iPhone), it fills the browser window instead. Esc, F or the button leaves it.
+
+function mapFull() {
+  return document.body.classList.contains('map-full');
+}
+
+// The button keeps one name, and aria-pressed says whether it is on; the tooltip says what a click does.
+function fullLabel() {
+  return document.fullscreenEnabled ? 'Full screen' : 'Fill the window';
+}
+
+function setMapFull(on) {
+  document.body.classList.toggle('map-full', on);
+  const btn = $('[data-zoom="full"]');
+  if (btn) {
+    btn.setAttribute('aria-label', fullLabel());
+    btn.setAttribute('aria-pressed', String(on));
+    btn.title = on ? (document.fullscreenEnabled ? 'Leave full screen' : 'Stop filling the window') : fullLabel();
+    btn.innerHTML = svgIcon(on ? ICONS.fullExit : ICONS.full);
+  }
+}
+
+function toggleFull() {
+  if (!mapFull()) {
+    if (S.view !== 'map') return;
+    setMapFull(true);
+    if (document.fullscreenEnabled && !document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+    return;
+  }
+  leaveFull();
+}
+
+// Leaves full screen, the browser's own as well.
+function leaveFull() {
+  setMapFull(false);
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+
+// In the browser's own full screen, the browser takes Esc: it leaves full screen without a key event
+// the page sees, so an open side panel stays open until the next Esc.
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && mapFull()) setMapFull(false);
+});
+
+document.addEventListener('keydown', (ev) => {
+  // The side panel's own Esc runs first and marks the event; only a second Esc leaves full screen.
+  // Esc while carrying a tile only puts the tile back.
+  if (ev.key === 'Escape' && !ev.defaultPrevented && !S.drawer && mapFull() && !$('#map-canvas').classList.contains('moving')) {
+    ev.preventDefault();
+    toggleFull();
+  }
 });
 
 function render() {
@@ -770,7 +877,7 @@ function render() {
   $('#nav-pulls').hidden = !repoGroups().length;
   paintMailNav();
   const asking = (S.snap && S.snap.counts && S.snap.counts.needs) || 0;
-  document.title = `${asking ? `(${asking}) ` : ''}${VIEW_NAMES[S.view]} · Pleni`;
+  document.title = `${asking ? `(${asking}) ` : ''}${pageName()} · Pleni`;
   if (S.view === 'map') renderMap();
   else if (S.view === 'list') renderList();
   else if (S.view === 'projects') renderProjects();
@@ -1398,6 +1505,7 @@ function zoomAt(px, py, k) {
 }
 
 function zoomButton(kind) {
+  if (kind === 'full') return toggleFull();
   if (kind === 'fit') {
     S.fv.sig = '';
     if (fitView()) S.fv.sig = S.layoutSig;
@@ -1650,6 +1758,8 @@ function panBy(dx, dy) {
       '-': () => zoom(0.8),
       _: () => zoom(0.8),
       0: () => zoomButton('fit'),
+      f: () => toggleFull(),
+      F: () => toggleFull(),
     };
     const act = Object.hasOwn(keys, ev.key) ? keys[ev.key] : null;
     if (!act) return;
@@ -2675,6 +2785,38 @@ function renderPulls() {
 // drawer
 // ---------------------------------------------------------------------------------------------
 
+// True in a window that shows one session's panel as its whole page.
+function popoutSession() {
+  return !!S.popout && S.popout.kind === 'session';
+}
+
+// The browser closes only a window a page opened. A pasted, saved or restored pop-out address is a
+// plain tab, which stays open: it becomes Pleni's normal page instead.
+function closePopout() {
+  window.close();
+  setTimeout(() => {
+    if (window.closed) return;
+    history.replaceState(null, '', `${location.pathname}${location.search}#/map`);
+    location.reload();
+  }, 200);
+}
+
+// In a pop-out, a link to another page of Pleni opens in the main window (or a new tab), so the
+// pop-out keeps showing its one thing.
+function openInMain(hash) {
+  try {
+    const main = window.opener;
+    if (main && !main.closed && main.location.origin === location.origin) {
+      main.location.hash = hash;
+      main.focus();
+      return;
+    }
+  } catch {
+    // The window that opened this one shows another site now.
+  }
+  window.open(`${location.origin}/${hash}`, '_blank', 'noopener');
+}
+
 function setInert(on) {
   for (const el of [$('.skip'), $('.appbar'), $('#main')]) el.inert = on;
 }
@@ -2728,7 +2870,8 @@ function drawerFrame(frame) {
   return (
     `<div class="dhead"><span class="mark" id="drawer-mark" aria-hidden="true"></span>` +
     '<div class="dtitles"><h2 id="drawer-title"></h2><p class="dsub" id="drawer-sub"></p></div>' +
-    `<button type="button" class="icon-btn" data-close aria-label="Close the details">${svgIcon(ICONS.close)}</button></div>` +
+    (S.popout ? '' : `<button type="button" class="icon-btn" data-popout="session" aria-label="Open in a window of its own" title="Open in a window of its own">${svgIcon(ICONS.popout)}</button>`) +
+    `<button type="button" class="icon-btn" data-close aria-label="${popoutSession() ? 'Close this window' : 'Close the details'}">${svgIcon(ICONS.close)}</button></div>` +
     '<div class="dstatus" id="drawer-status"></div>' +
     (frame === 'group'
       ? ''
@@ -3901,6 +4044,8 @@ async function hideNode(key, title) {
   }
   keepPersonField(key, 'role', 'hidden'); // so saving Settings later keeps it
   hiding.delete(key);
+  // A session window shows only this panel, so with the session hidden it has nothing left to show.
+  if (S.drawer && S.drawer.key === key && popoutSession()) return closePopout();
   if (S.drawer && S.drawer.key === key) closeDrawer();
   await pollNow().catch(() => {});
   showMoved({ key, spot: 'note', text: `Hidden from the map: "${title}". To show it again later, go to Settings, then Team.`, undo: () => unhideNode(key, title, before) });
@@ -4034,6 +4179,8 @@ async function fetchDrawerEvents() {
 document.addEventListener('keydown', (ev) => {
   if (!S.drawer) return;
   if (ev.key === 'Escape') {
+    // A session's own window is that panel; Esc leaves it open.
+    if (popoutSession()) return;
     ev.preventDefault();
     closeDrawer();
     return;
@@ -6323,6 +6470,14 @@ $('#signin').addEventListener('submit', (ev) => {
 // ---------------------------------------------------------------------------------------------
 
 document.addEventListener('click', (ev) => {
+  if (S.popout && ev.button === 0 && !(ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey)) {
+    const link = ev.target.closest('a[href^="#/"]');
+    if (link) {
+      ev.preventDefault();
+      openInMain(link.getAttribute('href'));
+      return;
+    }
+  }
   const el = ev.target.closest('button, a.skip');
   if (!el) return;
   if (el.matches('a.skip')) {
@@ -6334,7 +6489,8 @@ document.addEventListener('click', (ev) => {
   if (el.hasAttribute('data-undo')) return undoMove();
   // A drag across the map must not also open the tile it ended on.
   if (el.closest('#map-canvas') && S.dragUntil > Date.now()) return;
-  if (el.hasAttribute('data-close')) return closeDrawer();
+  if (el.hasAttribute('data-close')) return popoutSession() ? closePopout() : closeDrawer();
+  if (el.dataset.popout) return popOut(el.dataset.popout);
   if (el.id === 'theme-toggle') return toggleTheme();
   if (el.dataset.zoom) return zoomButton(el.dataset.zoom);
   if (el.dataset.mapMode) return setMapMode(el.dataset.mapMode);
@@ -6420,5 +6576,9 @@ document.addEventListener('click', (ev) => {
 // ---------------------------------------------------------------------------------------------
 
 applyTheme();
+const startedPopout = popoutFromHash();
+if (startedPopout) startPopout(startedPopout);
 setView(viewFromHash() || 'map', false);
+if (startedPopout && startedPopout.kind === 'session') openDrawer(startedPopout.key, null);
+setMapFull(false);
 poll();

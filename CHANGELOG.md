@@ -8,6 +8,13 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **Full screen for the map.** A new button under the zoom buttons (or the `F` key) shows only the
+  map, with its legend and buttons. Esc or the button leaves it. On a phone without full screen, the
+  map fills the browser window.
+- **Pop out.** The Map and the List each have a **Pop out** button, and a session's side panel has
+  one in its header. Each opens in a window of its own that stays live, for a second screen. A
+  session's window is that session's page; its close button closes the window. A link to another
+  page of Pleni opens in the main window, and "Cannot reach Pleni" still shows in a pop-out.
 - **Projects.** A new **Projects** page groups your sessions by folder. A project is a name, a
   folder on your computer, and (if you like) a GitHub repository. Each project shows which sessions
   work in its folder, or in a folder inside it, and how many are working, need you, or are idle.

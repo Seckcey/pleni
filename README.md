@@ -114,9 +114,12 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   A line glows while work moves along it: teal dots travel down when work is handed out, and
   purple dots travel up when a report comes back. Drag to move around. Use Ctrl + scroll, a
   pinch, or the `+` and `−` buttons to zoom. The **Working** switch hides sessions that are
-  quiet.
+  quiet. The **full screen** button (or `F`) shows only the map; Esc or the button leaves it.
 - **List** — the same sessions as a table, grouped by project, with filters. It also works well
   with a screen reader.
+- **Pop out** — the Map, the List, or one session's side panel can open in a window of its own,
+  to keep it on a second screen. Each window stays live on its own. Your browser may ask you to
+  allow pop-ups for Pleni the first time.
 - **Projects** — a project is a name, a folder on your computer, and (if you like) a GitHub
   repository. Choose **New project** and type those. Pleni then shows, on one card, the sessions
   working in that folder or in a folder inside it, and how many are working, need you, or are

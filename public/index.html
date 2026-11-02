@@ -64,9 +64,12 @@
         <h1 id="map-title" tabindex="-1">Map</h1>
         <p class="meta" id="map-meta">Reading your sessions…</p>
       </div>
-      <div class="seg" role="group" aria-label="Who the map shows">
-        <button type="button" data-map-mode="working" aria-pressed="true">Working</button>
-        <button type="button" data-map-mode="all" aria-pressed="false">Everyone</button>
+      <div class="view-tools">
+        <div class="seg" role="group" aria-label="Who the map shows">
+          <button type="button" data-map-mode="working" aria-pressed="true">Working</button>
+          <button type="button" data-map-mode="all" aria-pressed="false">Everyone</button>
+        </div>
+        <button type="button" class="btn btn-ic" data-popout="map" title="Open the map in a window of its own"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg>Pop out</button>
       </div>
     </div>
     <div class="attention" id="map-attention"></div>
@@ -88,12 +91,13 @@
             <button type="button" data-zoom="in" aria-label="Zoom in"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></button>
             <button type="button" data-zoom="out" aria-label="Zoom out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M5 12h14"/></svg></button>
             <button type="button" data-zoom="fit" aria-label="Fit the whole map"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+            <button type="button" data-zoom="full" aria-label="Full screen" aria-pressed="false" title="Full screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M14 4h6v6M20 4l-6 6M10 20H4v-6M4 20l6-6"/></svg></button>
           </div>
           <div class="map-empty" id="map-empty" hidden></div>
         </div>
         <p class="map-foot" id="map-foot"></p>
       </div>
-      <p class="note" id="map-help">Drag empty space to move the map. Drag a tile onto another tile to say who it reports to; the Reports to menu in its side panel does the same. To zoom, hold Ctrl and scroll, pinch, or use the buttons. When the map is selected, the arrow keys move it, plus and minus zoom, and 0 fits it. The List view shows the same sessions as a table.</p>
+      <p class="note" id="map-help">Drag empty space to move the map. Drag a tile onto another tile to say who it reports to; the Reports to menu in its side panel does the same. To zoom, hold Ctrl and scroll, pinch, or use the buttons. When the map is selected, the arrow keys move it, plus and minus zoom, 0 fits it, and F shows it full screen. The List view shows the same sessions as a table.</p>
     </div>
   </section>
 
@@ -102,6 +106,9 @@
       <div>
         <h1 id="list-title" tabindex="-1">List</h1>
         <p class="meta" id="list-meta"></p>
+      </div>
+      <div class="view-tools">
+        <button type="button" class="btn btn-ic" data-popout="list" title="Open the list in a window of its own"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg>Pop out</button>
       </div>
     </div>
     <div class="attention" id="list-attention"></div>
