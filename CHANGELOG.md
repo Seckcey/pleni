@@ -4,6 +4,17 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Full screen for the map.** A new button under the zoom buttons (or the `F` key) shows only the
+  map, with its legend and buttons. Esc or the button leaves it. On a phone without full screen, the
+  map fills the browser window.
+- **Pop out.** The Map and the List each have a **Pop out** button, and a session's side panel has
+  one in its header. Each opens in a window of its own that stays live, for a second screen. A
+  session's window is that session's page; its close button closes the window.
+
 ## 0.3.0 (2026-11-02)
 
 Your phone can now open Pleni on your home Wi-Fi, without Tailscale, and every device signs in

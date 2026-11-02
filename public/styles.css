@@ -312,6 +312,8 @@ h1, h2, h3 { line-height: var(--ui-leading-tight); }
 .btn:hover { border-color: var(--ui-control-border); }
 .btn.primary { background: var(--ui-accent-fill); color: var(--ui-on-accent); border-color: var(--ui-accent-fill); }
 .btn.primary:hover { background: var(--ui-accent); }
+.btn-ic { display: inline-flex; align-items: center; gap: var(--ui-space-3); }
+.btn-ic svg { width: 16px; height: 16px; flex: none; }
 .link { background: none; border: 0; padding: 0; color: var(--ui-accent); font-weight: var(--ui-weight-medium); text-decoration: underline; text-underline-offset: 2px; }
 .icon-btn {
   display: inline-grid; place-items: center; width: 34px; height: 34px; flex: none;
@@ -364,6 +366,7 @@ main:focus { outline: none; }
 .view-head h1 { font-size: 22px; font-weight: var(--ui-weight-semibold); margin: 0; }
 .view-head h1:focus { outline: none; }
 .view-head .meta { margin: var(--ui-space-2) 0 0; color: var(--ui-text-secondary); font-size: var(--ui-font-md); }
+.view-tools { display: flex; align-items: center; gap: var(--ui-space-4); flex-wrap: wrap; }
 .panel { background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); padding: var(--ui-space-6); }
 .empty { color: var(--ui-text-muted); padding: var(--ui-space-5) 0; }
 .seg { display: inline-flex; gap: var(--ui-space-1); padding: 3px; background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); }
@@ -843,6 +846,7 @@ table.mtypes select.field { max-width: 15rem; }
 /* ---------- drawer ---------- */
 
 .layer { position: fixed; inset: 0; z-index: 40; }
+.dhead .icon-btn + .icon-btn { margin-left: calc(var(--ui-space-3) - var(--ui-space-5)); }
 .scrim { position: absolute; inset: 0; background: var(--ui-scrim); }
 .drawer {
   position: absolute; top: 0; right: 0; bottom: 0; width: min(720px, 100vw); overflow: auto;
@@ -992,6 +996,26 @@ ul.kids .t { font-weight: var(--ui-weight-semibold); overflow: hidden; text-over
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 6px); } }
 
 /* ---------- small screens ---------- */
+
+/* ---------- full screen and pop-out windows ---------- */
+
+/* Full screen: the map alone fills the screen (or the window where there is no full screen). */
+body.map-full .skip, body.map-full .appbar, body.map-full #notices,
+body.map-full #view-map .view-head, body.map-full #map-attention, body.map-full #map-welcome,
+body.map-full #flows, body.map-full #map-help, body.map-full .map-foot { display: none; }
+body.map-full main { max-width: none; padding: 0; }
+body.map-full .map { margin: 0; border: 0; border-radius: 0; }
+body.map-full .map-canvas { height: 100vh; height: 100dvh; }
+
+/* A pop-out window shows one view, or one session's panel, and nothing else. */
+body.popout .skip, body.popout .appbar, body.popout #notices, body.popout .attention, body.popout [data-popout] { display: none; }
+body.popout main { padding-top: var(--ui-space-5); }
+body.popout-map .map-canvas { height: clamp(320px, calc(100vh - 150px), 2000px); }
+body.popout-map #map-help { display: none; }
+body.popout-session main { display: none; }
+body.popout-session .layer { position: static; }
+body.popout-session .scrim { display: none; }
+body.popout-session .drawer { position: static; width: auto; min-height: 100vh; border-left: 0; box-shadow: none; }
 
 @media (max-width: 860px) {
   .appbar { flex-wrap: wrap; gap: var(--ui-space-4) var(--ui-space-5); padding: var(--ui-space-4) var(--ui-space-5); }

@@ -1503,10 +1503,28 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `#/pulls` (shown in the menu only when a session on the map is in a GitHub repository),
   `#/settings`, and `#/settings/<group>` for one group of settings (`basics`, `team`, `models`,
   `sources`, `alerts`, `buttons` or `devices`).
+- **Pop-out windows:** **Pop out** in the Map and List headers, and the pop-out button in a side
+  panel's header, open that view or that panel in a window of its own (`window.open`, named
+  `pleni-map`, `pleni-list` or `pleni-session-<key letters>`, so popping out the same one again
+  brings that window forward; a blocked window says so in the notice at the bottom). The window is
+  this same page with `#/map?popout`, `#/list?popout` or `#/session/<encoded key>?popout`
+  (`popoutFromHash`, read once at start into `S.popout`). It polls Pleni by itself, so it stays
+  live. It hides the app bar, the notices, the Needs you blocks and the Pop out buttons, ignores
+  address changes, and leaves alerts to the main window (no `checkAlerts`). A session's window
+  shows that panel as the whole page, not as a dialog: Esc does not close it, its close button
+  ("Close this window") closes the window, and the window's title is the session's name.
+- **Full screen:** the fourth map button (`data-zoom="full"`, `aria-pressed`), or `F` when the map
+  has focus, adds `body.map-full`, which hides everything but the map, its legend and its buttons,
+  and asks the browser for full screen (`document.documentElement.requestFullscreen`, so a tile's
+  side panel still shows). Where the browser has no full screen (`document.fullscreenEnabled`
+  false, as on an iPhone), the map fills the window instead. The button, `F` or Esc leaves it; Esc
+  closes an open side panel first. Leaving the browser's full screen (`fullscreenchange`) or
+  changing the view leaves it too. The map refits on its own when the person has not moved it.
 - **Map:** a left-to-right tidy tree of tiles (`W 268 × H 128`, gaps 96 × 22, padding 48) joined by
   rounded orthogonal lines. A line glows while its edge is `active`; three small packets travel down
   (planner/parent → child, teal) or up (child → parent, purple). Pan with drag, zoom with Ctrl+wheel,
-  pinch, the `+`/`−`/fit buttons, and the keyboard (`+`, `-`, `0`, arrow keys) when the map has focus.
+  pinch, the `+`/`−`/fit buttons, and the keyboard (`+`, `-`, `0`, arrow keys, `F` for full screen)
+  when the map has focus.
   The view refits only when the content no longer fits and the person has not moved it. A
   Working/Everyone switch (remembered in `localStorage` as `pleni.mapMode`) hides quiet sessions.
   Dragging a session or relay tile more than 6 px onto another tile (or onto the person) posts
