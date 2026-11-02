@@ -69,7 +69,7 @@ test('cleanSettings keeps good values', () => {
     people: { you: { label: 'Ada' }, [`claude:${UUID}`]: { label: 'Builder', role: 'coordinator', watch: true, answer: true }, relay: { watch: true } },
     projects: { pleni: { label: 'Pleni', hidden: false } },
     chain: [{ match: 'Sergeant', reportsTo: 'Colonel', role: 'coordinator' }, { match: 'Colonel', reportsTo: 'you', role: null }],
-    remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] },
+    remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'], lan: true, lanAddresses: ['192.168.1.23'] },
     actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true, send: true, answers: true },
     send: { mode: 'edit' },
     answers: { waitMinutes: 25 },
@@ -79,6 +79,20 @@ test('cleanSettings keeps good values', () => {
     rollSoon: { memoryPercent: 80, squeezes: 0, days: 10 },
   };
   assert.deepEqual(cleanSettings(raw), raw);
+});
+
+test('Wi-Fi access is off unless it is turned on with a real true', () => {
+  assert.equal(cleanSettings({}).remote.lan, false);
+  for (const lan of ['true', 1, null, {}]) assert.equal(cleanSettings({ remote: { lan } }).remote.lan, false);
+  assert.equal(cleanSettings({ remote: { lan: true } }).remote.lan, true);
+});
+
+test('the chosen Wi-Fi addresses keep only IPv4 addresses, once each, the newest 10', () => {
+  const addresses = (lanAddresses) => cleanSettings({ remote: { lanAddresses } }).remote.lanAddresses;
+  assert.deepEqual(addresses(['192.168.1.23', ' 10.0.0.5 ', '192.168.1.23', 'fe80::1', '300.1.1.1', 'box.local', 5, null]), ['192.168.1.23', '10.0.0.5']);
+  const many = Array.from({ length: 12 }, (_, i) => `192.168.1.${i + 1}`);
+  assert.deepEqual(addresses(many), many.slice(2));
+  assert.deepEqual(addresses('192.168.1.23'), []);
 });
 
 test('the Models page may change Codex settings only when turned on with a real true', () => {
@@ -195,7 +209,7 @@ test('cleanSettings drops unknown keys', () => {
   assert.deepEqual(Object.keys(settings.modelTiers), ['senior', 'junior']);
   assert.deepEqual(Object.keys(settings.sources), ['claude', 'claudeDesktop', 'codex', 'grok', 'kimi', 'mailbox']);
   assert.deepEqual(settings.sources.claude, { enabled: true, root: null });
-  assert.deepEqual(settings.remote, { hosts: [], tailscaleUsers: [] });
+  assert.deepEqual(settings.remote, { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] });
   assert.deepEqual(settings.people, { you: { label: 'Ada' } });
   assert.deepEqual(settings.projects, { pleni: { hidden: true } });
 });

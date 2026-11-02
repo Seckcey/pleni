@@ -528,16 +528,58 @@ whether the relay wakes it for its mail. Pleni never sends mail itself.
   off in Settings (the `content` setting, set to `none`). Then you see only names, tools, and
   states.
 - It never shows what a model was "thinking", only that it was thinking.
-- It opens only on your own computer unless you set up remote access yourself, and only for a
-  browser that has the key Pleni prints when it starts.
+- It opens only on your own computer, unless you turn on Wi-Fi access or set up Tailscale
+  yourself. Another device must sign in with Pleni's password or its key. The buttons that act
+  (send, answer, merge, save models, open windows) work only on the computer that runs Pleni.
 
 Read [docs/privacy.md](docs/privacy.md) for exactly what Pleni reads, what it shows, and what it
 never does. To report a security problem, read [SECURITY.md](SECURITY.md) first.
 
 ## Open it from your phone
 
-Pleni opens only on your own computer. To see it on your phone, you can use
-[Tailscale](https://tailscale.com/), which links your own devices together privately.
+Pleni opens only on your own computer until you choose otherwise. There are two ways to see it on
+your phone, a tablet, or another computer. Both need you to sign in once on each device.
+
+### On your home Wi-Fi
+
+No extra app needed. Your phone must be on the same Wi-Fi as your computer.
+
+1. On your computer, open Pleni's **Settings → Devices**.
+2. Under **Password**, type a password twice (at least 8 characters; a few words together are easy
+   to remember and hard to guess), and choose **Set the password**.
+3. Under **On this Wi-Fi**, choose **Open Pleni on this Wi-Fi**. The first time, Windows may ask
+   whether Node.js may use the network: choose **Allow**.
+4. On your phone, point the camera at the QR code Pleni shows. (Or type the address under it, such
+   as `http://192.168.1.23:8790/`.)
+5. Type the password and choose **Sign in**. Bookmark the page. The phone stays signed in.
+
+If the phone cannot open the address, check that it is on the same Wi-Fi, and that Windows calls
+this Wi-Fi a private network (Windows **Settings → Network and internet → Wi-Fi**, then your
+network). Please keep these points in mind:
+
+- The Wi-Fi address has no padlock (it is not HTTPS). What Pleni shows travels over your Wi-Fi
+  without the extra lock Tailscale adds. Use it on a network you trust, like your home Wi-Fi, and
+  not on public Wi-Fi.
+- Pleni answers only on the address you chose, a home-network address (it starts with `10.`,
+  `172.16.` to `172.31.`, or `192.168.`), never on one the internet can reach, and only while a
+  password is set. Take your laptop to a café or a hotel, and it gets another address there, so
+  Pleni does not answer until you choose **Open Pleni here** in Settings → Devices. If your
+  computer's address at home changes, do the same.
+- Sign in with the password on the Wi-Fi address. Pleni's key does not work there, because the
+  address has no padlock.
+- Wrong passwords slow Pleni down: after 5 wrong tries it waits a minute, then longer each time,
+  also after a restart. After 20 wrong tries in a row it stops taking the password until you turn
+  it back on in **Settings → Devices** on your computer.
+- **Settings → Devices** lists every device that signed in. Choose **Sign out** next to one you
+  lost or no longer use, and it has to sign in again.
+- A signed-in device sees what you see in Pleni and can change most of its settings. It cannot
+  send messages, answer questions, merge, change models, open windows, set the password, or let
+  in more devices: those work only on the computer that runs Pleni.
+
+### Anywhere, with Tailscale
+
+[Tailscale](https://tailscale.com/) links your own devices together privately, so this works away
+from home too.
 
 1. Install Tailscale on your computer and your phone (or laptop), and sign in to the same account
    on both.
@@ -553,10 +595,9 @@ Pleni opens only on your own computer. To see it on your phone, you can use
 5. On your computer, open Pleni's **Settings → Devices**. Under **Turned away lately**, choose
    **Allow** next to your phone's visit. Pleni adds the address and your Tailscale login to its
    lists and saves.
-6. Reload the page on your phone. Pleni asks for its key: on your computer, choose **Copy the
-   key** in Settings → Devices and paste it there. (Or choose **Copy a sign-in link** and open that
-   link once on the phone.) Then bookmark the page. You only need the key once per device, and the
-   address keeps working after restarts.
+6. Reload the page on your phone, and sign in with Pleni's password. (No password yet? Set one in
+   Settings → Devices, or choose **Copy the key** there and paste the key instead.) Then bookmark
+   the page. The address keeps working after restarts.
 
 Lost the address? **Settings → Devices** on your computer shows it with a **Copy** button, and
 Pleni prints it when it starts (`From your other devices:`). `npx pleni --url` shows it too, with
@@ -574,11 +615,12 @@ In `settings.json`, the same thing looks like this:
 ```
 
 Pleni lets a request in only when both the host name and the Tailscale login are on these
-lists, and the browser has Pleni's key. **Allow** fills in both lists for you. Please keep these points in mind:
+lists, and the browser has signed in. **Allow** fills in both lists for you. Please keep these
+points in mind:
 
 - **Never use `tailscale funnel` for Pleni.** Funnel puts a page on the open internet.
-- Anyone you add can see everything you can see in Pleni, and can change its settings too. Add
-  only yourself, or people you trust with your work.
+- Anyone you add can see everything you can see in Pleni, and can change most of its settings.
+  Add only yourself, or people you trust with your work.
 - To stop sharing, run `tailscale serve --https=443 off`.
 
 ## Pleni and Plenipo

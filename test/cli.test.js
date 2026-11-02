@@ -216,6 +216,28 @@ test('--url shows the address and the key without starting Pleni', (t) => {
   assert.match(demo.stderr, /demo makes a new key each time/);
 });
 
+test('--url shows Wi-Fi addresses only when Wi-Fi access is on, a password is set, and the address was chosen', async (t) => {
+  // This computer's own home-network addresses differ from one computer to the next (there may be
+  // none); the ones it shows must be exactly those, among the chosen ones.
+  const { homeAddresses } = await import('../src/lan.js');
+  const mine = homeAddresses().map((a) => a.address);
+  const home = tempDir(t);
+  fs.writeFileSync(path.join(home, 'key'), 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG\n');
+  const settings = { port: 9123, remote: { lan: true, lanAddresses: [...mine, '192.168.250.250'] } };
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify(settings));
+  const wifiLines = (out) => out.split('\n').filter((l) => l.startsWith('On this Wi-Fi'));
+  const without = runCli(['--url'], cliEnv(home));
+  assert.equal(without.status, 0, without.stderr);
+  assert.deepEqual(wifiLines(without.stdout), [], 'no password, no Wi-Fi address');
+  fs.writeFileSync(path.join(home, 'password'), '{}');
+  const shown = runCli(['--url'], cliEnv(home));
+  assert.equal(shown.status, 0, shown.stderr);
+  assert.deepEqual(wifiLines(shown.stdout), mine.map((a) => `On this Wi-Fi: http://${a}:9123/`));
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({ ...settings, remote: { lan: false, lanAddresses: mine } }));
+  assert.deepEqual(wifiLines(runCli(['--url'], cliEnv(home)).stdout), [], 'off, no Wi-Fi address');
+});
+
+
 test('a damaged key file stops Pleni and is left alone', RUN, (t) => {
   const home = tempDir(t);
   fs.writeFileSync(path.join(home, 'key'), 'not a key!');

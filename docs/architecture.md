@@ -33,11 +33,14 @@ I run this?" waits on the page until the person answers it there or in the sessi
 
 - **Zero runtime dependencies.** Node.js 22.12 or newer, ES modules, `node:` built-ins only. No
   build step: the files in `public/` are served as they are.
-- **Local by default.** The server binds `127.0.0.1` only. Other devices can reach it only through a
-  reverse proxy you configure (for example `tailscale serve`) and only for the host names and
-  Tailscale logins you list in settings.
+- **Local by default.** The server binds `127.0.0.1`. Other devices can reach it only through a
+  reverse proxy you configure (for example `tailscale serve`), for the host names and Tailscale
+  logins you list in settings, or, when the person turns on Wi-Fi access and a password is set,
+  on the home-network addresses of this computer that the person chose (see Wi-Fi access). The
+  buttons that act work only from this computer.
 - **Only the person who started it.** Every account on the computer can reach `127.0.0.1`, so the
-  API also needs a random key made at each start and printed in Pleni's address (see Server).
+  API also needs Pleni's key, kept in its settings folder and printed in its address, or the pass a
+  device got by signing in with Pleni's password (see Signing in and Server).
 - **Read-only.** Pleni reads; it does not write anywhere on this computer except its own settings
   file, and, with the opt-in Models page, the model and effort values in Codex's `config.toml` and
   Claude Code's `settings.json`, and the worker type files in their `agents` folders (see Models),
@@ -49,7 +52,8 @@ I run this?" waits on the page until the person answers it there or in the sessi
   fixed ones and the ones the person types for Send, and the only change it makes elsewhere is a
   merge on GitHub that the person confirms.
 - **Private by default.** Nothing leaves the computer, except what the opt-in Live GitHub status
-  asks GitHub through `gh`. No telemetry, and no network calls of Pleni's own. The page shows short
+  asks GitHub through `gh`, and the page itself for your own signed-in devices (through Tailscale,
+  or over your Wi-Fi with Wi-Fi access). No telemetry, and no network calls of Pleni's own. The page shows short
   snippets of session text only when `content` is `"snippets"` (the default); `"none"` shows only
   tool names and states.
 - **Robust to big, live files.** Session files can be gigabytes and are appended while we read them.
@@ -81,9 +85,12 @@ src/models.js           the Models page: Codex's and Claude Code's models and ef
 src/toml.js             a small TOML reader and one-line editor for src/models.js
 src/frontmatter.js      a small reader and line editor for the settings block of a Claude Code agent file
 src/demo.js             synthetic, moving demo data (no files needed)
+src/signin.js           signing in from other devices: the password (an scrypt hash), a pass per device, the waits after wrong tries
+src/lan.js              Wi-Fi access: listeners on this computer's home-network addresses (opt-in, needs a password)
 src/server.js           HTTP server, security gate, routes
 public/index.html       the page (no inline script or style)
 public/app.js           the page logic (ES module, vanilla JS)
+public/qr.js            a small QR code maker for the Wi-Fi address (ES module)
 public/styles.css       Plenipo design tokens and page styles
 public/brand/           logos, favicons, mascot
 test/                   node:test suites; fixtures are generated into temp folders
@@ -118,7 +125,7 @@ export const DEFAULTS = {
   people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role, reportsTo?: nodeKey | 'you', watch?: true, answer?: true } }  max 500
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
-  remote: { hosts: [], tailscaleUsers: [] },          // each max 20 entries, lower-cased
+  remote: { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] }, // hosts and logins: each max 20 entries, lower-cased; lan: Wi-Fi access, true only when set to true; lanAddresses: the chosen Wi-Fi addresses, IPv4 only, the newest 10
   actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false }, // the window buttons, Send, and Answer questions (set by Connect and Disconnect); each true only when set to true
   send: { mode: 'read' },                              // what a sent message may do: 'read' | 'edit'
   answers: { waitMinutes: 10 },                        // how long Pleni holds a question (1-60) before the session asks in its own window
@@ -1183,38 +1190,130 @@ change; it reads an agent file again within a few seconds.
   before the closing `---`) and `removeFrontmatterKey` work like their TOML twins, and `yamlValue`
   quotes a value YAML would read another way.
 
+## Signing in (`src/signin.js`)
+
+```js
+export const PASSWORD_MIN = 8, PASSWORD_MAX = 200, MAX_DEVICES = 50, LOCK_AFTER = 20
+export const SIGNIN_MESSAGES  // the plain-words answers
+export function passwordFile(settingsPath)  // -> the "password" file next to the settings file
+export function devicesFile(settingsPath)   // -> the "devices.json" file next to it
+export function passwordProblem(text)       // -> why a new password does not fit, or null
+export function deviceName(userAgent)       // -> 'iPhone, Safari', 'Windows computer, Edge', ... or 'A device'
+export function waitMessage(ms)             // -> 'Too many wrong tries. Try again in N minutes.'
+export function createSignin({ file, now, cost })  // -> { passwordInfo, setPassword, removePassword, unlock, checkPassword, addDevice, findDevice, removeDevice, removeAllDevices, devices, devicesProblem }
+```
+
+Another device signs in with Pleni's password (or its key, see Server) and gets a pass of its own.
+
+- **The password** is 8 to 200 characters (counted after NFKC, so the same password typed on
+  another device still matches), and not only spaces. Only an scrypt hash is kept: `{ v: 1, N, r,
+  p, salt, hash, at, wrong, locked }` in `password` (N 2^15, r 8, p 1, a 16-byte salt and a 32-byte
+  hash, both base64url). `cost` sets N, r and p for new hashes (tests make it small); a check uses
+  the ones in the file. A file that cannot be read or does not fit means no password, and
+  `passwordInfo().problem` says so in plain words.
+- **Wrong tries:** `checkPassword(text)` answers `{ ok: true }`, or `{ ok: false, status, error,
+  wait? }`. One check runs at a time (another gets `429` and `wait: 1`). Each wrong try counts. The
+  first 4 wrong tries in a row get `401`. From the 5th, Pleni waits 1 minute, then 2, 4, 8, 16 and
+  at most 30 (`429`), and turns away every try, the right one too, until the wait is over. After 20
+  in a row (`LOCK_AFTER`) password sign-in stops (`locked`) until `unlock()` on this computer, or a
+  new password. The count and the end of the wait (`wrong`, `waitUntil`) are saved in the file, so a
+  restart changes neither; a wait that would end more than 30 minutes from now (the clock went back)
+  is cut to 30 minutes. A right password clears both. Text longer than 800 characters counts as
+  wrong without hashing.
+- **Devices:** `addDevice({ name, via })` makes a pass, `d.` and 32 random bytes in base64url, and
+  answers `{ pass, device }`; the pass goes only into that browser's cookie. `devices.json` keeps
+  `{ v: 1, devices: [{ id, hash, name, via, at, seen }] }`: a 12-character id, the pass's SHA-256 in
+  hex, a name (at most 60 characters, no control characters), `'password'` or `'key'`, and when it
+  signed in and was last used. `findDevice(pass)` finds a device by that hash and moves `seen` on;
+  `seen` is saved at most every 10 minutes. At most 50 devices: the one not used for the longest
+  makes room. A list that cannot be read starts empty, and `devicesProblem()` says so.
+- `removeDevice(id)` and `removeAllDevices()` answer `{ removed, saved }`. A sign-out that could not
+  be saved works until Pleni stops; the server then answers `500` with
+  `SIGNIN_MESSAGES.removeUnsaved`, so the page never says it worked.
+- **The files are the truth.** Another Pleni on the same settings folder may change them, so before
+  each read or change Pleni compares the file's inode, size and change time with what it last read
+  or wrote, and reads it again when they differ. A password changed, a device signed out, or a
+  wrong try in one Pleni counts in the other at once.
+- Both files are written with mode 0600 through a temp file (`renameWithRetry`). Without `file`
+  (tests, the demo) both live in memory only.
+
+## Wi-Fi access (`src/lan.js`)
+
+```js
+export function isIPv4(ip)  // -> true for a dotted IPv4 address
+export function isHomeAddress(ip)  // -> true for 10.x, 172.16-31.x and 192.168.x (RFC 1918) only
+export function homeAddresses(interfaces)  // -> [{ address, name }], likeliest first
+export function createLan({ makeServer, isOn, allowed, port, addresses, every })  // -> { start, refresh, close, state, serving, present, urls }
+```
+
+- **On** (`isOn`) when `remote.lan` is true, a password is set, and it is not the demo. Removing
+  the password or turning it off closes the listeners and their connections.
+- **Only the chosen addresses.** Pleni listens on an address only when it is both one of this
+  computer's home-network addresses now (`homeAddresses`) and in `remote.lanAddresses` (`allowed`).
+  On another network (a café, a hotel, a work VPN) the computer has another address, so Pleni does
+  not answer there until the person chooses that address on this computer.
+- `homeAddresses()` takes the IPv4 addresses of `os.networkInterfaces()` that are not internal and
+  are home-network ones: 192.168.x first, then 10.x, then 172.16-31.x, each with real adapters
+  before virtual ones (names such as vEthernet, VirtualBox, VMware, Docker, WSL, Tailscale). It never
+  takes a public address, a Tailscale (100.64.x) one, IPv6, or loopback.
+- `refresh()` starts one listener (`makeServer()`) per wanted address, on Pleni's own port
+  (`port()`), and stops the ones no longer wanted. Calls wait for each other. A listener that
+  fails, when it starts or later, keeps its error code for Settings and is started again at the
+  next look; an error never stops Pleni. `start()` looks every 30 seconds (an unref'd timer), since
+  an address can come and go when the Wi-Fi reconnects.
+- `state()` is `{ on, addresses: [{ address, name, url, ok, error }], others: [{ address, name }] }`,
+  where `url` is `http://<address>:<port>/` once it listens, and `others` are this computer's
+  home-network addresses Pleni does not answer on. `serving(address)` is true while it listens and
+  Wi-Fi access is on; `present()` is `homeAddresses()` now; `urls()` lists the working addresses.
+
 ## Server (`src/server.js`)
 
 ```js
 export function newKey()  // -> 43 random base64url characters (32 bytes)
-export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess, github, modelSaver, sender, asks, hookSaver, hookKey })  // -> http.Server
+export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess, github, modelSaver, sender, asks, hookSaver, hookKey, signin, lanAddresses, lanPort })  // -> http.Server
 export function keyFile(settingsPath)  // -> the "key" file next to the settings file
 export function readKeyFile(file, { tries, pause, read })  // -> { key } | { missing: true } | { problem: 'damaged' | <error code> }
 export function keyFileError(file, problem)  // -> Error with code 'PLENI_KEY_FILE' and a plain message
 export function loadOrCreateKey(file, { renew, tries, pause })  // -> { key, saved }; throws keyFileError
-export async function start({ port, configFile, demo, open, renewKey })  // -> { server, url, key, keySaved, close }
+export async function start({ port, configFile, demo, open, renewKey })  // -> { server, url, key, keySaved, remote, home, close }
 ```
 
-- Bind `127.0.0.1` only.
+- Bind `127.0.0.1`. With Wi-Fi access on (see Wi-Fi access), more listeners answer on this
+  computer's home-network addresses with the same handler. Their connections are marked
+  (`homeSockets`), so the gates never take them for this computer, whatever they send.
+  `createServer({ signin })` takes the sign-in store (`createSignin()`, in memory, when left out;
+  `start()` passes one kept next to the settings file, and the demo one in memory), and
+  `lanAddresses` and `lanPort` let tests stand in for this computer's addresses and port.
+  `start()` waits for the Wi-Fi listeners and returns their addresses as `home` (`http://<address>:<port>/`).
 - **Host gate:** allow `localhost`, `127.0.0.1` and `[::1]` with any port. Any other host is allowed
   only when it is listed in `remote.hosts` and the request's `Tailscale-User-Login` header is listed
   in `remote.tailscaleUsers` (both compared lower-case). Otherwise `403`: JSON `{ error }` for
   `/api/` paths, and for a page a plain-text answer that says to choose Allow in Settings → Devices
-  on the computer that runs Pleni. This also blocks DNS rebinding. A refused request whose host is
+  on the computer that runs Pleni. This also blocks DNS rebinding. A connection on a Wi-Fi address
+  is allowed only when its Host is that very address (`req.socket.localAddress`, without a
+  `::ffff:` start) and Pleni serves it now (`lan.serving`): the loopback names, Tailscale names and
+  every other name are refused there, and a page gets plain words that point to Settings → Devices.
+  A refused visit on a Wi-Fi address is never kept as a turned-away device: anyone there can send
+  Tailscale's headers. A refused request whose host is
   a Tailscale name (`<machine>.<tailnet>.ts.net`, which no web site can point at this computer) and
   that carries a `Tailscale-User-Login` of the form `name@domain` is kept as a turned-away device
   `{ host, login, at }`: in memory only, the newest 5, one per host and login.
 - **Key gate:** the host gate stops web sites, but every account and program on the computer can
-  reach `127.0.0.1` and send any header, Tailscale's included. So every API request also needs a key.
+  reach `127.0.0.1` and send any header, Tailscale's included. So every API request also needs the
+  key, or the pass of a device that signed in (`signin.findDevice`, see Signing in).
   Demo mode always uses a throw-away key. `url` is `http://localhost:<port>/?t=<key>`, which the CLI
   prints and `--open` opens. `createServer` takes the key (letters, digits, `-`, `_`; at least 16;
   a new one when left out) and keeps only its SHA-256.
   - `GET`/`HEAD /?t=<key>` answers `303` to `/`. When the key is right it also sets
     `pleni-<local port>=<key>; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict` (one name per port, so two Plenis
     do not overwrite each other). A wrong key gets the redirect without a cookie.
-  - Every `/api/` route except `/api/health` needs that cookie, compared in constant time (SHA-256
-    of both, then `timingSafeEqual`), after the method check. Without it: `401` with a plain
-    message. Remote requests need it too: the Tailscale headers prove nothing on their own.
+  - Every `/api/` route except `/api/health` and `/api/signin` needs that cookie, after the method
+    check: the key, compared in constant time (SHA-256 of both, then `timingSafeEqual`), or a
+    device's pass (`d.` and 43 base64url characters), found by its SHA-256. Without it: `401` with
+    a plain message. Remote requests need it too: the Tailscale headers prove nothing on their own.
+  - **The key never works on a Wi-Fi address**, which has no padlock: there only a device's pass
+    counts, `/?t=<key>` sets no cookie, and the sign-in box refuses the key (`401`, without counting
+    a wrong try). A pass can be signed out; the key cannot.
   - The page files and `/brand/` need no key; they hold no session data.
 - **Key file:** `start()` reads the key from the `key` file next to the settings file (`keyFile`)
   before it starts anything else. The key never changes on its own, because a new key would break
@@ -1228,7 +1327,10 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   - A key file that still cannot be read, or that does not hold a key, is never replaced:
     `loadOrCreateKey` throws `keyFileError`, and the CLI prints its message and stops with exit 1.
 - **`--url`** (CLI): prints the plain address `http://localhost:<port>/`, one `https://<host>/` line
-  per `remote.hosts` entry, the key, and the sign-in link `http://localhost:<port>/?t=<key>`. The
+  per `remote.hosts` entry, with `remote.lan` on and a `password` file one `On this Wi-Fi:
+  http://<address>:<port>/` line per `homeAddresses()` entry that is in `remote.lanAddresses`, the
+  key, and the sign-in link
+  `http://localhost:<port>/?t=<key>`. The
   port is `--port`, else `PLENI_PORT`, else the settings. It reads the settings and the key file
   (`readKeyFile`), starts nothing and writes nothing. No key file yet, or one that cannot be used,
   prints a plain message and exits 1; so does `--demo`, whose key does not last.
@@ -1236,15 +1338,16 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`,
   `Cross-Origin-Resource-Policy: same-origin`. HTML also gets
   `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`.
-- **Routes:** `GET /` (index.html; `/?t=<key>` redirects, see above), `GET /app.js`, `GET /styles.css`, `GET /brand/<file>` (names
+- **Routes:** `GET /` (index.html; `/?t=<key>` redirects, see above), `GET /app.js`, `GET /qr.js`, `GET /styles.css`, `GET /brand/<file>` (names
   `[a-z0-9._-]+`, extensions png, svg, ico, webp; resolved inside `public/brand` only),
   `GET /favicon.ico`, `GET /api/health`, `GET /api/snapshot` (weak ETag, `304` on match),
   `GET /api/session?key=<nodeKey>&since=<offset>`, `GET /api/settings`, `POST /api/settings`,
   `POST /api/placement`, `POST /api/dismiss`, `POST /api/watch`, `POST /api/open`,
   `GET /api/rollover?key=<nodeKey>`, `POST /api/rollover`, `POST /api/new`, `POST /api/teleport`,
   `GET /api/send?key=<nodeKey>`, `POST /api/send`, `POST /api/hook`, `POST /api/answer`,
-  `POST /api/answering`, `GET /api/hooks`, `POST /api/hooks`,
-  `GET /api/devices`, `GET /api/github`, `POST /api/github/merge`, `GET /api/mail`,
+  `POST /api/answering`, `GET /api/hooks`, `POST /api/hooks`, `POST /api/signin`,
+  `POST /api/signout`, `POST /api/password`, `POST /api/lan`, `GET /api/devices`,
+  `POST /api/devices`, `GET /api/github`, `POST /api/github/merge`, `GET /api/mail`,
   `GET /api/models`, `POST /api/models`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
 - `GET /api/snapshot` first lets go of held calls answered in a session's own window
@@ -1257,7 +1360,20 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   that starts with a dot is not read. `createServer({ version, build })` can set both for tests.
 - **POST /api/settings** requires the key cookie, `X-Pleni: settings`, `Content-Type:
   application/json`, a body of at most 64 KB, and an `Origin` (when present) whose host equals the
-  request host. The body is cleaned with `cleanSettings`, saved, and the store reloaded.
+  request host. The body is cleaned with `cleanSettings`, saved, and the store reloaded. Who may
+  open Pleni changes only on this computer: `remote.lan` and `remote.lanAddresses` always keep
+  their saved values (only `POST /api/lan` changes them), and a request that is not from this
+  computer keeps all of `remote`.
+- **POST /api/signin** `{ secret }` needs no cookie, but the host gate and the same checks as
+  `POST /api/settings`. When `secret` is the key, or a sign-in link that holds it (`?t=<key>` or
+  `&t=<key>`), or else the password (`signin.checkPassword`), Pleni adds a device
+  (`signin.addDevice`, named from the User-Agent by `deviceName`, `via` `'key'` or `'password'`)
+  and answers `{ ok: true }` with `Set-Cookie: pleni-<local port>=d.<pass>; Path=/;
+  Max-Age=31536000; HttpOnly; SameSite=Strict`. Otherwise it answers `401` (a wrong password, or no
+  password set), or `429` while Pleni waits after wrong tries (with `Retry-After` in seconds), while
+  another check runs, or when password sign-in has stopped. The key is checked first and always works.
+- **POST /api/signout** `{}` needs the cookie and passes the same checks. A device's pass is
+  removed at once (`signin.removeDevice`); either way the answer clears the cookie (`Max-Age=0`).
 - **POST /api/dismiss** `{ id: '<key>|<kind>', at: number | null }` passes the same checks; `kind`
   is one of `needs`, `error`, `question`, `review`, `alert`, `paused`, `halted`, `note`, `stopped`,
   `mail`, `mailread`. It hides that notice while its `at` is not newer than the given time (a
@@ -1277,8 +1393,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   that role back (one of `superintendent`, `coordinator`, `lead`, `worker`, or null to remove it),
   only when the session is hidden now; the session need not be on the map.
 - **POST /api/open** `{ key }` passes the same checks, then refuses (`403`) a request that is not
-  from this computer: a host other than the loopback names, or one carrying `Tailscale-User-Login`
-  or `X-Forwarded-For` (a proxy such as `tailscale serve` passed it on). `openSession` in
+  from this computer: one that came in on a Wi-Fi address, one whose connection is not from a
+  loopback address (`127.0.0.0/8` or `::1`), a host other than the loopback names, or one carrying
+  `Tailscale-User-Login` or `X-Forwarded-For` (a proxy such as `tailscale serve` passed it on). `openSession` in
   `src/open.js` makes the rest of the checks and opens the window; it answers `{ ok: true }` or
   `{ error }` with the status it gives. `platform` and `spawnProcess` (a stand-in for
   `child_process.spawn`) let tests run this without opening anything.
@@ -1354,8 +1471,26 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   repositories on the map, and its answer is sent with the status it gives.
 - **GET /api/devices** needs the key cookie and a request from this computer (like `/api/open`;
   `403` otherwise). It answers `{ addresses: ['https://<host>/' for each remote.hosts], key,
-  knocks: [{ host, login, at, allowed }] }`, the turned-away devices newest first, where `allowed`
-  is whether both are on the lists now.
+  knocks: [{ host, login, at, allowed }], password: { set, at, locked, problem }, lan: { on,
+  addresses: [{ address, name, url, ok, error }] }, devices: [{ id, name, via, at, seen }],
+  devicesProblem, demo }`: the turned-away devices newest first, where `allowed` is whether both
+  are on the lists now; `signin.passwordInfo()`; `lan.state()`; and the signed-in devices, last
+  used first (`signin.devices()`), with `signin.devicesProblem()`.
+- **POST /api/devices** `{ remove: '<device id>' | 'all' }` passes the same checks as `/api/open`
+  (this computer only) and signs out one device (`400` for an id that is not 12 base64url
+  characters, `404` when it is gone) or every one. It answers `{ ok: true, removed }`, or `500` when
+  the sign-out could not be saved.
+- **POST /api/password** passes the same checks as `/api/open` (this computer only):
+  `{ password: '<new>' }` sets or changes it (`signin.setPassword`; `400` when it does not fit),
+  `{ password: null }` removes it, and `{ unlock: true }` turns password sign-in back on. Signed-in
+  devices stay signed in. Wi-Fi access starts or stops with the password; the answer is
+  `{ ok: true, password, lan }` once it has.
+- **POST /api/lan** `{ on: true, address? }` or `{ on: false }` passes the same checks as
+  `/api/open` (this computer only), and is refused in the demo (`409`) and, to turn on, without a
+  password (`409`). On adds `address` (or, when left out, the likeliest of `lan.present()`) to the
+  end of `remote.lanAddresses`; it must be one of this computer's home-network addresses now
+  (`409` otherwise, or when there is none). Off empties the list. It saves `remote.lan` and answers
+  `{ ok: true, lan }` once the listeners have started or stopped.
 - `GET /api/settings` returns `{ settings, file, roots, nodes: [{ key, title, platform, kind }], platform }`,
   where the last `platform` is the server's `process.platform`. `nodes` holds the snapshot's nodes
   and its `hiddenSessions`, so Settings can name hidden sessions.
@@ -1483,17 +1618,39 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   or "Also change files in its folder"; Answer questions: what `GET /api/hooks` says, asked when the
   group opens, with **Connect Pleni to Claude Code**, **Connect again** or **Disconnect** posting
   `/api/hooks` (Settings' own copy of `actions.answers` follows), Claude Code's settings file, the
-  lines Connect adds in a fold, and **Hold a question for**, `answers.waitMinutes`) and **Devices** (Open Pleni on another
-  device; Other devices, the port, and where the settings file is). **Open Pleni on another
-  device**, on this computer, asks `GET /api/devices` when the group opens and every 5 seconds while
-  it shows. It shows this computer's address, the address for other devices with **Copy the
-  address** (or the three setup steps, `tailscale serve --bg <port>`, open it on the other device,
-  Allow, when none is set), the devices turned away lately with **Allow**, and **Copy the key** and
-  **Copy a sign-in link** (`https://<host>/?t=<key>`). Allow adds the host and the login to the
-  lists and saves when no other change waits to be saved; otherwise it fills them in and asks to
-  save. On another device the section only says which address the page is using and to bookmark
-  it. `#/settings/<group>` opens a group, and choosing a tab puts its
-  group in the address. **Find a setting** shows, from every group, the sections whose group
+  lines Connect adds in a fold, and **Hold a question for**, `answers.waitMinutes`) and **Devices**
+  (Password; On this Wi-Fi; Signed-in devices; Through Tailscale; Allowed through Tailscale, with
+  the port; and where the settings file is). On this computer the group asks `GET /api/devices`
+  when it opens and every 5 seconds while it shows.
+  - **Password:** with none, two `new-password` fields and **Set the password**; with one, when it
+    was set, **Change the password** (the same fields, **Save the new password**, **Cancel**) and
+    **Remove the password** (which asks first). After too many wrong tries it says password
+    sign-in is off, with **Turn password sign-in back on** and **Set a new password**. Each posts
+    `/api/password`. The page checks the length and that both fields match first. Enter in a field
+    sets the password and never saves the form, and the message line sits outside the repainted
+    box, so it never clears the fields.
+  - **On this Wi-Fi:** **Open Pleni on this Wi-Fi** (only with a password; it chooses the likeliest
+    of `lan.others` and names it), **Open Pleni here** next to each other address, and **Turn Wi-Fi
+    access off** post `/api/lan` (Settings' own copy of `remote.lan` and `remote.lanAddresses`
+    follows). While on, it shows the first working address as a QR code (`qrSvg` from
+    `public/qr.js`) and text with its adapter's name and **Copy the address**, more working
+    addresses in a fold, the addresses that failed, and the other addresses of this computer (in a
+    fold when one works). With none working, it says Pleni does not answer on this network. It also
+    says what to do when Windows asks about Node.js, and that the address has no padlock. The demo
+    says it does not open.
+  - **Signed-in devices:** each device's name, how and when it signed in, and when it was last
+    used, with **Sign out**, and **Sign out every device**; each posts `/api/devices`.
+  - **Through Tailscale:** this computer's address, the address for other devices with **Copy the
+    address** (or the three setup steps, `tailscale serve --bg <port>`, open it on the other
+    device, Allow, when none is set), the devices turned away lately with **Allow**, and **Copy
+    the key** and **Copy a sign-in link** (`https://<host>/?t=<key>`). Allow adds the host and the
+    login to the lists and saves when no other change waits to be saved; otherwise it fills them
+    in and asks to save.
+  - On another device the group shows only **This device**: which address the page is using, to
+    bookmark it, and **Sign out of this device** (`POST /api/signout`, then the page starts again).
+    The other sections and the Tailscale lists are not shown there.
+
+  `#/settings/<group>` opens a group, and choosing a tab puts its group in the address. **Find a setting** shows, from every group, the sections whose group
   name, heading, notes, rows, or a few extra words (`data-find`) have each typed word at the start
   of a word. It marks the matching rows, opens a fold that holds a match, hides the tabs, and says
   how many sections match; Esc clears it. All groups are one form, so Save sends every field.
@@ -1558,14 +1715,18 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   Settings' own copy gets the role too. Roll over's Check step offers **Hide the old session** once
   the new one is found. The counts line under the Map and List titles adds "N hidden (Settings,
   Team)".
-- **Missing key:** a `401` from the API shows the sign-in box (`#signin`) instead of "Cannot reach
-  Pleni", and the page keeps polling. The box is a form with a hidden `username` field ("Pleni") and
-  a `current-password` field, so browsers can save the key like a password. Sign in takes the key,
-  or a whole pasted address that holds `?t=<key>`, checks that it looks like a key, and opens
-  `/?t=<key>`: the server's own redirect sets the cookie and sends the browser back to `/`, so the
-  address to bookmark never holds the key. Before it goes, it sets `sessionStorage` `pleni.signin`;
-  if the page comes back still locked, the box says the key did not work. The flag is cleared once
-  the page is live. The box takes the focus only when nothing else has it.
+- **Signing in:** a `401` from the API shows the sign-in box (`#signin`, "Sign in to Pleni")
+  instead of "Cannot reach Pleni", and the page keeps polling; the status line says "Sign in
+  needed". The box is a form with a hidden `username` field ("Pleni") and a `current-password`
+  field, so browsers can save the password. Sign in posts what was typed (the password, the key, or
+  a pasted sign-in link) to `/api/signin`, then opens `/` again; a refusal shows the server's
+  plain message under the field. On a plain `http:` page of another device (the Wi-Fi address) the
+  box does not say the key works. The box takes the focus only when nothing else has it.
+- **QR codes** (`public/qr.js`): `qrCode(text, { mask })` makes a byte-mode code with error
+  correction level M, versions 1 to 10 (at most `QR_MAX_BYTES`, 213 bytes, of UTF-8; longer throws a
+  `RangeError`), picking the mask with the standard's penalty rules, as in Project Nayuki's
+  generator. `qrSvg(text, { label })` draws it black on white, with a four-module quiet zone and
+  `role="img"`.
 - **Focus:** keyboard focus is never left under the sticky app bar or the Settings button row: the
   page scrolls the focused control clear of both (WCAG 2.4.11), and `scroll-padding-top` follows
   the app bar's height.

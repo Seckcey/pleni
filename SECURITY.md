@@ -31,18 +31,30 @@ Please use made-up data in your report. Do not send real session files.
 
 These are Pleni's promises, in plain words. A way around any of them is a vulnerability:
 
-- **Only your computer can reach it.** Pleni listens only on `127.0.0.1`. It answers only when the
+- **Only your computer can reach it.** Pleni listens on `127.0.0.1`. It answers only when the
   host name is `localhost`, `127.0.0.1`, or `[::1]`, or when the host name is on `remote.hosts`
   **and** the `Tailscale-User-Login` header is on `remote.tailscaleUsers`. Anything else gets
-  `403`. A way past this check, including DNS rebinding, is a vulnerability.
+  `403`. With Wi-Fi access turned on and a password set, it also listens on the home-network
+  addresses of this computer (`10.x`, `172.16.x` to `172.31.x`, `192.168.x`) that were chosen on
+  this computer, and on nothing else, and answers there only when the host name is that same
+  address. Pleni's key never works on those addresses; only a device's pass does. A way past these
+  checks, including DNS rebinding, or a way to make Pleni listen on another address, is a
+  vulnerability.
 - **Only the person who started it can use it.** Other accounts on the same computer can reach
   `127.0.0.1` too, and can send any header they like. So every `/api/` request except
   `/api/health` also needs the secret key that Pleni keeps in its settings folder (file `key`, made once,
   replaced with `--new-key`) and prints in its
-  address (`/?t=<key>`). The browser keeps it as an `HttpOnly`, `SameSite=Strict` cookie for a year, and
-  Pleni compares it in constant time. Without it the answer is `401`. A way to read session data
-  or change settings without the key, from another account or another program, is a
-  vulnerability.
+  address (`/?t=<key>`), or a pass that a device gets by signing in with the key or the password
+  you set. The browser keeps either as an `HttpOnly`, `SameSite=Strict` cookie for a year. Pleni
+  compares the key in constant time, and keeps only a SHA-256 of each pass (`devices.json`) and
+  only an scrypt hash of the password (`password`). Without one the answer is `401`. A way to read
+  session data or change settings without the key, the password or a pass, from another account,
+  another program or another device, is a vulnerability.
+- **Guessing the password is slow.** Every wrong password counts, one check at a time: after 5 in
+  a row Pleni waits from 1 to 30 minutes, and after 20 it stops taking the password until it is
+  turned back on at the computer. The count and the wait are saved, so a restart resets neither,
+  and two Plenis on one settings folder share them. A way to make more guesses than that, or to
+  keep using a pass after its device was signed out and Pleni said so, is a vulnerability.
 - **It only reads.** Pleni writes nowhere on your computer except its own settings folder, and it
   never stops a session. It sends a session nothing but Roll over's two fixed messages and, with
   **Send messages** turned on, a message you type in a session's Chat tab on this computer: one
@@ -65,10 +77,12 @@ These are Pleni's promises, in plain words. A way around any of them is a vulner
 - **Session text stays text.** Text from session files is shown as plain text and never run as
   code in the page. The page allows only its own scripts and styles. A way to run a script
   through session content, a file name, or a setting is a vulnerability.
-- **Settings change only on purpose.** Saving settings needs the key, the `X-Pleni: settings`
-  header, a JSON body of at most 64 KB, and, when the browser sends one, an `Origin` that matches
-  the host. A way for another web site or another account to change Pleni's settings is a
-  vulnerability.
+- **Settings change only on purpose.** Saving settings needs the key or a pass, the `X-Pleni:
+  settings` header, a JSON body of at most 64 KB, and, when the browser sends one, an `Origin` that
+  matches the host. Who may open Pleni (the Tailscale lists, Wi-Fi access, the password, and the
+  signed-in devices) changes only from the computer that runs Pleni. A way for another web site or
+  another account to change Pleni's settings, or for another device to change who may open Pleni,
+  is a vulnerability.
 - **It serves only its own files.** Pictures under `/brand/` come only from Pleni's own `brand`
   folder. A way to read any other file through the server is a vulnerability.
 - **"None" means none.** With `content` set to `none`, no session text, tool details, or mailbox

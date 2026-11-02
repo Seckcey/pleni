@@ -11,6 +11,7 @@ import { OPEN_MESSAGES } from '../src/open.js';
 import { ROLL_MESSAGES } from '../src/rollover.js';
 import { SEND_MESSAGES, createSender } from '../src/send.js';
 import { browserCommand, createServer, keyFile, loadOrCreateKey, newKey, readBuild, readKeyFile } from '../src/server.js';
+import { SIGNIN_MESSAGES, createSignin } from '../src/signin.js';
 
 const CSP = "default-src 'none'; script-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; " +
   "img-src 'self' data:; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; " +
@@ -44,6 +45,7 @@ function makePublicDir(t) {
   fs.mkdirSync(path.join(publicDir, 'brand'), { recursive: true });
   fs.writeFileSync(path.join(publicDir, 'index.html'), '<!doctype html><title>test page</title>');
   fs.writeFileSync(path.join(publicDir, 'app.js'), 'export const app = 1;\n');
+  fs.writeFileSync(path.join(publicDir, 'qr.js'), 'export const qr = 1;\n');
   fs.writeFileSync(path.join(publicDir, 'styles.css'), 'body { margin: 0; }\n');
   fs.writeFileSync(path.join(publicDir, 'brand', 'logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
   fs.writeFileSync(path.join(publicDir, 'brand', 'mark-2.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
@@ -122,6 +124,10 @@ async function startServer(t, options = {}) {
     ...(options.github ? { github: options.github } : {}),
     ...(options.sender ? { sender: options.sender } : {}),
     ...(options.hookKey ? { hookKey: options.hookKey } : {}),
+    ...(options.signin ? { signin: options.signin } : {}),
+    // Tests never look at this computer's real network: no Wi-Fi address unless a test stands one in.
+    lanAddresses: options.lanAddresses ?? (() => []),
+    lanPort: 0,
     ...(options.useFileSettings
       ? {}
       : { getSettings: memory.getSettings, saveSettings: memory.saveSettings.bind(memory) }),
@@ -441,6 +447,7 @@ test('the page files are served with the right types', async (t) => {
   const expect = [
     ['/', 'text/html; charset=utf-8', 'index.html'],
     ['/app.js', 'text/javascript; charset=utf-8', 'app.js'],
+    ['/qr.js', 'text/javascript; charset=utf-8', 'qr.js'],
     ['/styles.css', 'text/css; charset=utf-8', 'styles.css'],
     ['/brand/logo.svg', 'image/svg+xml', 'brand/logo.svg'],
     ['/brand/mark-2.png', 'image/png', 'brand/mark-2.png'],
@@ -1158,7 +1165,7 @@ test('the devices list needs the key and works only on this computer', async (t)
     assertPlainError(res, 403);
     assert.equal(res.json.key, undefined);
   }
-  assertPlainError(await request(port, { method: 'POST', path: '/api/devices' }), 405);
+  assertPlainError(await request(port, { method: 'PUT', path: '/api/devices' }), 405);
 });
 
 // ---- New agent ----
@@ -1857,4 +1864,328 @@ test('Connect adds Pleni\'s hooks to Claude Code\'s settings and turns answering
   assert.equal(memory.state.settings.actions.answers, false);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8')), { model: 'opus' });
   assertPlainError(await answerReq(port, '/api/hooks', { connect: 'yes' }), 400);
+});
+
+// ---- signing in with a password, and Wi-Fi access ----
+
+// A small scrypt cost keeps these tests fast.
+const SIGNIN_COST = { N: 2 ** 10, r: 8, p: 1 };
+const PASSWORD = 'correct horse battery';
+const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/19.0 Mobile/15E148 Safari/604.1';
+const FROM_PHONE = { host: 'box.example.ts.net', 'tailscale-user-login': 'ada@example.com' };
+const TAILSCALE = { remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'] } };
+
+async function withPassword() {
+  const signin = createSignin({ cost: SIGNIN_COST });
+  await signin.setPassword(PASSWORD);
+  return signin;
+}
+
+const pageReq = (port, urlPath, body, headers = {}) => request(port, {
+  method: 'POST',
+  path: urlPath,
+  headers: { 'content-type': 'application/json', 'x-pleni': 'settings', ...headers },
+  body: JSON.stringify(body),
+});
+
+const signInReq = (port, secret, headers = {}) => pageReq(port, '/api/signin', { secret }, { cookie: undefined, 'user-agent': IPHONE, ...headers });
+
+// "pleni-<port>=d.<pass>" from a sign-in answer.
+function passFrom(res) {
+  const cookie = String(res.headers['set-cookie'] ?? '');
+  return /^(pleni-\d+=d\.[A-Za-z0-9_-]{43});/.exec(cookie)?.[1] ?? null;
+}
+
+test('signing in with the password gives this browser a pass of its own, which works like the key', async (t) => {
+  const signin = await withPassword();
+  const { port } = await startServer(t, { signin, settings: TAILSCALE });
+  const res = await signInReq(port, PASSWORD, FROM_PHONE);
+  assert.equal(res.status, 200, res.text);
+  assert.deepEqual(res.json, { ok: true });
+  assert.match(String(res.headers['set-cookie']), new RegExp(`^pleni-${port}=d\\.[A-Za-z0-9_-]{43}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict$`));
+  const cookie = passFrom(res);
+  assert.equal((await request(port, { path: '/api/snapshot', headers: { ...FROM_PHONE, cookie } })).status, 200);
+  assert.deepEqual(signin.devices().map((d) => [d.name, d.via]), [['iPhone, Safari', 'password']]);
+  // The pass is not the key: it does not open the key's sign-in link.
+  assert.notEqual(cookie, keyCookie(port));
+});
+
+test('the sign-in box also takes the key, or a sign-in link that holds it', async (t) => {
+  const signin = createSignin({ cost: SIGNIN_COST });
+  const { port } = await startServer(t, { signin });
+  for (const secret of [TEST_KEY, ` ${TEST_KEY} `, `https://box.example.ts.net/?t=${TEST_KEY}`, `http://localhost:${port}/?a=1&t=${TEST_KEY}#x`]) {
+    const res = await signInReq(port, secret);
+    assert.equal(res.status, 200, secret);
+    assert.ok(passFrom(res), secret);
+  }
+  assert.deepEqual([...new Set(signin.devices().map((d) => d.via))], ['key']);
+  // Without a password, anything else is refused with how to set one.
+  const res = await signInReq(port, 'not the key at all');
+  assertPlainError(res, 401);
+  assert.equal(res.json.error, SIGNIN_MESSAGES.noPassword);
+  assert.equal(res.headers['set-cookie'], undefined);
+  assertPlainError(await signInReq(port, `https://box.example.ts.net/?t=${TEST_KEY}x`), 401);
+});
+
+test('a wrong password is refused, and many wrong tries are slowed down; the key still works', async (t) => {
+  const { port } = await startServer(t, { signin: await withPassword() });
+  for (let i = 1; i < 5; i++) {
+    const res = await signInReq(port, 'wrong password');
+    assertPlainError(res, 401);
+    assert.equal(res.json.error, SIGNIN_MESSAGES.wrong);
+  }
+  let res = await signInReq(port, 'wrong password');
+  assertPlainError(res, 429);
+  assert.equal(res.headers['retry-after'], '60');
+  res = await signInReq(port, PASSWORD);
+  assertPlainError(res, 429);
+  assert.equal(res.headers['set-cookie'], undefined);
+  assert.equal((await signInReq(port, TEST_KEY)).status, 200);
+});
+
+test('signing in needs the page itself, and a host Pleni answers', async (t) => {
+  const { port } = await startServer(t, { signin: await withPassword() });
+  assertPlainError(await signInReq(port, PASSWORD, { 'x-pleni': undefined }), 403);
+  assertPlainError(await signInReq(port, PASSWORD, { origin: 'https://attacker.example' }), 403);
+  assertPlainError(await signInReq(port, PASSWORD, { host: 'attacker.example' }), 403);
+  assertPlainError(await request(port, { path: '/api/signin', headers: { cookie: undefined } }), 405);
+  assert.equal((await signInReq(port, PASSWORD, { origin: `http://localhost:${port}` })).status, 200);
+});
+
+test('signing out ends that pass at once, and clears the cookie', async (t) => {
+  const signin = await withPassword();
+  const { port } = await startServer(t, { signin, settings: TAILSCALE });
+  const cookie = passFrom(await signInReq(port, PASSWORD, FROM_PHONE));
+  const out = await pageReq(port, '/api/signout', {}, { ...FROM_PHONE, cookie });
+  assert.equal(out.status, 200);
+  assert.deepEqual(out.headers['set-cookie'], [`pleni-${port}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict`]);
+  assert.deepEqual(signin.devices(), []);
+  assertPlainError(await request(port, { path: '/api/snapshot', headers: { ...FROM_PHONE, cookie } }), 401);
+  assertPlainError(await pageReq(port, '/api/signout', {}, { cookie: undefined }), 401);
+  // Signing out with the key only clears this browser's cookie.
+  assert.equal((await pageReq(port, '/api/signout', {})).status, 200);
+});
+
+test('Settings lists the signed-in devices and signs one out, only on this computer', async (t) => {
+  const signin = await withPassword();
+  const { port } = await startServer(t, { signin, settings: TAILSCALE });
+  const phone = passFrom(await signInReq(port, PASSWORD, FROM_PHONE));
+  const tablet = passFrom(await signInReq(port, PASSWORD, FROM_PHONE));
+  const list = (await request(port, { path: '/api/devices' })).json;
+  assert.deepEqual(list.password, { set: true, at: signin.passwordInfo().at, locked: false, problem: null });
+  assert.equal(list.devices.length, 2);
+  assert.deepEqual(Object.keys(list.devices[0]).sort(), ['at', 'id', 'name', 'seen', 'via']);
+  assert.equal(list.devicesProblem, null);
+  assert.deepEqual(list.lan, { on: false, addresses: [], others: [] });
+  assertPlainError(await pageReq(port, '/api/devices', { remove: list.devices[0].id }, { ...FROM_PHONE, cookie: phone }), 403);
+  assertPlainError(await pageReq(port, '/api/devices', { remove: 'x' }), 400);
+  assertPlainError(await pageReq(port, '/api/devices', { remove: 'AAAAAAAAAAAA' }), 404);
+  const phoneId = signin.findDevice(phone.split('=')[1]).id;
+  assert.deepEqual((await pageReq(port, '/api/devices', { remove: phoneId })).json, { ok: true, removed: 1 });
+  assertPlainError(await request(port, { path: '/api/snapshot', headers: { ...FROM_PHONE, cookie: phone } }), 401);
+  assert.equal((await request(port, { path: '/api/snapshot', headers: { ...FROM_PHONE, cookie: tablet } })).status, 200);
+  assert.deepEqual((await pageReq(port, '/api/devices', { remove: 'all' })).json, { ok: true, removed: 1 });
+  assertPlainError(await request(port, { path: '/api/snapshot', headers: { ...FROM_PHONE, cookie: tablet } }), 401);
+});
+
+test('the password is set, changed, turned back on and removed only on this computer', async (t) => {
+  const signin = createSignin({ cost: SIGNIN_COST });
+  const { port } = await startServer(t, { signin, settings: TAILSCALE });
+  let res = await pageReq(port, '/api/password', { password: PASSWORD });
+  assert.equal(res.status, 200, res.text);
+  assert.equal(res.json.password.set, true);
+  assert.deepEqual(res.json.lan, { on: false, addresses: [], others: [] });
+  const phone = passFrom(await signInReq(port, PASSWORD, FROM_PHONE));
+  for (const body of [{ password: 'from the phone' }, { password: null }, { unlock: true }]) {
+    res = await pageReq(port, '/api/password', body, { ...FROM_PHONE, cookie: phone });
+    assertPlainError(res, 403);
+  }
+  assertPlainError(await pageReq(port, '/api/password', { password: 'short' }), 400);
+  assertPlainError(await pageReq(port, '/api/password', { password: 5 }), 400);
+  assertPlainError(await pageReq(port, '/api/password', {}), 400);
+  assert.equal((await pageReq(port, '/api/password', { unlock: true })).status, 200);
+  assert.equal((await pageReq(port, '/api/password', { password: 'another good one' })).status, 200);
+  assert.deepEqual(await signin.checkPassword('another good one'), { ok: true });
+  res = await pageReq(port, '/api/password', { password: null });
+  assert.equal(res.json.password.set, false);
+  // A device that signed in stays signed in until it is signed out.
+  assert.equal((await request(port, { path: '/api/snapshot', headers: { ...FROM_PHONE, cookie: phone } })).status, 200);
+});
+
+test('another device cannot change who may open Pleni; this computer can, except the Wi-Fi switch', async (t) => {
+  const signin = await withPassword();
+  const { port, memory } = await startServer(t, { signin, settings: TAILSCALE });
+  const phone = passFrom(await signInReq(port, PASSWORD, FROM_PHONE));
+  const wider = { ...memory.state.settings, displayName: 'Phone', remote: { hosts: ['box.example.ts.net', 'evil.example.ts.net'], tailscaleUsers: ['ada@example.com', 'eve@example.com'], lan: true, lanAddresses: ['192.168.1.66'] } };
+  assert.equal((await postSettings(port, wider, { ...FROM_PHONE, cookie: phone })).status, 200);
+  assert.equal(memory.state.settings.displayName, 'Phone');
+  assert.deepEqual(memory.state.settings.remote, { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'], lan: false, lanAddresses: [] });
+  assert.equal((await postSettings(port, wider)).status, 200);
+  assert.deepEqual(memory.state.settings.remote.hosts, ['box.example.ts.net', 'evil.example.ts.net']);
+  assert.equal(memory.state.settings.remote.lan, false);
+  assert.deepEqual(memory.state.settings.remote.lanAddresses, []);
+});
+
+// A stand-in for this computer's Wi-Fi address: 127.0.0.1 on a port of its own.
+const WIFI = () => [{ address: '127.0.0.1', name: 'Wi-Fi' }];
+
+async function wifiServer(t, options = {}) {
+  const started = await startServer(t, { lanAddresses: WIFI, ...options });
+  const on = await pageReq(started.port, '/api/lan', { on: true });
+  assert.equal(on.status, 200, on.text);
+  const [entry] = on.json.lan.addresses;
+  assert.equal(entry.ok, true);
+  const wifi = Number(new URL(entry.url).port);
+  t.after(() => pageReq(started.port, '/api/lan', { on: false }).catch(() => {}));
+  return { ...started, wifi, entry };
+}
+
+const atWifi = (wifi) => ({ host: `127.0.0.1:${wifi}`, cookie: undefined });
+
+test('Wi-Fi access needs a password, and is turned on only on this computer', async (t) => {
+  const signin = createSignin({ cost: SIGNIN_COST });
+  const { port, memory } = await startServer(t, { signin, lanAddresses: WIFI, settings: TAILSCALE });
+  let res = await pageReq(port, '/api/lan', { on: true });
+  assertPlainError(res, 409);
+  assert.match(res.json.error, /Set a password first/);
+  await signin.setPassword(PASSWORD);
+  const phone = passFrom(await signInReq(port, PASSWORD, FROM_PHONE));
+  assertPlainError(await pageReq(port, '/api/lan', { on: true }, { ...FROM_PHONE, cookie: phone }), 403);
+  assertPlainError(await pageReq(port, '/api/lan', { on: 'yes' }), 400);
+  res = await pageReq(port, '/api/lan', { on: true });
+  assert.equal(res.status, 200, res.text);
+  assert.equal(memory.state.settings.remote.lan, true);
+  assert.equal(res.json.lan.on, true);
+  assert.deepEqual(Object.keys(res.json.lan.addresses[0]).sort(), ['address', 'error', 'name', 'ok', 'url']);
+  assert.match(res.json.lan.addresses[0].url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
+  assert.deepEqual(memory.state.settings.remote.lanAddresses, ['127.0.0.1']);
+  const devices = (await request(port, { path: '/api/devices' })).json;
+  assert.deepEqual(devices.lan, res.json.lan);
+  res = await pageReq(port, '/api/lan', { on: false });
+  assert.deepEqual(res.json.lan, { on: false, addresses: [], others: [{ address: '127.0.0.1', name: 'Wi-Fi' }] });
+  assert.equal(memory.state.settings.remote.lan, false);
+  assert.deepEqual(memory.state.settings.remote.lanAddresses, [], 'turning it off forgets the addresses');
+});
+
+test('a phone on the Wi-Fi signs in with the password and sees the map, but cannot act', async (t) => {
+  const signin = await withPassword();
+  const { wifi } = await wifiServer(t, { signin, settings: { actions: { send: true, openTerminal: true } } });
+  assert.equal((await request(wifi, { path: '/api/health', headers: atWifi(wifi) })).status, 200);
+  assertPlainError(await request(wifi, { path: '/api/snapshot', headers: atWifi(wifi) }), 401);
+  const res = await signInReq(wifi, PASSWORD, { host: `127.0.0.1:${wifi}`, origin: `http://127.0.0.1:${wifi}` });
+  assert.equal(res.status, 200, res.text);
+  const cookie = passFrom(res);
+  assert.ok(cookie.startsWith(`pleni-${wifi}=`));
+  const phone = { host: `127.0.0.1:${wifi}`, cookie };
+  assert.equal((await request(wifi, { path: '/api/snapshot', headers: phone })).status, 200);
+  assertPlainError(await request(wifi, { path: '/api/devices', headers: phone }), 403);
+  assertPlainError(await pageReq(wifi, '/api/send', { key: SESSION_KEY, text: 'hi', id: 'a1' }, phone), 403);
+  assertPlainError(await pageReq(wifi, '/api/open', { key: SESSION_KEY }, phone), 403);
+  assertPlainError(await pageReq(wifi, '/api/lan', { on: false }, phone), 403);
+  assertPlainError(await pageReq(wifi, '/api/password', { password: 'take it over' }, phone), 403);
+});
+
+test('Pleni\'s key never works on a Wi-Fi address, which has no padlock', async (t) => {
+  const signin = await withPassword();
+  const { wifi } = await wifiServer(t, { signin });
+  const at = { host: `127.0.0.1:${wifi}` };
+  // Not as a cookie,
+  assertPlainError(await request(wifi, { path: '/api/snapshot', headers: { ...at, cookie: keyCookie(wifi) } }), 401);
+  // not from a sign-in link,
+  const link = await request(wifi, { path: `/?t=${TEST_KEY}`, headers: { ...at, cookie: undefined } });
+  assert.equal(link.status, 303);
+  assert.equal(link.headers['set-cookie'], undefined);
+  // and not in the sign-in box, where it does not count as a wrong password either.
+  for (const secret of [TEST_KEY, `http://127.0.0.1:${wifi}/?t=${TEST_KEY}`]) {
+    const res = await signInReq(wifi, secret, at);
+    assertPlainError(res, 401);
+    assert.match(res.json.error, /key does not work on the Wi-Fi address/);
+  }
+  assert.deepEqual(signin.devices(), []);
+  assert.equal((await signInReq(wifi, PASSWORD, at)).status, 200, 'no wait started');
+});
+
+test('a visit on the Wi-Fi can never show up as a turned-away Tailscale device', async (t) => {
+  const { port, wifi } = await wifiServer(t, { signin: await withPassword() });
+  const fake = { host: 'pc.evil.ts.net', 'tailscale-user-login': 'eve@example.com', cookie: undefined };
+  assert.equal((await request(wifi, { path: '/', headers: fake })).status, 403);
+  assert.equal((await request(wifi, { path: '/api/health', headers: fake })).status, 403);
+  assert.deepEqual((await request(port, { path: '/api/devices' })).json.knocks, []);
+  // The same visit passed on to 127.0.0.1, as tailscale serve does, is listed.
+  assert.equal((await request(port, { path: '/', headers: fake })).status, 403);
+  assert.deepEqual((await request(port, { path: '/api/devices' })).json.knocks.map((k) => k.login), ['eve@example.com']);
+});
+
+test('Wi-Fi access answers only on the addresses chosen on this computer', async (t) => {
+  const signin = await withPassword();
+  const addresses = [{ address: '127.0.0.1', name: 'Wi-Fi' }, { address: '192.0.2.1', name: 'Hotel Wi-Fi' }];
+  const { port, memory } = await startServer(t, { signin, lanAddresses: () => addresses });
+  assertPlainError(await pageReq(port, '/api/lan', { on: true, address: '192.168.77.77' }), 409);
+  assertPlainError(await pageReq(port, '/api/lan', { on: true, address: 5 }), 400);
+  // Without an address, the likeliest one is chosen.
+  let res = await pageReq(port, '/api/lan', { on: true });
+  assert.equal(res.status, 200, res.text);
+  assert.deepEqual(res.json.lan.addresses.map((a) => [a.address, a.ok]), [['127.0.0.1', true]]);
+  assert.deepEqual(res.json.lan.others, [{ address: '192.0.2.1', name: 'Hotel Wi-Fi' }]);
+  // Another address is added only when chosen; this one cannot be listened on in a test.
+  res = await pageReq(port, '/api/lan', { on: true, address: '192.0.2.1' });
+  assert.deepEqual(memory.state.settings.remote.lanAddresses, ['127.0.0.1', '192.0.2.1']);
+  assert.deepEqual(res.json.lan.addresses.map((a) => [a.address, a.ok]), [['127.0.0.1', true], ['192.0.2.1', false]]);
+  await pageReq(port, '/api/lan', { on: false });
+  addresses.length = 0;
+  res = await pageReq(port, '/api/lan', { on: true });
+  assertPlainError(res, 409);
+  assert.match(res.json.error, /not on a Wi-Fi or home network/);
+});
+
+test('a sign-out that could not be saved says so', async (t) => {
+  const real = await withPassword();
+  const signin = { ...real, removeDevice: (id) => ({ removed: real.removeDevice(id).removed, saved: false }), removeAllDevices: () => ({ removed: real.removeAllDevices().removed, saved: false }) };
+  const { port } = await startServer(t, { signin, settings: TAILSCALE });
+  passFrom(await signInReq(port, PASSWORD, FROM_PHONE));
+  const [device] = real.devices();
+  let res = await pageReq(port, '/api/devices', { remove: device.id });
+  assertPlainError(res, 500);
+  assert.equal(res.json.error, SIGNIN_MESSAGES.removeUnsaved);
+  res = await pageReq(port, '/api/devices', { remove: 'all' });
+  assertPlainError(res, 500);
+});
+
+test('on a Wi-Fi address, Pleni answers only to that address, even with the key', async (t) => {
+  const { wifi } = await wifiServer(t, { signin: await withPassword() });
+  for (const host of ['localhost', `localhost:${wifi}`, '[::1]', 'attacker.example', 'box.example.ts.net']) {
+    const res = await request(wifi, { path: '/api/health', headers: { host, cookie: keyCookie(wifi) } });
+    assertPlainError(res, 403);
+  }
+  const phone = { host: `127.0.0.1:${wifi}`, cookie: passFrom(await signInReq(wifi, PASSWORD, { host: `127.0.0.1:${wifi}` })) };
+  const page = await request(wifi, { path: '/', headers: { host: 'localhost' } });
+  assert.equal(page.status, 403);
+  assert.match(page.text, /Open Pleni on this Wi-Fi/);
+  // A signed-in phone on the Wi-Fi is never this computer either.
+  assertPlainError(await request(wifi, { path: '/api/hooks', headers: phone }), 403);
+});
+
+test('turning Wi-Fi access off, or removing the password, closes the Wi-Fi address', async (t) => {
+  const signin = await withPassword();
+  const { port, wifi } = await wifiServer(t, { signin });
+  assert.equal((await request(wifi, { path: '/api/health', headers: atWifi(wifi) })).status, 200);
+  const res = await pageReq(port, '/api/password', { password: null });
+  assert.deepEqual(res.json.lan, { on: false, addresses: [], others: [{ address: '127.0.0.1', name: 'Wi-Fi' }] });
+  await assert.rejects(request(wifi, { path: '/api/health', headers: atWifi(wifi) }), { code: 'ECONNREFUSED' });
+  // A new password opens it again, on a new port in this test.
+  const back = await pageReq(port, '/api/password', { password: PASSWORD });
+  assert.equal(back.json.lan.on, true);
+  const again = Number(new URL(back.json.lan.addresses[0].url).port);
+  assert.equal((await request(again, { path: '/api/health', headers: atWifi(again) })).status, 200);
+  await pageReq(port, '/api/lan', { on: false });
+  await assert.rejects(request(again, { path: '/api/health', headers: atWifi(again) }), { code: 'ECONNREFUSED' });
+});
+
+test('the demo never opens to the Wi-Fi', async (t) => {
+  const store = fakeStore();
+  store.demo = true;
+  const signin = await withPassword();
+  const { port } = await startServer(t, { store, signin, lanAddresses: WIFI });
+  assertPlainError(await pageReq(port, '/api/lan', { on: true }), 409);
+  assert.equal((await request(port, { path: '/api/devices' })).json.demo, true);
 });

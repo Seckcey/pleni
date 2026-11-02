@@ -4,6 +4,40 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+Your phone can now open Pleni on your home Wi-Fi, without Tailscale, and every device signs in
+with a password you set, instead of a long key.
+
+### Added
+
+- **A password for Pleni.** Set it in **Settings → Devices** on your computer. Another device
+  signs in by typing it, and the browser can remember it. Pleni keeps only a scrambled form of the
+  password (an scrypt hash), never the password itself. The key still works too.
+- **Each device gets a pass of its own.** **Settings → Devices** lists the devices that signed in,
+  when, and when each was last used. **Sign out** ends one device's pass at once; **Sign out every
+  device** ends them all. Another device can also sign itself out.
+- **Open Pleni on this Wi-Fi.** Off until you turn it on, and only while a password is set. Pleni
+  then also answers on your computer's address on that network (a home-network address that starts
+  with `10.`, `172.16.` to `172.31.`, or `192.168.`), never on one the internet can reach. On
+  another network, such as a café's, your computer has another address, and Pleni does not answer
+  there until you choose **Open Pleni here**. Settings shows the address and a QR code to scan with
+  your phone's camera. Pleni prints the address when it starts (`On this Wi-Fi:`), and `--url`
+  shows it. Pleni's key does not work on the Wi-Fi address, which has no padlock; the password does.
+- **Wrong passwords slow Pleni down.** After 5 wrong tries in a row it waits a minute, then 2, 4,
+  8, 16 and at most 30 minutes. After 20 it stops taking the password until you turn it back on at
+  your computer. A restart resets neither the count nor the wait.
+
+### Changed
+
+- The sign-in box asks for the password ("Sign in to Pleni"). It still takes the key, or a pasted
+  sign-in link.
+- Only the computer that runs Pleni can change who may open it: the Tailscale lists, Wi-Fi access,
+  the password, and the signed-in devices. Before, a device that came in through Tailscale could
+  change the Tailscale lists in Settings.
+- Pleni checks where a request really comes from, not only the address it asks for, before it
+  treats it as "this computer". A request from another device can never act for this computer.
+
 ## 0.2.0 (2026-10-22)
 
 Pleni can now act when you ask, not only watch. Each action happens only when you click, and only
