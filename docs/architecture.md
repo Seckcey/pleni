@@ -83,6 +83,9 @@ src/answers.js          Answer questions: Claude Code's hooks ask Pleni first; C
 src/github.js           Live GitHub status and Merge, through the GitHub CLI, gh (opt-in)
 src/models.js           the Models page: Codex's and Claude Code's models and effort, read always, changed on request (opt-in)
 src/toml.js             a small TOML reader and one-line editor for src/models.js
+src/usage.js            Usage: tokens used in the last 7 days per tool, and Codex's plan limits, read from session files (read-only)
+src/statusline.js       Plan limits for Claude Code: Connect and Disconnect add and remove Pleni's status line (opt-in)
+src/statusline-script.mjs  the status line script that Connect copies into Pleni's folder as pleni-statusline.mjs
 src/frontmatter.js      a small reader and line editor for the settings block of a Claude Code agent file
 src/demo.js             synthetic, moving demo data (no files needed)
 src/signin.js           signing in from other devices: the password (an scrypt hash), a pass per device, the waits after wrong tries
@@ -126,7 +129,7 @@ export const DEFAULTS = {
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] }, // hosts and logins: each max 20 entries, lower-cased; lan: Wi-Fi access, true only when set to true; lanAddresses: the chosen Wi-Fi addresses, IPv4 only, the newest 10
-  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false }, // the window buttons, Send, and Answer questions (set by Connect and Disconnect); each true only when set to true
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false, limits: false }, // the window buttons, Send, Answer questions and plan limits (the last two set by Connect and Disconnect); each true only when set to true
   send: { mode: 'read' },                              // what a sent message may do: 'read' | 'edit'
   answers: { waitMinutes: 10 },                        // how long Pleni holds a question (1-60) before the session asks in its own window
   github: { live: false, merge: false, mergeMethod: 'squash' }, // Live GitHub status, the Merge button, 'squash' | 'merge' | 'rebase'
@@ -1190,6 +1193,154 @@ change; it reads an agent file again within a few seconds.
   before the closing `---`) and `removeFrontmatterKey` work like their TOML twins, and `yamlValue`
   quotes a value YAML would read another way.
 
+## Usage (`src/usage.js`)
+
+The Usage popup shows how many tokens each AI tool used, and how much of its plan is left. Pleni
+reads only files that the tools already keep on this computer. It uses no login key and calls no
+server of any AI company. It keeps only numbers and keys for telling copies apart in memory, never
+text from a session.
+
+```js
+export function createUsage({ getRoots, getSettings, now, claudeLimits, maxBytes, maxFiles })  // -> { read }
+// read({ fresh }) -> Promise<{ at, tools: { claude, codex, grok, kimi } }>, never rejects
+export function lastDays(now)  // -> { keys: ['YYYY-MM-DD' x 7], starts: [8 local midnights], start, end }
+```
+
+Each tool is `{ on, today, week, days, atLeast, limits, error }`:
+
+- `on`: the tool's source is enabled in Settings (`sources.<tool>.enabled`). A tool that is off is
+  not read; its numbers are zero.
+- `today`, `week` and each of `days`: `T = { input, output, cacheRead, cacheWrite, total }`, and
+  `total = input + output + cacheWrite`. Cache reads are shown apart and never added.
+- `days`: the last 7 local days of this computer, oldest first, today last,
+  `[{ date: 'YYYY-MM-DD', ...T }]`. A day runs from local midnight. Each record goes into the day of
+  its own time stamp, not the day of its file or folder. `week` is the sum of the 7 days.
+- `atLeast`: true when Pleni had to stop reading early (see Limits on work), so the numbers may be
+  too low.
+- `limits`: `L = { at, from, plan, windows }` or `null`. `at` is when the numbers were saved (ms),
+  `from` is `'files'` (Codex) or `'statusLine'` (Claude Code), `plan` is a string or `null`, and
+  `windows` is `[{ minutes, usedPercent, resetsAt }]` (`minutes` and `resetsAt` may be `null`;
+  `resetsAt` is in ms; `usedPercent` is 0 to 100). A window the tool did not give is left out, never
+  made up. Grok and Kimi Code save no limits, so theirs is always `null`.
+  **Claude Code's hook:** `createUsage({ claudeLimits })` takes an optional function (it may be
+  async) that returns an `L` with `from: 'statusLine'`, or `null`. The server gives it
+  `statusLineLimits(dir)` while `actions.limits` is on (see Plan limits for Claude Code below).
+  Without it, Claude Code has no limits. A hook that throws counts as `null`. Its answer is used
+  even when Claude Code's session folder is missing, and it is read again on every call, also while
+  the rest of the answer is reused. Each window of a `statusLine` `L` also has a `name`
+  (`'five_hour' | 'seven_day' | 'spend_limit'`); `spend_limit` has `minutes: null`.
+- `error`: plain words when the tool's folder is not set or not found, else `null`.
+
+**Which files and fields are read** (read-only; a file that cannot be read, or a bad line, is skipped):
+
+- **Claude Code:** `<claude root>/projects/**.jsonl`, which includes `<session>/subagents/*.jsonl`
+  and below, and the same under the Claude Desktop root when it holds that layout. Lines with
+  `type` `assistant` and `message.usage`, except `message.model` `<synthetic>`. One API message is
+  written on several lines with the same `message.id`, so calls are keyed by `message.id` (else
+  `uuid`), the largest value of each number is kept, and this holds across all files.
+  `input` is `input_tokens`, `output` is `output_tokens`, `cacheWrite` is
+  `cache_creation_input_tokens`, `cacheRead` is `cache_read_input_tokens`. The time is `timestamp`.
+- **Codex:** the `rollout-*.jsonl` files that `src/sources/codex.js` walks (`sessions/YYYY/MM/DD`
+  and `archived_sessions`; the same thread in both counts once, by the id in its file name).
+  `token_count` events: Pleni takes the growth of `info.total_token_usage` between successive events
+  in a file. An event whose total did not change counts for nothing, and a total that goes down is a
+  fresh start. A fork (`session_meta.payload.forked_from_id`) copies old events: events older than
+  the fork's own `session_meta` time stamp count for nothing and only set the starting total.
+  `input` is `input_tokens - cached_input_tokens` (not below 0), `cacheRead` is
+  `cached_input_tokens`, `output` is `output_tokens`, `cacheWrite` is 0. **Limits:** the newest
+  `token_count` event with a non-null `rate_limits` over all files, by the event's time stamp. A
+  snapshot whose `limit_id` is a non-empty string other than `codex` is ignored. `windows` come from
+  `primary` then `secondary`, each with `used_percent`, `window_minutes` and `resets_at` (seconds,
+  turned into ms); a null window is left out. `plan` is `plan_type`.
+- **Grok:** `<grok root>/sessions/<folder>/<session>/usage.json`. Each of `turns[]` counts at its
+  `endedAt`. A turn is keyed by `(endedAt, inputTokens, outputTokens, cachedReadTokens,
+  cacheCreationTokens)`, not by `turnNumber`, so history that a resume or fork copied counts once,
+  even when the copy was renumbered. `input` is `inputTokens`, `output` is `outputTokens`,
+  `cacheRead` is `cachedReadTokens`, `cacheWrite` is `cacheCreationTokens`. A `usage.json` over
+  8 MB is skipped and sets `atLeast`.
+- **Kimi Code:** `<kimi root>/sessions/<folder>/<session>/agents/<agent>/wire.jsonl` for the main
+  agent and every helper. Only lines with `type` `usage.record` count; `time` is epoch ms. A record
+  is keyed by `(time, agentId, model, the four numbers)`. `input` is `usage.inputOther`, `output` is
+  `usage.output`, `cacheRead` is `usage.inputCacheRead`, `cacheWrite` is `usage.inputCacheCreation`.
+
+**Limits on work.** Only files changed since the start of the oldest of the 7 days are read. Pleni
+remembers each file's size and where it stopped, and reads only the bytes added to a growing `.jsonl`
+since then (a last line without its newline waits). A file that got smaller or was replaced is read
+again from the start. One `read` takes at most 256 MB and 5000 files from each tool (newest files
+first); past that the tool answers with `atLeast: true` and the next read goes on from there. Files
+are read one after another with a pause between them, so the server keeps answering. The last answer
+is reused for 30 seconds, unless `fresh` is true or the folders or `sources` settings changed. One
+read at a time runs; a read asked for meanwhile gets the running one's answer.
+
+## Plan limits for Claude Code (`src/statusline.js`, `src/statusline-script.mjs`)
+
+Claude Code gives its 5-hour and weekly limits to a status line after each reply, and saves them
+nowhere. With the opt-in **Connect** (Settings, Buttons, this computer only), Pleni adds a small
+status line to Claude Code's `settings.json`. Pleni reads no login key and calls no server.
+
+```js
+export const SCRIPT_NAME = 'pleni-statusline.mjs', PREVIOUS_NAME = 'statusline.json', LIMITS_NAME = 'claude-limits.json'
+export const STATUS_MESSAGES  // the plain-words answers
+export function statusFiles(dir)  // -> { script, previous, limits }, paths in Pleni's settings folder
+export function scriptText()      // -> this version's script text (src/statusline-script.mjs)
+export function pleniCommand(scriptPath, platform, execPath)  // -> the command string, or null for an unsafe path
+export function isPleniCommand(command)  // -> true when it ends with a quoted path to pleni-statusline.mjs
+export function readStatusSetup({ root, scriptPath, platform, execPath })
+// -> { ok, error, file, found, connected, stale, previous, lines }
+export function createStatusSaver({ now })  // -> { connect(where), disconnect(where) }; where = { root, backupDir, dir, platform?, execPath? }
+export function upgradeScript({ root, dir, platform, execPath })  // -> true when it wrote the script again
+```
+
+- **Files**, all in Pleni's settings folder (next to `settings.json`): `pleni-statusline.mjs` (the
+  script), `statusline.json` (the person's own status line from before Connect, saved exactly, mode
+  0600; only there if they had one), and `claude-limits.json` (the saved limits, mode 0600).
+- **The command** Claude Code runs (`pleniCommand`): on Windows `node "<path with forward slashes>"`
+  (a quoted full path to node does not work in PowerShell); elsewhere `"<node's full path>" "<path>"`.
+  A path with a double quote, a back quote, a dollar sign or a line break (and, outside Windows, a
+  backslash) gets `null`, and Connect refuses. The settings key written is
+  `statusLine: { ...old, type: 'command', command }`, so the person's own `padding`,
+  `refreshInterval` and `hideVimModeIndicator` stay.
+- **`readStatusSetup`:** `connected` is true when `statusLine.command` is exactly Pleni's command;
+  `stale` when it is Pleni's script with another command (Pleni's folder or node moved; Connect again
+  fixes it); `previous` is true when the person has a status line that is not Pleni's, which keeps
+  showing. `lines` is the block Connect writes (`null` for an unsafe path). A `statusLine` that is
+  not an object makes `ok` false.
+- **Connect** (`connect(where)`): the same care as Answer questions. Not more than 10 changes a
+  minute (`429`); a copy of `settings.json` in `backups/` first (`claude-settings-...`); the rest of
+  the file kept, with its indent and line breaks; no change if the file changed since Pleni read it
+  (`409`). Then it writes the script (always fresh), saves the person's old `statusLine` object
+  exactly in `statusline.json` unless it is already Pleni's (and removes an old `statusline.json`
+  when there was none), and writes `settings.json`.
+- **Disconnect:** only when `statusLine` is still Pleni's, it puts back the saved object exactly, or
+  removes the key when there was none. If the person changed it meanwhile (it is not Pleni's), the
+  file is left alone and the answer has `note` (`STATUS_MESSAGES.notMine`). If it is Pleni's but
+  points at another Pleni folder's script, and this folder has no saved copy, it is also left alone,
+  with `STATUS_MESSAGES.otherFolder`. Then it removes
+  `statusline.json`, the script and `claude-limits.json`. Files in Pleni's folder are removed only
+  after `settings.json` was changed or left alone on purpose.
+- **At start** (`upgradeScript`), when `statusLine` is Pleni's current command, the script is written
+  again if its text differs from `scriptText()` (a newer Pleni). It writes only in Pleni's folder.
+- **The script** reads standard input (at most 1 MB). When `rate_limits` has at least one usable
+  window (an empty or unusable one never replaces the file already saved), it writes
+  `{ v: 1, at: <ms>, windows: [{ name: 'five_hour' | 'seven_day' | 'spend_limit', minutes: 300 | 10080
+  | null, usedPercent, resetsAt }] }` to `claude-limits.json`, through a temporary file in the same
+  folder and a rename. Only windows with two finite numbers (`used_percentage` 0 to 100,
+  `resets_at` in seconds, saved in ms) are kept. It saves and prints nothing else from the input: no
+  folder, session id or text. If `statusline.json` holds a previous command, the script runs it with
+  the same input and passes on its output and exit code, and stops it after 10 seconds. The
+  shell is the one Claude Code uses: on Windows Git Bash (`CLAUDE_CODE_GIT_BASH_PATH`, else
+  `bash.exe` in the Git folder of `git.exe` on `PATH`, else `C:/Program Files/Git/bin/bash.exe`) with
+  `-c`, else `powershell.exe -NoProfile -Command`; elsewhere `$SHELL` only when it is bash or zsh
+  (an absolute path to a file; Claude Code uses only those two), else the first file found among
+  `/bin/bash`, `/usr/bin/bash`, `/bin/zsh`, `/usr/bin/zsh`, `/bin/sh`, with `-c`. With no previous command it prints one short line, like
+  `Opus · 5-hour 24% · week 41%`. It never fails: on any error it ends with code 0.
+- **Reading** (`statusLineLimits(dir)` in `src/usage.js`): `claude-limits.json` of at most 64 KB,
+  `v` 1, only windows with valid numbers (`usedPercent` held to 0 to 100), as `{ at, from:
+  'statusLine', plan: null, windows }` or `null`. The server uses it only while `actions.limits` is on.
+- Claude Code runs a status line only in a trusted folder, and not when `disableAllHooks` is on. A
+  status line in a project's own settings wins over the user's, so no numbers may arrive then. Plans
+  other than Pro, Max and Ultra send no `rate_limits`, and a window is missing until the first reply.
+
 ## Signing in (`src/signin.js`)
 
 ```js
@@ -1270,7 +1421,7 @@ export function createLan({ makeServer, isOn, allowed, port, addresses, every })
 
 ```js
 export function newKey()  // -> 43 random base64url characters (32 bytes)
-export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess, github, modelSaver, sender, asks, hookSaver, hookKey, signin, lanAddresses, lanPort })  // -> http.Server
+export function createServer({ store, getSettings, saveSettings, publicDir, version, key, platform, spawnProcess, github, modelSaver, sender, asks, hookSaver, hookKey, signin, lanAddresses, lanPort, usage, statusSaver })  // -> http.Server
 export function keyFile(settingsPath)  // -> the "key" file next to the settings file
 export function readKeyFile(file, { tries, pause, read })  // -> { key } | { missing: true } | { problem: 'damaged' | <error code> }
 export function keyFileError(file, problem)  // -> Error with code 'PLENI_KEY_FILE' and a plain message
@@ -1348,7 +1499,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `POST /api/answering`, `GET /api/hooks`, `POST /api/hooks`, `POST /api/signin`,
   `POST /api/signout`, `POST /api/password`, `POST /api/lan`, `GET /api/devices`,
   `POST /api/devices`, `GET /api/github`, `POST /api/github/merge`, `GET /api/mail`,
-  `GET /api/models`, `POST /api/models`.
+  `GET /api/models`, `POST /api/models`, `GET /api/usage`, `GET /api/statusline`,
+  `POST /api/statusline`.
   `HEAD` mirrors `GET`. Other methods get `405`; unknown paths `404`.
 - `GET /api/snapshot` first lets go of held calls answered in a session's own window
   (`asks.settle(snap.nodes)`, see Answer questions), then sends the JSON and ETag the store made
@@ -1363,7 +1515,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   request host. The body is cleaned with `cleanSettings`, saved, and the store reloaded. Who may
   open Pleni changes only on this computer: `remote.lan` and `remote.lanAddresses` always keep
   their saved values (only `POST /api/lan` changes them), and a request that is not from this
-  computer keeps all of `remote`.
+  computer keeps all of `remote`. `actions.limits` always keeps its saved value too (only `POST
+  /api/statusline` changes it), from any device.
 - **POST /api/signin** `{ secret }` needs no cookie, but the host gate and the same checks as
   `POST /api/settings`. When `secret` is the key, or a sign-in link that holds it (`?t=<key>` or
   `&t=<key>`), or else the password (`signin.checkPassword`), Pleni adds a device
@@ -1459,6 +1612,20 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `/api/open`), `codex` is `readCodexModels` for `roots.codex` and `claude` is `readClaudeModels`
   for `roots.claude`, each with the models of that tool's sessions on the map (reviewers left out),
   or `demoModels()` and `demoClaudeModels()` in the demo. It only reads.
+- **GET /api/usage** needs the key cookie, and any signed-in device may read it (it only reads,
+  like the snapshot). It answers `{ demo, limitsOn, at, tools }`, the shape `createUsage().read()` gives (see
+  Usage) plus `limitsOn` (`settings.actions.limits`, false in the demo), with `?fresh=1` to skip the 30-second reuse. In the demo it answers `demoUsage(now)`:
+  made-up numbers, limits for Claude Code (`from: 'statusLine'`) and Codex (`from: 'files'`) and
+  none for Grok and Kimi Code; it reads no folder. `createServer({ usage })` lets tests replace it.
+- **GET /api/statusline** needs the key cookie and a request from this computer. It answers `{ on,
+  demo, ok, error, file, found, connected, stale, previous, lines }`: `on` is `settings.actions.limits`
+  and the rest is `readStatusSetup`. In the demo it answers a fixed made-up state (`on: false`,
+  not connected, made-up `lines`) and reads no file.
+- **POST /api/statusline** `{ connect: boolean }` passes the same checks as `/api/hooks` (this
+  computer only, `400` for a body that is not a boolean `connect`, refused in the demo) and calls
+  `statusSaver.connect` or `.disconnect` with the root of Claude Code and Pleni's own folder, then
+  sets `actions.limits` to `connect`. It answers `{ ok, backup, note }`. `createServer({ statusSaver })`
+  lets tests replace it.
 - **POST /api/models** `{ app: 'codex' | 'claude', tag, sergeant?, worker?, types?, add? }` (`app`
   is `codex` unless it is `claude`; the root is that tool's) passes the same checks as
   `/api/open` (this computer only), needs `settings.models.edit` (`403` otherwise), and is refused in
@@ -1510,13 +1677,51 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   this same page with `#/map?popout`, `#/list?popout` or `#/session/<encoded key>?popout`
   (`popoutFromHash`, read once at start into `S.popout`). It polls Pleni by itself, so it stays
   live. It hides the app bar, the Needs you blocks and the Pop out buttons, but keeps the notices
-  (such as "Cannot reach Pleni") and the sign-in box. It ignores address changes, and leaves alerts
+  (such as "Cannot reach Pleni"), the sign-in box and the Usage button. It ignores address changes, and leaves alerts
   to the main window (no `checkAlerts`). A link to another page of Pleni (`#/...`) opens in the
   window that opened the pop-out, or in a new tab when that window is gone. A session's window
   shows that panel as the whole page, not as a dialog: Esc does not close it, its close button
   ("Close this window") closes the window, and the window's title is the session's name. Hiding
   that session closes its window. When the browser will not close the window (a pasted or restored
   pop-out address opens a plain tab), the tab turns into Pleni's normal page at `#/map`.
+- **Usage popup:** a **Usage** button (`data-usage`, before Pop out) in the Map and List headers'
+  `.view-tools`. A pop-out window keeps it (only `[data-popout]` buttons are hidden there). It opens
+  `<dialog id="usage" aria-labelledby="usage-title">` with `showModal()`, so Esc closes it natively,
+  keyboard focus stays inside, and the close button (`data-usage-close`), a click on the dim area (only
+  when the press began there too, so a text selection that ends there does not close it), a
+  change of address, and the Settings link close it. On close, focus goes back to the button that
+  opened it (not when the person left for Settings). It shows "Reading your usage…" until
+  `GET /api/usage` answers, and a plain error when that fails or the answer is not a JSON object (with
+  the last good numbers kept, and a note, when it fails later). It asks when it opens and every 60 seconds while it is open (not
+  while the page is hidden), and stops when it closes; an answer that arrives after it closed is
+  ignored. A new answer goes through `setHtml`, so nothing is repainted when the words did not
+  change, and the scroll place and a focused link are kept. Times in it are clock times, never "5 min ago", so
+  a quiet minute changes nothing. One card for each tool whose `on` is true (a plain line when all
+  four are off), with the tool's mark and name (and a Codex plan name when it has one):
+  - **Plan limits.** One bar for each window: `role="meter"` (0 to 100, `aria-label` and
+    `aria-valuetext`) with the words in front, such as "5-hour limit: 63% used, resets at 4:30 PM"
+    or "Weekly limit: 22% used, resets Mon 9:00 AM" (a name from `window.name`, else 300 minutes is
+    the 5-hour limit and 10080 the weekly one, else "N-hour limit"; "resets at" a clock time for
+    later today, a weekday and time within 6 days, a date after that). The bar turns amber from 80%
+    and red from 95%, with the number always in words too. Under the bars: "As of 3:04 PM, from
+    Codex's own files" or "from Claude Code's status line". A window whose `resetsAt` is past shows
+    no bar, only "Reset at 4:30 PM. The new number comes with the next reply."
+  - **No limits.** Claude Code, when `limitsOn` is true: "Connected. Your limits show here after
+    Claude Code's next reply in a trusted folder (Pro, Max and Ultra plans only)." and the claude.ai
+    link. Otherwise: "Connect Claude Code to see your plan limits here." with a link to
+    `#/settings/buttons` on this computer (`LOCAL_PAGE`), or "Connect it on the computer that runs
+    Pleni." on another device, and "See them on claude.ai" (`https://claude.ai/settings/usage`,
+    `target="_blank" rel="noopener noreferrer"`). Codex: "Codex saves its limits after each reply. None
+    in the last 7 days." and a link to `https://chatgpt.com/codex/settings/usage`. Grok and Kimi Code:
+    "<Tool> does not save plan limits on this computer. In <Tool>, type /usage."
+  - **Tokens.** "Today: 1.2 million tokens" and "Last 7 days: 8.4 million tokens" (`total`; "at
+    least" in front when `atLeast`, with a note that Pleni stopped reading early), each with a line
+    "Sent 900k · written back 250k · saved to memory 40k · read again from memory 40 million (not
+    counted)" (`input`, `output`, `cacheWrite`, `cacheRead`). Numbers are in plain words: whole
+    numbers under 1000, then `k`, `million` and `billion`. A tool with an `error` shows that
+    sentence in place of its tokens.
+  - A footer: "Pleni counts tokens from the session files on this computer. It never asks the AI
+    companies. Each tool counts tokens its own way, so compare a tool with itself."
 - **Full screen:** the fourth map button (`data-zoom="full"`, `aria-pressed`), or `F` when the map
   has focus, adds `body.map-full`, which hides everything but the map, its legend and its buttons,
   and asks the browser for full screen (`document.documentElement.requestFullscreen`, so a tile's
@@ -1643,7 +1848,18 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   or "Also change files in its folder"; Answer questions: what `GET /api/hooks` says, asked when the
   group opens, with **Connect Pleni to Claude Code**, **Connect again** or **Disconnect** posting
   `/api/hooks` (Settings' own copy of `actions.answers` follows), Claude Code's settings file, the
-  lines Connect adds in a fold, and **Hold a question for**, `answers.waitMinutes`) and **Devices**
+  lines Connect adds in a fold, and **Hold a question for**, `answers.waitMinutes`; Plan limits from
+  Claude Code: what Connect does in plain words, then what `GET /api/statusline` says, asked at the
+  same times as `/api/hooks`: **On** (Pleni's status line is in Claude Code's settings), **Needs
+  Connect again** (it is from another place, or `actions.limits` is on and Pleni's status line is
+  gone, with a note when the person's own is there instead) or **Off**, with
+  **Connect plan limits**, **Connect again** or **Disconnect** posting `/api/statusline` (Settings' own
+  copy of `actions.limits` follows; a Disconnect that left the file alone shows the reason, not
+  "Pleni took its status line out"; keyboard focus moves to the box's first button when the one
+  pressed is gone), a line that says the person's own status line keeps showing
+  when there is one, Claude Code's settings file, and the lines Connect adds in a fold; on another
+  device only "Only on the computer that runs Pleni.", and in the demo "The demo has no Claude Code
+  to connect.") and **Devices**
   (Password; On this Wi-Fi; Signed-in devices; Through Tailscale; Allowed through Tailscale, with
   the port; and where the settings file is). On this computer the group asks `GET /api/devices`
   when it opens and every 5 seconds while it shows.
@@ -1790,5 +2006,7 @@ demo shows made-up pull requests for its two repositories (`demoGithub(repos, no
 made-up Codex settings (`demoModels()`, in the shape `readCodexModels` gives): sergeants on GPT-6.1 Sol
 at high effort, workers on GPT-6 Astra, and two worker types, and made-up Claude Code settings
 (`demoClaudeModels()`): sergeants on Opus at high effort, workers on Sonnet, and two worker types;
-saving them is refused. Each scripted
+saving them is refused. The Usage popup shows made-up token counts for the last 7 days and
+made-up limits for Claude Code and Codex (`demoUsage(now)`, in the shape `createUsage().read()` gives).
+Each scripted
 letter is kept once, at the last time the loop sent it, so the Mail page shows no copies.

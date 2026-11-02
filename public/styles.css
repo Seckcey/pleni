@@ -995,6 +995,38 @@ ul.kids .t { font-weight: var(--ui-weight-semibold); overflow: hidden; text-over
 .toast-text { min-width: 0; overflow-wrap: anywhere; }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 6px); } }
 
+/* ---------- Usage popup ---------- */
+
+.usage {
+  width: min(640px, calc(100vw - 24px)); max-width: none; max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px);
+  padding: 0; overflow: hidden; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius-lg);
+  background: var(--ui-surface); color: var(--ui-text-primary); box-shadow: var(--ui-elevation-3);
+}
+.usage::backdrop { background: var(--ui-scrim); }
+.usage-box { display: flex; flex-direction: column; max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); }
+.usage-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ui-space-5); padding: var(--ui-space-6) var(--ui-space-6) var(--ui-space-4); border-bottom: 1px solid var(--ui-border); }
+.usage-head h2 { margin: 0; font-size: var(--ui-font-xl); }
+.usage-head .meta { margin: var(--ui-space-1) 0 0; color: var(--ui-text-secondary); font-size: var(--ui-font-md); }
+.usage-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: var(--ui-space-5) var(--ui-space-6) var(--ui-space-6); display: grid; gap: var(--ui-space-5); align-content: start; }
+.usage-body > p { margin: 0; }
+.u-card { background: var(--ui-surface-raised); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); padding: var(--ui-space-5) var(--ui-space-6); min-width: 0; overflow-wrap: anywhere; }
+.u-name { display: flex; align-items: center; flex-wrap: wrap; gap: var(--ui-space-4); margin: 0 0 var(--ui-space-4); font-size: var(--ui-font-lg); }
+.u-plan { font-size: var(--ui-font-sm); font-weight: var(--ui-weight-regular); color: var(--ui-text-muted); }
+.u-limits { display: grid; gap: var(--ui-space-4); margin-bottom: var(--ui-space-5); }
+.u-limits p, .u-tokens p { margin: 0; }
+.u-limit { display: grid; gap: var(--ui-space-2); }
+.u-words { color: var(--ui-text-primary); }
+.u-bar { height: 8px; overflow: hidden; border-radius: var(--ui-radius-pill); background: var(--ui-surface-sunken); border: 1px solid var(--ui-border-strong); }
+.u-bar > span { display: block; height: 100%; min-width: 2px; background: var(--ui-accent); }
+.u-bar.warm > span { background: var(--ui-warn); }
+.u-bar.hot > span { background: var(--ui-error); }
+.u-src, .u-split { font-size: var(--ui-font-sm); color: var(--ui-text-muted); }
+.u-tokens { display: grid; gap: var(--ui-space-1); padding-top: var(--ui-space-4); border-top: 1px solid var(--ui-border); }
+.u-line { margin-top: var(--ui-space-3) !important; }
+.u-line:first-child { margin-top: 0 !important; }
+.u-limits a, .u-foot a { color: var(--ui-accent-strong); }
+.u-foot { margin: 0; }
+
 /* ---------- small screens ---------- */
 
 /* ---------- full screen and pop-out windows ---------- */

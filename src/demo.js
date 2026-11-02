@@ -2,6 +2,7 @@
 // Everything is worked out from the clock passed in: the same time always gives the same data.
 import { cleanSettings } from './config.js';
 import { parsePulls } from './github.js';
+import { lastDays } from './usage.js';
 
 export const BEAT_MS = 4000;
 
@@ -329,6 +330,56 @@ export function demoClaudeModels() {
     typeEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
     modelEfforts: { opus: 'high' },
     notes: [],
+  };
+}
+
+// What GET /api/usage gives in the demo, in the same shape as createUsage().read() in src/usage.js:
+// made-up token counts for the last 7 days, limits for Claude Code (from its status line) and Codex
+// (from its files), and none for Grok and Kimi Code. The same time always gives the same numbers.
+export function demoUsage(now = Date.now()) {
+  const win = lastDays(now);
+  // [input, output, cacheRead, cacheWrite] per day, oldest first, in thousands of tokens.
+  const SHAPES = {
+    claude: [[310, 120, 5200, 410], [280, 96, 4100, 380], [0, 0, 0, 0], [0, 0, 0, 0], [350, 140, 6100, 450], [420, 170, 7300, 520], [190, 82, 3300, 260]],
+    codex: [[150, 60, 900, 0], [220, 80, 1400, 0], [180, 70, 1100, 0], [0, 0, 0, 0], [260, 95, 1700, 0], [310, 120, 2100, 0], [140, 52, 800, 0]],
+    grok: [[80, 30, 200, 20], [0, 0, 0, 0], [95, 38, 260, 24], [60, 22, 150, 12], [0, 0, 0, 0], [110, 44, 310, 30], [45, 18, 120, 9]],
+    kimi: [[0, 0, 0, 0], [120, 50, 640, 70], [140, 56, 700, 80], [0, 0, 0, 0], [90, 36, 480, 52], [0, 0, 0, 0], [75, 30, 400, 44]],
+  };
+  const tool = (name, limits) => {
+    const days = win.keys.map((date, i) => {
+      const [input, output, cacheRead, cacheWrite] = SHAPES[name][i].map((k) => k * 1000);
+      return { date, input, output, cacheRead, cacheWrite, total: input + output + cacheWrite };
+    });
+    const sum = (field) => days.reduce((n, d) => n + d[field], 0);
+    const week = { input: sum('input'), output: sum('output'), cacheRead: sum('cacheRead'), cacheWrite: sum('cacheWrite'), total: sum('total') };
+    const { date, ...today } = days[days.length - 1];
+    return { on: true, today, week, days, atLeast: false, limits, error: null };
+  };
+  const DAY = 24 * 60 * MIN;
+  return {
+    at: now,
+    tools: {
+      claude: tool('claude', {
+        at: now - 2 * MIN,
+        from: 'statusLine',
+        plan: null,
+        windows: [
+          { minutes: 300, usedPercent: 42, resetsAt: now + 95 * MIN },
+          { minutes: 10080, usedPercent: 18, resetsAt: now + 4 * DAY },
+        ],
+      }),
+      codex: tool('codex', {
+        at: now - 9 * MIN,
+        from: 'files',
+        plan: 'plus',
+        windows: [
+          { minutes: 300, usedPercent: 27, resetsAt: now + 160 * MIN },
+          { minutes: 10080, usedPercent: 11, resetsAt: now + 5 * DAY },
+        ],
+      }),
+      grok: tool('grok', null),
+      kimi: tool('kimi', null),
+    },
   };
 }
 

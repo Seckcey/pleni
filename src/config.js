@@ -29,8 +29,9 @@ export const DEFAULTS = deepFreeze({
   chain: [], // [{ match, reportsTo, role }] who reports to whom, by session name; first match wins
   remote: { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] },
   // The window buttons and Send (Windows, this computer only), and whether Pleni's hooks are in
-  // Claude Code's settings (set by Connect and Disconnect, see src/answers.js).
-  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false },
+  // Claude Code's settings (answers: Connect and Disconnect in src/answers.js; limits: the status line of
+  // src/statusline.js).
+  actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false, limits: false },
   // What a message sent from Pleni may do: 'read' (read files and answer) or 'edit' (also change files in its folder).
   send: { mode: 'read' },
   // How long Pleni holds a question from Claude Code before the session asks in its own window.
@@ -275,6 +276,7 @@ function cleanActions(raw) {
     teleport: cleanBool(a.teleport, DEFAULTS.actions.teleport),
     send: cleanBool(a.send, DEFAULTS.actions.send),
     answers: cleanBool(a.answers, DEFAULTS.actions.answers),
+    limits: cleanBool(a.limits, DEFAULTS.actions.limits),
   };
 }
 

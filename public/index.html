@@ -68,6 +68,7 @@
           <button type="button" data-map-mode="working" aria-pressed="true">Working</button>
           <button type="button" data-map-mode="all" aria-pressed="false">Everyone</button>
         </div>
+        <button type="button" class="btn btn-ic" data-usage title="Your token use and plan limits"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 20V11M12 20V5M19 20v-6"/></svg>Usage</button>
         <button type="button" class="btn btn-ic" data-popout="map" title="Open the map in a window of its own"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg>Pop out</button>
       </div>
     </div>
@@ -107,6 +108,7 @@
         <p class="meta" id="list-meta"></p>
       </div>
       <div class="view-tools">
+        <button type="button" class="btn btn-ic" data-usage title="Your token use and plan limits"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 20V11M12 20V5M19 20v-6"/></svg>Usage</button>
         <button type="button" class="btn btn-ic" data-popout="list" title="Open the list in a window of its own"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg>Pop out</button>
       </div>
     </div>
@@ -168,6 +170,19 @@
     <div id="settings"><p class="empty">Loading settings…</p></div>
   </section>
 </main>
+
+<dialog class="usage" id="usage" aria-labelledby="usage-title">
+  <div class="usage-box">
+    <div class="usage-head">
+      <div>
+        <h2 id="usage-title">Usage</h2>
+        <p class="meta">Your token use and plan limits</p>
+      </div>
+      <button type="button" class="icon-btn" data-usage-close aria-label="Close the usage window"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>
+    <div class="usage-body" id="usage-body"><p class="empty">Reading your usage…</p></div>
+  </div>
+</dialog>
 
 <div class="sr-only" id="live-summary" role="status" aria-live="polite" aria-atomic="true"></div>
 

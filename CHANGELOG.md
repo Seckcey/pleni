@@ -15,6 +15,18 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   one in its header. Each opens in a window of its own that stays live, for a second screen. A
   session's window is that session's page; its close button closes the window. A link to another
   page of Pleni opens in the main window, and "Cannot reach Pleni" still shows in a pop-out.
+- **Usage.** A **Usage** button in the Map and List headers (and in their pop-out windows) opens a
+  window with one card for each AI tool: Claude Code, Codex, Grok and Kimi Code. Each card shows
+  the tokens used today and in the last 7 days, read from the session files on this computer.
+  Pleni uses no login key and never asks the AI companies. It keeps the window up to date while
+  it is open.
+- **Plan limits in Usage.** Codex saves its 5-hour and weekly limits in its own session files, so
+  Pleni shows them with the time they were saved. For Claude Code, an opt-in **Plan limits from
+  Claude Code** part in **Settings → Buttons** adds a small Pleni status line to Claude Code's
+  settings file (a copy of the file goes to Pleni's backups folder first, your own status line
+  keeps showing, and Disconnect puts it back). Claude Code then hands Pleni its limits after each
+  reply, for Pro, Max and Ultra plans. Grok and Kimi Code save no limits, so their cards say where
+  to look: type `/usage` in the tool.
 
 ## 0.3.0 (2026-11-02)
 

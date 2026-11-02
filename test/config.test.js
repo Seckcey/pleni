@@ -70,7 +70,7 @@ test('cleanSettings keeps good values', () => {
     projects: { pleni: { label: 'Pleni', hidden: false } },
     chain: [{ match: 'Sergeant', reportsTo: 'Colonel', role: 'coordinator' }, { match: 'Colonel', reportsTo: 'you', role: null }],
     remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'], lan: true, lanAddresses: ['192.168.1.23'] },
-    actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true, send: true, answers: true },
+    actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true, send: true, answers: true, limits: true },
     send: { mode: 'edit' },
     answers: { waitMinutes: 25 },
     github: { live: true, merge: true, mergeMethod: 'rebase' },
@@ -119,10 +119,10 @@ test('alerts: the stopped time stays in range, and only a real true watches a ti
 });
 
 test('the window buttons stay off unless each is turned on with a real true', () => {
-  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false };
+  const off = { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false, limits: false };
   assert.deepEqual(cleanSettings({}).actions, off);
   for (const value of ['true', 1, null, {}, []]) {
-    assert.deepEqual(cleanSettings({ actions: { openTerminal: value, rollover: value, newAgent: value, teleport: value, send: value, answers: value } }).actions, off, String(value));
+    assert.deepEqual(cleanSettings({ actions: { openTerminal: value, rollover: value, newAgent: value, teleport: value, send: value, answers: value, limits: value } }).actions, off, String(value));
   }
   assert.deepEqual(cleanSettings({ actions: 'on' }).actions, off);
   assert.deepEqual(cleanSettings({ actions: { openTerminal: true, other: true } }).actions, { ...off, openTerminal: true });

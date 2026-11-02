@@ -120,6 +120,17 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
 - **Pop out** — the Map, the List, or one session's side panel can open in a window of its own,
   to keep it on a second screen. Each window stays live on its own. Your browser may ask you to
   allow pop-ups for Pleni the first time.
+- **Usage** — the **Usage** button in the Map and List headers opens a window with a card for
+  each AI tool that is turned on. Each card shows the tokens used today and in the last 7 days,
+  counted from the session files on this computer. Pleni uses no login key and never asks the AI
+  companies, and each tool counts tokens its own way, so compare a tool with itself. A card also
+  shows plan limits where they are saved on this computer: Codex saves its 5-hour and weekly
+  limits in its session files. For Claude Code, open **Settings**, then **Buttons**, and choose
+  **Connect plan limits** under **Plan limits from Claude Code**. Pleni adds a small status line
+  to Claude Code's settings file (a copy of the file goes to Pleni's backups folder first, your
+  own status line keeps showing, and **Disconnect** puts it back). This works for Pro, Max and
+  Ultra plans, and Claude Code needs a trusted folder. Grok and Kimi Code save no limits, so
+  their cards say to type `/usage` in the tool.
 - **Activity** — every hand-off, newest first.
 - **Mail** — shown when your agents use agent mail (see below). It shows every message between you
   and your agents in full, newest first, marks the new ones, and gives the command to answer each.

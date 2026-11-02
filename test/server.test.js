@@ -125,6 +125,7 @@ async function startServer(t, options = {}) {
     ...(options.sender ? { sender: options.sender } : {}),
     ...(options.hookKey ? { hookKey: options.hookKey } : {}),
     ...(options.signin ? { signin: options.signin } : {}),
+    ...(options.usage ? { usage: options.usage } : {}),
     // Tests never look at this computer's real network: no Wi-Fi address unless a test stands one in.
     lanAddresses: options.lanAddresses ?? (() => []),
     lanPort: 0,
@@ -1507,6 +1508,81 @@ test("GET /api/models reads Codex's model lines, and says where they can be chan
   assertPlainError(await request(port, { method: 'PUT', path: '/api/models' }), 405);
 });
 
+// ---- Usage ----
+
+test('GET /api/usage answers the shape, from made-up files, and any signed-in device may read it', async (t) => {
+  const dir = tempDir(t, 'pleni-usage-server-');
+  const day = new Date();
+  day.setHours(9, 0, 0, 0);
+  const line = JSON.stringify({
+    type: 'assistant',
+    uuid: 'u1',
+    timestamp: day.toISOString(),
+    message: { id: 'msg_1', model: 'claude-x', usage: { input_tokens: 11, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 4 } },
+  });
+  fs.mkdirSync(path.join(dir, 'claude', 'projects', 'p'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'claude', 'projects', 'p', '0a1b2c3d-1111-2222-3333-444455556666.jsonl'), `${line}\n`);
+  const memory = memorySettings(REMOTE);
+  memory.state.roots = { claude: path.join(dir, 'claude'), codex: path.join(dir, 'codex') };
+  const { port } = await startServer(t, { memory });
+  const res = await request(port, { path: '/api/usage' });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.demo, false);
+  assert.equal(typeof res.json.at, 'number');
+  assert.deepEqual(Object.keys(res.json.tools), ['claude', 'codex', 'grok', 'kimi']);
+  const claude = res.json.tools.claude;
+  assert.deepEqual(claude.today, { input: 11, output: 5, cacheRead: 100, cacheWrite: 4, total: 20 });
+  assert.equal(claude.days.length, 7);
+  assert.equal(claude.on, true);
+  assert.equal(claude.limits, null);
+  assert.match(res.json.tools.codex.error, /Codex/);
+  const laptop = await request(port, { path: '/api/usage?fresh=1', headers: FROM_LAPTOP });
+  assert.equal(laptop.status, 200);
+  assert.equal(laptop.json.tools.claude.today.total, 20);
+  const head = await request(port, { method: 'HEAD', path: '/api/usage' });
+  assert.equal(head.status, 200);
+  assertPlainError(await request(port, { path: '/api/usage', headers: { cookie: undefined } }), 401);
+  assertPlainError(await request(port, { method: 'POST', path: '/api/usage' }), 405);
+  assertPlainError(await request(port, { method: 'PUT', path: '/api/usage' }), 405);
+});
+
+test('GET /api/usage says whether Connect for plan limits is on', async (t) => {
+  const off = await startServer(t, { memory: memorySettings(REMOTE) });
+  assert.equal((await request(off.port, { path: '/api/usage' })).json.limitsOn, false);
+  const on = await startServer(t, { memory: memorySettings({ ...REMOTE, actions: { limits: true } }) });
+  assert.equal((await request(on.port, { path: '/api/usage' })).json.limitsOn, true);
+});
+
+test('a normal settings save never turns plan limits on or off', async (t) => {
+  for (const [headers, from] of [[FROM_LAPTOP, 'a laptop'], [{}, 'this computer']]) {
+    const on = memorySettings({ ...REMOTE, actions: { limits: true } });
+    const a = await startServer(t, { memory: on });
+    for (const actions of [{}, { limits: false }, { limits: true, send: true }]) {
+      assert.equal((await postSettings(a.port, { ...REMOTE, actions }, headers)).status, 200, from);
+      assert.equal(on.state.settings.actions.limits, true, `${from} ${JSON.stringify(actions)}`);
+    }
+    const off = memorySettings(REMOTE);
+    const b = await startServer(t, { memory: off });
+    assert.equal((await postSettings(b.port, { ...REMOTE, actions: { limits: true } }, headers)).status, 200, from);
+    assert.equal(off.state.settings.actions.limits, false, from);
+  }
+});
+
+test('GET /api/usage in the demo answers made-up numbers and reads no folder', async (t) => {
+  const store = fakeStore();
+  store.demo = true;
+  const usage = { read() { throw new Error('the demo must not read files'); } };
+  const { port } = await startServer(t, { store, usage });
+  const res = await request(port, { path: '/api/usage' });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.demo, true);
+  assert.equal(res.json.tools.claude.limits.from, 'statusLine');
+  assert.equal(res.json.tools.codex.limits.from, 'files');
+  assert.equal(res.json.tools.grok.limits, null);
+  assert.equal(res.json.tools.kimi.limits, null);
+  assert.equal(res.json.tools.claude.days.length, 7);
+});
+
 test('Save to Codex works only on this computer, with the switch on, and keeps a copy', async (t) => {
   const { dir, codex, memory, store } = modelsSetup(t, { models: { edit: true } });
   const { port } = await startServer(t, { store, memory });
@@ -1864,6 +1940,68 @@ test('Connect adds Pleni\'s hooks to Claude Code\'s settings and turns answering
   assert.equal(memory.state.settings.actions.answers, false);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8')), { model: 'opus' });
   assertPlainError(await answerReq(port, '/api/hooks', { connect: 'yes' }), 400);
+});
+
+test('Connect for plan limits adds the status line, turns limits on, and Disconnect puts the old line back', async (t) => {
+  const dir = tempDir(t);
+  const claude = path.join(dir, 'claude');
+  fs.mkdirSync(claude);
+  const mine = { type: 'command', command: '~/bin/line.sh', padding: 1 };
+  const original = JSON.stringify({ model: 'opus', statusLine: mine }, null, 2) + '\n';
+  fs.writeFileSync(path.join(claude, 'settings.json'), original);
+  const memory = memorySettings({});
+  memory.state.file = path.join(dir, 'pleni', 'settings.json');
+  memory.state.roots = { ...memory.state.roots, claude };
+  const { port } = await startServer(t, { memory });
+  const before = (await request(port, { path: '/api/statusline' })).json;
+  assert.equal(before.on, false);
+  assert.equal(before.connected, false);
+  assert.equal(before.previous, true);
+  assert.equal(before.demo, false);
+  assertPlainError(await request(port, { path: '/api/statusline', headers: { 'x-forwarded-for': '100.64.0.7' } }), 403);
+  assertPlainError(await request(port, { path: '/api/statusline', headers: FROM_LAPTOP }), 403);
+  assertPlainError(await answerReq(port, '/api/statusline', { connect: true }, { 'tailscale-user-login': 'ada@example.com' }), 403);
+  assertPlainError(await answerReq(port, '/api/statusline', { connect: true }, { 'x-forwarded-for': '100.64.0.7' }), 403);
+  assertPlainError(await answerReq(port, '/api/statusline', { connect: 'yes' }), 400);
+  assertPlainError(await request(port, { method: 'PUT', path: '/api/statusline' }), 405);
+  assert.equal(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8'), original, 'the refused calls changed nothing');
+  // Limits are not read while Connect is off, even if the file is there.
+  const files = path.join(dir, 'pleni');
+  const done = await answerReq(port, '/api/statusline', { connect: true });
+  assert.equal(done.status, 200, done.text);
+  assert.match(path.basename(done.json.backup), /^claude-settings-\d{8}-\d{6}\.json$/);
+  assert.equal(memory.state.settings.actions.limits, true);
+  assert.equal(fs.existsSync(path.join(files, 'pleni-statusline.mjs')), true);
+  const saved = JSON.parse(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8'));
+  assert.equal(saved.model, 'opus');
+  assert.equal(saved.statusLine.padding, 1);
+  assert.match(saved.statusLine.command, /pleni-statusline\.mjs"$/);
+  const after = (await request(port, { path: '/api/statusline' })).json;
+  assert.deepEqual([after.on, after.connected, after.stale], [true, true, false]);
+  // The Usage popup shows what the status line saved.
+  fs.writeFileSync(path.join(files, 'claude-limits.json'), JSON.stringify({ v: 1, at: Date.now(), windows: [{ name: 'five_hour', minutes: 300, usedPercent: 33, resetsAt: Date.now() + 3600000 }] }));
+  const usage = (await request(port, { path: '/api/usage?fresh=1' })).json;
+  assert.equal(usage.tools.claude.limits.from, 'statusLine');
+  assert.equal(usage.tools.claude.limits.windows[0].usedPercent, 33);
+  const off = await answerReq(port, '/api/statusline', { connect: false });
+  assert.equal(off.status, 200, off.text);
+  assert.equal(memory.state.settings.actions.limits, false);
+  assert.equal(fs.readFileSync(path.join(claude, 'settings.json'), 'utf8'), original);
+  assert.equal(fs.existsSync(path.join(files, 'claude-limits.json')), false);
+  assert.equal((await request(port, { path: '/api/usage?fresh=1' })).json.tools.claude.limits, null);
+});
+
+test('the status line is not connected in the demo, which shows a made-up state', async (t) => {
+  const store = fakeStore();
+  store.demo = true;
+  const { port, memory } = await startServer(t, { store });
+  const res = await request(port, { path: '/api/statusline' });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.demo, true);
+  assert.deepEqual([res.json.on, res.json.connected, res.json.file], [false, false, null]);
+  assert.match(res.json.lines, /pleni-statusline\.mjs/);
+  assertPlainError(await answerReq(port, '/api/statusline', { connect: true }), 409);
+  assert.equal(memory.state.settings.actions.limits, false);
 });
 
 // ---- signing in with a password, and Wi-Fi access ----

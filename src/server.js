@@ -20,7 +20,7 @@ import { openLimits, openSession } from './open.js';
 import { newAgent, teleport } from './newagent.js';
 import { GITHUB_MESSAGES, createGithub } from './github.js';
 import { MODELS_MESSAGES, createModelSaver, readClaudeModels, readCodexModels } from './models.js';
-import { demoClaudeModels, demoGithub, demoModels } from './demo.js';
+import { demoClaudeModels, demoGithub, demoModels, demoUsage } from './demo.js';
 import { rollover, rolloverInfo } from './rollover.js';
 import { createSender, sendLogFile } from './send.js';
 import {
@@ -39,6 +39,8 @@ import {
 } from './answers.js';
 import { createLan } from './lan.js';
 import { SIGNIN_MESSAGES, createSignin, deviceName } from './signin.js';
+import { createUsage, statusLineLimits } from './usage.js';
+import { STATUS_MESSAGES, createStatusSaver, readStatusSetup, statusFiles, upgradeScript } from './statusline.js';
 
 const BIND_HOST = '127.0.0.1';
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -99,7 +101,7 @@ const BRAND_NAME = /^[a-z0-9][a-z0-9._-]*\.(png|svg|ico|webp)$/;
 // Names such as "nul.png" or "com1.svg" are devices, not files, on Windows.
 const WINDOWS_DEVICE = /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/;
 const BRAND_TYPES = { png: 'image/png', svg: 'image/svg+xml', ico: 'image/x-icon', webp: 'image/webp' };
-const API_GET = new Set(['/api/health', '/api/snapshot', '/api/session', '/api/devices', '/api/github', '/api/mail', '/api/models']);
+const API_GET = new Set(['/api/health', '/api/snapshot', '/api/session', '/api/devices', '/api/github', '/api/mail', '/api/models', '/api/usage']);
 // Only the health check answers without signing in: it says nothing but "Pleni is running". Signing
 // in itself (POST /api/signin) is how a browser gets in.
 const OPEN_API = new Set(['/api/health']);
@@ -239,12 +241,12 @@ export function loadOrCreateKey(file, { renew = false, tries, pause } = {}) {
 // `key` is the secret every API request needs (see keyAllowed); a new one is made when it is left out.
 // `platform` and `spawnProcess` are for Open in PowerShell (see src/open.js), `github` for live
 // GitHub status (see src/github.js), `modelSaver` for the Models page (see src/models.js) and
-// `sender` for Send (see src/send.js), and `asks` and `hookSaver` for answering questions (see
+// `sender` for Send (see src/send.js), `usage` for the Usage popup (see src/usage.js), `statusSaver` for Connect for plan limits (see src/statusline.js), and `asks` and `hookSaver` for answering questions (see
 // src/answers.js); tests replace them. `hookKey` is the secret Claude Code's hooks send; without it,
 // no hook call is answered. `signin` keeps the password and the signed-in devices (src/signin.js;
 // in memory only when left out), and `lanAddresses` and `lanPort` let tests stand in for this
 // computer's Wi-Fi addresses and port (src/lan.js).
-export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null, github = null, modelSaver = null, sender = null, asks = null, hookSaver = null, hookKey = null, signin = null, lanAddresses = null, lanPort = null }) {
+export function createServer({ store, getSettings, saveSettings, publicDir = PUBLIC_DIR, version = readVersion(), build = readBuild(), key = newKey(), platform = process.platform, spawnProcess = null, github = null, modelSaver = null, sender = null, asks = null, hookSaver = null, hookKey = null, signin = null, lanAddresses = null, lanPort = null, usage = null, statusSaver = null }) {
   if (typeof key !== 'string' || !KEY_RE.test(key)) {
     throw new Error('The server key must be at least 16 letters, digits, "-" or "_".');
   }
@@ -267,10 +269,21 @@ export function createServer({ store, getSettings, saveSettings, publicDir = PUB
     asks: null,
     hookSaver: hookSaver ?? createHookSaver(),
     hookKey: typeof hookKey === 'string' && hookKey ? hookKey : null,
+    usage: null,
+    statusSaver: statusSaver ?? createStatusSaver(),
     knocks: new Map(),
     signin: signin ?? createSignin(),
     lan: null,
   };
+  app.usage = usage ?? createUsage({
+    getRoots: () => app.readSettings().roots,
+    getSettings: () => app.readSettings().settings,
+    // Claude Code's limits, from Pleni's status line, only while Connect for plan limits is on.
+    claudeLimits: () => {
+      const state = app.readSettings();
+      return state.settings.actions?.limits === true ? statusLineLimits(path.dirname(state.file ?? settingsFile())) : null;
+    },
+  });
   app.asks = asks ?? createAsks({ onChange: () => store.setAsks?.(app.asks.list()) });
   const answer = (req, res) => {
     handle(app, req, res).catch(() => {
@@ -327,6 +340,8 @@ export async function start({ port, configFile, demo = false, open = false, rene
     await closeStore(store);
     throw err;
   }
+  // A status line script from an older Pleni is written again from this version (src/statusline.js).
+  if (!demo) upgradeScript({ root: first.roots?.claude ?? null, dir: path.dirname(file) });
   const url = `http://localhost:${server.address().port}/?${KEY_PARAM}=${key}`;
   let closing = null;
   const close = () => (closing ??= shutdown(server, store));
@@ -380,6 +395,7 @@ async function handle(app, req, res) {
     if (pathname === '/api/answer') return postAnswer(app, req, res, host);
     if (pathname === '/api/answering') return postAnswering(app, req, res, host);
     if (pathname === '/api/hooks') return postHooks(app, req, res, host);
+    if (pathname === '/api/statusline') return postStatusline(app, req, res, host);
     if (pathname === '/api/github/merge') return postMerge(app, req, res, host);
     if (pathname === '/api/models') return postModels(app, req, res, host);
     return postSettings(app, req, res, host);
@@ -393,15 +409,17 @@ async function handle(app, req, res) {
   if (pathname === '/api/rollover') return sendRollover(app, req, res, host, new URLSearchParams(query));
   if (pathname === '/api/send') return sendSendInfo(app, req, res, host, new URLSearchParams(query));
   if (pathname === '/api/hooks') return sendHooks(app, req, res, host);
+  if (pathname === '/api/statusline') return sendStatusline(app, req, res, host);
   if (pathname === '/api/devices') return sendDevices(app, req, res, host);
   if (pathname === '/api/github') return sendGithub(app, req, res, host, new URLSearchParams(query));
   if (pathname === '/api/mail') return sendMail(app, req, res, new URLSearchParams(query));
   if (pathname === '/api/models') return sendModels(app, req, res, host);
+  if (pathname === '/api/usage') return sendUsage(app, req, res, new URLSearchParams(query));
   return sendJson(req, res, 200, await settingsPayload(app, app.readSettings()));
 }
 
 function allowedMethods(pathname) {
-  if (['/api/settings', '/api/rollover', '/api/models', '/api/send', '/api/hooks', '/api/devices'].includes(pathname)) return ['GET', 'HEAD', 'POST'];
+  if (['/api/settings', '/api/rollover', '/api/models', '/api/send', '/api/hooks', '/api/statusline', '/api/devices'].includes(pathname)) return ['GET', 'HEAD', 'POST'];
   if (['/api/placement', '/api/dismiss', '/api/watch', '/api/hide', '/api/open', '/api/new', '/api/teleport', '/api/github/merge', '/api/answer', '/api/answering', '/api/signin', '/api/signout', '/api/password', '/api/lan', HOOK_PATH].includes(pathname)) return ['POST'];
   if (PAGE_FILES.has(pathname) || API_GET.has(pathname)) return READ_ONLY;
   if (/^\/brand\/[^/]+$/.test(pathname)) return READ_ONLY;
@@ -651,12 +669,15 @@ async function settingsPayload(app, state) {
 // without the browser asking first, and that request is refused, so the header plus the Origin
 // check also stops cross-site saves.
 // Who may open Pleni from another device changes only on this computer, and Wi-Fi access only with
-// its own switch (POST /api/lan), so another device keeps the remote settings as they are.
+// its own switch (POST /api/lan), so another device keeps the remote settings as they are. The same
+// goes for actions.limits: only Connect and Disconnect (POST /api/statusline) change it.
 async function postSettings(app, req, res, host) {
   const body = await readJsonPost(req, res, host);
   if (body === undefined) return undefined;
   const clean = cleanSettings(body);
-  const { remote } = app.readSettings().settings;
+  const { remote, actions } = app.readSettings().settings;
+  // Plan limits are switched only by Connect and Disconnect (POST /api/statusline), never by a save.
+  clean.actions.limits = actions.limits === true;
   clean.remote = isLocalRequest(host, req) ? { ...clean.remote, lan: remote.lan, lanAddresses: remote.lanAddresses } : structuredClone(remote);
   return saveAndReload(app, req, res, clean, (state) => settingsPayload(app, state));
 }
@@ -988,6 +1009,45 @@ async function postHooks(app, req, res, host) {
   return saveAndReload(app, req, res, cleanSettings(next), () => ({ ok: true, backup: result.backup ?? null }));
 }
 
+// Settings: whether Pleni's status line is in Claude Code's settings.json (plan limits), and the lines
+// Connect writes (src/statusline.js). Only on this computer: it names a file on it. The demo
+// answers a fixed made-up state.
+function sendStatusline(app, req, res, host) {
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, STATUS_MESSAGES.remote);
+  const state = app.readSettings();
+  const base = { on: state.settings.actions?.limits === true, demo: app.store.demo === true };
+  if (app.store.demo) {
+    const lines = JSON.stringify({ statusLine: { type: 'command', command: 'node "C:/Users/ada/.pleni/pleni-statusline.mjs"' } }, null, 2);
+    return sendJson(req, res, 200, { ...base, on: false, ok: true, error: null, file: null, found: false, connected: false, stale: false, previous: false, lines });
+  }
+  const setup = readStatusSetup({ root: state.roots?.claude ?? null, scriptPath: statusFiles(statusDir(state)).script, platform: app.platform });
+  return sendJson(req, res, 200, { ...base, ...setup });
+}
+
+// Connect ({ connect: true }) adds Pleni's status line to Claude Code's settings.json, and Disconnect
+// ({ connect: false }) puts the person's old one back; each keeps a copy of the file in Pleni's
+// backups folder first. Plan limits are on only while connected.
+async function postStatusline(app, req, res, host) {
+  const body = await readJsonPost(req, res, host);
+  if (body === undefined) return undefined;
+  if (!isLocalRequest(host, req)) return sendError(req, res, 403, STATUS_MESSAGES.remote);
+  if (typeof body.connect !== 'boolean') return sendError(req, res, 400, MESSAGES.badBody);
+  if (app.store.demo) return sendError(req, res, 409, STATUS_MESSAGES.demo);
+  const state = app.readSettings();
+  const dir = statusDir(state);
+  const where = { root: state.roots?.claude ?? null, backupDir: path.join(dir, 'backups'), dir, platform: app.platform };
+  const result = body.connect ? app.statusSaver.connect(where) : app.statusSaver.disconnect(where);
+  if (!result.ok) return sendError(req, res, result.status, result.error);
+  const next = structuredClone(state.settings);
+  next.actions.limits = body.connect;
+  return saveAndReload(app, req, res, cleanSettings(next), () => ({ ok: true, backup: result.backup ?? null, note: result.note ?? null }));
+}
+
+// Pleni's own settings folder.
+function statusDir(state) {
+  return path.dirname(state.file ?? settingsFile());
+}
+
 // Live pull request status for the GitHub repositories on the map, when settings.github.live is on.
 // `merge` says whether this page may offer Merge: the setting is on and the request is from this
 // computer. `?fresh=1` is the Look again button.
@@ -1031,6 +1091,16 @@ function sendModels(app, req, res, host) {
   const codex = readCodexModels({ root: state.roots?.codex ?? null, seen: modelsOnMap(app.store, 'codex') });
   const claude = readClaudeModels({ root: state.roots?.claude ?? null, seen: modelsOnMap(app.store, 'claude') });
   return sendJson(req, res, 200, { ...base, codex, claude });
+}
+
+// The Usage popup: { demo, at, tools: { claude, codex, grok, kimi } }, tokens used in the last 7
+// days and plan limits (src/usage.js), and `limitsOn`: whether Connect for plan limits is on. Read-only,
+// so any signed-in device may read it. `?fresh=1` skips the 30-second reuse. The demo answers
+// made-up numbers.
+async function sendUsage(app, req, res, params) {
+  if (app.store.demo) return sendJson(req, res, 200, { demo: true, limitsOn: false, ...demoUsage(Date.now()) });
+  const answer = await app.usage.read({ fresh: params.get('fresh') === '1' });
+  return sendJson(req, res, 200, { demo: false, limitsOn: app.readSettings().settings.actions?.limits === true, ...answer });
 }
 
 // Save to Codex or Save to Claude Code: { app: 'codex' | 'claude', tag, sergeant?, worker?, types?,

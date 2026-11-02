@@ -109,10 +109,11 @@ recent pop-ups in its notification list until you clear them.
 - It never writes, moves, or deletes anything in the Claude Code, Codex, Claude desktop app, or
   mailbox folders. The exceptions are **Save to Codex** and **Save to Claude Code** on the Models
   page (see [below](#models)), and **Connect** and **Disconnect** for **Answer questions**, which add
-  and take out Pleni's own two hooks in Claude Code's `settings.json` (see below).
+  and take out Pleni's own two hooks in Claude Code's `settings.json` (see below), and **Connect**
+  and **Disconnect** for **plan limits**, which add and take out Pleni's status line there.
 - It writes nowhere except its own folder (`settings.json`, `key`, `hook-key`, `dismissed.json`, the
   `backups/` folder of the Models page and of Connect, `sent.jsonl`, the record of messages
-  sent with **Send messages**, and `password` and `devices.json` for signing in, see
+  sent with **Send messages**, and `pleni-statusline.mjs`, `statusline.json` and `claude-limits.json` for plan limits, and `password` and `devices.json` for signing in, see
   [below](#signing-in-with-a-password)). It saves each file safely: it writes a temporary file in
   the same folder, then renames it.
 - When it turns away a device that Tailscale brings, it keeps that device's Tailscale address and
@@ -153,6 +154,18 @@ recent pop-ups in its notification list until you clear them.
   Claude Code sent (only while session text is on), in memory only, until you answer it, give it
   back, or the time you chose runs out. **Disconnect** takes exactly Pleni's hooks out again. If
   Pleni is not running, Claude Code cannot reach it and goes on as if there were no hook.
+- **Plan limits for Claude Code** (Settings → Buttons, off until you choose **Connect**, this
+  computer only) adds a small status line to Claude Code's `settings.json`, after a copy of the file.
+  Claude Code then runs Pleni's script after each reply and hands it its 5-hour and weekly limits.
+  The script saves only those numbers (the percent used and when each limit resets) in
+  `claude-limits.json` in Pleni's folder. It saves nothing else Claude Code sends it: no folder
+  names, session ids, or words. Pleni reads no login key and calls no server for this. If you
+  already had a status line, Pleni keeps it exactly in `statusline.json`, its script runs your
+  command the way Claude Code would and shows what it prints, and **Disconnect** puts your old
+  status line back and deletes Pleni's three files. If you changed the status line yourself in the
+  meantime, Pleni leaves your file alone and says so. Claude Code only runs a status line in a
+  folder you trust. Grok and Kimi Code save no limits, so Pleni shows where to look in each tool
+  instead.
 - **New agent** (Settings → Buttons, off until you turn it on, Windows only, this computer only)
   opens one PowerShell window in the folder of a session you pick and runs `claude --name <name>`
   or `codex` there. The name you type is held to the same plain marks. Pleni sends the new agent
