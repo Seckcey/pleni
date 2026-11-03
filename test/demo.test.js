@@ -16,7 +16,7 @@ function clock(start = NOW) {
 }
 
 function allSessions(state) {
-  return ['claude', 'codex', 'grok', 'kimi'].flatMap((name) => state[name].sessions);
+  return ['claude', 'codex', 'grok', 'kimi', 'gemini'].flatMap((name) => state[name].sessions);
 }
 
 function demoSnapshot(now, settings = {}) {
@@ -34,7 +34,7 @@ test('the same time always gives the same demo data', () => {
 
 test('the demo returns the source shapes the store expects', () => {
   const state = createDemoSource({ now: () => NOW }).poll();
-  for (const name of ['claude', 'codex', 'grok', 'kimi']) {
+  for (const name of ['claude', 'codex', 'grok', 'kimi', 'gemini']) {
     assert.equal(state[name].ok, true);
     assert.ok(state[name].sessions.length > 0, name);
     assert.equal(state[name].error, null);
@@ -70,6 +70,11 @@ test('the cast has every status and the planned shape', () => {
   assert.equal(coordinator.platform, 'claude');
   const helpers = sessions.filter((s) => s.parentKey === coordinator.key);
   assert.deepEqual(helpers.map((s) => s.status).sort(), ['done', 'ready', 'working']);
+
+  // A Gemini CLI session with a helper that finished.
+  const gemini = sessions.filter((s) => s.platform === 'gemini');
+  const lead = gemini.find((s) => s.kind === 'session');
+  assert.deepEqual(gemini.filter((s) => s.parentKey === lead.key).map((s) => [s.kind, s.status]), [['agent', 'done']]);
 
   const models = new Set(sessions.map((s) => s.model));
   for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'gpt-6.1-sol']) assert.ok(models.has(model), model);

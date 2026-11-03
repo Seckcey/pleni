@@ -32,10 +32,12 @@ const OFFLINE = 'codex:019a3e10-2f77-7c54-b15a-9e5162738495';
 const TILES = 'claude:3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f';
 const RATES = 'grok:01a13b20-5c6d-7e8f-9a0b-1c2d3e4f5a6b';
 const ROUNDING = 'kimi:7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+const HELP_PAGES = 'gemini:4b5c6d7e-8f90-4a1b-9c2d-3e4f5a6b7c8d';
+const SCREENSHOTS = `${HELP_PAGES}/codebase_investigator-5e6f`;
 // Made-up GitHub repositories for the Pull requests view.
 const GITHUB = { billing: 'example/billing-service', field: 'example/field-app' };
-const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
-const ROOTS = { claude: '.claude', codex: '.codex', grok: '.grok', kimi: '.kimi-code' };
+const TOOLS = ['claude', 'codex', 'grok', 'kimi', 'gemini'];
+const ROOTS = { claude: '.claude', codex: '.codex', grok: '.grok', kimi: '.kimi-code', gemini: '.gemini' };
 
 export const DEMO_KEYS = Object.freeze({ planner: PLANNER, coordinator: COORDINATOR });
 
@@ -159,6 +161,23 @@ const CAST = [
     texts: ['Two screens round prices down instead of to the nearest cent.', 'The cart and the receipt now round the same way.'],
   },
   {
+    key: HELP_PAGES, kind: 'session', title: 'Help pages refresh', cwd: FIELD, branch: 'main', entrypoint: null,
+    model: 'gemini-3-pro-preview', effort: null, status: 'working', start: 28,
+    prompt: 'Bring the help pages up to date with the new login screen.',
+    tools: [
+      ['ReadFile', 'login-help.md', 'Read 64 lines.'],
+      ['Shell', 'Build the help pages', 'Built 12 pages.'],
+      ['WriteFile', 'login-help.md', 'Wrote 70 lines.'],
+    ],
+    texts: ['The login help page still shows the old buttons.', 'The help pages now match the new login screen.'],
+  },
+  {
+    key: SCREENSHOTS, parent: HELP_PAGES, kind: 'agent', title: 'Find the old screenshots', cwd: FIELD, branch: 'main',
+    entrypoint: null, model: 'gemini-3-flash-preview', effort: null, status: 'done', start: 24, end: 14,
+    prompt: 'Find every help page that shows the old login screen.',
+    last: 'Three help pages show the old login screen: login-help.md, first-run.md and faq.md.',
+  },
+  {
     key: TILES, kind: 'session', title: 'Map tile cache', cwd: FIELD, branch: 'main', entrypoint: 'cli',
     model: 'claude-opus-5-5', effort: 'low', status: 'idle', start: 140, end: 95,
     prompt: 'Check the map tile cache sizes.', last: 'Cache sizes look fine. Nothing else to do here.',
@@ -175,6 +194,7 @@ const SPAWNS = {
   [TESTS]: 'Write tests for the refund endpoint',
   [LAYOUT]: 'Lay out the new invoice PDF',
   [LEDGER]: 'Check the ledger migration',
+  [SCREENSHOTS]: 'Find the help pages with old screenshots',
 };
 
 // One loop of hand-offs; the number is the beat inside the loop.
@@ -362,7 +382,7 @@ export function demoClaudeModels() {
 
 // What GET /api/usage gives in the demo, in the same shape as createUsage().read() in src/usage.js:
 // made-up token counts for the last 7 days, limits for Claude Code (from its status line) and Codex
-// (from its files), and none for Grok and Kimi Code. The same time always gives the same numbers.
+// (from its files), and none for Grok, Kimi Code and Gemini CLI. The same time always gives the same numbers.
 export function demoUsage(now = Date.now()) {
   const win = lastDays(now);
   // [input, output, cacheRead, cacheWrite] per day, oldest first, in thousands of tokens.
@@ -371,6 +391,7 @@ export function demoUsage(now = Date.now()) {
     codex: [[150, 60, 900, 0], [220, 80, 1400, 0], [180, 70, 1100, 0], [0, 0, 0, 0], [260, 95, 1700, 0], [310, 120, 2100, 0], [140, 52, 800, 0]],
     grok: [[80, 30, 200, 20], [0, 0, 0, 0], [95, 38, 260, 24], [60, 22, 150, 12], [0, 0, 0, 0], [110, 44, 310, 30], [45, 18, 120, 9]],
     kimi: [[0, 0, 0, 0], [120, 50, 640, 70], [140, 56, 700, 80], [0, 0, 0, 0], [90, 36, 480, 52], [0, 0, 0, 0], [75, 30, 400, 44]],
+    gemini: [[60, 22, 310, 0], [0, 0, 0, 0], [0, 0, 0, 0], [130, 48, 880, 0], [85, 31, 540, 0], [0, 0, 0, 0], [105, 40, 690, 0]],
   };
   const tool = (name, limits) => {
     const days = win.keys.map((date, i) => {
@@ -406,6 +427,7 @@ export function demoUsage(now = Date.now()) {
       }),
       grok: tool('grok', null),
       kimi: tool('kimi', null),
+      gemini: tool('gemini', null),
     },
   };
 }

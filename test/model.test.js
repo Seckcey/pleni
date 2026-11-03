@@ -17,6 +17,7 @@ const PLANNER = 'codex:bbbbbbbb-0000-4000-8000-000000000001';
 const CHILD = 'codex:bbbbbbbb-0000-4000-8000-000000000002';
 const REVIEWER = 'codex:bbbbbbbb-0000-4000-8000-000000000003';
 const OTHER = 'claude:cccccccc-0000-4000-8000-000000000001';
+const GEMINI = 'gemini:dddddddd-0000-4000-8000-000000000001';
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pleni-model-'));
@@ -169,6 +170,8 @@ test('modelLabel makes short readable names', () => {
     ['kimi-code/k3', 'Kimi K3'],
     ['kimi-k2-turbo-preview', 'Kimi K2 Turbo Preview'],
     ['kimi-for-coding-highspeed', 'Kimi For Coding Highspeed'],
+    ['gemini-3-pro-preview', 'Gemini 3 Pro Preview'],
+    ['gemini-2.5-flash', 'Gemini 2.5 Flash'],
   ];
   for (const [model, label] of cases) assert.equal(modelLabel(model), label, model);
   for (const model of [null, undefined, '', '<synthetic>', 7]) assert.equal(modelLabel(model), null);
@@ -1689,7 +1692,7 @@ test('inFolder tidies ".." in a typed folder, but never climbs above a drive', (
 
 // ---- AI tool tiles (settings.toolTiles) ----
 
-function toolSnap({ settings = {}, claude = [], codex = [], grok, kimi, mailbox = null } = {}) {
+function toolSnap({ settings = {}, claude = [], codex = [], grok, kimi, gemini, mailbox = null } = {}) {
   const found = (root, sessions) => (sessions === null ? null : { ok: true, error: null, root, sessions });
   return buildSnapshot({
     now: NOW,
@@ -1698,6 +1701,7 @@ function toolSnap({ settings = {}, claude = [], codex = [], grok, kimi, mailbox 
     codex: found('/home/ada/.codex', codex),
     grok,
     kimi,
+    gemini,
     mailbox,
   });
 }
@@ -1708,14 +1712,19 @@ test('AI tool tiles: each tool that is on and found has a tile under you, with i
     settings: { groupBy: 'project' },
     grok: { ok: true, error: null, root: '/home/ada/.grok', sessions: [] },
     kimi: { ok: false, error: 'Pleni could not find the Kimi Code folder.', root: '/home/ada/.kimi-code', sessions: [] },
+    gemini: { ok: true, error: null, root: '/home/ada/.gemini', sessions: [session(GEMINI, { title: 'Docs pass', model: 'gemini-3-pro-preview' })] },
   });
   assert.equal(s.toolTiles, true);
   const tiles = s.nodes.filter((n) => n.kind === 'tool');
   assert.deepEqual(tiles.map((n) => [n.key, n.title, n.platform, n.parent, n.subtitle]), [
     ['tool:claude', 'Claude Code', 'claude', 'you', '4 sessions'],
     ['tool:codex', 'Codex', 'codex', 'you', '2 sessions'],
+    ['tool:gemini', 'Gemini CLI', 'gemini', 'you', '1 session'],
     ['tool:grok', 'Grok', 'grok', 'you', 'No sessions now'],
   ]);
+  assert.equal(node(s, GEMINI).parent, 'tool:gemini');
+  assert.equal(node(s, GEMINI).modelLabel, 'Gemini 3 Pro Preview');
+  assert.deepEqual(s.sources.gemini, { enabled: true, ok: true, error: null, count: 1 });
   assert.equal(node(s, 'tool:grok').rank, 'AI tool');
   assert.deepEqual(node(s, 'tool:grok').projectIds, []);
   assert.equal(node(s, LEAD).parent, 'tool:claude');
