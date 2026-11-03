@@ -1686,3 +1686,71 @@ test('inFolder tidies ".." in a typed folder, but never climbs above a drive', (
   assert.equal(inFolder('/home/ada/code/app', '/home/ada/code/../app'), false);
   assert.equal(inFolder('C:\\Users\\ada\\app', 'C:\\..\\Users\\ada\\app', 'win32'), true);
 });
+
+// ---- AI tool tiles (settings.toolTiles) ----
+
+function toolSnap({ settings = {}, claude = [], codex = [], grok, kimi, mailbox = null } = {}) {
+  const found = (root, sessions) => (sessions === null ? null : { ok: true, error: null, root, sessions });
+  return buildSnapshot({
+    now: NOW,
+    settings: cleanSettings({ toolTiles: true, ...settings }),
+    claude: found('/home/ada/.claude', claude),
+    codex: found('/home/ada/.codex', codex),
+    grok,
+    kimi,
+    mailbox,
+  });
+}
+
+test('AI tool tiles: each tool that is on and found has a tile under you, with its sessions under it', () => {
+  const s = toolSnap({
+    ...cast(),
+    settings: { groupBy: 'project' },
+    grok: { ok: true, error: null, root: '/home/ada/.grok', sessions: [] },
+    kimi: { ok: false, error: 'Pleni could not find the Kimi Code folder.', root: '/home/ada/.kimi-code', sessions: [] },
+  });
+  assert.equal(s.toolTiles, true);
+  const tiles = s.nodes.filter((n) => n.kind === 'tool');
+  assert.deepEqual(tiles.map((n) => [n.key, n.title, n.platform, n.parent, n.subtitle]), [
+    ['tool:claude', 'Claude Code', 'claude', 'you', '4 sessions'],
+    ['tool:codex', 'Codex', 'codex', 'you', '2 sessions'],
+    ['tool:grok', 'Grok', 'grok', 'you', 'No sessions now'],
+  ]);
+  assert.equal(node(s, 'tool:grok').rank, 'AI tool');
+  assert.deepEqual(node(s, 'tool:grok').projectIds, []);
+  assert.equal(node(s, LEAD).parent, 'tool:claude');
+  assert.equal(node(s, OTHER).parent, 'tool:claude');
+  assert.equal(node(s, HELPER).parent, LEAD, 'a helper stays under the session that started it');
+  assert.equal(node(s, PLANNER).parent, 'tool:codex');
+  assert.equal(node(s, CHILD).parent, PLANNER);
+  assert.equal(s.nodes.some((n) => n.kind === 'project'), false, 'grouping by folder waits while the tool tiles show');
+});
+
+test('AI tool tiles are off unless the person turns them on', () => {
+  const s = snap(cast());
+  assert.equal(s.toolTiles, false);
+  assert.equal(s.nodes.some((n) => n.kind === 'tool'), false);
+  assert.equal(node(s, LEAD).parent, 'project:alpha');
+});
+
+test('AI tool tiles: the mailbox chain still goes planner, relay, coordinator', () => {
+  const s = toolSnap({ ...cast(), mailbox: mailbox(), settings: { sources: { mailbox: { enabled: true, planner: PLANNER } } } });
+  assert.equal(node(s, PLANNER).parent, 'tool:codex');
+  assert.equal(node(s, 'relay').parent, PLANNER);
+  assert.equal(node(s, LEAD).parent, 'relay');
+  assert.equal(node(s, OTHER).parent, 'tool:claude');
+});
+
+test('AI tool tiles: a tool that is off has no tile, unless something on the map still hangs under it', () => {
+  const off = toolSnap({ claude: null, codex: cast().codex });
+  assert.equal(node(off, 'tool:claude'), undefined);
+  assert.equal(node(off, 'tool:codex').subtitle, '2 sessions');
+  // A relay worker run with no session file of its own, and no relay or coordinator on the map.
+  const box = mailbox({
+    relay: null,
+    tasks: [{ id: 'T-1', title: 'Split the service', state: 'IN_PROGRESS', updatedAt: NOW - 2 * MIN, attention: [], workers: [{ id: 'W1', state: 'running', startedAt: NOW - 2 * MIN }] }],
+  });
+  const s = toolSnap({ claude: null, codex: cast().codex, mailbox: box, settings: { sources: { mailbox: { enabled: true } } } });
+  assert.equal(node(s, 'mailbox:T-1/W1').parent, 'tool:claude');
+  assert.equal(node(s, 'tool:claude').subtitle, '1 session');
+});

@@ -8,6 +8,11 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **AI tool tiles.** A new **AI tools** button on the Map gives each AI tool you use (Claude Code,
+  Codex, Grok and Kimi Code) a tile of its own, with its sessions under it. A tool's tile shows
+  even when none of its sessions is running, and the relay's tile stays on the map too. Click the
+  button again to hide them. The same switch is in **Settings → You and the map**. It works from
+  any signed-in device, since it only changes the map.
 - **Full screen for the map.** A new button under the zoom buttons (or the `F` key) shows only the
   map, with its legend and buttons. Esc or the button leaves it. On a phone without full screen, the
   map fills the browser window.

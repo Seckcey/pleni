@@ -24,7 +24,7 @@ const EFFORT_WORDS = { minimal: 'minimal effort', low: 'low effort', medium: 'me
 const PLATFORM_WORDS = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', relay: 'Mailbox' };
 // The tools whose sessions Pleni reads. Each one has a word above and a mark in ICONS.
 const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
-const KIND_WORDS = { person: 'Person', project: 'Project', session: 'Session', agent: 'Helper agent', reviewer: 'Automatic reviewer', relay: 'Relay' };
+const KIND_WORDS = { person: 'Person', project: 'Project', tool: 'AI tool', session: 'Session', agent: 'Helper agent', reviewer: 'Automatic reviewer', relay: 'Relay' };
 const ENTRY_WORDS = { 'claude-desktop': 'Claude desktop app', 'claude-vscode': 'VS Code', cli: 'Terminal', 'sdk-cli': 'Agent SDK', 'relay worker': 'The mailbox relay' };
 const PLACEMENT_WORDS = { manual: 'You chose this.', rule: 'Set by a chain rule.', auto: 'Chosen automatically.' };
 const MOVE_PX = 6; // how far a pressed tile must travel before it is being moved, not clicked
@@ -52,6 +52,7 @@ const DEFAULTS = {
   titles: 'plain',
   content: 'snippets',
   groupBy: 'none',
+  toolTiles: false,
   window: { activeMinutes: 10, recentHours: 24, staleMinutes: 30 },
   showReviewers: false,
   modelTiers: { senior: ['opus', 'fable', 'astra'], junior: ['sonnet', 'haiku', 'sol', 'luna', 'mini'] },
@@ -259,7 +260,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-ask-send', 'data-ask-approve', 'data-ask-keep', 'data-ask-allow', 'data-ask-deny', 'data-ask-back', 'data-hooks', 'data-limits', 'data-merge', 'data-merge-yes', 'data-merge-no', 'data-gh-again', 'data-cloud-again', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-pw', 'data-wifi-address', 'data-wifi', 'data-wifi-copy', 'data-device-out', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-ask-send', 'data-ask-approve', 'data-ask-keep', 'data-ask-allow', 'data-ask-deny', 'data-ask-back', 'data-hooks', 'data-limits', 'data-merge', 'data-merge-yes', 'data-merge-no', 'data-gh-again', 'data-cloud-again', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-pw', 'data-wifi-address', 'data-wifi', 'data-wifi-copy', 'data-device-out', 'data-hide', 'data-zoom', 'data-map-mode', 'data-tool-tiles', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -432,6 +433,7 @@ function titleOf(n) {
   if (n.title) return String(n.title);
   if (n.kind === 'person') return 'You';
   if (n.kind === 'project') return n.project || 'Project';
+  if (n.kind === 'tool') return PLATFORM_WORDS[n.platform] || 'AI tool';
   if (n.kind === 'agent') return 'Helper agent';
   if (n.kind === 'reviewer') return 'Reviewer';
   if (n.kind === 'relay') return 'Relay';
@@ -453,6 +455,7 @@ function keyName(key) {
   if (m) return `${PLATFORM_WORDS[m[1].toLowerCase()]} session ${m[2]}`;
   if (k.startsWith('path:')) return `agent ${k.slice(5).split('/').filter(Boolean).pop() || ''}`.trim();
   if (k.startsWith('project:')) return k.slice(8);
+  if (k.startsWith('tool:')) return PLATFORM_WORDS[k.slice(5)] || k.slice(5);
   if (k === 'relay') return 'the mailbox relay';
   const w = /^mailbox:(.+)\/(W\d+)$/.exec(k);
   if (w) return `worker ${w[2]} on ${w[1]}`;
@@ -475,6 +478,7 @@ function projectLabel(name) {
 function rankLine(n) {
   if (n.kind === 'person') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'Your sessions';
   if (n.kind === 'project') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'Project';
+  if (n.kind === 'tool') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'AI tool';
   if (isRelay(n)) return ['Relay', n.subtitle].filter(Boolean).join(' · ');
   const folder = S.snap && S.snap.nodes && !S.snap.nodes.some((x) => x.kind === 'project') ? n.projectLabel : null;
   return [n.rank, PLATFORM_WORDS[n.platform], folder, n.subtitle].filter(Boolean).join(' · ');
@@ -1369,12 +1373,14 @@ function workingSet(ix) {
   const now = serverNow();
   const live = (n) =>
     n.needs || n.status === 'working' || n.status === 'ready' || n.status === 'error' || ix.lit.has(n.key) || (isTime(n.lastAt) && now - n.lastAt < QUIET_MS);
-  // A running relay is its normal state, not news: it shows when it halts or carries a hand-off.
-  const relayNews = (n) => isRelay(n) && (n.status === 'error' || ix.lit.has(n.key));
+  // A running relay is its normal state, not news: it shows when it halts or carries a hand-off,
+  // and always while the AI tools button is on, with a tile for each AI tool.
+  const tools = toolTilesOn();
+  const relayNews = (n) => isRelay(n) && (tools || n.status === 'error' || ix.lit.has(n.key));
   const visit = (n) => {
     let any = false;
     for (const k of ix.kids.get(n.key) || []) any = visit(k) || any;
-    if (any || n.kind === 'person' || (isSession(n) && live(n)) || relayNews(n)) {
+    if (any || n.kind === 'person' || n.kind === 'tool' || (isSession(n) && live(n)) || relayNews(n)) {
       keep.add(n.key);
       return true;
     }
@@ -1516,6 +1522,7 @@ function tileHtml(p, L, ix, i) {
   const n = p.n;
   const status = statusOf(n);
   const cls = ['tile', `k-${safeClass(n.kind || 'session')}`];
+  if (n.kind === 'tool') cls.push(`pf-${safeClass(n.platform)}`);
   if (status) cls.push(`st-${status}`);
   if (ix.lit.has(n.key)) cls.push('lit');
   const title = titleOf(n);
@@ -1592,9 +1599,11 @@ function flowsHtml(ix) {
 
 function renderMap() {
   for (const b of $$('[data-map-mode]')) b.setAttribute('aria-pressed', String(b.dataset.mapMode === S.mapMode));
+  for (const b of $$('[data-tool-tiles]')) b.setAttribute('aria-pressed', String(toolTilesOn()));
   if (!S.snap) return;
   const ix = S.index;
-  const empty = !hasSessions();
+  // With the AI tools button on, the tool tiles show even before any session does.
+  const empty = !hasSessions() && !(ix && ix.nodes.some((n) => n.kind === 'tool'));
   setText($('#map-meta'), countsLine());
   setHtml($('#map-attention'), attentionHtml());
   setHtml($('#map-welcome'), empty ? welcomeHtml() : '');
@@ -1668,6 +1677,30 @@ function setMapMode(mode) {
   writeStore('pleni.mapMode', S.mapMode);
   if (!S.fv.user) S.fv.sig = '';
   renderMap();
+}
+
+// Whether the Map's AI tools button is pressed (settings.toolTiles, from the snapshot).
+function toolTilesOn() {
+  return !!S.snap && S.snap.toolTiles === true;
+}
+
+// The AI tools button: saves settings.toolTiles for every device, then shows the new map.
+async function toggleToolTiles(btn) {
+  if (S.toolBusy) return;
+  const on = !toolTilesOn();
+  S.toolBusy = true;
+  btn.setAttribute('aria-busy', 'true');
+  try {
+    await changeSetting('toolTiles', () => on, (v) => v === true);
+    if (!S.fv.user) S.fv.sig = '';
+    say(on ? 'Each AI tool has a tile now, with its sessions under it.' : 'The AI tool tiles are hidden.');
+  } catch (err) {
+    showMoved({ key: null, spot: 'note', bad: true, fadeMs: MOVED_MS, text: `The AI tools button did not change. ${plainError(err)}` });
+  } finally {
+    S.toolBusy = false;
+    btn.removeAttribute('aria-busy');
+    renderMap();
+  }
 }
 
 // ---------- pan and zoom ----------
@@ -2385,23 +2418,28 @@ async function postSettingsObject(settings) {
   return body;
 }
 
-// Gets the saved settings, changes only projectList with `change(list)`, saves them all, and
-// returns the list Pleni kept. Pleni's Settings page, if it was opened, learns the new list too.
-async function changeProjectList(change) {
+// Gets the saved settings, changes only settings[key] with `change(value)`, saves them all, and
+// returns `keep(the value Pleni kept)`. Pleni's Settings page, if it was opened, learns it too.
+async function changeSetting(key, change, keep) {
   const info = await getJson('/api/settings');
   if (!info || typeof info.settings !== 'object' || info.settings === null) throw new Error('Pleni sent settings this page cannot read.');
   const settings = info.settings;
-  const list = Array.isArray(settings.projectList) ? settings.projectList : [];
-  settings.projectList = change(list);
+  settings[key] = change(settings[key]);
   const body = await postSettingsObject(settings);
-  const kept = body && body.settings && Array.isArray(body.settings.projectList) ? body.settings.projectList : [];
+  const kept = keep(body && body.settings ? body.settings[key] : undefined);
   if (S.set && S.set.info && S.set.info.settings) {
-    S.set.info.settings.projectList = clone(kept);
-    if (S.set.draft) S.set.draft.projectList = clone(kept);
+    S.set.info.settings[key] = clone(kept);
+    if (S.set.draft) S.set.draft[key] = clone(kept);
   }
   S.etag = null;
   await pollNow().catch(() => {});
   return kept;
+}
+
+// changeSetting for projectList, which is always a list.
+function changeProjectList(change) {
+  const list = (v) => (Array.isArray(v) ? v : []);
+  return changeSetting('projectList', (v) => change(list(v)), list);
 }
 
 // What Pleni changed in the project it kept, in plain words.
@@ -4481,8 +4519,17 @@ function groupNowHtml(n) {
       return `<li><button type="button" data-node="${esc(k.key)}">${markHtml(k, 'small')}<span class="t">${esc(titleOf(k))}</span>${right}</button></li>`;
     })
     .join('');
-  const heading = n.kind === 'person' ? 'Under you' : isRelay(n) ? 'Under the relay' : 'In this project';
-  return `${n.kind === 'person' ? asksHtml('you') : ''}<p class="dnow">${esc(cap(countsPlain(c)))}.</p>${mailHtml(n)}<h3>${heading}</h3>${list ? `<ul class="kids">${list}</ul>` : '<p class="empty">Nothing listed right now.</p>'}`;
+  const heading = n.kind === 'person' ? 'Under you' : isRelay(n) ? 'Under the relay' : n.kind === 'tool' ? `${esc(titleOf(n))} sessions` : 'In this project';
+  return `${n.kind === 'person' ? asksHtml('you') : ''}<p class="dnow">${esc(cap(countsPlain(c)))}.</p>${n.kind === 'tool' ? toolNowHtml(n) : ''}${mailHtml(n)}<h3>${heading}</h3>${list ? `<ul class="kids">${list}</ul>` : '<p class="empty">Nothing listed right now.</p>'}`;
+}
+
+// An AI tool's tile: what hangs under it, and where to see its token use or change where Pleni looks.
+function toolNowHtml(n) {
+  const name = esc(titleOf(n));
+  return (
+    `<p class="dnow">${name} sessions that don't report to another tile hang under this tile. The AI tools button above the map hides these tiles again.</p>` +
+    `<p class="dnow"><button type="button" class="btn" data-usage>See token use</button> <a href="#/settings/sources">Change where Pleni looks for ${name}</a></p>`
+  );
 }
 
 function detailsHtml(n) {
@@ -6346,6 +6393,7 @@ function renderSettingsForm() {
       </select></div><p class="help" id="s-theme-help">Kept in this browser only. It changes right away.</p></div>
       ${selectRow('s-titles', 'Rank words', 'titles', [['plain', 'Plain: Lead and Agent (plus Superintendent and Coordinator for those roles)'], ['military', 'Military: General, Colonel, Sergeant, Specialist, Private'], ['company', 'Company: Owner, Vice President, Manager, Supervisor, Worker']], 'The words used for ranks on the tiles.')}
       ${selectRow('s-group', 'Group sessions', 'groupBy', [['none', 'Not at all'], ['project', 'By project folder']], 'By project folder puts a folder tile between you and its sessions.')}
+      ${checkRow('s-tooltiles', 'AI tool tiles', 'toolTiles', 'Show a tile for each AI tool, with its sessions under it', 'The AI tools button on the Map does the same. While it is on, sessions group by AI tool instead of by folder, and the relay stays on the map.')}
     </section>
     <section class="panel" aria-labelledby="s-h-show" data-find="snippets text privacy hours days time window old finished stuck idle reviewers"><h2 id="s-h-show">What the page shows</h2>
       <div class="srow" role="radiogroup" aria-labelledby="s-content-lbl" aria-describedby="s-content-help"><span class="lbl" id="s-content-lbl">Session text</span><div class="checks">
@@ -6927,6 +6975,7 @@ document.addEventListener('click', (ev) => {
   if (el.id === 'theme-toggle') return toggleTheme();
   if (el.dataset.zoom) return zoomButton(el.dataset.zoom);
   if (el.dataset.mapMode) return setMapMode(el.dataset.mapMode);
+  if (el.hasAttribute('data-tool-tiles')) return toggleToolTiles(el);
   if (el.dataset.tab) return selectTab(el.dataset.tab, false);
   if (el.dataset.dismiss) return dismissNotice(el);
   if (el.id === 's-alerts-test') return testAlert();

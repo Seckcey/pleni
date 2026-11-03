@@ -13,6 +13,8 @@ export const DEFAULTS = deepFreeze({
   titles: 'plain',
   content: 'snippets',
   groupBy: 'none',
+  // The Map's AI tools button: a tile for each AI tool, with its sessions under it.
+  toolTiles: false,
   window: { activeMinutes: 10, recentHours: 24, staleMinutes: 30 },
   showReviewers: false,
   modelTiers: { senior: ['opus', 'fable', 'astra'], junior: ['sonnet', 'haiku', 'sol', 'luna', 'mini'] },
@@ -128,6 +130,7 @@ export function cleanSettings(raw) {
     titles: oneOf(r.titles, TITLES, DEFAULTS.titles),
     content: oneOf(r.content, CONTENT, DEFAULTS.content),
     groupBy: oneOf(r.groupBy, GROUP_BY, DEFAULTS.groupBy),
+    toolTiles: cleanBool(r.toolTiles, DEFAULTS.toolTiles),
     window: cleanWindow(r.window),
     showReviewers: cleanBool(r.showReviewers, DEFAULTS.showReviewers),
     modelTiers: cleanTiers(r.modelTiers),

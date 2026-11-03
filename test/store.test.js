@@ -142,8 +142,9 @@ test('the snapshot carries a weak ETag of its JSON without the time', () => {
   assert.equal(snap.etag, `W/"${crypto.createHash('sha1').update(untimed).digest('hex')}"`);
   assert.equal(snap.json, json);
   assert.equal(json.includes('etag'), false);
-  assert.deepEqual(Object.keys(snap), ['version', 'now', 'demo', 'sources', 'nodes', 'edges', 'events', 'counts', 'attention', 'asks', 'tasks', 'mail', 'hiddenSessions', 'projects', 'actions', 'codexCloud']);
+  assert.deepEqual(Object.keys(snap), ['version', 'now', 'demo', 'sources', 'nodes', 'edges', 'events', 'counts', 'attention', 'asks', 'tasks', 'mail', 'hiddenSessions', 'projects', 'actions', 'codexCloud', 'toolTiles']);
   assert.deepEqual(snap.codexCloud, { live: false });
+  assert.equal(snap.toolTiles, false);
   assert.ok(snap.nodes.some((n) => n.key === CLAUDE_KEY));
   assert.ok(snap.nodes.some((n) => n.key === CODEX_KEY));
 });
