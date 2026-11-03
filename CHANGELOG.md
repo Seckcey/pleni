@@ -8,6 +8,11 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **Claude Code cloud sessions on the Cloud page.** The Cloud page now has a button that opens your
+  Claude cloud sessions on claude.ai/code, and, with Live GitHub status on, the pull requests they
+  opened (branches named `claude/...`). Claude Code has no official way for other programs to list
+  cloud sessions, and Pleni never reads your Claude login. The Cloud link now always shows. Live
+  GitHub status also looks at the GitHub repositories of your projects.
 - **Full screen for the map.** A new button under the zoom buttons (or the `F` key) shows only the
   map, with its legend and buttons. Esc or the button leaves it. On a phone without full screen, the
   map fills the browser window.
