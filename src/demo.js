@@ -283,11 +283,12 @@ const TASKS = [
   { id: 'T-103', title: 'Tax table update', state: 'BLOCKED', attention: ['question'] },
 ];
 
-// The Field app project mailbox: one task with two workers, W2 a Claude Code session of its own.
+// The Field app project mailbox: one task with two workers. W1 ran in Codex and kept no session
+// file; W2 is a Claude Code session of its own.
 const FIELD_TASKS = [
   {
     id: 'T-201', title: 'Offline map tiles', state: 'IN_PROGRESS', attention: [],
-    workers: [{ id: 'W1', model: 'claude-sonnet-5-5', start: 50, end: 20 }, { id: 'W2', model: 'claude-sonnet-5-5', start: 15, session: DOWNLOADS }],
+    workers: [{ id: 'W1', tool: 'codex', model: 'gpt-6.1-sol', start: 50, end: 20 }, { id: 'W2', model: 'claude-sonnet-5-5', start: 15, session: DOWNLOADS }],
   },
 ];
 const FIELD_HISTORY = [
@@ -694,6 +695,7 @@ function projectMailbox(clock, { name, folder, tasks: list, events: all, coordin
         model: w.model,
         startedAt: clock.mark - w.start * MIN,
         finishedAt: w.end ? clock.mark - w.end * MIN : null,
+        ...(w.tool ? { tool: w.tool } : {}),
         ...(w.session ? { sessionId: w.session.slice(w.session.indexOf(':') + 1) } : {}),
       })),
     };
