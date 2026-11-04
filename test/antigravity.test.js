@@ -206,12 +206,22 @@ test('the title is the summary title, else the first request, else the first pro
   ]);
   writeTranscript(root, idAt(4), [ask(at, 'A long first request'), reply(at + 1000, 'Done.')]);
   writeMeta(root, { [idAt(4)]: { summary: { title: 'Named by Antigravity', WorkspaceURIs: [] } } });
+  // A first request with no words that was never cleared (only a picture): the first request with
+  // words names it, not history.jsonl, which comes first only after a squeeze.
+  writeTranscript(root, idAt(5), [
+    { ...ask(at, ''), content: [{ inline_data: { mime_type: 'image/png' } }] },
+    reply(at + 1000, 'I see a login form.'),
+    ask(at + 2000, 'Make the button blue'),
+    reply(at + 3000, 'Done.'),
+  ]);
+  fs.appendFileSync(path.join(root, 'history.jsonl'), line({ display: '[Image #1]', timestamp: at, workspace: FOLDER, conversationId: idAt(5) }));
 
   const byId = new Map(open(root).poll().sessions.map((s) => [s.id, [s.title, s.titleSource]]));
   assert.deepEqual(byId.get(idAt(1)), ['Fix the login page It shows a blank screen.', 'first-prompt']);
   assert.deepEqual(byId.get(idAt(2)), ['Plain words here', 'first-prompt']);
   assert.deepEqual(byId.get(idAt(3)), ['Tidy the docs folder', 'history']);
   assert.deepEqual(byId.get(idAt(4)), ['Named by Antigravity', 'summary']);
+  assert.deepEqual(byId.get(idAt(5)), ['Make the button blue', 'first-prompt']);
 });
 
 test('a request without tags keeps the person\'s own words, even an upper-case <WORD> in them', (t) => {
@@ -222,6 +232,8 @@ test('a request without tags keeps the person\'s own words, even an upper-case <
     'Replace <YOUR_PROJECT_ID> in deploy.sh with my project and run it',
     'Use <ENTER> to submit, not <TAB>',
     `What does the <API_KEY> setting in config.json do?\n${ADDED}`,
+    // A closed block inside a sentence is the person's own too.
+    'Why does <TITLE>Home</TITLE> not show?',
     // A closed block on lines of its own is one Antigravity CLI added, whatever its name.
     'Sum up the thread\n<PREVIOUS_CONVERSATION_THREAD>\nEarlier words.\n</PREVIOUS_CONVERSATION_THREAD>',
     // A known block may run on to the end of a text that was cut short.
@@ -235,6 +247,7 @@ test('a request without tags keeps the person\'s own words, even an upper-case <
     'Replace <YOUR_PROJECT_ID> in deploy.sh with my project and run it',
     'Use <ENTER> to submit, not <TAB>',
     'What does the <API_KEY> setting in config.json do?',
+    'Why does <TITLE>Home</TITLE> not show?',
     'Sum up the thread',
     'Short ask',
   ];
@@ -481,7 +494,7 @@ test('status: working, ready, idle, error and stopped, from the steps and the wi
   assert.equal(tight.get(idAt(10)), 'idle', 'the background command started more than staleMinutes ago');
 });
 
-test('a tool that waits for the person to allow it needs them, once it has waited 15 seconds', (t) => {
+test('a tool that waits for the person to allow it, or to answer its question, needs them once it has waited 15 seconds', (t) => {
   const root = agyHome(t);
   const runs = (ms, command) => uses(ms, [call('run_command', { CommandLine: command, Cwd: FOLDER })]);
   const waits = (ms, status = 'WAITING') => ran(ms, 'RUN_COMMAND', '', { status });
@@ -499,6 +512,11 @@ test('a tool that waits for the person to allow it needs them, once it has waite
     ask(T0 - 10 * MINUTE, 'Clean it'), runs(T0 - 9 * MINUTE, 'rm -rf dist'), waits(T0 - 9 * MINUTE),
     ask(T0 - 2 * MINUTE, 'Never mind, test it'), runs(T0 - MINUTE, 'npm test'),
   ]);
+  // A wait whose turn ended is over too, though its step was never written again.
+  writeTranscript(root, idAt(5), [ask(T0 - MINUTE, 'Clean it'), runs(T0 - 50 * SECOND, 'rm -rf dist'), waits(T0 - 40 * SECOND), reply(T0 - 30 * SECOND, 'I left the folder as it is.')]);
+  // A question the agent asks waits for the person's answer: it is not a request to use a tool.
+  const question = { questions: [{ question: 'Which database should I use?', options: ['Postgres', 'SQLite'], is_multi_select: false }] };
+  writeTranscript(root, idAt(6), [ask(T0 - MINUTE, 'Set up the database'), uses(T0 - 40 * SECOND, [call('ask_question', question)]), ran(T0 - 30 * SECOND, 'ASK_QUESTION', '', { status: 'WAITING' })]);
 
   const { clock, get } = open(root);
   const needs = (n) => get(keyOf(idAt(n))).needs;
@@ -508,10 +526,12 @@ test('a tool that waits for the person to allow it needs them, once it has waite
   assert.deepEqual(s.needs, { kind: 'permission', text: 'Asks to use run_command: rm -rf build', at: T0 - 10 * SECOND });
   assert.equal(s.status, 'working');
   assert.deepEqual(s.activity, { tool: 'run_command', detail: 'rm -rf build', at: T0 - 10 * SECOND });
-  assert.deepEqual([2, 3, 4].map(needs), [null, null, null]);
+  assert.deepEqual([2, 3, 4, 5].map(needs), [null, null, null, null]);
+  assert.deepEqual(needs(6), { kind: 'question', text: 'Which database should I use?', at: T0 - 30 * SECOND });
   const quiet = open(root, { content: 'none' });
   quiet.clock.now = T0 + 6 * SECOND;
   assert.deepEqual(quiet.get(keyOf(idAt(1))).needs, { kind: 'permission', text: null, at: T0 - 10 * SECOND });
+  assert.deepEqual(quiet.get(keyOf(idAt(6))).needs, { kind: 'question', text: null, at: T0 - 30 * SECOND });
 
   // It stays, however long the person takes, until the step is written again as it runs.
   clock.now = T0 + 2 * HOUR;
@@ -627,12 +647,19 @@ test('a helper started through INVOKE_SUBAGENT hangs under the conversation that
 test('a helper whose parent is not known still shows as a helper, and two conversations naming each other make no loop', (t) => {
   const root = agyHome(t);
   const at = T0 - 3 * MINUTE;
-  writeTranscript(root, idAt(1), [
-    { ...ask(at, 'Look around'), content: '<subagent_reminder>\nYou are a subagent.\n</subagent_reminder>\n<USER_REQUEST>\nLook around\n</USER_REQUEST>' },
-    reply(at + 1000, 'Looked.'),
-  ]);
+  const reminded = (ms, text, caller) => ({
+    ...ask(ms, text),
+    content: `<subagent_reminder>\nYou are a subagent.${caller ? `\nThe caller agent that started you has id: ${caller}` : ''}\n</subagent_reminder>\n<USER_REQUEST>\n${text}\n</USER_REQUEST>`,
+  });
+  writeTranscript(root, idAt(1), [reminded(at, 'Look around'), reply(at + 1000, 'Looked.')]);
   writeTranscript(root, idAt(2), [ask(at, 'A'), invoked(at + 100, [idAt(3), idAt(2)]), reply(at + 200, 'A done.')]);
   writeTranscript(root, idAt(3), [ask(at, 'B'), invoked(at + 100, [idAt(2)]), reply(at + 200, 'B done.')]);
+  // The conversation its reminder names last changed two days ago, so Pleni does not show it.
+  writeTranscript(root, idAt(4), [reminded(at, 'Keep checking the build', idAt(5)), uses(T0 - MINUTE, [call('run_command', { CommandLine: 'npm run build' })])]);
+  writeTranscript(root, idAt(5), [ask(T0 - 49 * HOUR, 'Start a long helper'), reply(T0 - 49 * HOUR, 'Started.')], { mtime: T0 - 48 * HOUR });
+  // Two helpers whose reminders name each other.
+  writeTranscript(root, idAt(6), [reminded(at, 'Check the left side', idAt(7)), reply(at + 1000, 'Left is fine.')]);
+  writeTranscript(root, idAt(7), [reminded(at, 'Check the right side', idAt(6)), reply(at + 1000, 'Right is fine.')]);
   const byId = new Map(open(root).poll().sessions.map((s) => [s.id, s]));
   assert.equal(byId.get(idAt(1)).kind, 'agent');
   assert.equal(byId.get(idAt(1)).parentKey, null);
@@ -641,6 +668,9 @@ test('a helper whose parent is not known still shows as a helper, and two conver
   assert.equal(byId.get(idAt(2)).parentKey, null);
   assert.equal(byId.get(idAt(3)).parentKey, keyOf(idAt(2)));
   assert.equal(byId.get(idAt(2)).kind, 'session');
+  assert.equal(byId.has(idAt(5)), false);
+  assert.deepEqual([byId.get(idAt(4)).kind, byId.get(idAt(4)).parentKey, byId.get(idAt(4)).status], ['agent', null, 'working']);
+  assert.deepEqual([6, 7].map((n) => byId.get(idAt(n)).parentKey), [keyOf(idAt(7)), null]);
 });
 
 test('a helper hangs under the conversation its reminder names, not under a fork that copied the steps that started it', (t) => {
@@ -660,7 +690,8 @@ test('a helper hangs under the conversation its reminder names, not under a fork
   for (const id of forks) writeTranscript(root, id, [...started, ask(at + 60000, 'Something else'), reply(at + 61000, 'Done.')]);
   const reminded = (ms, line, text) => ({ ...ask(ms, text), content: `<subagent_reminder>\nYou are a subagent.\n${line}\n</subagent_reminder>\n<USER_REQUEST>\n${text}\n</USER_REQUEST>` });
   writeTranscript(root, helper, [reminded(at + 2500, `The caller agent that started you has id: ${parent}`, 'Find the slow queries.'), uses(T0 - MINUTE, [call('grep_search', { Query: 'SELECT' })])]);
-  writeTranscript(root, lost, [reminded(at + 2600, `<caller agent id="${parent}">`, 'Check the indexes.'), reply(at + 9000, 'Two indexes are missing.')]);
+  // Its own id comes first: the line that names the caller agent wins.
+  writeTranscript(root, lost, [reminded(at + 2600, `Your conversation id: ${lost}\n<caller agent id="${parent}">`, 'Check the indexes.'), reply(at + 9000, 'Two indexes are missing.')]);
 
   const byId = new Map(open(root).poll().sessions.map((s) => [s.id, s]));
   assert.equal(byId.get(helper).parentKey, keyOf(parent));
@@ -672,6 +703,55 @@ test('a helper hangs under the conversation its reminder names, not under a fork
     assert.equal(byId.get(id).status, 'idle', 'a fork does not wait for a helper it did not start');
     assert.deepEqual(byId.get(id).links, []);
   }
+});
+
+test('a helper forked from a helper hangs under the one that started it, though its transcript starts with a copy of that one\'s steps', (t) => {
+  const root = agyHome(t);
+  const at = T0 - 20 * MINUTE;
+  // The forks' ids sort before their parent's, so a wrong link would show.
+  const [main, worker, tester, coordinator, linter] = [idAt(1), idAt(2), idAt(3), idAt(4), idAt(5)];
+  const reminded = (ms, caller, text) => ({
+    ...ask(ms, text),
+    content: `<subagent_reminder>\nThe caller agent that started you has id: ${caller}\n</subagent_reminder>\n<USER_REQUEST>\n${text}\n</USER_REQUEST>`,
+  });
+  const starts = (ms, role) => uses(ms, [call('invoke_subagent', { Subagents: [{ Role: role }] })]);
+  const works = (command) => uses(T0 - MINUTE, [call('run_command', { CommandLine: command })]);
+  writeTranscript(root, main, [ask(at, 'Speed up the build'), starts(at + 1000, 'Build coordinator'), invoked(at + 1500, [coordinator]), reply(at + 2000, 'A coordinator is on it.')]);
+  // The coordinator starts a tester, then a worker whose start is not written yet, then reads 30
+  // files and starts a linter. Each is forked: its transcript starts with a copy of the
+  // coordinator's steps so far, the coordinator's reminder and the tester's start too.
+  const steps = [
+    reminded(at + 1600, main, 'Make the build faster'),
+    starts(at + 1700, 'Test worker'),
+    invoked(at + 1710, [tester]),
+    starts(at + 1720, 'Cache worker'),
+    ran(at + 1730, 'INVOKE_SUBAGENT', '', { status: 'WAITING' }),
+  ];
+  for (let i = 0; i < 30; i++) steps.push(uses(at + 1800 + i, [call('view_file', { AbsolutePath: `/home/ada/project/src/part${i}.js` })]), ran(at + 1800 + i, 'VIEW_FILE', 'A part.'));
+  steps.push(starts(at + 1900, 'Lint worker'));
+  const lead = writeTranscript(root, coordinator, [...steps, invoked(at + 1910, [linter]), reply(at + 2000, 'Three workers are on it.')]);
+  writeTranscript(root, tester, [...steps.slice(0, 2), reminded(at + 1705, coordinator, 'Run the tests'), works('npm test')]);
+  writeTranscript(root, worker, [...steps.slice(0, 4), reminded(at + 1725, coordinator, 'Add a build cache'), works('npm run build')]);
+  // The linter's own reminder comes after its first 50 steps, so only the copy is read.
+  writeTranscript(root, linter, [...steps, reminded(at + 1905, coordinator, 'Lint the code'), works('npm run lint')]);
+
+  const { clock, poll } = open(root);
+  let byId = new Map(poll().sessions.map((s) => [s.id, s]));
+  assert.deepEqual([main, coordinator, tester, worker, linter].map((id) => [byId.get(id).parentKey, byId.get(id).status]), [
+    [null, 'working'],
+    [keyOf(main), 'working'],
+    [keyOf(coordinator), 'working'],
+    [keyOf(coordinator), 'working'],
+    [keyOf(coordinator), 'working'],
+  ]);
+  assert.deepEqual([tester, linter].map((id) => byId.get(id).title), ['Test worker', 'Lint worker']);
+  // The worker's start is written now: it gets its role, and stays where it is.
+  append(lead, { ...invoked(at + 1730, [worker]), step_index: 4 });
+  clock.now += SECOND;
+  byId = new Map(poll().sessions.map((s) => [s.id, s]));
+  assert.deepEqual([byId.get(worker).parentKey, byId.get(worker).title], [keyOf(coordinator), 'Cache worker']);
+  // They all start with the same copied step, so their links share a time.
+  assert.deepEqual(byId.get(coordinator).links.map((l) => `${l.dir} ${l.other}`).sort(), [worker, tester, linter].map((id) => `down ${keyOf(id)}`));
 });
 
 test('a helper of a helper that works keeps every conversation above it working', (t) => {
@@ -898,26 +978,43 @@ test('a broken line is skipped, and a half-written last line waits for its newli
 });
 
 test('a big transcript read from near its end keeps its first request, start and the helpers it named early on, with their roles', (t) => {
-  const root = agyHome(t);
   const at = T0 - 60 * MINUTE;
-  const filler = 'y'.repeat(100 * 1024);
+  const kids = [KID, idAt(3), idAt(4), idAt(5)];
+  const start = (index, ms, ids, status = 'DONE') => ({ ...invoked(ms, ids), status, step_index: index });
+  const helps = (role) => call('invoke_subagent', { Subagents: [{ Role: role }] });
+  // One reply reads a file and starts three helpers. Antigravity CLI writes a step again when it
+  // changes, so the first start is written before it names its helper, and again after the second.
   const steps = [
-    ask(at, 'Index the whole repository'),
-    uses(at + 1000, [call('invoke_subagent', { Subagents: [{ Role: 'Docs indexer' }] })]),
-    invoked(at + 2000, [KID]),
+    { ...ask(at, 'Index the whole repository'), step_index: 0 },
+    { ...uses(at + 1000, [call('view_file', { AbsolutePath: '/home/ada/project/notes/transcript.jsonl' }), helps('Docs indexer'), helps('Code indexer'), helps('Test indexer')]), step_index: 1 },
+    // The file holds a reply of another conversation: words in a tool's result are not a reply.
+    { ...ran(at + 1500, 'VIEW_FILE', '{"type":"PLANNER_RESPONSE","content":"Done."}'), step_index: 2 },
+    start(3, at + 2000, [], 'WAITING'),
+    start(4, at + 2100, [kids[1]], 'RUNNING'),
+    start(3, at + 2000, [kids[0]]),
+    start(4, at + 2100, [kids[1]]),
+    start(5, at + 2200, [kids[2]]),
+    // A later reply starts one more.
+    { ...uses(at + 2300, [helps('Link checker')]), step_index: 6 },
+    start(7, at + 2400, [kids[3]]),
   ];
-  for (let i = 0; i < 50; i++) steps.push(ran(at + 3000 + i, 'VIEW_FILE', filler));
-  steps.push(reply(T0 - 2 * MINUTE, 'The index is ready.'));
-  const file = writeTranscript(root, CID, steps, { full: true });
-  assert.ok(fs.statSync(file).size > 4 * 1024 * 1024);
-  writeTranscript(root, KID, [ask(at + 2500, 'Index the docs'), reply(at + 9000, 'The docs are indexed.')]);
-  const byId = new Map(open(root).poll().sessions.map((s) => [s.id, s]));
+  const read = (big) => {
+    const root = agyHome(t);
+    const filler = big ? Array.from({ length: 50 }, (_, i) => ({ ...ran(at + 3000 + i, 'VIEW_FILE', 'y'.repeat(100 * 1024)), step_index: 8 + i })) : [];
+    const file = writeTranscript(root, CID, [...steps, ...filler, { ...reply(T0 - 2 * MINUTE, 'The index is ready.'), step_index: 58 }], { full: true });
+    assert.equal(fs.statSync(file).size > 4 * 1024 * 1024, big);
+    for (const id of kids) writeTranscript(root, id, [ask(at + 2500, 'Index one part'), reply(at + 9000, 'Done.')]);
+    return new Map(open(root).poll().sessions.map((s) => [s.id, s]));
+  };
+  const helpers = (byId) => kids.map((id) => [byId.get(id).parentKey, byId.get(id).title, byId.get(id).titleSource]);
+  const want = ['Docs indexer', 'Code indexer', 'Test indexer', 'Link checker'].map((role) => [keyOf(CID), role, 'role']);
+  assert.deepEqual(helpers(read(false)), want, 'read whole');
+  const byId = read(true);
+  assert.deepEqual(helpers(byId), want, 'the roles their calls gave them, as when the transcript was small');
   const lead = byId.get(CID);
   assert.equal(lead.title, 'Index the whole repository');
   assert.equal(lead.startedAt, at);
   assert.equal(lead.lastText, 'The index is ready.');
-  assert.equal(byId.get(KID).parentKey, keyOf(CID));
-  assert.deepEqual([byId.get(KID).title, byId.get(KID).titleSource], ['Docs indexer', 'role'], 'the role its call gave it, as when the transcript was small');
 });
 
 // ---- what Pleni opens ----

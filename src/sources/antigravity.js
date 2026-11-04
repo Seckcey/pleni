@@ -53,8 +53,8 @@ const TRANSCRIPTS = ['transcript_full.jsonl', 'transcript.jsonl'];
 const INVOKE = 'INVOKE_SUBAGENT';
 const INVOKE_HINT = Buffer.from(INVOKE);
 const INVOKE_TOOL = 'invoke_subagent';
-const INVOKE_TOOL_HINT = Buffer.from(INVOKE_TOOL);
 const REPLY_HINT = Buffer.from('PLANNER_RESPONSE');
+const ASK_TOOL = 'ask_question'; // waits for the person's answer, not for leave to run a tool
 // The note Antigravity CLI puts in a helper's first steps, to tell it that it is a helper.
 const REMINDER = '<subagent_reminder>';
 const RUNNING = new Set(['RUNNING', 'PENDING', 'WAITING', 'ACTIVE']);
@@ -433,19 +433,20 @@ function applyRecord(entry, rec) {
 }
 
 // The first request, and the reminder that tells a helper it is one and who started it, from steps
-// read in order from the start of the file. A squeeze leaves the first request with no words: the
-// next request is not the first one, so `cut` says so.
+// read in order from the start of the file. A squeeze clears the first request of its words: the
+// next request is not the first one, so `cut` says so. A forked helper's transcript starts with a
+// copy of its parent's steps, reminder and all, so the last reminder that names a caller counts.
 function noteHead(entry, step) {
   const head = entry.head;
   if (head.prompt === null && step.kind === 'prompt') {
     if (step.text) head.prompt = flat(step.text, 120);
-    else head.cut = true;
+    else if (step.status === 'CLEARED') head.cut = true;
   }
   if (head.steps >= HEAD_STEPS) return;
   head.steps++;
   if (step.reminder) {
     head.helper = true;
-    head.caller ??= step.caller;
+    if (step.caller) head.caller = step.caller;
   }
 }
 
@@ -469,7 +470,8 @@ function scanBefore(entry, end) {
 
 // From the CALL_SCAN_BYTES before the part that is read, only the INVOKE_SUBAGENT steps are taken,
 // with the invoke_subagent calls of the reply before each, for the roles they gave. Only lines that
-// hold one of those words are parsed; a reply that starts no helper just forgets the calls.
+// hold one of those two words are parsed, and the parsed step decides: a tool's result may hold
+// the words too.
 function scanCalls(entry, end) {
   const from = Math.max(0, end - CALL_SCAN_BYTES);
   if (end <= from) return;
@@ -485,31 +487,38 @@ function scanCalls(entry, end) {
       pos = first + 1;
     }
     let nl;
-    let calls = NONE; // the invoke_subagent calls of the newest reply
-    let n = 0; // the INVOKE_SUBAGENT steps since that reply
+    const walk = callWalker(entry);
     while ((nl = data.indexOf(NEWLINE, pos)) !== -1) {
       const line = data.subarray(pos, nl);
       pos = nl + 1;
-      const invoke = line.includes(INVOKE_HINT);
-      if (!invoke && !line.includes(REPLY_HINT)) continue;
-      if (!invoke && !line.includes(INVOKE_TOOL_HINT)) {
-        calls = NONE;
-        continue;
-      }
-      const step = slimStep(parseLine(line), POLL_KEEP);
-      if (step?.kind === 'reply') {
-        calls = invokeCalls(step);
-        n = 0;
-      } else if (step?.type === INVOKE) {
-        if (step.children.length) addNamed(entry, step, calls, n);
-        n++;
-      }
+      if (line.includes(INVOKE_HINT) || line.includes(REPLY_HINT)) walk(slimStep(parseLine(line), POLL_KEEP));
     }
   } catch {
     // The helpers are a bonus; the rest of the transcript is read without them.
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
   }
+}
+
+// Takes steps in file order and names the helpers of each INVOKE_SUBAGENT step, as the log would: a
+// step written again keeps the place of its first copy, and so the call that copy answered.
+function callWalker(entry) {
+  let calls = NONE; // the invoke_subagent calls of the newest reply
+  let n = 0; // the INVOKE_SUBAGENT steps since that reply, each step_index once
+  const firsts = new Map(); // step_index -> where its first copy came: { calls, n }
+  return (step) => {
+    if (step?.kind === 'reply') {
+      calls = invokeCalls(step);
+      n = 0;
+    } else if (step?.type === INVOKE) {
+      let at = step.index === null ? undefined : firsts.get(step.index);
+      if (!at) {
+        at = { calls, n: n++ };
+        if (step.index !== null) firsts.set(step.index, at);
+      }
+      if (step.children.length) addNamed(entry, step, at.calls, at.n);
+    }
+  };
 }
 
 // A step, or a newer copy of one with the same step_index: the newest copy wins, in the place the
@@ -657,7 +666,8 @@ function argText(value) {
 }
 
 // Short words about what a tool call does (≤140 characters), from its arguments: the first line of
-// a command, a search query or pattern, a file's base name, a web site's host name, a helper's role.
+// a command, a search query or pattern, a file's base name, a web site's host name, a helper's role,
+// the agent a message goes to, or the first question asked.
 function toolDetail(args) {
   if (!args) return null;
   const get = (...names) => {
@@ -673,8 +683,16 @@ function toolDetail(args) {
     ?? baseName(get('AbsolutePath', 'TargetFile', 'DirectoryPath', 'SearchDirectory', 'SearchPath', 'ImageName'))
     ?? hostOf(get('Url', 'url'))
     ?? rolesOf(args).find(Boolean)
-    ?? flat(get('Recipient'), 80);
+    ?? flat(get('Recipient'), 80)
+    ?? firstQuestion(args);
   return text ? clip(text, 140) : null;
+}
+
+// The words of the first question of an ask_question call: `questions: [{ question, options }]`.
+function firstQuestion(args) {
+  let list = args.questions ?? args.Questions;
+  if (typeof list === 'string') list = parseJson(argText(list));
+  return Array.isArray(list) && isObject(list[0]) ? flat(argText(list[0].question), 140) : null;
 }
 
 // The role of each helper an invoke_subagent call asks for, in order.
@@ -890,14 +908,18 @@ function toSession(entry, parents, chosen, places, t, w, snippets) {
 }
 
 // A tool step of the turn going now that has waited longer than APPROVAL_GRACE_MS for the person to
-// allow it, as an interactive run does. A helper's start waits for the helper, not the person. It
-// stays until the step is answered or the turn ends, however long that takes.
+// allow it, as an interactive run does, or to answer its question. A helper's start waits for the
+// helper, not the person. It stays until the step is answered or the turn ends, however long that
+// takes.
 function needsOf(f, snippets, t) {
   if (!f.turn.open) return null;
   const s = f.current.findLast((x) => x.kind === 'tool' && x.type !== INVOKE && x.status === WAITING);
   if (!s || s.at === null || t - s.at <= APPROVAL_GRACE_MS) return null;
   const call = f.pairs.get(s) ?? null;
   const tool = call?.name ?? toolName(s.type);
+  if (tool === ASK_TOOL || toolName(s.type) === ASK_TOOL) {
+    return { kind: 'question', text: snippets && call?.name === ASK_TOOL ? call.detail : null, at: s.at };
+  }
   const text = call?.detail ? `Asks to use ${tool}: ${call.detail}` : `Asks to use ${tool}`;
   return { kind: 'permission', text: snippets ? clip(text, 280) : null, at: s.at };
 }
@@ -942,8 +964,8 @@ function parentsOf(chosen) {
   const parents = new Map();
   const ids = [...chosen.keys()].sort();
   for (const id of ids) {
-    const caller = chosen.get(id).head.caller;
-    if (caller && caller !== id && chosen.has(caller) && !above(id, caller, parents)) parents.set(id, caller);
+    const caller = callerOf(id, chosen);
+    if (caller && !above(id, caller, parents)) parents.set(id, caller);
   }
   for (const id of ids) {
     for (const child of chosen.get(id).children.keys()) {
@@ -952,6 +974,19 @@ function parentsOf(chosen) {
     }
   }
   return parents;
+}
+
+// The shown conversation a helper's reminder names. A forked helper whose own reminder came after
+// its first 50 steps has only the copy of its parent's: when the conversation that copy names does
+// not name the helper, but one with that same caller does, the copy came from that one.
+function callerOf(id, chosen) {
+  const caller = chosen.get(id).head.caller;
+  if (!caller || caller === id || !chosen.has(caller)) return null;
+  if (chosen.get(caller).children.has(id)) return caller;
+  for (const entry of chosen.values()) {
+    if (entry.head.caller === caller && entry.children.has(id)) return null;
+  }
+  return caller;
 }
 
 // True when `a` is `b` or a conversation above it.

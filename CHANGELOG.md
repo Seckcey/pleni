@@ -35,11 +35,11 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   lists in its `cache` folder and `history.jsonl`, which say which folder each conversation works
   in. It never opens your login, your settings or the conversation databases, and it never shows
   what the model was thinking. When Antigravity CLI has waited more than 15 seconds for you to
-  allow a tool, the conversation shows under **Needs you** (how it marks that wait in its files is
-  Pleni's best guess so far). The files Pleni reads hold no token counts or limits, so the Usage
-  card and the Antigravity CLI tile say to type `/usage` in Antigravity CLI, which shows how much
-  of each model's limit is left. Like Grok, Kimi Code and Gemini CLI, Antigravity CLI is
-  watch-only in Pleni: no button sends it anything.
+  allow a tool, or to answer a question it asked you, the conversation shows under **Needs you**
+  (how it marks that wait in its files is Pleni's best guess so far). The files Pleni reads hold
+  no token counts or limits, so the Usage card and the Antigravity CLI tile say to type `/usage`
+  in Antigravity CLI, which shows how much of each model's limit is left. Like Grok, Kimi Code and
+  Gemini CLI, Antigravity CLI is watch-only in Pleni: no button sends it anything.
 - **Gemini CLI.** Pleni now shows your Gemini CLI sessions too, and the helpers they start: on the
   map, in the List, in each session's side panel, and on the Usage page, where its tokens are
   counted. With the AI tools button on, Gemini CLI gets a tile of its own. Pleni reads only Gemini
