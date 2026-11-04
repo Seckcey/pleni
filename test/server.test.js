@@ -1337,6 +1337,19 @@ test('GitHub status is off until it is turned on, and offers Merge only on this 
   assert.equal((await request(noMerge.port, { path: '/api/github' })).json.merge, false);
 });
 
+test('GitHub status also asks about the repositories of the person\'s projects', async (t) => {
+  const github = fakeGithub();
+  const projectList = [
+    { id: 'proj0001', name: 'Notes', folder: '/home/ada/code/notes', repo: 'ada/notes' },
+    { id: 'proj0002', name: 'Cloud only', folder: '/home/ada/code/cloud', repo: 'ada/cloud-only' },
+    { id: 'proj0003', name: 'No repo', folder: '/home/ada/code/plain', repo: null },
+  ];
+  const { port } = await startServer(t, { store: githubStore(), github, settings: { github: { live: true }, projectList } });
+  const res = await request(port, { path: '/api/github' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(github.calls[0], ['status', { repos: ['ada/notes', 'ada/site', 'ada/cloud-only'], fresh: false }], 'the map first, then each project repository once');
+});
+
 test('GitHub status in the demo is made up, and asks nothing', async (t) => {
   const github = fakeGithub();
   const { port } = await startServer(t, { store: githubStore(true), github, settings: { github: { live: true } } });

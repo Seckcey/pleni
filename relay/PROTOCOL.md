@@ -171,3 +171,20 @@ Without the relay, tell the other side in one line after you write:
 
 Each time it starts, each side reads the other side's board first (`STATUS.md` for the planner,
 `CODEX-QUEUE.md` for the coordinator), then the task files with newer time stamps.
+
+## HQ: one planner for several projects
+
+The owner may run several mailboxes with one planner, the **orchestrator**:
+
+- Each **project** is a normal mailbox, with its own coordinator, its own relay, and these same
+  rules.
+- **HQ** is a mailbox too. Its `bin/relay-settings.json` lists the projects. Only the HQ relay wakes
+  the orchestrator: when something new waits for the planner in HQ or in a project. Each item in
+  its note names the project and that project's mailbox folder.
+- The orchestrator is the planner of every project. It writes each assignment, answer and review
+  in that project's own mailbox, in the planner's files there. Work with no project goes on HQ's
+  own board. Its standing orders are HQ's `AGENTS.md`.
+- A project's relay never wakes the orchestrator's thread; only HQ's does. HQ stops waking it if a
+  project does, and tells the owner.
+- HQ's `.relay/codex-attention.md` lists what waits in all of them, with a Project column (`hq`
+  is HQ itself).

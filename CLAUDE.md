@@ -51,8 +51,8 @@ it before you change code, and follow its names, shapes, and file paths.
   program that writes into a mailbox and starts Claude Code sessions. It is not part of Pleni.
   Pleni never runs it, and it is not in the npm package. Read `relay/README.md` before you change
   it. Keep its scripts ASCII-only and working in Windows PowerShell 5.1, and run
-  `relay/bin/bridge-relay-check.ps1` on Windows after a change. Never add a file named `CLAUDE.md`
-  or `AGENTS.md` inside `relay/`: agents working on Pleni would read it as their own orders. The
+  `relay/bin/bridge-relay-check.ps1` on Windows after a change. Never add a file named `CLAUDE.md`,
+  `AGENTS.md` or `GEMINI.md` inside `relay/`: agents working on Pleni would read it as their own orders. The
   coordinator's orders live in `relay/COORDINATOR.md` instead. Never commit a real mailbox, its
   `.relay` folder, or its `relay-settings.json` or `cost-limits.json`.
 - **The website is separate.** The `website/` folder holds getplenipo.com, made by 8 West Ventures,

@@ -18,12 +18,16 @@
   running sessions) holds the coordinator turn, and files left behind by closed windows do not; 17 agent mail
   (agent-mail.ps1: send, read and wait by name, with names, sizes and unknown agents checked); 18 agent mail wakes
   (-EnrollAgent by name, one wake per new message, none for mail already read, waits while the thread is open, two
-  agents at once, and -MaxAgentTurnsAtOnce).
+  agents at once, and -MaxAgentTurnsAtOnce); 19-22 HQ (role hq in bin\relay-settings.json, with two project mailboxes
+  that share one fake Codex home): one orchestrator wake for the items of both projects, with an --add-dir for each,
+  nothing for what waited when a project was added, and a dry run that changes nothing; a project's item waits while
+  that project's coordinator turn runs, the other project's goes, and never two Codex processes; a project that wakes
+  the orchestrator's thread too stops HQ's wakes with an alert; -NewProject and -UpdateProjects.
   It runs only the bridge-relay.ps1 and agent-mail.ps1 beside it, ..\tests\stub-claude.js and
   ..\tests\stub-codex.js; other -RelayScript/-StubCli values are refused.
   Prints one PASS/FAIL line per check, then a summary. Exit 0 only when every check passes (2 = could not set up).
   No network, no API key, no real claude.exe. It removes its temp folder and stops any process it started
-  (only processes whose command line names this run's temp folder). Takes about 2-4 minutes.
+  (only processes whose command line names this run's temp folder). Takes about 5-9 minutes.
   Windows PowerShell 5.1. ASCII only.
 
 .EXAMPLE
@@ -363,6 +367,35 @@ function New-Fixture([string]$Name) {
         payload = [ordered]@{ id = $fx.tid; timestamp = '2026-10-09T05:00:00Z'; cwd = $fx.planner; originator = 'codex_cli_rs'; instructions = 'synthetic planner thread' } }
     Write-Text $fx.rollout ((ConvertTo-Json -InputObject $meta -Compress -Depth 4) + "`n")
     Set-CodexStubMode $fx 'ok'
+    return $fx
+}
+
+function Set-HqProjects([hashtable]$Fx, [string[]]$Ids, [object[]]$Extra) {
+    # HQ's bin\relay-settings.json: role hq, the named projects of the fixture (and any extra entries), workspace-write.
+    $list = @()
+    foreach ($pf in @($Fx.p1, $Fx.p2)) {
+        if ($Ids -contains $pf.id) { $list += [pscustomobject]@{ id = $pf.id; name = $pf.title; mailbox = $pf.mb } }
+    }
+    foreach ($e in @($Extra)) { if ($null -ne $e) { $list += $e } }
+    $s = [ordered]@{ role = 'hq'; projects = $list; codex_exec_args = @('--sandbox', 'workspace-write') }
+    Write-Text (Join-Path $Fx.mb 'bin\relay-settings.json') (ConvertTo-Json -InputObject $s -Depth 6)
+}
+
+function New-HqFixture([string]$Name) {
+    # HQ (a fixture as above; its Codex thread is the orchestrator) and two project mailboxes beside it, notes and shop,
+    # that share HQ's fake Codex home, Claude folder and stubs. HQ's settings list both projects.
+    $fx = New-Fixture $Name
+    foreach ($p in @(@{ key = 'p1'; id = 'notes'; title = 'Notes'; dir = 'proj-notes' }, @{ key = 'p2'; id = 'shop'; title = 'Shop'; dir = 'proj-shop' })) {
+        $pf = $fx.Clone()
+        $pf.mb = Join-Path $fx.dir $p.dir
+        $pf.id = $p.id
+        $pf.title = $p.title
+        Write-Text (Join-Path $pf.mb 'CODEX-QUEUE.md') "# Codex queue (owner: Codex)`r`n"
+        Write-Text (Join-Path $pf.mb 'STATUS.md') "# Status board (owner: Claude)`r`n"
+        Write-Text (Join-Path $pf.mb 'tasks\T-BASE\assignment.md') "# Assignment - T-BASE ($($p.id), synthetic)`r`n`r`n- Goal: fixture only.`r`n"
+        $fx[$p.key] = $pf
+    }
+    Set-HqProjects $fx @('notes', 'shop') $null
     return $fx
 }
 
@@ -1141,6 +1174,190 @@ try {
         $r = Invoke-Relay $fx 'UnenrollAgent' @{ AgentName = 'Sergeant Two' }
         Check ($r.code -eq 0 -and -not (Get-RelayJson $fx 'agents.json').'sergeant-two') '-UnenrollAgent did not remove Sergeant Two'
         Check (@(Get-Calls $fx 'start').Count -eq 0) 'agent mail woke the coordinator'
+    }
+
+    Invoke-Scenario '19 HQ: one orchestrator wake covers items from both projects; what waited when a project was added wakes nothing; -DryRun changes nothing' {
+        $fx = New-HqFixture 'hq1'
+        Set-HqProjects $fx @('notes') $null
+        # Already waiting in shop before HQ lists it.
+        Write-Text (Join-Path $fx.p2.mb 'tasks\T-BASE\questions.md') (Get-Questions @(5))
+        Initialize-Fixture $fx
+        $r = Invoke-Relay $fx 'EnrollCodex' @{ ThreadId = $fx.tid }
+        if ($r.code -ne 0) { throw "-EnrollCodex failed (exit $($r.code)): $(Get-Tail $r.out)" }
+        # The owner adds shop, and two entries the relay must skip.
+        $bad = @([pscustomobject]@{ id = 'hq'; name = 'Bad'; mailbox = $fx.p1.mb }, [pscustomobject]@{ id = 'gone'; name = 'Gone'; mailbox = (Join-Path $fx.dir 'nowhere') })
+        Set-HqProjects $fx @('notes', 'shop') $bad
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ($r.code -eq 0) "-Once exit code $($r.code)"
+        Check ($r.out -match 'project shop .+ is new to this relay') 'the relay did not say that the shop project is new to it'
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 0) 'adding a project woke the orchestrator for an item that was already waiting in it'
+        $r = Invoke-Relay $fx 'Status' $null
+        Check ($r.out -match '- notes \(Notes\): mailbox .+; folder found: True' -and $r.out -match '- shop \(Shop\): mailbox .+; folder found: True') '-Status does not list the two projects'
+        Check ($r.out -match 'entry 3 \(hq\) is skipped' -and $r.out -match 'entry 4 \(gone\) is skipped') '-Status does not show the two bad entries as skipped'
+        Check (@(Get-AttentionKeys $r.out) -contains 'shop:T-BASE/Q5') '-Status does not list the waiting shop item under its project key'
+        # New items in both projects: the dry run shows one wake, with both project folders, and changes nothing.
+        Write-Text (Join-Path $fx.p1.mb 'tasks\T-BASE\questions.md') (Get-Questions @(2))
+        Write-Text (Join-Path $fx.p2.mb 'tasks\T-BASE\status.md') "# Status - T-BASE`r`n`r`n**Current state:** IN_REVIEW (handoff written)`r`n"
+        Write-Text (Join-Path $fx.p2.mb 'tasks\T-BASE\handoff.md') "# Handoff - T-BASE`r`n`r`n- Result: ready for review.`r`n"
+        $sf = Join-Path $fx.mb '.relay\state.json'
+        $before = (Get-FileHash -LiteralPath $sf -Algorithm SHA256).Hash
+        $r = Invoke-Relay $fx 'DryRun' $null
+        Check ($r.out -match 'would wake Codex thread') 'the dry run did not report the orchestrator wake'
+        Check ($r.out -match 'workspace-write --add-dir "?[^"]*proj-notes"? --add-dir "?[^"]*proj-shop') 'the dry run command does not add both project folders'
+        Check ((Get-FileHash -LiteralPath $sf -Algorithm SHA256).Hash -eq $before) 'the dry run changed state.json'
+        Check (@(Get-CodexCalls $fx '').Count -eq 0) 'the dry run called the Codex stub'
+        Check (-not (Test-Path -LiteralPath (Join-Path $fx.p1.mb '.relay')) -and -not (Test-Path -LiteralPath (Join-Path $fx.p2.mb '.relay'))) 'HQ wrote into a project mailbox'
+        $r1 = Invoke-Relay $fx 'Once' $null
+        $r2 = Invoke-Relay $fx 'Once' $null
+        Check ($r1.code -eq 0 -and $r2.code -eq 0) "-Once exit codes $($r1.code)/$($r2.code)"
+        $s = @(Get-CodexCalls $fx 'start')
+        Check ($s.Count -eq 1) "expected 1 orchestrator wake, got $($s.Count)"
+        if ($s.Count -ge 1) {
+            $c = $s[0]
+            Check ($c.thread -eq $fx.tid) 'the wake did not go to the orchestrator thread'
+            Check ($c.prompt -match 'project notes' -and $c.prompt -match 'project shop') 'one wake does not name both projects'
+            Check ($c.prompt -match 'proj-notes' -and $c.prompt -match 'proj-shop') 'the notice does not name the project mailbox folders'
+            Check ($c.prompt -match 'Q2' -and $c.prompt -match 'IN_REVIEW' -and $c.prompt -notmatch 'Q5') 'the wake does not hold exactly the two new items'
+            $x = @($c.extra)
+            $dirs = @()
+            for ($i = 0; $i -lt $x.Count - 1; $i++) { if ($x[$i] -eq '--add-dir') { $dirs += [string]$x[$i + 1] } }
+            Check ($dirs.Count -eq 2 -and $dirs[0] -like '*\hq1\proj-notes' -and $dirs[1] -like '*\hq1\proj-shop') ('the wake did not add exactly the two project folders: ' + ($x -join ' '))
+            Check ($x -contains 'workspace-write') 'the wake lost codex_exec_args'
+        }
+        $n = @(Get-CodexNotes $fx | Where-Object { $_.key -eq 'notes:T-BASE/Q2' -or $_.key -like 'shop:T-BASE/handoff@*' })
+        Check ($n.Count -eq 2 -and @($n | Where-Object { $_.state -ne 'completed' }).Count -eq 0) 'the two project items are not recorded once each as completed, under their project keys'
+        $att = Read-Shared (Join-Path $fx.mb '.relay\codex-attention.md')
+        Check ($att -match '\| Item \| Project \| Task \|' -and $att -match '\| notes:T-BASE/Q2 \| notes \|' -and $att -match '\| shop:T-BASE/Q5 \| shop \|') 'codex-attention.md has no Project column with the project items'
+        Check (@(Get-Calls $fx 'start').Count -eq 0) 'project items woke the coordinator of HQ'
+    }
+
+    Invoke-Scenario '20 HQ: a project item waits while that project''s coordinator turn runs; the other project''s item still goes; never two Codex processes' {
+        $fx = New-HqFixture 'hq2'
+        Initialize-Fixture $fx
+        $r = Invoke-Relay $fx 'EnrollCodex' @{ ThreadId = $fx.tid }
+        if ($r.code -ne 0) { throw "-EnrollCodex failed (exit $($r.code)): $(Get-Tail $r.out)" }
+        # The notes relay runs a coordinator turn: its state.json names a running turn of a live process (this harness).
+        $busy = @{ dispatches = @{ 'R-fixture' = @{ id = 'R-fixture'; state = 'running'; pid = $PID } } }
+        $nsf = Join-Path $fx.p1.mb '.relay\state.json'
+        Write-Text $nsf (ConvertTo-Json -InputObject $busy -Depth 5)
+        Write-Text (Join-Path $fx.p1.mb 'tasks\T-BASE\questions.md') (Get-Questions @(2))
+        Write-Text (Join-Path $fx.p2.mb 'tasks\T-BASE\questions.md') (Get-Questions @(3))
+        Set-CodexStubMode $fx 'sleep:12'
+        $r = Invoke-Relay $fx 'Once' @{ NoWait = $true }
+        Check ($r.out -match 'item\(s\) of project notes wait' -and $r.out -match 'a coordinator turn runs there') 'the notes item did not wait for the coordinator turn of notes'
+        Check (Wait-Until { (Get-RunningCodexStubs $fx) -eq 1 } 15) 'the shop item did not wake the orchestrator'
+        $s = @(Get-CodexCalls $fx 'start')
+        Check ($s.Count -eq 1 -and $s[0].prompt -match 'project shop' -and $s[0].prompt -notmatch 'project notes') 'the first wake was not exactly the shop item'
+        # A state.json that cannot be read counts as a running turn.
+        Write-Text $nsf '{ not json'
+        $r = Invoke-Relay $fx 'Once' @{ NoWait = $true }
+        Check ($r.out -match 'could not be read') 'a state.json that cannot be read did not hold the notes item'
+        # The notes turn is over, but the orchestrator still runs the shop wake: never a second Codex process.
+        Remove-Item -LiteralPath $nsf -Force
+        $r = Invoke-Relay $fx 'Once' @{ NoWait = $true }
+        if ((Get-RunningCodexStubs $fx) -ne 1) { throw 'timing: the 12 s Codex turn ended before the check; re-run on a less loaded machine' }
+        Check ($r.out -match 'Codex wake C\S+ is still running') 'the notes item did not wait for the running orchestrator turn'
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 1) 'a second Codex process started while the orchestrator ran'
+        Check (Wait-Until { (Get-RunningCodexStubs $fx) -eq 0 } 40) 'the orchestrator turn did not end'
+        Set-CodexStubMode $fx 'ok'
+        $null = Invoke-Relay $fx 'Once' $null
+        $null = Invoke-Relay $fx 'Once' $null
+        $s = @(Get-CodexCalls $fx 'start')
+        Check ($s.Count -eq 2) "expected 2 orchestrator wakes in total, got $($s.Count)"
+        if ($s.Count -eq 2) { Check ($s[1].prompt -match 'project notes' -and $s[1].prompt -notmatch 'project shop') 'the second wake was not exactly the notes item' }
+        Check (Test-NoOverlap $fx -Codex) 'two Codex processes were alive at the same time'
+    }
+
+    Invoke-Scenario '21 HQ: a project that also wakes the orchestrator''s thread stops the orchestrator wakes, with an alert' {
+        $fx = New-HqFixture 'hq3'
+        Initialize-Fixture $fx
+        $r = Invoke-Relay $fx 'EnrollCodex' @{ ThreadId = $fx.tid }
+        if ($r.code -ne 0) { throw "-EnrollCodex failed (exit $($r.code)): $(Get-Tail $r.out)" }
+        # The notes relay enrolls the same thread for its own planner wake (both use one Codex home).
+        $r = Invoke-Relay $fx.p1 'EnrollCodex' @{ ThreadId = $fx.tid }
+        Check ($r.code -eq 0) "-EnrollCodex in the notes project exit code $($r.code): $(Get-Tail $r.out)"
+        Write-Text (Join-Path $fx.p2.mb 'tasks\T-BASE\questions.md') (Get-Questions @(2))
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 0) 'HQ woke the orchestrator although the notes project wakes the same thread'
+        $st = Get-RelayState $fx
+        Check ([string]$st.codex_halt -match 'project notes') 'HQ did not stop its orchestrator wakes for the notes project'
+        Check (-not $st.halt) 'the shared thread stopped the coordinator direction too'
+        $al = Read-Shared (Join-Path $fx.mb '.relay\alerts.md')
+        Check ($al -match 'project notes' -and $al -match '-UnenrollCodex') 'the alert does not say to run -UnenrollCodex in the notes project'
+        # Fixed in the project: after -ClearHalt the wake goes.
+        $null = Invoke-Relay $fx.p1 'UnenrollCodex' $null
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 1) 'the orchestrator was not woken after the notes project let go of the thread'
+        # An agent of the shop project on the same thread stops the wakes too.
+        $agents = @{ orch = @{ name = 'Orchestrator'; key = 'orch'; thread_id = $fx.tid } }
+        Write-Text (Join-Path $fx.p2.mb '.relay\agents.json') (ConvertTo-Json -InputObject $agents -Depth 4)
+        Write-Text (Join-Path $fx.p1.mb 'tasks\T-BASE\questions.md') (Get-Questions @(3))
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexCalls $fx 'start').Count -eq 1) 'HQ woke the orchestrator although an agent of the shop project uses the same thread'
+        Check ([string](Get-RelayState $fx).codex_halt -match 'project shop') 'HQ did not stop its orchestrator wakes for the agent of the shop project'
+        Check ((Read-Shared (Join-Path $fx.mb '.relay\alerts.md')) -match '-UnenrollAgent') 'the alert does not say to run -UnenrollAgent'
+    }
+
+    Invoke-Scenario '22 HQ: -NewProject makes a project mailbox and lists it; the same id again is refused; -UpdateProjects copies only the scripts' {
+        $fx = New-HqFixture 'hq4'
+        # HQ holds its own copy of the relay, the way the README's setup makes one.
+        $repoRelay = Split-Path -Parent $HereDir
+        foreach ($f in @(Get-ChildItem -LiteralPath $HereDir -File | Where-Object { $_.Name -match '\.ps1$|\.example\.json$' })) {
+            Copy-Item -LiteralPath $f.FullName -Destination (Join-Path (Join-Path $fx.mb 'bin') $f.Name)
+        }
+        foreach ($sub in @('tests', 'templates')) {
+            $to = Join-Path $fx.mb $sub
+            New-Item -ItemType Directory -Path $to -Force | Out-Null
+            foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $repoRelay $sub) -File)) { Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $to $f.Name) }
+        }
+        Write-Text (Join-Path $fx.mb 'README.md') "# Mailbox protocol (synthetic)`r`n"
+        Write-Text (Join-Path $fx.mb 'CLAUDE.md') "# Standing orders (synthetic)`r`n"
+        Write-Text (Join-Path $fx.mb 'bin\cost-limits.json') '{"enabled":false}'
+        $r = Invoke-Relay $fx 'NewProject' @{ ProjectId = 'garden'; ProjectName = 'Garden' }
+        Check ($r.code -eq 0) "-NewProject exit code $($r.code): $(Get-Tail $r.out)"
+        $pg = Join-Path $fx.mb 'projects\garden'
+        foreach ($rel in @('bin\bridge-relay.ps1', 'bin\agent-mail.ps1', 'bin\spawn-worker.ps1', 'bin\relay-settings.example.json', 'bin\cost-limits.json',
+                'tests\stub-codex.js', 'tests\stub-claude.js', 'templates\assignment.md', 'README.md', 'CLAUDE.md')) {
+            Check (Test-Path -LiteralPath (Join-Path $pg $rel) -PathType Leaf) "-NewProject did not make $rel"
+        }
+        Check (Test-Path -LiteralPath (Join-Path $pg 'tasks') -PathType Container) '-NewProject did not make the tasks folder'
+        $q = Join-Path $pg 'CODEX-QUEUE.md'
+        Check ((Test-Path -LiteralPath $q) -and (Read-Shared $q) -match '^# Codex queue \(owner: Codex\)') 'CODEX-QUEUE.md does not start the way the README setup starts it'
+        $b = Join-Path $pg 'STATUS.md'
+        Check ((Test-Path -LiteralPath $b) -and (Read-Shared $b) -match '^# Status board \(owner: Claude\)') 'STATUS.md does not start the way the README setup starts it'
+        $ps = $null
+        try { $ps = ConvertFrom-Json -InputObject (Read-Shared (Join-Path $pg 'bin\relay-settings.json')) } catch { }
+        $hqRoot = [IO.Path]::GetFullPath($fx.mb).TrimEnd('\')
+        Check ($ps -and -not $ps.role -and $null -eq $ps.projects -and $ps.hq_dir -eq $hqRoot -and @($ps.codex_exec_args) -contains 'workspace-write') 'the project settings are not HQ''s without role and projects, with hq_dir'
+        $hs = ConvertFrom-Json -InputObject (Read-Shared (Join-Path $fx.mb 'bin\relay-settings.json'))
+        $g = @(@($hs.projects) | Where-Object { $_.id -eq 'garden' })
+        Check ($g.Count -eq 1 -and $g[0].name -eq 'Garden' -and $g[0].mailbox -eq $pg) 'the projects list of HQ does not hold the garden project'
+        Check (@($hs.projects).Count -eq 3 -and $hs.role -eq 'hq') 'the settings of HQ lost the other projects or the role'
+        Check (@(Get-ChildItem -LiteralPath (Join-Path $fx.mb 'bin') -File -Filter 'relay-settings.json.bak-*').Count -eq 1) '-NewProject kept no copy of the old HQ settings'
+        $g2 = Join-Path $fx.dir 'garden2'
+        $r = Invoke-Relay $fx 'NewProject' @{ ProjectId = 'garden'; ProjectName = 'Garden again'; ProjectFolder = $g2 }
+        Check ($r.code -ne 0 -and $r.out -match 'already has a project') 'a second -NewProject with the same id was not refused'
+        Check (-not (Test-Path -LiteralPath $g2)) 'the refused -NewProject made a folder'
+        $r = Invoke-Relay $fx.p1 'NewProject' @{ ProjectId = 'other'; ProjectName = 'Other' }
+        Check ($r.code -ne 0 -and $r.out -match 'not HQ') '-NewProject worked in a mailbox that is not HQ'
+        # -UpdateProjects copies the scripts and keeps the one it replaced; the settings stay; a running relay is skipped.
+        $gs = Join-Path $pg 'bin\bridge-relay.ps1'
+        Write-Text $gs "# an older relay`r`n"
+        $setBefore = (Get-FileHash -LiteralPath (Join-Path $pg 'bin\relay-settings.json') -Algorithm SHA256).Hash
+        $lockFile = Join-Path $fx.p2.mb '.relay\relay.lock'
+        Write-Text $lockFile ('{"pid":' + $PID + ',"mode":"Start","started":"2026-11-03 10:00:00","started_utc":0,"poll_seconds":1}')
+        $held = [IO.File]::Open($lockFile, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+        try { $r = Invoke-Relay $fx 'UpdateProjects' $null } finally { $held.Dispose() }
+        Check ($r.code -eq 0) "-UpdateProjects exit code $($r.code): $(Get-Tail $r.out)"
+        $hqHash = (Get-FileHash -LiteralPath (Join-Path $fx.mb 'bin\bridge-relay.ps1') -Algorithm SHA256).Hash
+        Check ((Get-FileHash -LiteralPath $gs -Algorithm SHA256).Hash -eq $hqHash) '-UpdateProjects did not copy the relay of HQ into the garden project'
+        Check (@(Get-ChildItem -LiteralPath (Join-Path $pg 'bin') -File -Filter 'bridge-relay.ps1.bak-*').Count -eq 1) '-UpdateProjects kept no copy of the script it replaced'
+        Check ((Get-FileHash -LiteralPath (Join-Path $pg 'bin\relay-settings.json') -Algorithm SHA256).Hash -eq $setBefore) '-UpdateProjects changed the project settings'
+        Check (Test-Path -LiteralPath (Join-Path $fx.p1.mb 'bin\bridge-relay.ps1') -PathType Leaf) '-UpdateProjects did not copy the relay into the notes project'
+        Check (Test-Path -LiteralPath (Join-Path $fx.p1.mb 'tests\stub-codex.js') -PathType Leaf) '-UpdateProjects did not copy the stubs into the notes project'
+        Check (-not (Test-Path -LiteralPath (Join-Path $fx.p1.mb 'bin\relay-settings.json')) -and -not (Test-Path -LiteralPath (Join-Path $fx.p1.mb 'templates'))) '-UpdateProjects copied settings or templates'
+        Check (-not (Test-Path -LiteralPath (Join-Path $fx.p2.mb 'bin\bridge-relay.ps1')) -and $r.out -match 'Skipped shop') '-UpdateProjects did not skip the shop project, whose relay runs'
     }
 } catch {
     $script:Fail++

@@ -1,0 +1,11 @@
+{
+  "role": "hq",
+  "projects": [
+    { "id": "notes", "name": "Notes", "mailbox": "C:\\Users\\ada\\mailboxes\\notes" },
+    { "id": "shop", "name": "Shop", "mailbox": "C:\\Users\\ada\\hq\\projects\\shop" }
+  ],
+  "projects_dir": "C:\\Users\\ada\\projects",
+  "owner_name": "Ada",
+  "codex_exec_args": ["--sandbox", "workspace-write"],
+  "note": "HQ only: copy this file to relay-settings.json in the HQ mailbox's bin folder and change the values. role hq makes this mailbox HQ: its relay wakes the orchestrator (the Codex thread enrolled here with -EnrollCodex) for new items in HQ and in each project. projects: each project mailbox, with an id (1-40 small letters, digits or hyphens, never hq), a name, and the full path of its mailbox folder; bridge-relay.ps1 -NewProject adds one for you. With codex_exec_args set to workspace-write, the orchestrator may also write in each project mailbox (the relay adds --add-dir for each). The other settings are the same as in relay-settings.example.json."
+}
