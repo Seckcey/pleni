@@ -19,6 +19,9 @@ const MINUTE_MS = 60000;
 const STATUSES = ['working', 'ready', 'idle', 'done', 'error'];
 const KINDS = ['session', 'agent', 'reviewer'];
 const NO_PROJECT = 'Other';
+// The AI tools whose sessions Pleni reads, and the names their tiles show (settings.toolTiles).
+const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
+const TOOL_NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code' };
 const GIT_CACHE_MAX = 500;
 const GITHUB_PATH = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 
@@ -45,6 +48,8 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
   };
   const box = isObject(mailbox) ? mailbox : null;
   const all = collectSessions([claude, codex, grok, kimi]);
+  // A tile for each AI tool that is on and was found, even with no sessions (settings.toolTiles).
+  ctx.tools = s.toolTiles ? availableTools({ claude, codex, grok, kimi }) : [];
   const workers = mailboxWorkers(box, ctx, all);
   for (const worker of workers) all.set(worker.key, worker);
   ctx.relayWorkers = new Set(workers.map((worker) => worker.key));
@@ -100,6 +105,8 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
     },
     // Whether the Cloud page is turned on, so the page knows to show its link.
     codexCloud: { live: s.codexCloud.live },
+    // Whether the Map's AI tools button is pressed: each AI tool has a tile, with its sessions under it.
+    toolTiles: s.toolTiles,
   };
 }
 
@@ -524,7 +531,7 @@ function buildTree(all, ctx, mailbox) {
     const rule = session.spawned ? null : chainRule(settings.chain, session, settings);
     if (rule) rules.set(session.key, rule);
     nodes.set(session.key, sessionNode(session, name, ctx, rule));
-    homes.set(session.key, settings.groupBy === 'project' ? projectKey(name) : 'you');
+    homes.set(session.key, homeOf(session, name, settings));
   }
   if (mailbox && isObject(mailbox.relay)) {
     const relay = relayNode(mailbox, settings);
@@ -545,6 +552,7 @@ function buildTree(all, ctx, mailbox) {
   breakCycles(nodes, parentOf, homes);
 
   nodes.set('you', personNode(settings.displayName, settings.titles));
+  if (settings.toolTiles) addToolTiles(nodes, parentOf, ctx.tools);
   for (const [key, parent] of parentOf) {
     if (parent.startsWith('project:') && !nodes.has(parent)) {
       const name = parent.slice('project:'.length);
@@ -557,6 +565,33 @@ function buildTree(all, ctx, mailbox) {
   const order = treeOrder(nodes, parentOf);
   rollUp(nodes, order);
   return { nodes, parentOf, order };
+}
+
+// Where a session hangs when nothing else places it: its AI tool's tile, its project's tile, or you.
+function homeOf(session, project, settings) {
+  if (settings.toolTiles && TOOLS.includes(session.platform)) return toolKey(session.platform);
+  return settings.groupBy === 'project' ? projectKey(project) : 'you';
+}
+
+// A tile under you for each available AI tool, and for any other tool a session hangs under.
+function addToolTiles(nodes, parentOf, available) {
+  const tools = new Set(available);
+  for (const parent of parentOf.values()) {
+    if (parent.startsWith('tool:')) tools.add(parent.slice('tool:'.length));
+  }
+  for (const tool of TOOLS) {
+    if (!tools.has(tool)) continue;
+    nodes.set(toolKey(tool), toolNode(tool));
+    parentOf.set(toolKey(tool), 'you');
+  }
+}
+
+// An AI tool counts when its source is on and found its folder, or when it has sessions.
+function availableTools(results) {
+  return TOOLS.filter((tool) => {
+    const result = results[tool];
+    return isObject(result) && (result.ok !== false || sessionsOf(result).length > 0);
+  });
 }
 
 // ---- chain of command ----
@@ -685,7 +720,7 @@ function treeOrder(nodes, parentOf) {
   return order;
 }
 
-// Projects and the person show how many sessions they hold and when anything last moved.
+// Projects, AI tools and the person show how many sessions they hold and when anything last moved.
 function rollUp(nodes, order) {
   const counts = new Map();
   for (let i = order.length - 1; i > 0; i--) {
@@ -697,9 +732,9 @@ function rollUp(nodes, order) {
     if (node.lastAt !== null && (parent.lastAt === null || node.lastAt > parent.lastAt)) parent.lastAt = node.lastAt;
   }
   for (const node of nodes.values()) {
-    if (node.kind !== 'project') continue;
+    if (node.kind !== 'project' && node.kind !== 'tool') continue;
     const n = counts.get(node.key) || 0;
-    node.subtitle = n === 1 ? '1 session' : `${n} sessions`;
+    node.subtitle = n === 0 ? 'No sessions now' : n === 1 ? '1 session' : `${n} sessions`;
   }
 }
 
@@ -796,6 +831,11 @@ function fallbackTitle(session) {
 
 function personNode(displayName, theme) {
   return groupNode({ key: 'you', parent: null, platform: 'human', kind: 'person', title: displayName, rank: rankOf(theme, null, 'person', null) });
+}
+
+// An AI tool's tile (settings.toolTiles): its sessions hang under it.
+function toolNode(tool) {
+  return groupNode({ key: toolKey(tool), parent: 'you', platform: tool, kind: 'tool', title: TOOL_NAMES[tool], rank: 'AI tool' });
 }
 
 function projectNode(key, title, name) {
@@ -917,6 +957,10 @@ function messageEdges(tree, pairs, ctx) {
 
 function projectKey(name) {
   return `project:${name}`;
+}
+
+function toolKey(tool) {
+  return `tool:${tool}`;
 }
 
 // ---- links, edges and events ----

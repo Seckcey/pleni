@@ -118,6 +118,8 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   purple dots travel up when a report comes back. Drag to move around. Use Ctrl + scroll, a
   pinch, or the `+` and `−` buttons to zoom. The **Working** switch hides sessions that are
   quiet. The **full screen** button (or `F`) shows only the map; Esc or the button leaves it.
+  The **AI tools** button gives each AI tool a tile of its own, with its sessions under it,
+  even when none is running. The relay's tile stays on the map too. Click it again to hide them.
 - **List** — the same sessions as a table, grouped by project, with filters. It also works well
   with a screen reader.
 - **Pop out** — the Map, the List, or one session's side panel can open in a window of its own,

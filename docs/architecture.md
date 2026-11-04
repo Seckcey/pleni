@@ -120,6 +120,7 @@ export const DEFAULTS = {
   titles: 'plain',                    // 'plain' | 'military' | 'company'
   content: 'snippets',                // 'snippets' | 'none'
   groupBy: 'none',                    // 'none' | 'project' (a folder tile between you and its sessions)
+  toolTiles: false,                   // the Map's AI tools button: a tile for each AI tool, its sessions under it
   window: { activeMinutes: 10, recentHours: 24, staleMinutes: 30 },
   showReviewers: false,               // Codex automatic-review sub-agents
   modelTiers: { senior: ['opus', 'fable', 'astra'], junior: ['sonnet', 'haiku', 'sol', 'luna', 'mini'] },
@@ -504,7 +505,7 @@ export function buildSnapshot({ now, settings, claude, codex, mailbox, dismissed
 Snapshot = {
   version: 1, now,
   demo: boolean,   // true only in the demo, where the Projects page offers no New, Edit or Delete
-  sources: { claude: SourceInfo, codex: SourceInfo, mailbox: SourceInfo | null },
+  sources: { claude: SourceInfo, codex: SourceInfo, grok: SourceInfo, kimi: SourceInfo, mailbox: SourceInfo | null },
   nodes: Node[], edges: Edge[], events: Event[], counts: { working, ready, idle, done, error, total },
   attention: [{ id: '<key>|<kind>', key, kind, text, at }],  // at is 0 when unknown
   tasks: MailboxState['tasks'] | null,
@@ -514,11 +515,12 @@ Snapshot = {
   actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean, teleport: boolean, send: boolean, answers: boolean },  // the page may show each button (setting on, Pleni on Windows; answers on any system)
   asks: Ask[],  // the questions Pleni holds for the person (src/answers.js), oldest first
   codexCloud: { live: boolean },  // settings.codexCloud.live: the Cloud page lists Codex cloud tasks only while it is true
+  toolTiles: boolean,  // settings.toolTiles: the Map's AI tools button is pressed, and the tree has tool tiles
 }
 SourceInfo = { enabled, ok, error, count }
 Node = {
-  key, parent, platform: 'human' | 'group' | 'claude' | 'codex',
-  kind: 'person' | 'project' | 'session' | 'agent' | 'reviewer',
+  key, parent, platform: 'human' | 'group' | 'claude' | 'codex' | 'grok' | 'kimi' | 'relay',
+  kind: 'person' | 'project' | 'tool' | 'relay' | 'session' | 'agent' | 'reviewer',
   title, subtitle, rank, role, tier: 'senior' | 'junior' | null,
   model, modelLabel, effort, status, startedAt, lastAt, activity, lastText,
   workerType, chosen, // a Claude Code sub-agent's type, and whether its model and effort were chosen for it (Session); else null
@@ -545,6 +547,14 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
 
 - Tree: `you` (the person, `displayName`) → projects (when `groupBy` is `project`) → top-level
   sessions → sub-agents, recursively. A sub-agent whose parent is not listed hangs under its project.
+- AI tool tiles: while `toolTiles` is true, each top-level session hangs under its AI tool's tile,
+  `tool:<platform>` (kind `tool`, platform the tool, parent `you`, title "Claude Code", "Codex",
+  "Grok" or "Kimi Code", rank "AI tool", subtitle "N sessions" or "No sessions now"), instead of
+  under `you` or its project, so grouping by project waits. A tool has a tile when its source is on
+  and found its folder (`SourceInfo.ok`) or has sessions, even when none is listed, and also when
+  anything on the map hangs under it. Who reports to whom (below) still wins, so the mailbox chain
+  stays planner → relay → coordinator → workers. A `tool:` key is not a node key (`isNodeKey`): a
+  tool tile cannot be moved, watched, hidden, named in People, or opened for events.
 - Relay and its workers: when the mailbox has relay files, a `relay` node (kind and platform
   `relay`, title "Relay" or the person's label, status working/idle/error from running, paused and
   halted) sits between the planner and the coordinator. The relay's worker runs
@@ -1836,6 +1846,13 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   when the map has focus.
   The view refits only when the content no longer fits and the person has not moved it. A
   Working/Everyone switch (remembered in `localStorage` as `pleni.mapMode`) hides quiet sessions.
+  Working mode always keeps the person and the AI tool tiles. Next to it, the **AI tools** button
+  (`data-tool-tiles`, `aria-pressed` from `snapshot.toolTiles`) gets the saved settings, flips
+  `toolTiles`, and saves them all, the same as the **AI tool tiles** box under Settings → You and the
+  map. Any signed-in device may change it, since it only changes the map. While it is pressed,
+  Working mode also keeps the relay, and the map shows the tool tiles (not the welcome page) even
+  with no sessions. A tool tile's side panel lists what hangs under it, with **See token use**
+  (`data-usage`) and a link to Settings → Sources.
   Dragging a session or relay tile more than 6 px onto another tile (or onto the person) posts
   `/api/placement`; valid bosses light up, Esc or a drop elsewhere cancels, and a short notice offers
   Undo. The drawer's **Reports to** menu does the same from the keyboard, with **Automatic** to undo.
@@ -2078,7 +2095,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `.\agent-mail.ps1 -Send -From '<your name>' -To '<its name>' -Text 'your answer'`. Pleni sends
   no mail. Feed lines read "<sender> sent mail to <receiver>", up when the receiver is above the
   sender on the map, else down; a side that is not on the map shows its mail name. A relay wake
-  reads "Relay woke <agent>". Working mode shows the relay while one of its lines is lit.
+  reads "Relay woke <agent>". Working mode shows the relay while one of its lines is lit, and always
+  while the AI tools button is pressed.
 - **Chosen or default:** where a tile, a List row or the side panel shows a sub-agent's model and
   effort, a part its sergeant did not choose (`chosen.model` or `chosen.effort` false) ends with
   "(default)", and both with "(defaults)": "Sonnet 5.5 · max effort (defaults)". The Details tab

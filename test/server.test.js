@@ -2528,3 +2528,12 @@ test('the demo never changes the saved project list, and never shows it', async 
   assert.equal(res.json.settings.displayName, 'Grace');
   assert.deepEqual(memory.state.settings.projectList, [own]);
 });
+
+test('any signed-in device may switch the AI tool tiles, since they only change the map', async (t) => {
+  const { port, memory } = await startServer(t, { settings: REMOTE });
+  assert.equal(memory.state.settings.toolTiles, false);
+  assert.equal((await postSettings(port, { ...memory.state.settings, toolTiles: true }, FROM_LAPTOP)).status, 200);
+  assert.equal(memory.state.settings.toolTiles, true);
+  assert.equal((await postSettings(port, { ...memory.state.settings, toolTiles: false }, FROM_LAPTOP)).status, 200);
+  assert.equal(memory.state.settings.toolTiles, false);
+});
