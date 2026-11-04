@@ -8,6 +8,36 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **A coordinator in Codex or Gemini CLI.** The mailbox relay can now wake a Codex thread or a
+  Gemini CLI session as a project's coordinator, not only a Claude Code session. You pick the tool
+  when you sign the coordinator up (`-Enroll -Tool codex` or `-Enroll -Tool gemini`), and Pleni
+  shows it under that tool. It works in a folder of its own, with strict limits on what it may
+  write and run. Gemini CLI costs money for every turn, and it skips the relay's turn limit in a
+  mailbox folder, so also set `model.maxSessionTurns` in your own Gemini settings. See "A
+  coordinator in Codex or Gemini CLI" in the relay's README. To switch a mailbox from one tool to
+  another, stop the relay, sign up again with the other `-Tool`, and start the relay. Signing up
+  again clears the old coordinator's count of failed turns and its wait, as a rollover does. A halt
+  stays, and `-Enroll` says so. A Codex coordinator needs a folder with no `AGENTS.md` or
+  `AGENTS.override.md` above it, up to the top of its Git repository, because Codex reads every
+  `AGENTS.md` from there down. A Codex thread has one job, except that the planner and a mail agent
+  may share one, as before.
+- **Start requests.** A Codex or Gemini CLI coordinator cannot run the worker launcher itself. It
+  writes a small file, `W<n>-start.md`, beside the worker's brief, and the relay checks it and
+  starts the worker. Each version of a request runs once, at most 12 workers start a day
+  (`relay_max_worker_starts_per_day`), and a refusal comes back to the coordinator as a note.
+  `New worktree: yes` lets the launcher make the worker's Git worktree (a second working folder of
+  a Git repository).
+- **A guard on the relay's own files.** While a Codex or Gemini CLI coordinator is signed up, or
+  start requests are on, the relay halts and tells you in plain words when its scripts, its
+  settings, the coordinator's orders file or its own records change and it did not make the change.
+  To halt means to send no turn and start no worker until you look. Stop the relay before you
+  change a setting, and wait until no coordinator turn is running. A Claude Code coordinator with
+  start requests off is not guarded, as before.
+- **A relay coordinator shows under its own AI tool.** The coordinator of a mailbox relay may be a
+  session in Codex or Gemini CLI, not only in Claude Code. Its `.relay\coordinator.json` then
+  names the tool (`tool`: `claude`, `codex` or `gemini`). Pleni reads it and shows the coordinator
+  as that tool's session, under the relay. A file with no tool means Claude Code, as before. A tool
+  Pleni does not know is not shown as the coordinator.
 - **Relay workers in Codex, Gemini CLI or Antigravity CLI.** The mailbox relay's coordinator can
   now start a worker in Codex, Gemini CLI or Antigravity CLI, not only in Claude Code. Each one
   stays off until you add it to `worker_tools` in the mailbox's `bin\relay-settings.json`, and each
@@ -106,6 +136,22 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   Codex sign-in (`codex login`; an API key does not work). Pleni shows titles and status, never
   messages. Codex leaves a small `error.log`, with your account id in it, in the `codex-cloud`
   folder next to Pleni's settings.
+
+### Changed
+
+- **Relay workers in Codex skip your own Codex settings and rules, and have no web search.** A
+  Codex worker, and a Codex coordinator, now start Codex without your `config.toml` and your
+  command rules. So your extra folders, MCP servers (add-on tools), hooks (commands Codex runs by
+  itself at set moments) and command rules do not apply. Every other `config.toml` setting stops
+  applying too, profiles included: a model or effort in a `[profiles.<name>]` part, or chosen with
+  `profile = "<name>"`, does not count. The relay still passes on your model, your sign-in store
+  (where Codex keeps your sign-in) and your Windows sandbox (a locked box that limits what a
+  program may touch), read from the top of `config.toml`. A Codex coordinator also gets its effort:
+  the one you signed it up with, else the one in `config.toml`. A Codex worker's effort is
+  `-Effort`, or `xhigh` when none is given, as before; it is never the one in `config.toml`.
+  Codex's own web search is off. This needs a Codex command
+  line from April 2026 or newer: an older one stops with an "update Codex" message. Set up Codex's
+  Windows sandbox first.
 
 ## 0.3.0 (2026-11-02)
 

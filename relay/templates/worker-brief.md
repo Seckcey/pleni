@@ -1,11 +1,11 @@
-# Worker brief — <TASK-ID> / <W#>   (owner: Claude coordinator)
+# Worker brief — <TASK-ID> / <W#>   (owner: coordinator)
 
-You are a **worker** session, supervised by the **Claude coordinator**. You never talk to the planner directly.
+You are a **worker** session, supervised by the **coordinator**. You never talk to the planner directly.
 
 - **Type:** implementation | read-only review
 - **Worktree (your only working directory):** <worktrees folder>\<TASK-ID>\<repo>
-- **Branch:** claude/<TASK-ID>   (already created — do not create/switch branches)
-- **Base commit:** <sha>
+- **Branch:** claude/<TASK-ID>   (already created, or made by the launcher for a start request with New worktree: yes; do not create or switch branches)
+- **Base commit:** <sha>   (needed for New worktree: yes)
 - **Model and effort:** <model>, <effort>   (why: <one line>)
 - **Tool:** claude | codex | gemini | antigravity   (only a tool that worker_tools in bin\relay-settings.json lists)
 

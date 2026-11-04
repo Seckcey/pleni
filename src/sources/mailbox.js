@@ -12,6 +12,8 @@ const MAX_TEXT_BYTES = 4 * 1024 * 1024;
 const MAX_LOCK_BYTES = 64 * 1024;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 const SESSION_ID = /^[0-9a-f-]{8,64}$/;
+// The AI tools a relay coordinator may run in (.relay/coordinator.json "tool").
+const COORDINATOR_TOOLS = new Set(['claude', 'codex', 'gemini']);
 const RUN_FILE = /^(W\d{1,6})\.run\.json$/;
 const REPORT_FILE = /^(W\d{1,6})-report\.md$/;
 // Notes for the person, kept at the mailbox root: NEEDS-<NAME>.md (NEEDS-ADA.md, NEEDS-OWNER.md).
@@ -710,9 +712,12 @@ function shortHost(host) {
   return String(host).trim().toLowerCase().split('.')[0];
 }
 
+// .relay/coordinator.json: { tool?, session_id, ... }. A file from before tools came has no tool: Claude Code.
 function coordinatorKeyOf(coordinator) {
   const id = typeof coordinator?.session_id === 'string' ? coordinator.session_id.trim().toLowerCase() : '';
-  return SESSION_ID.test(id) ? `claude:${id}` : null;
+  const raw = coordinator?.tool ?? 'claude';
+  const tool = typeof raw === 'string' ? raw.trim().toLowerCase() || 'claude' : null;
+  return SESSION_ID.test(id) && COORDINATOR_TOOLS.has(tool) ? `${tool}:${id}` : null;
 }
 
 // .relay/codex.json: { thread_id, follow_name?, ... }, the planner's Codex thread. The relay keeps

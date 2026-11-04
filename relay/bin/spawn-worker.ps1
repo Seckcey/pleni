@@ -9,7 +9,12 @@
   - Codex (-Tool codex), Gemini (-Tool gemini) and Antigravity (-Tool antigravity) stay off until worker_tools in
     bin\relay-settings.json lists them.
     Codex: `codex exec` in a new thread, signed in with ChatGPT (codex login status). OPENAI_API_KEY and the other
-    OpenAI overrides are removed for the child, so it never bills an API account. Gemini: `gemini -p` with the owner's
+    OpenAI overrides are removed for the child, so it never bills an API account. It starts with --ignore-user-config and
+    --ignore-rules, so none of the owner's config.toml (extra folders, MCP servers, hooks) or command rules apply, with
+    -c web_search=disabled and the network off in the sandbox. The launcher passes on only the model (when none was
+    given), the sign-in store (keyring or auto) and the Windows sandbox from config.toml. The effort is -Effort, xhigh
+    unless given, as always. It needs a Codex CLI from April 2026 or newer: an older one stops at once, and the worker's
+    note says to update Codex. Gemini: `gemini -p` with the owner's
     own Gemini login (GEMINI_API_KEY passes through untouched; Gemini is paid per use), a per-run admin policy
     (--admin-policy, checked by SHA-256 right before the start) and a turn limit (GEMINI_CLI_SYSTEM_DEFAULTS_PATH).
     Antigravity: `agy` in a new headless conversation (--input-format stream-json, the prompt as one line on stdin),
@@ -36,6 +41,16 @@
     the init event) or a new Antigravity conversation (its conversation_id from the init event, saved as soon as agy
     reports it). Pleni can show it, and once a Claude run has ended, the owner can open it with
     claude --resume <session_id> in the worktree.
+  - Start requests: a coordinator in Codex or Gemini CLI cannot run this launcher itself, so it writes W<n>-start.md beside the
+    worker's brief and bin\bridge-relay.ps1 runs the launcher for it, with the checked values of that file.
+  - -ResultFile and -NewWorktree: only bin\bridge-relay.ps1 passes them, for a start request (W<n>-start.md).
+      -ResultFile   a .relay\dispatch\S<time>-<id>.result.json file of this mailbox (any other path is refused). The
+                    launcher writes what happened there: ok (true or false), its own words, and the runner's pid and
+                    start time. A refusal writes its words too.
+      -NewWorktree  first makes the brief's worktree, <worktrees folder>\<TASK-ID>\<repo>, on the new branch
+                    claude/<TASK-ID> from the brief's Base commit, out of <projects_dir>\<repo> (git worktree add, which
+                    runs that repository's own post-checkout hook, if it has one). It never changes a worktree or a
+                    branch that is already there.
   - Test only. bin\bridge-relay-check.ps1 sets these; each one can only make the launcher refuse:
       RELAY_TEST_GEMINI_POLICY_DIR  one more folder for the Gemini system policy check, read like
                                     C:\ProgramData\gemini-cli\policies (which is always read too)
@@ -65,7 +80,10 @@ param(
     [string]$Model = 'claude-opus-5-5[1m]',
     [ValidateSet('low', 'medium', 'high', 'xhigh', 'max')][string]$Effort = 'xhigh',
     [switch]$Status,
-    [switch]$Foreground
+    [switch]$Foreground,
+    # Only bin\bridge-relay.ps1 passes these, for a start request (W<n>-start.md).
+    [string]$ResultFile,     # where to write what happened: .relay\dispatch\S<time>-<id>.result.json of this mailbox
+    [switch]$NewWorktree     # make <worktrees>\<TASK-ID>\<repo> on claude/<TASK-ID> from the brief's Base commit first
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,6 +104,37 @@ $ClaudeDefaultModel = 'claude-opus-5-5[1m]'
 # --admin-policy, and with it the relay's policy for the worker.
 $GeminiSystemPolicies = 'C:\ProgramData\gemini-cli\policies'
 $Notes = New-Object System.Collections.Generic.List[string]   # Codex and Gemini: the launcher's notes for <W>.log
+
+function Write-StartResult([bool]$Ok, [string]$Message, $RunnerPid, [string]$RunnerStart) {
+    # For the relay (-ResultFile): what happened, in the launcher's own words. Never throws.
+    if (-not $ResultPath) { return }
+    try {
+        $o = [ordered]@{ ok = $Ok; message = $Message; runner_pid = $RunnerPid; runner_start = $RunnerStart; task = $TaskId; worker = $Worker; tool = $Tool }
+        [IO.File]::WriteAllText($ResultPath, (ConvertTo-Json -InputObject $o -Depth 3), $Utf8)
+    } catch { }
+}
+
+# -ResultFile: only a .relay\dispatch\S<time>-<4 hex>.result.json file of this mailbox. A refused path gets no file.
+$ResultPath = ''
+if ($ResultFile) {
+    $full = [IO.Path]::GetFullPath($ResultFile)
+    $want = [IO.Path]::GetFullPath((Join-Path $Bridge '.relay\dispatch'))
+    if ((Split-Path -Parent $full) -ne $want -or (Split-Path -Leaf $full) -notmatch '^S\d{8}-\d{6}-[0-9a-f]{4}\.result\.json$') {
+        throw "Refusing: -ResultFile must be a .relay\dispatch\S<time>-<id>.result.json file of this mailbox (got $ResultFile). Nothing was started."
+    }
+    $ResultPath = $full
+}
+
+# Any refusal below ends the script, as before; the relay gets its words (the message only, without PowerShell's
+# position lines). A trap covers the whole script, wherever it stands; break ends the script with the error, as a
+# throw with no trap does. Errors that a try/catch inside the script catches never reach it. When -NewWorktree made
+# the worktree before a later refusal, the words say so: the worktree stays, so the next request needs New worktree: no.
+trap {
+    $trapWords = $_.Exception.Message
+    if ($script:WorktreeNote) { $trapWords += $script:WorktreeNote + ' It stays: to ask again, set New worktree to no.' }
+    Write-StartResult $false $trapWords $null ''
+    break
+}
 
 function Write-RunState([string]$Path, [hashtable]$State) {
     # Another program (Pleni, the relay, a test) may be reading run.json just then, so a failed write is tried again.
@@ -345,6 +394,75 @@ $Worktree = [IO.Path]::GetFullPath($Worktree)
 if (-not $Worktree.StartsWith($WorktreesDir, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing: worktree must be under $WorktreesDir (got $Worktree)"
 }
+
+function New-TaskWorktree {
+    # -NewWorktree: makes only <worktrees>\<TASK-ID>\<repo>, on the new branch claude/<TASK-ID>, from the brief's Base
+    # commit, out of <projects_dir>\<repo>. It never changes a worktree or a branch that is already there.
+    $parts = @($Worktree.Substring($WorktreesDir.Length).Split('\') | Where-Object { $_ })
+    if ($parts.Count -ne 2 -or $parts[0] -ne $TaskId) { throw "Refusing: a new worktree must be $WorktreesDir$TaskId\<repo folder> (got $Worktree). Nothing was started." }
+    $repoName = $parts[1]
+    if ($repoName -notmatch '^[A-Za-z0-9._-]{1,100}$' -or $repoName -match '^\.+$') { throw "Refusing: '$repoName' is not a plain repo folder name. Nothing was started." }
+    if (Test-Path -LiteralPath $Worktree) { throw "Refusing: $Worktree is already there; New worktree: yes only makes a new one. Set it to no. Nothing was started." }
+    if (-not ($rs -and $rs.projects_dir)) { throw "Refusing: a new worktree needs projects_dir in $rsFile (the folder that holds $repoName). Nothing was started." }
+    $repo = Join-Path ([IO.Path]::GetFullPath([string]$rs.projects_dir).TrimEnd('\')) $repoName
+    if (-not (Test-Path -LiteralPath (Join-Path $repo '.git') -PathType Container)) { throw "Refusing: $repo is not a Git repository folder (it has no .git folder). Nothing was started." }
+    $branchLine = Select-String -LiteralPath $Brief -Pattern '^\s*-\s*\*\*Branch:\*\*\s*`?([^\s`]+)' | Select-Object -First 1
+    $baseLine = Select-String -LiteralPath $Brief -Pattern '^\s*-\s*\*\*Base commit:\*\*\s*`?([0-9a-fA-F]{7,40})(?![0-9A-Za-z])' | Select-Object -First 1
+    $branch = "claude/$TaskId"
+    if (-not $branchLine -or $branchLine.Matches[0].Groups[1].Value -ne $branch) { throw "Refusing: for a new worktree the brief's Branch line must be $branch. Nothing was started." }
+    if (-not $baseLine) { throw 'Refusing: for a new worktree the brief needs a Base commit line with the commit (7 to 40 hex characters). Nothing was started.' }
+    $base = $baseLine.Matches[0].Groups[1].Value
+    $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $git) { throw 'Refusing: git.exe was not found, so the new worktree cannot be made. Nothing was started.' }
+    $keep = $ErrorActionPreference
+    $baseOk = $false
+    $branchThere = $false
+    $addExit = 0
+    $addText = ''
+    $branchLeft = $false
+    $treeLeft = $false
+    $folderLeft = $false
+    try {
+        $ErrorActionPreference = 'Continue'   # Windows PowerShell 5.1 turns native stderr into errors under Stop
+        $null = & $git.Path -C $repo cat-file -e "$base^{commit}" 2>&1
+        $baseOk = ($LASTEXITCODE -eq 0)
+        $null = & $git.Path -C $repo show-ref --verify --quiet "refs/heads/$branch" 2>&1
+        $branchThere = ($LASTEXITCODE -eq 0)
+        if ($baseOk -and -not $branchThere) {
+            # Native output goes through [string], so an error record becomes plain text.
+            $addText = ((& $git.Path -C $repo worktree add -b $branch $Worktree $base 2>&1) | ForEach-Object { [string]$_ }) -join ' '
+            $addExit = $LASTEXITCODE
+            if ($addExit -ne 0) {
+                # git makes the branch first, so it can fail after that: in the checkout (the branch stays) or in
+                # the repository's post-checkout hook (the whole worktree stays). The words name what is left;
+                # nothing is removed.
+                $null = & $git.Path -C $repo show-ref --verify --quiet "refs/heads/$branch" 2>&1
+                $branchLeft = ($LASTEXITCODE -eq 0)
+                $treeLeft = Test-Path -LiteralPath ([IO.Path]::Combine($Worktree, '.git')) -PathType Leaf   # a worktree's .git is a file
+                $folderLeft = Test-Path -LiteralPath $Worktree
+            }
+        }
+    } finally { $ErrorActionPreference = $keep }
+    if (-not $baseOk) { throw "Refusing: the Base commit $base from the brief is not in $repo. Nothing was started." }
+    if ($branchThere) { throw "Refusing: the branch $branch is already in $repo; a new worktree needs a new branch. Nothing was started." }
+    if ($addText.Length -gt 200) { $addText = $addText.Substring(0, 200) }
+    if ($addExit -ne 0) {
+        # What git left comes before git's own words, so a shortened copy of the message still says it.
+        $left = ''
+        if ($treeLeft) { $left = " git made the worktree $Worktree on $branch before it failed. It stays: to ask again, set New worktree to no." }
+        else {
+            if ($branchLeft) { $left += " git made the branch $branch in $repo before it failed." }
+            if ($folderLeft) { $left += " The folder $Worktree is there now, but it is not a whole worktree." }
+            if ($left) { $left += ' What git left stays, so New worktree: yes is refused until the owner deletes it.' }
+        }
+        throw "Refusing: git worktree add failed.$left Nothing was started. git said: $addText"
+    }
+    $script:WorktreeNote = " Made the worktree $Worktree on $branch from $base."
+}
+
+# -NewWorktree (a start request with New worktree: yes): make the worktree first. The runner never gets it.
+$script:WorktreeNote = ''
+if ($NewWorktree) { New-TaskWorktree }
 if (-not (Test-Path $Worktree)) { throw "Worktree from brief does not exist: $Worktree" }
 
 $RunFile = Join-Path $WorkerDir "$Worker.run.json"
@@ -398,20 +516,61 @@ function Get-RunsToday([string]$Name) {
     return $n
 }
 
-function Get-CodexConfigModel {
-    # The model that Codex's own settings name: model = "..." at the top of <CODEX_HOME>\config.toml, or ''.
-    # Read only, and only that line.
-    $codexHome = $env:CODEX_HOME
-    if (-not $codexHome) { $codexHome = Join-Path $env:USERPROFILE '.codex' }
-    $f = Join-Path $codexHome 'config.toml'
-    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return '' }
+function Get-CodexConfigTop {
+    # The only settings that the launcher still takes from Codex's own <CODEX_HOME>\config.toml (CODEX_HOME, else
+    # <USERPROFILE>\.codex), now that a Codex worker starts with --ignore-user-config: model and
+    # cli_auth_credentials_store (the top-level keys, above the first [table]), and the Windows sandbox (sandbox in
+    # [windows], else the older flags in [features]). Read only, and nothing else in the file: not the effort, as a
+    # worker's effort is always -Effort (xhigh unless given). Each value is checked; one that fails is left out and its
+    # key is named in bad (a key only, never a value). store is only keyring or auto: file is Codex's default. sandbox is
+    # only elevated, unelevated or mxc, or '' when the owner never set one up.
+    $r = @{ model = ''; store = ''; sandbox = ''; bad = @() }
+    $raw = @{}
+    $win = @{}   # the Windows sandbox settings: [windows] sandbox, and the older [features] flags
     try {
-        foreach ($line in @(Get-Content -LiteralPath $f -TotalCount 400 -ErrorAction Stop)) {
-            if ($line -match '^\s*\[') { break }   # the first table: the top-level keys end here
-            if ($line -match '^\s*model\s*=\s*["'']([^"'']*)["'']') { return $Matches[1] }
+        $codexHome = $env:CODEX_HOME
+        if (-not $codexHome) {
+            if (-not $env:USERPROFILE) { return $r }
+            $codexHome = [IO.Path]::Combine($env:USERPROFILE, '.codex')   # not Join-Path: it throws for a drive that is not there
         }
-    } catch { }
-    return ''
+        if (-not [IO.Path]::IsPathRooted($codexHome)) { return $r }
+        $f = [IO.Path]::Combine($codexHome, 'config.toml')
+        if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $r }
+        $table = ''   # '' above the first [table], else the table's name
+        foreach ($line in @(Get-Content -LiteralPath $f -TotalCount 5000 -ErrorAction Stop)) {
+            if ($line -match '^\s*\[') {   # a table line: only a plain name ([windows], [features]) is kept; any other table is 'other'
+                if ($line -match '^\s*\[\s*([A-Za-z0-9_-]+)\s*\]') { $table = $Matches[1] } else { $table = 'other' }
+                continue
+            }
+            if ($table -eq '') {
+                if ($line -cmatch '^\s*(model|cli_auth_credentials_store)\s*=\s*["'']([^"'']*)["'']') {
+                    if (-not $raw.ContainsKey($Matches[1])) { $raw[$Matches[1]] = $Matches[2] }
+                }
+            } elseif ($table -ceq 'windows') {
+                if ($line -cmatch '^\s*sandbox\s*=\s*["'']([^"'']*)["'']') { if (-not $win.ContainsKey('sandbox')) { $win['sandbox'] = $Matches[1] } }
+            } elseif ($table -ceq 'features') {
+                if ($line -cmatch '^\s*(elevated_windows_sandbox|experimental_windows_sandbox|enable_experimental_windows_sandbox)\s*=\s*(true|false)\b') {
+                    if (-not $win.ContainsKey($Matches[1])) { $win[$Matches[1]] = ($Matches[2] -ceq 'true') }
+                }
+            }
+        }
+    } catch { return $r }
+    $m = [string]$raw['model']
+    if ($m) {
+        $why = Get-ModelError $m
+        if ($why) { $r.bad = @($r.bad) + 'model' } else { $r.model = $m }
+    }
+    $s = [string]$raw['cli_auth_credentials_store']
+    if ($s -ceq 'keyring' -or $s -ceq 'auto') { $r.store = $s }
+    elseif ($s -and $s -cne 'file') { $r.bad = @($r.bad) + 'cli_auth_credentials_store' }
+    # The Windows sandbox: Codex takes it only from config.toml, and --ignore-user-config drops it, so without it every
+    # command that Codex's rules do not allow is refused. [windows] sandbox wins; else the older flags, as Codex reads them.
+    $w = [string]$win['sandbox']
+    if ($w) {
+        if (@('elevated', 'unelevated', 'mxc') -ccontains $w) { $r.sandbox = $w } else { $r.bad = @($r.bad) + 'windows.sandbox' }
+    } elseif ($win['elevated_windows_sandbox'] -eq $true) { $r.sandbox = 'elevated' }
+    elseif ($win['experimental_windows_sandbox'] -eq $true -or $win['enable_experimental_windows_sandbox'] -eq $true) { $r.sandbox = 'unelevated' }
+    return $r
 }
 
 function Find-GitTop([string]$Dir) {
@@ -533,13 +692,26 @@ if ($Tool -ne 'claude') {
     }
 }
 
+# Codex: the settings that stay from the owner's config.toml. The effort is not one of them: it is -Effort, xhigh unless
+# given, the same for every tool.
+$CodexCfg = @{ model = ''; store = ''; sandbox = ''; bad = @() }
+if ($Tool -eq 'codex') { $CodexCfg = Get-CodexConfigTop }
+# An older Codex CLI does not know --ignore-user-config or --ignore-rules: clap's words on standard error, exit code 2.
+$CodexTooOldPattern = "unexpected argument\W+--ignore-(user-config|rules)\b"
+$CodexOptionWords = ('Codex starts with --ignore-user-config and --ignore-rules, so it uses none of the extra folders, MCP servers (add-on tools), ' +
+    'hooks (commands Codex runs by itself at set moments) or command rules (your list of commands Codex may run without asking) from your own Codex settings. ' +
+    'Its web search is off. It keeps your model, Windows sandbox and sign-in store (where Codex keeps your sign-in: keyring means Windows Credential Manager, auto means keyring when it works). ' +
+    'Its effort comes from -Effort (xhigh when none is given), not from your config.toml.')
+$CodexTooOldWords = 'This Codex CLI is too old for the relay. Update it (npm install -g @openai/codex) to a version from April 2026 or newer.'
+
 function Get-ModelText {
     # The model, in words, for the launch line and the log.
     if ($Tool -eq 'claude') { return "model $Model" }
     if ($ToolModel) { return "model $ToolModel (from -Model)" }
     if ($Tool -eq 'codex') {
-        $m = Get-CodexConfigModel
+        $m = [string]$CodexCfg.model
         if ($m) { return "model $m (Codex's default, from its config.toml)" }
+        if (@($CodexCfg.bad) -contains 'model') { return "Codex's own default model (the model in its config.toml cannot be passed on)" }
         return "Codex's own default model (its config.toml names none)"
     }
     if ($Tool -eq 'antigravity') { return "Antigravity CLI's default model" }
@@ -562,6 +734,12 @@ if (-not $Foreground) {
     if ($Model) { $argList += @('-Model', $Model) }
     if ($Tool -ne 'claude') { $argList += @('-Tool', $Tool) }
     $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden -PassThru
+    # For the relay (-ResultFile): the runner's pid and start time name it until its run.json says more. The runner never
+    # gets -ResultFile or -NewWorktree, so only the launcher writes the result.
+    $ticks = ''
+    try { $ticks = [string]$p.StartTime.ToUniversalTime().Ticks } catch { }
+    Write-StartResult $true ("Launched $Worker ($Type, $ToolName) for $TaskId - runner pid $($p.Id)." + $script:WorktreeNote) $p.Id $ticks
+    if ($script:WorktreeNote) { Write-Output $script:WorktreeNote.Trim() }
     if ($Tool -eq 'claude') {
         Write-Output "Launched $Worker ($Type) for $TaskId - runner pid $($p.Id), model $Model, effort $Effort. Check: -Status"
     } else {
@@ -581,7 +759,7 @@ if ($Tool -eq 'codex') {
     $state.billing = 'chatgpt-sign-in'
     $state.budget_usd = $null          # Codex reports no cost; worker_runs_per_day limits the runs
     $state.model = $ToolModel
-    if (-not $ToolModel) { $state.model = Get-CodexConfigModel }
+    if (-not $ToolModel) { $state.model = $CodexCfg.model }
     if (-not $state.model) { $state.model = 'codex default' }
 } elseif ($Tool -eq 'gemini') {
     $state.billing = 'gemini-own-login (paid per use)'
@@ -785,6 +963,11 @@ if ($Tool -eq 'claude') {
     if ($Tool -eq 'antigravity') { Add-Note $AgyWarning }
     Add-Note (Get-ModelText)
     Add-Note (Get-EffortText)
+    if ($Tool -eq 'codex') {
+        Add-Note $CodexOptionWords
+        foreach ($k in @($CodexCfg.bad)) { Add-Note "Codex's config.toml has a '$k' that the relay cannot pass on, so it is left out. Codex uses its own default for it." }
+        if (-not $CodexCfg.sandbox) { Add-Note "Codex's Windows sandbox is not set up (no [windows] sandbox in its config.toml). Codex may then refuse this worker's commands and file edits. Set it up in Codex first (its setup writes it), then the relay passes it on." }
+    }
     Add-Note "$ToolName reports no cost in dollars, so -MaxBudgetUsd does not apply. worker_runs_per_day in bin\cost-limits.json limits the runs."
 
     # The worktree's .git as it is before the run. Save-ToolWork's git commands trust it only if the run left it alone.
@@ -825,16 +1008,31 @@ if ($Tool -eq 'claude') {
 
     if ($Tool -eq 'codex') {
         $cwd = $Worktree
-        # The network stays off whatever Codex's own settings say. Git's own folder is not writable, so a worker can
-        # never add a Git hook or change Git's settings; the launcher commits its changes (Save-ToolWork).
-        $cliArgs = @('exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=false')
+        # The network stays off. Git's own folder is not writable, so a worker can never add a Git hook or change Git's
+        # settings; the launcher commits its changes (Save-ToolWork). --ignore-user-config: Codex does not load
+        # <CODEX_HOME>\config.toml (the sign-in still uses CODEX_HOME), so none of its extra writable folders, MCP servers
+        # (add-on tools, which run outside the sandbox) or hooks apply. --ignore-rules: Codex does not load the owner's
+        # command rules, which can let a command run outside the sandbox. web_search=disabled keeps Codex's own web search
+        # (on by default) off. Codex's system settings still load, so the -c values still hold, and writable_roots=[] leaves
+        # the run only its own folder and the --add-dir folder, as for a Codex coordinator's turn. Codex no longer reads the model, the sign-in store and the Windows sandbox
+        # from config.toml, so the launcher passes them (Get-CodexConfigTop): -Model, else the config.toml model; the store
+        # only when it is keyring or auto; windows.sandbox as the owner set it up (without it Codex on Windows has no
+        # sandbox and refuses every command that no rule allows, and every file edit). The effort is -Effort (xhigh unless
+        # given), as it always was: never the one in config.toml.
+        $cliArgs = @('exec', '--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--sandbox', 'workspace-write',
+            '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'web_search=disabled')
         if ($Type -eq 'implementation') {
             $cliArgs += @('--add-dir', $WorkerDir)
         } else {
             $cwd = $WorkerDir   # a reviewer can write only in the workers folder, its report's folder
         }
-        if ($ToolModel) { $cliArgs += @('-m', $ToolModel) }
-        $cliArgs += @('-c', "model_reasoning_effort=$($Effort.ToLowerInvariant())", '-')
+        $cliModel = $ToolModel
+        if (-not $cliModel) { $cliModel = [string]$CodexCfg.model }
+        if ($cliModel) { $cliArgs += @('-m', $cliModel) }
+        $cliArgs += @('-c', "model_reasoning_effort=$($Effort.ToLowerInvariant())")
+        if ($CodexCfg.store) { $cliArgs += @('-c', "cli_auth_credentials_store=$($CodexCfg.store)") }
+        if ($CodexCfg.sandbox) { $cliArgs += @('-c', "windows.sandbox=$($CodexCfg.sandbox)") }
+        $cliArgs += '-'
         # The ChatGPT sign-in, checked the way the relay's Codex wake checks it ('codex login status' may answer on stderr).
         $check = {
             $launch = Get-Launch $Exe
@@ -868,7 +1066,11 @@ if ($Tool -eq 'claude') {
                 $state.state = 'failed'
                 $why = $ev.failed
                 if (-not $why) { $why = $ev.error }
-                if ($why) { $state.note = "Codex stopped: $why (exit $exit)." } else { $state.note = "Codex ended without finishing its turn (exit $exit)." }
+                $errText = ''
+                try { $errText = Read-SharedText $errFile 1048576 } catch { }
+                if ($errText -match $CodexTooOldPattern) { $state.note = $CodexTooOldWords }
+                elseif ($why) { $state.note = "Codex stopped: $why (exit $exit)." }
+                else { $state.note = "Codex ended without finishing its turn (exit $exit)." }
                 Add-Note $state.note
             }
         }

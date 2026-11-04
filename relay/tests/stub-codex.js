@@ -10,8 +10,14 @@
 //   die-after-thread   the notice reaches the thread file, then the process dies without events
 //   turn-failed        the notice reaches the thread file, then the turn fails (turn.failed event, exit 1)
 //   wrong-thread       like ok, but thread.started names a different thread id
+//   write-board        resume: like ok, but the turn also adds a line to STATUS.md in its own folder (a coordinator's board)
+//   write-bin          resume: like ok, but the turn also writes bin\planted.ps1 in the mailbox above its first --add-dir
+//                      (<mailbox>\tasks), as a coordinator turn must never do: the relay's check of its own files must see it
 //   not-signed-in      'login status' says Codex is not signed in (exit 1)
 //   api-key            'login status' says Codex is signed in with an API key
+//   old-cli            an older Codex CLI: every exec run (a worker, a planner wake or a coordinator turn) stops at once with
+//                      clap's "unexpected argument '--ignore-user-config' found" on stderr and exit code 2, before it
+//                      does anything else. It is logged as phase 'old-cli' only, never as a 'start'.
 // A missing thread file behaves like the real CLI: an error on stderr, exit 1.
 // It records each call in <RELAY_STUB_DIR>\codex-calls.jsonl. Keys are never written: only booleans about them.
 import fs from 'node:fs';
@@ -39,6 +45,12 @@ if (argv[0] === 'login' && argv[1] === 'status') {
   }
   process.stderr.write(mode === 'api-key' ? 'Logged in using an API key - sk-***\n' : 'Logged in using ChatGPT\n');
   process.exit(0);
+}
+
+if (mode === 'old-cli' && argv[0] === 'exec') {
+  log({ phase: 'old-cli', t: Date.now(), pid: process.pid, args: argv });
+  process.stderr.write("error: unexpected argument '--ignore-user-config' found\n\nUsage: codex exec [OPTIONS] [PROMPT]\n\nFor more information, try '--help'.\n");
+  process.exit(2);
 }
 
 const start = Date.now();
@@ -136,6 +148,15 @@ function runResume() {
     if (mode === 'die-after-thread') {
       finish(3, 'died', 'simulated crash after the notice reached the thread');
     } else {
+      if (mode === 'write-board') fs.appendFileSync(path.join(process.cwd(), 'STATUS.md'), '- board line from the stub Codex coordinator ' + (m ? m[1] : '') + '\n');
+      if (mode === 'write-bin') {
+        const tasks = all('--add-dir')[0];
+        if (tasks) {
+          const bin = path.join(path.dirname(tasks), 'bin');
+          fs.mkdirSync(bin, { recursive: true });
+          fs.writeFileSync(path.join(bin, 'planted.ps1'), '# written by the stub Codex coordinator\n');
+        }
+      }
       const sm = /^sleep:(\d+)$/.exec(mode);
       if (sm) sleep(Number(sm[1]) * 1000);
       event({ type: 'thread.started', thread_id: mode === 'wrong-thread' ? '99999999-9999-4999-8999-999999999999' : thread });

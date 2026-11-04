@@ -25,3 +25,6 @@ In HQ, this file is called `AGENTS.md`, so the orchestrator's Codex thread reads
    sentences that say what you did.
 10. **A new project is the owner's job.** If you need one, ask the owner. Only the owner runs
     `-NewProject`.
+11. **Never wake a project's coordinator yourself.** A project's coordinator may be a Claude Code
+    session, a Codex thread or a Gemini CLI session. Its project's relay wakes it. You write in the
+    project's mailbox, and the relay does the rest.

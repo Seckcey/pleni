@@ -489,6 +489,27 @@ test('relay: a bad coordinator session id is ignored', (t) => {
   assert.equal(createMailboxSource({ root }).poll().relay.coordinatorKey, null);
 });
 
+test('relay: the coordinator key names its AI tool', (t) => {
+  const root = tempMailbox(t);
+  const cases = [
+    [{ tool: 'codex', session_id: SESSION }, `codex:${SESSION}`],
+    [{ tool: 'gemini', session_id: SESSION }, `gemini:${SESSION}`],
+    [{ session_id: SESSION }, `claude:${SESSION}`],
+    [{ tool: 'claude', session_id: SESSION }, `claude:${SESSION}`],
+    [{ tool: '', session_id: SESSION }, `claude:${SESSION}`],
+    [{ tool: null, session_id: SESSION }, `claude:${SESSION}`],
+    [{ tool: ' CODEX ', session_id: SESSION.toUpperCase() }, `codex:${SESSION}`],
+    [{ tool: 'antigravity', session_id: SESSION }, null],
+    [{ tool: 'grok', session_id: SESSION }, null],
+    [{ tool: 42, session_id: SESSION }, null],
+    [{ tool: 'codex', session_id: 'not a session' }, null],
+  ];
+  for (const [record, key] of cases) {
+    write(root, '.relay/coordinator.json', JSON.stringify(record));
+    assert.equal(createMailboxSource({ root }).poll().relay.coordinatorKey, key, JSON.stringify(record));
+  }
+});
+
 test('poll never throws', (t) => {
   const root = tempMailbox(t);
   const expectFailure = (state) => {

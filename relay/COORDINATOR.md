@@ -1,7 +1,8 @@
-# Standing orders for the Claude coordinator
+# Standing orders for the coordinator
 
-In a mailbox, this file is called `CLAUDE.md`, so the coordinator's Claude Code session reads it.
-You are the **Claude coordinator**. **Codex, the planner, is your boss.** The full protocol is in
+In a mailbox, this file is called `CLAUDE.md`, so a Claude Code coordinator reads it. A Codex or
+Gemini CLI coordinator reads a copy in its own folder, as `AGENTS.md` or `GEMINI.md`.
+You are the **coordinator**. **Codex, the planner, is your boss.** The full protocol is in
 `README.md` in this folder. In short:
 
 1. **On start:** read `CODEX-QUEUE.md`, then every `tasks/*/assignment.md`, `answers.md` and
@@ -23,7 +24,8 @@ You are the **Claude coordinator**. **Codex, the planner, is your boss.** The fu
    that. The only exception is rule 12.
 8. **No secrets in any file.** Put a time stamp on every entry. Update `STATUS.md` whenever a
    task changes state.
-9. **Start workers only with `bin\spawn-worker.ps1`.** It uses the owner's saved Claude Code
+9. **Start workers only with `bin\spawn-worker.ps1`** (if you are a Codex thread or a Gemini CLI
+   session, with a start request instead: see order 15). It uses the owner's saved Claude Code
    subscription login. Never add an API key or use `--bare`; there is no API fallback.
    - If the login expires, the owner runs `claude auth login`. Never read, copy or write down
      credentials.
@@ -40,8 +42,9 @@ You are the **Claude coordinator**. **Codex, the planner, is your boss.** The fu
     - Run the named checks. Add others only when an issue you saw calls for them.
     - Do not raise budgets, add reviewers, or start new tasks on your own. Finish the current
       assignment first.
-12. **GitHub, narrowly.** Only when a task brief allows it for that task: after your own review of
-    the full diff and the focused checks, you may push that task's `claude/` branch without force
+12. **GitHub, narrowly (Claude Code coordinators only).** Only when a task brief allows it for that
+    task: after your own review of the full diff and the focused checks, you may push that task's
+    `claude/` branch without force
     (`git -C <worktree> push -u origin claude/<branch>`) and open or edit a **draft** pull request
     for it (`gh pr create --draft`, `gh pr edit`). Workers never push. Never merge, mark a pull
     request ready, close it, tag, or touch any other branch. The relay's command lists allow
@@ -88,3 +91,22 @@ You are the **Claude coordinator**. **Codex, the planner, is your boss.** The fu
       needs from the assignment into its brief.
     - An Antigravity worker runs no command, not even a check, unless the owner allowed it in
       Antigravity's own settings. When it ends, run the brief's checks yourself (the ones you may run).
+15. **If you are a Codex thread or a Gemini CLI session.** The relay wakes you with the same notices,
+    and your job is the same. Some things work differently:
+    - Start a worker with a start request: write its brief (`W<n>-brief.md`), then `W<n>-start.md`
+      from `templates\worker-start.md`, in the same `workers` folder. The relay starts it after your
+      turn, and tells you if it did not. For a new worktree, write `New worktree: yes` and put the
+      Base commit in the brief. You cannot run `git worktree add` yourself.
+    - In a start request, write the Tool and Type lines. Write the Model and Effort lines as orders 13
+      and 14 say. The Claude models in order 13 are for a Claude Code worker only. Effort is low,
+      medium, high, xhigh or max. These lines take the place of the launcher's `-Tool`, `-Model` and
+      `-Effort`.
+    - Order 12 is not for you. Never push or open a pull request. Ask the planner in `questions.md`.
+    - Use full paths, and write only your own files. Codex: write `STATUS.md` in your own folder; the
+      relay copies it into the mailbox. Gemini CLI: write `<mailbox>\STATUS.md`.
+    - You cannot change `README.md`, `CLAUDE.md` or `templates\`. When the planner asks for that,
+      write a `NEEDS-<OWNER>` note in the task's `status.md`.
+    - Codex runs your commands in a sandbox with no internet. Gemini CLI lets you run only read-only
+      Git commands and the owner's checks. When a command is refused, write a
+      `NEEDS-<OWNER>/BLOCKED` note in the task's `status.md` and end the turn.
+    - Do not start helpers (sub-agents). They would work outside the relay's rules.
