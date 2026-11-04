@@ -3082,8 +3082,11 @@ function Update-CodexFollow([hashtable]$State, [bool]$ReadOnly) {
         }
         return
     }
-    # One Codex thread has one job: a newer thread with the name that already has another job is not followed.
+    # One Codex thread has one job: a newer thread with the name that already has another job, or that works in the
+    # coordinator's folder, is not followed.
     $other = Get-ThreadJobText $best.id 'planner'
+    $coordFolder = Get-CoordinatorCodexFolder
+    if (-not $other -and $coordFolder -and (Test-InFolder $cwd $coordFolder)) { $other = "working in the coordinator's folder $coordFolder" }
     if ($other) {
         if ($State.flags['follow_codex_job'] -ne $best.id) {
             $State.flags['follow_codex_job'] = $best.id
@@ -3139,8 +3142,11 @@ function Update-AgentFollow([hashtable]$State, [bool]$ReadOnly) {
             }
             continue
         }
-        # One Codex thread has one job: a newer thread with the name that already has another job is not followed.
+        # One Codex thread has one job: a newer thread with the name that already has another job, or that works in the
+        # coordinator's folder, is not followed.
         $other = Get-ThreadJobText $best.id ('agent:' + $key)
+        $coordFolder = Get-CoordinatorCodexFolder
+        if (-not $other -and $coordFolder -and (Test-InFolder $cwd $coordFolder)) { $other = "working in the coordinator's folder $coordFolder" }
         if ($other) {
             $jobFlag = 'follow_agent_job_' + $key
             if ($State.flags[$jobFlag] -ne $best.id) {
@@ -3222,8 +3228,15 @@ function Invoke-Tick([hashtable]$State, [bool]$ReadOnly) {
                 $prompt = New-Prompt $id $batch
                 Write-Note ("DRY-RUN: would dispatch {0} item(s) to session {1} (cwd {2}). No CLI started, no key decrypted, no API credit used." -f $batch.Count, $coord.session_id, $coord.cwd)
                 Write-Host ('  command: ' + $ClaudeExe + ' ' + (((Get-CliArguments $coord $prompt) | ForEach-Object { ConvertTo-ArgToken $_ }) -join ' '))
+            } elseif ($coordTool -eq 'codex') {
+                # R-dry-run, never R<dry-run>: the Codex notice keeps plain characters only, so < and > would go.
+                $batch = @($pending | Select-Object -First 10)
+                $prompt = New-CoordinatorPrompt 'R-dry-run' $batch $coord
+                $opts = Get-CoordinatorCodexOptions $coord   # a list, so a variable first
+                Write-Note ("DRY-RUN: would dispatch {0} item(s) to the Codex coordinator thread {1} (folder {2}). Nothing started, nothing written." -f $batch.Count, $coord.session_id, $coord.cwd)
+                Write-Host ('  command: ' + (Get-CodexExePath) + ' ' + (Get-CodexCommandLine @() (Get-CoordinatorCodexTarget $coord) $prompt $opts))
             } else {
-                # Placeholder until the Codex and Gemini CLI coordinator turns are built (design section 15.2).
+                # Placeholder until the Gemini CLI coordinator turn is built (design section 15.2).
                 Write-Note ("DRY-RUN: would not dispatch {0} item(s): this relay cannot wake a coordinator in {1} yet. Nothing started, nothing written." -f $pending.Count, (Get-ToolName $coordTool))
             }
         } else {
@@ -3287,12 +3300,15 @@ function Invoke-Loop {
     if ($agl.Count) { $amWord = "AgentMail=ON ($($agl.Count) agent(s))" }
     $hqWord = ''
     if ($HqRole) { $hqWord = " HQ for $($script:HqProjects.Count) project(s)." }
+    $coordLoop = Get-Coordinator
+    $coordWord = 'Coordinator=NOT_ENROLLED'
+    if ($coordLoop) { $coordWord = 'Coordinator=' + (Get-CoordTool $coordLoop) }
     # The state and the guard's first look come before this line: a test that waits for it changes no file too early.
     $state = Get-State
     Initialize-RelayGuard $state
     $guardWord = ''
     if ($script:GuardOn) { $guardWord = ' Guard=ON.' }
-    Write-Log "Relay loop started (pid $PID; mailbox $Root; poll $PollSeconds s; debounce $DebounceSeconds s). Stop: bridge-relay.ps1 -Stop, or Ctrl+C here. $cxWord. $amWord.$hqWord$guardWord"
+    Write-Log "Relay loop started (pid $PID; mailbox $Root; poll $PollSeconds s; debounce $DebounceSeconds s). Stop: bridge-relay.ps1 -Stop, or Ctrl+C here. $coordWord. $cxWord. $amWord.$hqWord$guardWord"
     try {
         try { Invoke-Tick $state $false } catch { Write-Log "Tick error: $($_.Exception.Message)" }
         $last = Get-Now
@@ -3443,7 +3459,7 @@ function Invoke-EnrollCodex {
     if (-not $cwd) { Fail "Could not read the thread's working folder from the first line of $($found.path). Pass -CodexCwd <folder>." }
     if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { Fail "The Codex thread's working folder was not found: $cwd" }
     $coordFolder = Get-CoordinatorCodexFolder   # the folder of a Codex or Gemini CLI coordinator, or ''
-    if ($coordFolder -and (Test-SameFolder $cwd $coordFolder)) { Fail "The folder $cwd is this mailbox's coordinator's folder. Give the planner a folder of its own." }
+    if ($coordFolder -and (Test-InFolder $cwd $coordFolder)) { Fail "The folder $cwd is this mailbox's coordinator's folder, or inside it. Give the planner a folder of its own." }
     $held = Test-CodexThreadLocked $tid
     $cx = @{ thread_id = $tid; cwd = $cwd; rollout_path = $found.path; codex_home = $CodexHomeDir; enrolled_utc = (Get-Now);
         enrolled = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv);
@@ -3496,7 +3512,7 @@ function Invoke-EnrollAgent {
     if (-not $cwd) { Fail "Could not read the folder of Codex thread $($named.id) from the first line of $($named.path)." }
     if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { Fail "The folder of Codex thread $($named.id) was not found: $cwd" }
     $coordFolder = Get-CoordinatorCodexFolder   # the folder of a Codex or Gemini CLI coordinator, or ''
-    if ($coordFolder -and (Test-SameFolder $cwd $coordFolder)) { Fail "The folder $cwd is this mailbox's coordinator's folder. Give the agent a folder of its own." }
+    if ($coordFolder -and (Test-InFolder $cwd $coordFolder)) { Fail "The folder $cwd is this mailbox's coordinator's folder, or inside it. Give the agent a folder of its own." }
     $agents = Get-Agents
     $ag = @{ name = $name; key = $key; thread_id = $named.id; cwd = $cwd; rollout_path = $named.path; started_ms = $named.started; codex_home = $CodexHomeDir;
         enrolled_utc = (Get-Now); enrolled = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv);
@@ -3590,7 +3606,9 @@ function Show-Status {
     if ($li.held -and $li.info.mode -eq 'Start') { Write-Host "Loop: RUNNING (pid $($li.info.pid), since $($li.info.started))" }
     elseif ($li.held) { Write-Host "Loop: STOPPED (a short '$($li.info.mode)' command, pid $($li.info.pid), holds the writer lock)" }
     else { Write-Host 'Loop: STOPPED' }
-    if ($coord) {
+    if ($coord -and (Get-CoordTool $coord) -ne 'claude') {
+        Show-ToolCoordinatorStatus $state $coord   # a Codex or Gemini CLI coordinator, or a tool the relay does not know
+    } elseif ($coord) {
         $tp = [bool]($coord.transcript_path -and (Test-Path -LiteralPath ([string]$coord.transcript_path) -PathType Leaf))
         Write-Host "Coordinator: ENROLLED session $($coord.session_id) (cwd $($coord.cwd); enrolled $($coord.enrolled); transcript present: $tp)"
         if ($coord.follow_name) {
@@ -3621,9 +3639,24 @@ function Show-Status {
     if ($script:CostLimits) { Write-Host ("Today ({0}): {1}/{2} coordinator turns, {3} of {4} USD" -f $state.daily.date, $state.daily.wakes, $wakeLimit, $state.daily.cost, $DailyBudgetUsd) }
     else { Write-Host ("Today ({0}): {1}/{2} coordinator turns, {3} USD spent (cost limits OFF: bin\cost-limits.json)" -f $state.daily.date, $state.daily.wakes, $wakeLimit, $state.daily.cost) }
     Write-Host ('PAUSE file: ' + $(if (Test-Path -LiteralPath $PauseFile) { 'present (dispatch paused)' } else { 'absent' }))
+    # Start requests: shown while they are on, or while the relay keeps a record of one that ran or waits.
+    $startsOn = Get-StartRequestsOn $coord
+    $startRecs = @($state.starts.Values | Where-Object { ($_ -is [hashtable]) -and $_.state -ne 'known' } | Sort-Object { [int64]$_.detected_utc } -Descending)
+    if ($startsOn -or $startRecs.Count) {
+        $startLimit = $(if ($MaxWorkerStartsPerDay -eq 0) { 'no limit' } else { [string]$MaxWorkerStartsPerDay })
+        Write-Host ("Start requests: {0}; {1} wait; {2} started today (limit {3})" -f $(if ($startsOn) { 'ON' } else { 'OFF (start_requests in bin\relay-settings.json)' }),
+            @($startRecs | Where-Object { $_.state -eq 'new' }).Count, [int]$state.daily.worker_starts, $startLimit)
+        foreach ($sr in @($startRecs | Select-Object -First 5)) { Write-Host ("  - {0}: {1} {2}" -f $sr.key, $sr.state, (Get-Short ([string]$sr.message) 160)) }
+    }
+    if (Test-GuardWanted) { Write-Host "Relay files guard: ON (a Codex or Gemini CLI coordinator, or start requests): a change to bin, tests, the settings, the coordinator's orders file or the relay's records halts the relay." }
     $recent = @($state.dispatches.Values | Sort-Object { [int64]$_.seq } -Descending | Select-Object -First 5)
     if ($recent.Count) { Write-Host 'Recent dispatches:' }
-    foreach ($d in $recent) { Write-Host ("  - {0} {1}: {2} (cost {3} USD, items {4})" -f $d.id, $d.state, (Get-Short ([string]$d.outcome + ' ' + [string]$d.error) 160), $d.cost, @($d.items).Count) }
+    foreach ($d in $recent) {
+        # A Claude Code turn shows its cost, as before; Codex and Gemini CLI turns report none, so their tool is shown.
+        $what = ('cost {0} USD' -f $d.cost)
+        if ($null -eq $d.cost) { $what = Get-ToolName (Get-DispatchTool $d) }
+        Write-Host ("  - {0} {1}: {2} ({3}, items {4})" -f $d.id, $d.state, (Get-Short ([string]$d.outcome + ' ' + [string]$d.error) 160), $what, @($d.items).Count)
+    }
     $cx = Get-CodexConfig
     if ($cx) {
         $roll = Get-CodexRolloutPath $cx
@@ -3691,8 +3724,19 @@ function Show-Status {
 
 function Show-CoordinatorArgs {
     # Read-only (no lock, no CLI, no key): the exact permission values and --add-dir directories Get-CliArguments passes
-    # to a coordinator turn, for the enrolled coordinator, or the MailboxRoot defaults when none is enrolled.
+    # to a coordinator turn, for the enrolled coordinator, or the MailboxRoot defaults when none is enrolled. For a Codex
+    # coordinator: the codex exec arguments of its turn, the folders it may write, and its board.
     $coord = Get-Coordinator
+    if ($coord -and (Get-CoordTool $coord) -eq 'codex') {
+        $opts = Get-CoordinatorCodexOptions $coord   # each list into a variable first, never @(<function>)
+        $cliArgs = Get-CodexArguments (Get-CoordinatorCodexTarget $coord) '<notice>' $opts
+        $board = ''
+        if ($coord.cwd) { try { $board = Join-Path ([string]$coord.cwd) 'STATUS.md' } catch { $board = '' } }   # 5.1: Join-Path throws for a drive that is not there
+        $o = [ordered]@{ tool = 'codex'; codexArgs = $cliArgs.ToArray(); writableFolders = @([string]$coord.cwd, (Join-Path $Root 'tasks'));
+            network = $false; board = $board }
+        Write-Output (ConvertTo-Json -InputObject $o -Depth 4)
+        return
+    }
     $o = [ordered]@{ allowedTools = @(Get-CoordinatorTools $coord); disallowedTools = @(Get-CoordinatorDeny); addDirs = @(Get-CoordinatorAddDirs $coord);
         appendSystemPrompt = (Get-RelayRules $coord) }
     Write-Output (ConvertTo-Json -InputObject $o -Depth 4)
@@ -4294,34 +4338,675 @@ function Update-StartLaunching([hashtable]$State, [bool]$ReadOnly) {
     }
 }
 
-# ---------- Phase 6: placeholders for later steps ----------
-# The coordinator's plumbing already calls these. Each one refuses or does nothing, in plain words, until a later step
-# of Phase 6 builds it: a Codex coordinator, a Gemini CLI coordinator, and one thread, one job. scripts/check.js refuses
-# a second definition of a name, so the step that builds one replaces it here. With a Claude Code coordinator (every
-# mailbox today) none of them changes what the relay does.
+# ---------- a coordinator in Codex or Gemini CLI: a folder of its own ----------
+# A Codex or Gemini CLI coordinator works in a folder of its own, such as <mailbox>\coordinator: Codex may write in that
+# folder, and both tools read their standing orders there (AGENTS.md or GEMINI.md). So the folder must not be one of the
+# relay's own folders, nor another session's folder, nor inside an application repository.
+
+function Test-InFolder([string]$Path, [string]$Folder) {
+    # True when $Path is $Folder or inside it (letter case and a last \ do not count). False when either one is not a
+    # path Windows can use. A drive (C: or C:\) holds every path on it.
+    if (-not $Path -or -not $Folder) { return $false }
+    $a = [string]$Path
+    $b = [string]$Folder
+    if ($a -match '^[A-Za-z]:$') { $a += '\' }   # GetFullPath reads C: alone as the current folder of drive C
+    if ($b -match '^[A-Za-z]:$') { $b += '\' }
+    $p = ''
+    $f = ''
+    try {
+        $p = [IO.Path]::GetFullPath($a).TrimEnd('\')
+        $f = [IO.Path]::GetFullPath($b).TrimEnd('\')
+    } catch { return $false }
+    return (($p -ieq $f) -or $p.StartsWith($f + '\', [StringComparison]::OrdinalIgnoreCase))
+}
+
+function Get-WorktreesDir {
+    # The workers' worktrees folder, by the rule bin\spawn-worker.ps1 uses: worktrees_dir, else
+    # <projects folder>\_worktrees\claude. '' when neither is set.
+    if ($WorktreesSetting) { try { return [IO.Path]::GetFullPath($WorktreesSetting).TrimEnd('\') } catch { return '' } }
+    if ($ProjectsDir) { try { return (Join-Path $ProjectsDir '_worktrees\claude') } catch { return '' } }   # 5.1: Join-Path throws for a drive that is not there
+    return ''
+}
+
+function Get-GitRootAbove([string]$Folder) {
+    # The nearest folder at or above $Folder that holds a .git folder or file (a Git repository or worktree), or ''.
+    $d = ''
+    try { $d = [IO.Path]::GetFullPath($Folder).TrimEnd('\') } catch { return '' }
+    while ($d) {
+        if (Test-Path -LiteralPath (Join-Path $d '.git')) { return $d }
+        $up = ''
+        try { $up = [string][IO.Path]::GetDirectoryName($d) } catch { $up = '' }
+        if (-not $up) { break }
+        $up = $up.TrimEnd('\')
+        if ($up -ieq $d) { break }
+        $d = $up
+    }
+    return ''
+}
+
+function Get-HqFolder {
+    # HQ's folder: this mailbox when it is HQ, else hq_dir from bin\relay-settings.json (a project of HQ), else ''.
+    if ($HqRole) { return $Root }
+    if ($HqDirSetting) { try { return [IO.Path]::GetFullPath($HqDirSetting).TrimEnd('\') } catch { return '' } }
+    return ''
+}
+
+function Get-CoordinatorFolderError([string]$Folder, [string]$ForTool) {
+    # Why $Folder cannot be the folder of a Codex or Gemini CLI coordinator, in plain words, or '' when it can be.
+    $f = ''
+    try {
+        if (-not $Folder -or -not (Test-Path -LiteralPath $Folder -PathType Container)) { return 'it is not there' }
+        $f = [IO.Path]::GetFullPath($Folder).TrimEnd('\')
+    } catch { return 'Windows cannot use it as a folder path' }
+    if (($f -match '^[A-Za-z]:$') -or $f.StartsWith('\\')) { return 'it is a drive or a network folder' }
+    if ($f -match '(^|\\)\.git(\\|$)') { return "it is a Git folder (.git), or inside one" }
+    if (Test-InFolder $Root $f) { return 'it is the mailbox folder itself, or a folder that holds it' }
+    foreach ($sub in @('bin', 'tests', 'templates', 'tasks', 'mail', '.relay')) {
+        if (Test-InFolder $f (Join-Path $Root $sub)) { return "it is inside the mailbox's $sub folder" }
+    }
+    if ($env:USERPROFILE -and (Test-InFolder $env:USERPROFILE $f)) { return 'it is your home folder, or a folder that holds it' }
+    foreach ($d in @($CodexHomeDir, $GeminiDataDir, $ClaudeConfigDir)) {
+        # Inside such a folder, or holding it, a coordinator could change an AI tool's own settings.
+        if ($d -and ((Test-InFolder $f $d) -or (Test-InFolder $d $f))) { return "it is $d, where an AI tool keeps its own files, or inside it, or a folder that holds it" }
+    }
+    # Inside the projects folder is fine; a folder inside an application repository there is refused below.
+    if ($ProjectsDir -and (Test-InFolder $ProjectsDir $f)) { return 'it is the projects folder, or a folder that holds it' }
+    $wt = Get-WorktreesDir
+    if ($wt -and ((Test-InFolder $f $wt) -or (Test-InFolder $wt $f))) { return "it is the workers' worktrees folder $wt, or inside it, or a folder that holds it" }
+    $git = Get-GitRootAbove $f
+    if ($git -and -not (Test-InFolder $Root $git)) { return "it is inside the Git repository $git" }   # the mailbox's own repository is fine
+    $hq = Get-HqFolder
+    if ($hq) {
+        # In HQ, HQ is this mailbox, so this mailbox's own subfolders are fine (its projects are refused just below).
+        # -and and -or have the same precedence: hence two steps.
+        $inHq = ((Test-InFolder $f $hq) -and -not (Test-InFolder $f $Root))
+        if ($inHq -or (Test-InFolder $hq $f)) { return "it is HQ's folder $hq, or inside it, or a folder that holds it (HQ's AGENTS.md holds the orchestrator's orders)" }
+    }
+    foreach ($p in @($script:HqProjects)) {
+        $pm = [string]$p.mailbox
+        if ($pm -and -not (Test-SameFolder $pm $Root) -and ((Test-InFolder $f $pm) -or (Test-InFolder $pm $f))) { return "it is the project mailbox $pm, or inside it, or a folder that holds it" }
+    }
+    # Holding the planner's or an agent's folder, the coordinator could change that session's standing orders.
+    $cx = Get-CodexConfig
+    if ($cx -and $cx.cwd -and (Test-InFolder ([string]$cx.cwd) $f)) { return "it is this mailbox's planner's folder $($cx.cwd), or a folder that holds it" }
+    $agents = Get-Agents
+    foreach ($k in @($agents.Keys)) {
+        $ag = $agents[$k]
+        if (-not ($ag -is [hashtable]) -or -not $ag.cwd) { continue }
+        if (Test-InFolder ([string]$ag.cwd) $f) { return "it is the folder of the agent '$($ag.name)', or a folder that holds it" }
+    }
+    if ($ForTool -eq 'gemini' -and ($f.Contains(',') -or $f.Contains('@'))) { return 'its path holds a comma or an @, which Gemini CLI would read as a list or a file' }
+    return ''
+}
+
+function Get-ToolModelError([string]$Name, [string]$ForTool) {
+    # A model for a Codex or Gemini CLI coordinator, as bin\spawn-worker.ps1 checks a worker's: not a Claude model, and
+    # one word of plain characters that starts with a letter or a digit (a word that starts with - reads as an option).
+    if (-not $Name) { return '' }
+    if ($Name -match '(?i)claude|opus|sonnet|haiku|fable') { return "-Model $Name is a Claude model; $(Get-ToolName $ForTool) needs one of its own, or leave -Model out." }
+    if ($Name -notmatch '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$') { return "-Model must be one word of letters, digits and . _ : / -, starting with a letter or a digit (got '$Name')." }
+    return ''
+}
+
+# ---------- one Codex thread, one job ----------
+# A Codex thread may be only one of: this mailbox's planner, its coordinator, one of its agents, or HQ's orchestrator
+# (and, seen from HQ, a project's coordinator). Enrollment refuses an overlap both ways, the coordinator's preflight
+# halts on one, and a newer thread with a followed name that has another job is not followed. So two programs never
+# wake one thread.
+
+function Get-HqOrchestratorThread {
+    # In a project of HQ (hq_dir set; not HQ itself): HQ's orchestrator thread, from HQ's .relay\codex.json. Read-only.
+    # unreadable: that file is there but could not be read, so the thread is not known.
+    $none = @{ thread = ''; unreadable = $false }
+    if ($HqRole) { return $none }
+    $hq = Get-HqFolder
+    if (-not $hq -or (Test-SameFolder $hq $Root)) { return $none }
+    # Join-Path in a try: in Windows PowerShell 5.1 it throws when hq_dir names a drive that is not there (a network
+    # drive that this window has not mapped). Then HQ's file is not there, as for a folder that is not there.
+    $f = ''
+    try { $f = Join-Path $hq '.relay\codex.json' } catch { return $none }
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $none }
+    $c = $null
+    try { $c = Read-Json $f } catch { return @{ thread = ''; unreadable = $true } }
+    if ($null -eq $c) { return $none }
+    if (-not ($c -is [hashtable])) { return @{ thread = ''; unreadable = $true } }
+    return @{ thread = ([string]$c.thread_id).Trim().ToLowerInvariant(); unreadable = $false }
+}
+
+function Get-ThreadJobs {
+    # Every job a Codex thread has here, as @{ job; thread; text }, the thread id in lower case. Read-only.
+    $jobs = New-Object System.Collections.ArrayList
+    $cx = Get-CodexConfig
+    if ($cx) { [void]$jobs.Add(@{ job = 'planner'; thread = ([string]$cx.thread_id).Trim().ToLowerInvariant(); text = "this mailbox's planner" }) }
+    $c = Get-Coordinator
+    if ($c -and (Get-CoordTool $c) -eq 'codex') { [void]$jobs.Add(@{ job = 'coordinator'; thread = ([string]$c.session_id).Trim().ToLowerInvariant(); text = "this mailbox's coordinator" }) }
+    $agents = Get-Agents
+    foreach ($k in @($agents.Keys)) {
+        $ag = $agents[$k]
+        if (-not ($ag -is [hashtable])) { continue }
+        $nm = [string]$ag.name
+        if (-not $nm) { $nm = [string]$k }
+        [void]$jobs.Add(@{ job = 'agent:' + $k; thread = ([string]$ag.thread_id).Trim().ToLowerInvariant(); text = "the agent '$nm'" })
+    }
+    $orch = Get-HqOrchestratorThread
+    if ($orch.thread) { [void]$jobs.Add(@{ job = 'orchestrator'; thread = $orch.thread; text = "HQ's orchestrator" }) }
+    if ($HqRole) {
+        foreach ($p in @($script:HqProjects)) {
+            $pc = $null
+            try { $pc = Read-Json (Join-Path ([string]$p.mailbox) '.relay\coordinator.json') } catch { $pc = $null }
+            if (($pc -is [hashtable]) -and (Get-CoordTool $pc) -eq 'codex') {
+                [void]$jobs.Add(@{ job = 'project-coordinator:' + $p.id; thread = ([string]$pc.session_id).Trim().ToLowerInvariant(); text = "the coordinator of project $($p.id)" })
+            }
+        }
+    }
+    return , $jobs.ToArray()
+}
+
+function Get-ThreadJobText([string]$ThreadId, [string]$Except) {
+    # The first job of this Codex thread other than $Except (planner, coordinator, agent:<key> or orchestrator), in
+    # words, or ''. While HQ's codex.json cannot be read, the thread may be HQ's orchestrator, and that counts too.
+    $tid = ([string]$ThreadId).Trim().ToLowerInvariant()
+    if (-not $tid) { return '' }
+    $jobs = Get-ThreadJobs   # a variable first: @(<function>) would keep the list as one item
+    foreach ($j in $jobs) { if ($j.thread -and $j.thread -eq $tid -and $j.job -ne $Except) { return [string]$j.text } }
+    if ($Except -ne 'orchestrator' -and (Get-HqOrchestratorThread).unreadable) { return "maybe HQ's orchestrator (HQ's .relay\codex.json could not be read)" }
+    return ''
+}
+
+function Get-CoordinatorCodexFolder {
+    # The folder of a Codex or Gemini CLI coordinator, for the planner's and the agents' folder checks, else ''.
+    $c = Get-Coordinator
+    $t = Get-CoordTool $c
+    if ($c -and ($t -eq 'codex' -or $t -eq 'gemini')) { return [string]$c.cwd }
+    return ''
+}
+
+# ---------- a Codex coordinator ----------
+# One coordinator turn in Codex is
+#   codex exec --json --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=false
+#     -c sandbox_workspace_write.writable_roots=[] -c mcp_servers={} --add-dir <mailbox>\tasks [-m <model>]
+#     [-c model_reasoning_effort=<effort>] resume <thread id> <notice>
+# in the coordinator's own folder, with the ChatGPT sign-in only and never codex_exec_args (the planner's setting): the
+# turn can write only that folder and the mailbox's tasks folder, with no network and no MCP servers, whatever the
+# owner's own Codex settings say. Its status board is STATUS.md in its folder, and the relay copies it into the mailbox
+# after each turn that got the notice.
+
+function Get-CoordinatorCodexTarget([hashtable]$Coord) {
+    # The shape that Start-CodexProcess, Get-CodexArguments and Get-CodexRolloutPath read.
+    return @{ thread_id = ([string]$Coord.session_id).Trim().ToLowerInvariant(); cwd = [string]$Coord.cwd; rollout_path = [string]$Coord.transcript_path }
+}
+
+function Get-CoordinatorCodexOptions([hashtable]$Coord) {
+    # The relay's own fixed options for a coordinator turn (design D4). Never codex_exec_args, never HQ's project folders.
+    # Codex lays each -c value over the owner's own config.toml one key at a time, and adds each --add-dir folder to that
+    # file's writable_roots list. So two more options empty what that file could add: its writable_roots (then only the
+    # turn's own folder and tasks can be written) and its MCP servers (they run outside the sandbox; a Claude Code
+    # coordinator's turn has none either).
+    $o = New-Object System.Collections.Generic.List[string]
+    foreach ($x in @('--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]',
+            '-c', 'mcp_servers={}', '--add-dir', (Join-Path $Root 'tasks'))) { $o.Add([string]$x) }
+    if ($Coord.model) { $o.Add('-m'); $o.Add([string]$Coord.model) }
+    if ($Coord.effort) { $o.Add('-c'); $o.Add('model_reasoning_effort=' + ([string]$Coord.effort).ToLowerInvariant()) }
+    return , $o
+}
+
+function Get-CoordinatorAddDirError {
+    # Each Codex coordinator turn names <mailbox>\tasks on Codex's command line (--add-dir). Codex usually runs through
+    # codex.cmd, and cmd.exe cuts or changes a command line at these characters, so such a mailbox path is refused, as
+    # Get-ProjectFolderError refuses it for HQ's project folders. (The notice itself keeps plain characters only.)
+    $tasksDir = Join-Path $Root 'tasks'
+    if ($tasksDir -match '[\x00-\x1f"%!^&|<>]') {
+        return "the mailbox folder $Root has a character that cmd.exe treats specially (% ! ^ or &) in its path. Each coordinator turn names $tasksDir on Codex's command line, and codex.cmd would cut or change it there. Move the mailbox to a folder without those characters"
+    }
+    return ''
+}
+
+function Get-CodexCoordinatorPreflight([hashtable]$State, [hashtable]$Coord) {
+    # Right before a Codex coordinator turn. @{ error }: a normal failure (back off, try again). @{ halt }: something that
+    # does not fix itself, so coordinator turns stop until -ClearHalt.
+    $pf = Get-CodexPreflightError (Get-CoordinatorCodexTarget $Coord) '-Enroll -Tool codex' $true   # codex_exec_args is not used
+    if ($pf) { return @{ error = $pf; halt = '' } }
+    $cwd = [string]$Coord.cwd
+    $why = Get-CoordinatorFolderError $cwd 'codex'
+    if ($why) { return @{ error = ''; halt = "the coordinator's folder $cwd cannot be used any more: $why" } }
+    if (Test-Path -LiteralPath (Join-Path $cwd '.codex')) { return @{ error = ''; halt = "$cwd\.codex is there; Codex would read its settings (they could add writable folders), so no coordinator turn starts" } }
+    # Codex reads AGENTS.override.md in place of AGENTS.md, and the guard watches AGENTS.md only: such a file could
+    # replace the coordinator's standing orders. So no turn starts while one is there (enrollment and a rollover refuse
+    # such a folder too).
+    if (Test-Path -LiteralPath (Join-Path $cwd 'AGENTS.override.md')) { return @{ error = ''; halt = "$cwd\AGENTS.override.md is there; Codex would read it in place of AGENTS.md, the coordinator's standing orders, so no coordinator turn starts" } }
+    $aw = Get-CoordinatorAddDirError
+    if ($aw) { return @{ error = ''; halt = $aw } }
+    # .relay\coordinator.json is checked again on every turn, as the Claude Code coordinator's checks are.
+    $mw = Get-ToolModelError ([string]$Coord.model) 'codex'
+    if ($mw) { return @{ error = ''; halt = "the model in .relay\coordinator.json cannot be used ($mw) Enroll again with -Enroll -Tool codex" } }
+    $ef = ([string]$Coord.effort).ToLowerInvariant()
+    if ($ef -and @('low', 'medium', 'high', 'xhigh') -notcontains $ef) { return @{ error = ''; halt = "the effort '$ef' in .relay\coordinator.json is not low, medium, high or xhigh; enroll again with -Enroll -Tool codex" } }
+    $other = Get-ThreadJobText ([string]$Coord.session_id) 'coordinator'
+    if ($other) { return @{ error = ''; halt = "the coordinator's Codex thread $($Coord.session_id) is also $other; one thread has one job" } }
+    return @{ error = ''; halt = '' }
+}
 
 function Get-CodexCoordinatorBusy([hashtable]$State, [hashtable]$Coord) {
-    # Placeholder (a Codex coordinator): every turn waits, so nothing is sent, and the reason is logged once.
-    return 'this relay cannot wake a coordinator in Codex yet (.relay\coordinator.json names codex). Pending notifications are kept. Enroll a Claude Code coordinator with -Enroll -SessionName <name>'
+    # Why the coordinator's Codex thread cannot take a turn now, or ''. Get-BusyReason has looked for a running
+    # coordinator turn already. Never two programs in one thread: the relay's own planner and mail wakes in it (a
+    # backstop, as one thread has one job), Codex's own lock file, a process with the thread id on its command line, and
+    # a thread file that another program wrote within the quiet window.
+    $tid = ([string]$Coord.session_id).Trim().ToLowerInvariant()
+    foreach ($d in (@($State.codex_dispatches.Values) + @($State.mail_dispatches.Values))) {
+        if (($d.state -eq 'running' -or $d.state -eq 'launching') -and ([string]$d.thread_id).ToLowerInvariant() -eq $tid) { return "the relay's wake $($d.id) is still running in this thread (pid $($d.pid))" }
+    }
+    if (Test-CodexThreadLocked $tid) { return "another Codex program has thread $tid open (most likely the Codex app, which keeps every thread it opened until it quits fully)" }
+    $procs = Get-SessionProcesses $tid
+    if ($null -eq $procs) { return 'the process list could not be read to confirm the thread is idle' }
+    if ($procs.Count -gt 0) { return ('thread ' + $tid + ' is open in pid ' + (($procs | ForEach-Object { $_.ProcessId }) -join ',')) }
+    $roll = Get-CodexRolloutPath (Get-CoordinatorCodexTarget $Coord)
+    if ($QuietSeconds -gt 0 -and $roll) {
+        $tw = ConvertTo-Unix (Get-Item -LiteralPath $roll).LastWriteTimeUtc
+        $now = Get-Now
+        if ($tw -gt ($now - $QuietSeconds) -and $tw -gt ([int64]$State.last_finish_utc + 15)) {
+            return "the thread file was written $($now - $tw) s ago by another client (quiet window $QuietSeconds s)"
+        }
+    }
+    return ''
 }
 
-function Get-GeminiCoordinatorBusy([hashtable]$State, [hashtable]$Coord) {
-    # Placeholder (a Gemini CLI coordinator): every turn waits, so nothing is sent, and the reason is logged once.
-    return 'this relay cannot wake a coordinator in Gemini CLI yet (.relay\coordinator.json names gemini). Pending notifications are kept. Enroll a Claude Code coordinator with -Enroll -SessionName <name>'
+function New-CoordinatorPrompt([string]$Id, [object[]]$Batch, [hashtable]$Coord) {
+    # The notice for a Codex or Gemini CLI coordinator. Neither tool takes a second system prompt, so the relay's rules
+    # ride in the notice itself. Codex gets plain characters only (ConvertTo-SafeText drops < > and quotes, so the notice
+    # names W1-brief.md, never a placeholder in angle brackets); Gemini CLI gets the notice on its standard input.
+    $coordTool = Get-CoordTool $Coord
+    $parts = New-Object System.Collections.Generic.List[string]
+    $i = 0
+    foreach ($n in $Batch) { $i++; $parts.Add(('{0}) {1}' -f $i, $n.detail)) }
+    $orders = 'AGENTS.md'
+    $board = "your own copy $($Coord.cwd)\STATUS.md (the relay copies it into the mailbox after your turn)"
+    if ($coordTool -eq 'gemini') { $orders = 'GEMINI.md'; $board = "$Root\STATUS.md" }
+    $p = "[bridge-relay $Id] Mailbox notification for the coordinator ($i item(s)): " + ($parts -join '; ') + '. ' +
+        "bin/bridge-relay.ps1 started this turn automatically ($OwnerName did not type it). Read CODEX-QUEUE.md and the named files in $Root, then act as the coordinator under README.md there and your standing orders ($orders in your folder). " +
+        "Write only coordinator files, with full paths: the status board, $board, and under $Root\tasks only status.md, questions.md, handoff.md, and worker briefs and start requests (W1-brief.md, W1-start.md and so on). " +
+        "To start a worker, write its brief, then its start request from $Root\templates\worker-start.md (W2-start.md for W2, and so on); the relay starts it after your turn and tells you if it did not. " +
+        "Never run spawn-worker.ps1, git worktree add, git push or gh, and never edit bin, tests, .relay, README.md, CLAUDE.md or templates; if one of those is needed, write a $OwnerTag note in the task's status.md. " +
+        "If a command is refused, do not try another way: write a $OwnerTag/BLOCKED note naming the command, then end the turn. " +
+        'Do not invent tasks. If nothing is actionable, change nothing. End with a one to three sentence summary.'
+    $p = ($p -replace '[\r\n]+', ' ')
+    if ($coordTool -eq 'codex') { return (ConvertTo-SafeText $p) }
+    return (($p -replace '@', ' at ') -replace '"', "'")
 }
+
+function Initialize-CoordinatorBoard([hashtable]$Coord) {
+    # At enrollment and at a rollover: the coordinator's own STATUS.md starts as a copy of the mailbox's board, the one
+    # every coordinator keeps. The relay copies the folder's board over the mailbox's after each turn, so a different
+    # board that is in the folder already (an old one, say, from before a Claude Code coordinator kept the board) is kept
+    # in .relay\backups first, then replaced. The folder's board stays when it is the same, when it is a link, a folder
+    # or more than 1 MB (the relay never copies such a board into the mailbox), or when the mailbox has no board the
+    # relay copies (none, a link, or more than 1 MB). Only by the relay that holds the writer lock; never throws.
+    if (-not $script:CanWrite -or -not $Coord.cwd) { return }
+    $folder = [string]$Coord.cwd
+    try {
+        # Join-Path inside the try: in Windows PowerShell 5.1 it throws for a drive that is not there.
+        $dst = Join-Path $folder 'STATUS.md'
+        $src = Join-Path $Root 'STATUS.md'
+        $text = ''
+        $from = ''
+        if (Test-Path -LiteralPath $src -PathType Leaf) {
+            $fi = Get-Item -LiteralPath $src -Force
+            if (-not ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $fi.Length -le 1048576) { $text = Read-SharedText $src; $from = "a copy of $src" }
+        }
+        if (Test-Path -LiteralPath $dst) {
+            $di = Get-Item -LiteralPath $dst -Force
+            $plain = -not (($di.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $di.PSIsContainer)
+            if ($plain -and $di.Length -gt 1048576) { $plain = $false }   # never read or copied: too large for the mailbox
+            if (-not $from -or -not $plain -or ((Read-SharedText $dst) -ceq $text)) { Write-Log "Kept the coordinator's own $dst."; return }
+            $kept = Backup-RelayFile $dst   # first: if the copy fails, the folder's board stays as it is
+            Write-TextSafely $dst $text
+            Write-Log "Replaced $dst with $from, because the two boards were not the same. The folder's old board is kept as $kept."
+            return
+        }
+        if (-not $from) { $text = "# Status board (owner: coordinator)`r`n"; $from = 'a new board (the mailbox has no STATUS.md to copy)' }
+        Write-TextSafely $dst $text
+        Write-Log "Made $dst, $from. The relay copies it back into the mailbox after each coordinator turn."
+    } catch { Write-Log "Could not make the coordinator's STATUS.md in ${folder}: $($_.Exception.Message)" }
+}
+
+function Copy-CoordinatorBoard([hashtable]$Turn) {
+    # After a Codex coordinator turn that got its notice: STATUS.md from the turn's own folder ($Turn.cwd) into the
+    # mailbox. Only a plain file of at most 1 MB, never through a link, and only by the relay that holds the writer lock
+    # (never in a dry run). Never throws.
+    if (-not $script:CanWrite) { return }
+    $folder = [string]$Turn.cwd
+    if (-not $folder) { return }
+    try {
+        # Join-Path inside the try: in Windows PowerShell 5.1 it throws for a drive that is not there.
+        $src = Join-Path $folder 'STATUS.md'
+        $dst = Join-Path $Root 'STATUS.md'
+        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { return }
+        $fi = Get-Item -LiteralPath $src -Force
+        if ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint) { Write-Log "Did not copy ${src}: it is a link, not a file."; return }
+        if ($fi.Length -gt 1048576) { Write-Log "Did not copy ${src}: it is larger than 1 MB."; return }
+        if (Test-Path -LiteralPath $dst) {
+            $di = Get-Item -LiteralPath $dst -Force
+            if (($di.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $di.PSIsContainer) { Write-Log "Did not copy the coordinator's STATUS.md: $dst is a link or a folder."; return }
+        }
+        $text = Read-SharedText $src
+        if ((Test-Path -LiteralPath $dst -PathType Leaf) -and ((Read-SharedText $dst) -ceq $text)) { return }
+        Write-TextSafely $dst $text
+        Write-Log "Copied the coordinator's STATUS.md ($src) into the mailbox."
+    } catch { Write-Log "Could not copy the coordinator's STATUS.md: $($_.Exception.Message)" }
+}
+
+function Update-CodexCoordinatorFollow([hashtable]$State, [bool]$ReadOnly, [hashtable]$C) {
+    # A Codex coordinator enrolled by name follows it, as the planner does: a newer live thread with the name takes over,
+    # forward only and between turns, when it works in a folder of its own and has no other job.
+    $name = [string]$C.follow_name
+    $cur = [string]$C.session_id
+    $best = Find-NamedCodexThread $name
+    if (-not $best) {
+        if ($State.flags['follow_coordinator_miss'] -ne $cur) {
+            $State.flags['follow_coordinator_miss'] = $cur
+            Write-Log "No live Codex thread named '$name' was found; the relay still wakes thread $cur as the coordinator."
+        }
+        return
+    }
+    [void]$State.flags.Remove('follow_coordinator_miss')
+    if ($best.id -eq $cur -or $best.started -le [int64]$C.started_ms) { return }
+    if (@($State.dispatches.Values | Where-Object { $_.state -eq 'running' -or $_.state -eq 'launching' }).Count) {
+        $script:NextFollowCheck = 0   # between turns only: look again on the next tick
+        return
+    }
+    $cwd = Get-CodexThreadCwd $best.path
+    $refuse = ''
+    if (-not $cwd -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { $refuse = "names no folder the relay can find ('$cwd')" }
+    if (-not $refuse) { $fw = Get-CoordinatorFolderError $cwd 'codex'; if ($fw) { $refuse = "works in $cwd, which cannot be the coordinator's folder: $fw" } }
+    if (-not $refuse -and (Test-Path -LiteralPath (Join-Path $cwd '.codex'))) { $refuse = "works in $cwd, which has a .codex folder (Codex would read its settings in every coordinator turn)" }
+    if (-not $refuse -and (Test-Path -LiteralPath (Join-Path $cwd 'AGENTS.override.md'))) { $refuse = "works in $cwd, which has an AGENTS.override.md (Codex would read it in place of the coordinator's AGENTS.md)" }
+    if (-not $refuse) { $ow = Get-ThreadJobText $best.id 'coordinator'; if ($ow) { $refuse = "is already $ow" } }
+    if ($refuse) {
+        if ($State.flags['follow_coordinator_refused'] -ne $best.id) {
+            $State.flags['follow_coordinator_refused'] = $best.id
+            Write-Log "The newest Codex thread named '$name' ($($best.id)) $refuse. The relay still wakes thread $cur."
+        }
+        return
+    }
+    if ($ReadOnly) { Write-Note "DRY-RUN: would switch the coordinator to Codex thread $($best.id), the newest thread named '$name' (it wakes $cur now)."; return }
+    $oldCwd = [string]$C.cwd
+    $C.previous_session_id = $cur
+    $C.session_id = [string]$best.id
+    $C.cwd = $cwd
+    $C.transcript_path = [string]$best.path
+    $C.board = Join-Path $cwd 'STATUS.md'
+    $C.started_ms = $best.started
+    $C.followed_utc = Get-Now
+    $C.followed = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv)
+    Save-Json $CoordFile $C
+    if ($script:GuardOn -and $null -ne $script:RelayStamps) {
+        # The orders file moved with the folder: from now on the guard watches the new one. Nothing else is looked at
+        # again, so a change to another watched file is still seen.
+        if ($oldCwd) { try { [void]$script:RelayStamps.Remove((Join-Path $oldCwd 'AGENTS.md')) } catch { } }
+        $newOrders = Join-Path $cwd 'AGENTS.md'
+        $script:RelayStamps[$newOrders] = Get-RelayFileStamp $newOrders
+    }
+    Initialize-CoordinatorBoard $C
+    $State.failures = 0
+    $State.next_attempt_utc = 0
+    [void]$State.flags.Remove('last_block')
+    [void]$State.flags.Remove('follow_coordinator_refused')
+    Write-Log "Rollover: '$name' is now Codex thread $($best.id) (newest with that name; folder $cwd), so the relay wakes it as the coordinator instead of $cur."
+}
+
+function Invoke-EnrollCodexCoordinator {
+    # Operator only (-Enroll -Tool codex). Records a Codex thread as this mailbox's coordinator. Enrolling wakes nothing:
+    # the start requests that are there now count as known, and only new notifications wake the thread.
+    $aw = Get-CoordinatorAddDirError   # about the mailbox, not the thread: checked first
+    if ($aw) { Fail "A Codex coordinator cannot work for this mailbox: $aw. Nothing was saved." }
+    $tid = ''
+    if ($ThreadName) {
+        $named = Find-NamedCodexThread $ThreadName
+        if (-not $named) { Fail "No live Codex thread named '$ThreadName' was found in $CodexHomeDir (archived threads do not count). Check the name in Codex, or use -ThreadId." }
+        $tid = [string]$named.id
+    } else {
+        if ($ThreadId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') { Fail "-ThreadId must be the Codex thread id (a UUID; got '$ThreadId'), or give -ThreadName <name>. The relay never guesses it." }
+        $tid = $ThreadId.ToLowerInvariant()
+    }
+    $found = Find-CodexRollout $tid
+    if (-not $found) { Fail "No Codex thread $tid found under $CodexHomeDir\sessions. Take the id from the thread itself, and pass -CodexHome if Codex keeps its files elsewhere." }
+    if ($found.archived) { Fail "Codex thread $tid is archived. Unarchive it in Codex first, or enroll another thread." }
+    $other = Get-ThreadJobText $tid 'coordinator'   # one Codex thread has one job
+    if ($other) { Fail "Codex thread $tid is already $other. One Codex thread has one job: start a new thread for the coordinator." }
+    $cwd = ''
+    if ($CodexCwd) {
+        try { $cwd = [IO.Path]::GetFullPath($CodexCwd).TrimEnd('\') } catch { Fail "-CodexCwd '$CodexCwd' is not a folder path Windows can use." 64 }
+    } else { $cwd = Get-CodexThreadCwd $found.path }
+    if (-not $cwd) { Fail "Could not read the thread's working folder from the first line of $($found.path). Pass -CodexCwd <folder>." }
+    $why = Get-CoordinatorFolderError $cwd 'codex'
+    if ($why) { Fail "The Codex thread's folder $cwd cannot be the coordinator's folder: $why. Start the coordinator thread in a folder of its own, such as $Root\coordinator, then enroll again." }
+    if (Test-Path -LiteralPath (Join-Path $cwd '.codex')) { Fail "$cwd\.codex is there. Codex would read its settings in every coordinator turn. Move it away, then enroll again." }
+    if (Test-Path -LiteralPath (Join-Path $cwd 'AGENTS.override.md')) { Fail "$cwd\AGENTS.override.md is there. Codex reads it in place of AGENTS.md, the coordinator's standing orders. Move it away, then enroll again." }
+    $mw = Get-ToolModelError $Model 'codex'
+    if ($mw) { Fail $mw 64 }
+    $effortWord = ([string]$Effort).ToLowerInvariant()
+    $held = Test-CodexThreadLocked $tid
+    $coord = @{ tool = 'codex'; session_id = $tid; cwd = $cwd; transcript_path = [string]$found.path; codex_home = $CodexHomeDir;
+        enrolled_utc = (Get-Now); enrolled = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv);
+        follow_name = [string]$ThreadName; started_ms = (Get-CodexStarted $found.path);
+        verified = 'live Codex thread file found; its folder is a folder of its own; the thread has no other job';
+        model = [string]$Model; effort = $effortWord; allowed_checks = @(); board = (Join-Path $cwd 'STATUS.md');
+        resume_rule = 'codex exec --json --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.writable_roots=[] -c mcp_servers={} --add-dir <mailbox>\tasks [-m <model>] [-c model_reasoning_effort=<effort>] resume <thread id> <notice>; in the coordinator folder; ChatGPT sign-in only; never codex_exec_args' }
+    $kept = Backup-RelayFile $CoordFile   # a copy of the old record first, whatever changes
+    Save-Json $CoordFile $coord
+    Initialize-CoordinatorBoard $coord
+    $state = Get-State
+    foreach ($flag in @('last_block', 'follow_coordinator_miss', 'follow_coordinator_refused')) { [void]$state.flags.Remove($flag) }
+    Update-StartRequests $state $true $coord   # start files that are there now count as known: never run
+    Save-State $state
+    Write-Log ("Enrolled Codex thread $tid as the coordinator (folder $cwd). Each turn runs in Codex's workspace-write sandbox with no network and can write only $cwd and $Root\tasks. " +
+        "After each turn the relay copies $cwd\STATUS.md into the mailbox. Model: $(if ($Model) { $Model } else { 'Codex default' }); effort: $(if ($effortWord) { $effortWord } else { 'Codex default' }).")
+    if ($ThreadName) { Write-Log "It follows the name '$ThreadName': when a newer Codex thread takes that name, the relay wakes it instead, between turns." }
+    if ($held) { Write-Log 'Another Codex program has this thread open right now (most likely the Codex app). The relay wakes it only after that program lets go of it.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $cwd 'AGENTS.md') -PathType Leaf)) { Write-Log "WARNING: $cwd\AGENTS.md is not there. Copy relay\COORDINATOR.md there as AGENTS.md, so the coordinator reads its standing orders." }
+    if (-not (Get-StartRequestsOn $coord)) { Write-Log 'WARNING: start_requests is false in bin\relay-settings.json, so this coordinator cannot start workers.' }
+    if (-not (Get-CodexExePath)) { Write-Log 'WARNING: the Codex CLI was not found on PATH. Install it, or set codex_exe in bin\relay-settings.json, before the first turn.' }
+    if ($kept) { Write-Log "The coordinator.json from before is kept as $kept." }
+}
+
+# ---------- a coordinator turn in Codex (and later Gemini CLI) ----------
+# Start-Dispatch and Complete-Dispatch hand a turn to these when the coordinator is not a Claude Code session. A Codex
+# turn is built here. A Gemini CLI turn is built by the next step of Phase 6; until then it starts nothing.
 
 function Start-ToolDispatch([hashtable]$State, [hashtable]$Coord, [object[]]$Pending) {
-    # Placeholder (a Codex or Gemini CLI turn): Get-BusyReason holds every turn of such a coordinator first, so this
-    # does not run. If it does, it starts nothing and changes nothing: the notifications stay pending.
     $script:LastLaunched = $null
-    Write-Log ("Not dispatched: this relay cannot wake a coordinator in '{0}' yet. {1} notification(s) stay pending." -f (Get-CoordTool $Coord), @($Pending).Count)
+    $coordTool = Get-CoordTool $Coord
+    if ($coordTool -ne 'codex') {
+        # Not built yet (Gemini CLI): Get-BusyReason holds every turn of such a coordinator first, so this does not run.
+        # If it does, it starts nothing and changes nothing: the notifications stay pending.
+        Write-Log ("Not dispatched: this relay cannot wake a coordinator in '{0}' yet. {1} notification(s) stay pending." -f $coordTool, @($Pending).Count)
+        return
+    }
+    $now = Get-Now
+    if (-not (Test-Path -LiteralPath $DispatchDir)) { New-Item -ItemType Directory -Path $DispatchDir -Force | Out-Null }
+    $id = 'R' + (Get-Date).ToString('yyyyMMdd-HHmmss', $Inv) + '-' + [guid]::NewGuid().ToString('N').Substring(0, 4)
+    $batch = @($Pending | Select-Object -First 10)   # the Codex notice is one command-line argument
+    $prompt = New-CoordinatorPrompt $id $batch $Coord
+    $promptFile = Join-Path $DispatchDir "$id.prompt.txt"
+    $stdin = Join-Path $DispatchDir "$id.stdin.txt"
+    $out = Join-Path $DispatchDir "$id.out.jsonl"
+    $errFile = Join-Path $DispatchDir "$id.err.txt"   # never $err: Start-CodexProcess names its parameter $Err
+    [IO.File]::WriteAllText($promptFile, $prompt, $Utf8)
+    [IO.File]::WriteAllText($stdin, '', $Utf8)
+    $target = Get-CoordinatorCodexTarget $Coord
+    $options = Get-CoordinatorCodexOptions $Coord   # a list, so a variable first: @(<function>) would keep it as one item
+    $State.seq = [int64]$State.seq + 1
+    # guard: the program files' stamps at the start. The turn may outlive this relay process, so its record keeps them,
+    # and they are compared when the turn ends, in this relay process or in the next one.
+    $d = @{ id = $id; seq = $State.seq; tool = $coordTool; state = 'launching'; items = @($batch | ForEach-Object { $_.id }); started_utc = $now; finished_utc = 0;
+        session_id = [string]$Coord.session_id; transcript = [string]$Coord.transcript_path; cwd = [string]$Coord.cwd; pid = 0; proc_start = '';
+        out = $out; err = $errFile; stdin = $stdin; prompt_file = $promptFile; accepted_utc = 0; exit_code = $null; outcome = ''; error = '';
+        cost = $null; turns = $null; duration_ms = $null; subtype = ''; result_session = ''; summary = ''; billing = 'chatgpt-sign-in';
+        options = $options.ToArray(); policy_sha256 = ''; guard = (Get-RelayFileStamps $true) }
+    $State.dispatches[$id] = $d
+    foreach ($n in $batch) { $n.state = 'launched'; $n.dispatch_id = $id; $n.attempts = [int]$n.attempts + 1 }
+    Save-State $State   # write-ahead, as for a Claude Code turn: from here on a relay stop is settled from evidence
+
+    $pf = Get-CodexCoordinatorPreflight $State $Coord
+    if ($pf.halt) { Set-DispatchHalted $State $d $pf.halt; return }
+    if ($pf.error) { $d.guard = $null; Set-DispatchFailed $State $d $pf.error; return }
+    $roll = Get-CodexRolloutPath $target   # the thread file, found again if Codex moved it
+    if ($roll) { $d.transcript = $roll; $target.rollout_path = $roll }
+    if (-not (Test-RelayFiles $State 'before a coordinator turn')) { Set-DispatchHalted $State $d ([string]$State.halt); return }
+    $started = Start-CodexProcess $target $prompt $stdin $out $errFile $options
+    if ($started.error) { $d.guard = $null; Set-DispatchFailed $State $d $started.error; return }
+    $proc = $started.proc
+    try { $null = $proc.Handle } catch { }   # keep a handle so the exit code stays readable
+    $d.pid = $proc.Id
+    try { $d.proc_start = [string]$proc.StartTime.ToUniversalTime().Ticks } catch { $d.proc_start = '' }
+    $d.state = 'running'
+    $State.daily.wakes = [int]$State.daily.wakes + 1
+    $script:Procs[$id] = $proc
+    $script:LastLaunched = $id
+    [void]$State.flags.Remove('last_block')
+    Save-State $State
+    Write-Log ('Dispatched {0} to the Codex coordinator thread {1} (pid {2}; {3} item(s); workspace-write sandbox, no network): {4}' -f $id, $Coord.session_id, $proc.Id, $batch.Count,
+        (($batch | ForEach-Object { $_.detail }) -join '; '))
+}
+
+function Set-DispatchHalted([hashtable]$State, [hashtable]$D, [string]$Why) {
+    # A coordinator turn that must not start: nothing started, nothing delivered. Its notifications wait, and coordinator
+    # turns stop until -ClearHalt. No backoff: the cause does not go away by itself.
+    $D.state = 'failed'; $D.error = $Why; $D.finished_utc = Get-Now; $D.outcome = 'not delivered (relay halted)'; $D.guard = $null
+    foreach ($nid in @($D.items)) {
+        $n = $State.notes[$nid]
+        if ($n) { $n.state = 'pending'; $n.dispatch_id = ''; $n.outcome = "kept: $Why" }
+    }
+    if (-not $State.halt) {
+        $State.halt = $Why
+        Add-Alert $State '' "Relay halted before coordinator turn $($D.id) started: $Why. Pending notifications are kept. Fix it, then run bridge-relay.ps1 -ClearHalt."
+    }
+    Write-Log "Dispatch $($D.id) not started (halt): $Why"
+    Add-LedgerLine $D '-'
+    Remove-DispatchFiles $D
+}
+
+function Test-DispatchGuard([hashtable]$State, [hashtable]$D) {
+    # After a Codex or Gemini CLI coordinator turn: the program files against the stamps its record kept from its start.
+    # A change halts the relay (after the turn's own outcome is recorded). Compared once: the stamps are dropped then.
+    if (-not ($D.guard -is [hashtable])) { return }
+    $seen = Get-RelayFileStamps $true
+    $changed = Get-RelayFileChange $D.guard $seen   # a variable first: the list comes back as one array
+    $D.guard = $null
+    if ($changed.Count) { Set-GuardHalt $State $changed "during coordinator turn $($D.id)" }
 }
 
 function Complete-ToolDispatch([hashtable]$State, [hashtable]$D) {
-    # Placeholder (a Codex or Gemini CLI turn): only a state.json from a newer relay can hold such a turn. This relay
-    # cannot read its outcome, so the turn counts as not delivered, and its notifications stay pending.
-    if ($script:Procs.ContainsKey($D.id)) { [void]$script:Procs.Remove($D.id) }
-    Set-DispatchFailed $State $D ("this relay cannot read the outcome of a coordinator turn in '{0}' yet" -f (Get-DispatchTool $D))
+    # The end of a coordinator turn that is not Claude Code's. Delivery is decided by evidence, as for Claude Code: the
+    # tool's own events and the notice's marker in the thread file. The exit code only picks the words, and a turn this
+    # relay process did not start (no exit code) is decided the same way.
+    $dispatchTool = Get-DispatchTool $D
+    if ($dispatchTool -ne 'codex') {
+        # Not built yet (Gemini CLI): only a state.json from a newer relay can hold such a turn. This relay cannot read
+        # its outcome, so the turn counts as not delivered, and its notifications stay pending.
+        if ($script:Procs.ContainsKey($D.id)) { [void]$script:Procs.Remove($D.id) }
+        Set-DispatchFailed $State $D ("this relay cannot read the outcome of a coordinator turn in '{0}' yet" -f $dispatchTool)
+        return
+    }
+    $now = Get-Now
+    $exit = $null
+    if ($script:Procs.ContainsKey($D.id)) {
+        $p = $script:Procs[$D.id]
+        try { $p.WaitForExit(); $exit = $p.ExitCode } catch { }
+        [void]$script:Procs.Remove($D.id)
+    }
+    $D.exit_code = $exit
+    $exitWord = $(if ($null -eq $exit) { 'unknown' } else { [string]$exit })
+    $ev = Read-CodexEvents $D.out
+    $marker = Test-DispatchMarker $D
+    $errText = ''
+    try { if ($D.err -and (Test-Path -LiteralPath $D.err)) { $errText = Get-Short (Read-SharedText $D.err) 300 } } catch { }
+    $D.finished_utc = $now
+    $D.result_session = [string]$ev.thread
+    if ($ev.message) { $D.summary = Get-Short $ev.message 300 }
+    $State.last_finish_utc = $now
+    $enrolled = ([string]$D.session_id).ToLowerInvariant()
+    $delivered = $true
+    if ($ev.thread -and $ev.thread -ne $enrolled) {
+        $D.state = 'completed'
+        $D.outcome = "SESSION MISMATCH: Codex used thread $($ev.thread), enrolled is $enrolled"
+        Set-ItemsDone $State $D 'delivered to a different thread; not replayed'
+        $State.halt = "session mismatch on $($D.id): Codex reported thread $($ev.thread) instead of the enrolled $enrolled"
+        Add-Alert $State '' "Relay halted: coordinator turn $($D.id) ran in Codex thread $($ev.thread), not the enrolled $enrolled. Check the enrollment (-Enroll -Tool codex), then run -ClearHalt."
+    } elseif ($ev.completed -and -not $ev.failed) {
+        $D.state = 'completed'
+        $D.outcome = 'success'
+        Set-ItemsDone $State $D 'completed: the coordinator turn ended successfully (Codex)'
+        $State.failures = 0
+        $State.next_attempt_utc = 0
+    } elseif (-not $marker) {
+        # Not delivered: backoff, the notifications wait, and the relay halts after MaxFailures in a row.
+        $msg = "Codex ended without a result (exit $exitWord)"
+        if ($ev.failed) { $msg = "the Codex turn failed before the notice reached the thread: $($ev.failed)" }
+        elseif ($ev.error) { $msg = "Codex reported an error before the notice reached the thread: $($ev.error)" }
+        if ($errText) { $msg += ": $errText" }
+        Set-DispatchFailed $State $D $msg
+        $delivered = $false
+    } elseif ($ev.failed -or $ev.error) {
+        $D.state = 'completed'
+        $D.outcome = 'turn ended with an error; delivered, not replayed'
+        $D.error = Get-Short ("$($ev.failed) $($ev.error)") 300
+        Set-ItemsDone $State $D 'delivered; the turn ended with an error; not replayed'
+        Add-Backoff $State
+        Add-Alert $State '' "Coordinator turn $($D.id) (Codex) ended with an error: $($D.error). Not replayed."
+        if ([int]$State.failures -ge $MaxFailures) {
+            $State.halt = "$($State.failures) consecutive failed coordinator turns; last: $($D.error)"
+            Add-Alert $State '' "Relay halted after $($State.failures) consecutive failed coordinator turns. Run -ClearHalt after checking."
+        }
+    } else {
+        $D.state = 'completed'
+        $D.outcome = 'unknown: Codex ended without a result, but the notice is in the thread (delivered; not replayed)'
+        if ($errText) { $D.error = $errText }
+        Set-ItemsDone $State $D 'delivered; terminal outcome unknown (not replayed)'
+        Add-Alert $State '' "Coordinator turn $($D.id) (Codex) ended without a result (exit $exitWord) after its notice reached the thread. Not replayed. Check the coordinator's status files."
+    }
+    if ($delivered) { Copy-CoordinatorBoard $D }   # the turn's own folder: its board may have changed
+    Test-DispatchGuard $State $D   # every turn that ran, whatever its outcome
+    if (-not $delivered) { return }   # Set-DispatchFailed wrote the ledger line and removed the turn's files
+    Write-Log ('Dispatch {0} {1}: {2}; exit {3}' -f $D.id, $D.state, $D.outcome, $exitWord)
+    Add-LedgerLine $D '-'
+    Remove-DispatchFiles $D
+}
+
+function Show-ToolCoordinatorStatus([hashtable]$State, [hashtable]$Coord) {
+    # -Status for a coordinator that is not a Claude Code session.
+    $coordTool = Get-CoordTool $Coord
+    if ($coordTool -eq 'codex') {
+        $found = [bool](Get-CodexRolloutPath (Get-CoordinatorCodexTarget $Coord))
+        $held = Test-CodexThreadLocked ([string]$Coord.session_id)
+        Write-Host "Coordinator: ENROLLED Codex thread $($Coord.session_id) (folder $($Coord.cwd); enrolled $($Coord.enrolled); thread file found: $found; open in another Codex program now: $held)"
+        if ($Coord.follow_name) {
+            $sw = ''
+            if ($Coord.followed) { $sw = "; last switch $($Coord.followed), from $($Coord.previous_session_id)" }
+            Write-Host "Coordinator follows the Codex thread name '$($Coord.follow_name)': the newest live thread with that name is woken$sw"
+        }
+        Write-Host ("Coordinator turns: Codex's workspace-write sandbox, with no network; a turn can write only $($Coord.cwd) and $Root\tasks. " +
+            "The relay copies $($Coord.cwd)\STATUS.md into the mailbox after each turn. Each turn counts toward the daily wake limit; Codex reports no cost.")
+    } elseif ($coordTool -eq 'gemini') {
+        $tp = [bool]($Coord.transcript_path -and (Test-Path -LiteralPath ([string]$Coord.transcript_path) -PathType Leaf))
+        Write-Host "Coordinator: ENROLLED Gemini CLI session $($Coord.session_id) (folder $($Coord.cwd); enrolled $($Coord.enrolled); session file found: $tp)"
+        Write-Host 'Coordinator turns: this copy of the relay cannot wake a coordinator in Gemini CLI yet, so nothing is sent; pending notifications are kept.'
+    } else {
+        Write-Host "Coordinator: ENROLLED with an AI tool the relay does not know ('$coordTool'). Nothing is sent. Enroll again with -Enroll -Tool claude, codex or gemini."
+        return
+    }
+    $procs = Get-SessionProcesses ([string]$Coord.session_id)
+    if ($null -eq $procs) { Write-Host 'Coordinator open now: unknown (the process list could not be read)' }
+    elseif ($procs.Count -gt 0) { Write-Host ("Coordinator open now in pid {0}: the relay waits until it is closed" -f (($procs | ForEach-Object { $_.ProcessId }) -join ',')) }
+}
+
+# ---------- Phase 6: placeholders for later steps ----------
+# The coordinator's plumbing already calls these. Each one refuses or does nothing, in plain words, until the next step
+# of Phase 6 builds it: a Gemini CLI coordinator. scripts/check.js refuses a second definition of a name, so the step
+# that builds one replaces it here. With a Claude Code or Codex coordinator none of them changes what the relay does.
+
+function Get-GeminiCoordinatorBusy([hashtable]$State, [hashtable]$Coord) {
+    # Placeholder (a Gemini CLI coordinator): every turn waits, so nothing is sent, and the reason is logged once.
+    return 'this relay cannot wake a coordinator in Gemini CLI yet (.relay\coordinator.json names gemini). Pending notifications are kept. Enroll a Claude Code or Codex coordinator with -Enroll'
 }
 
 function Test-GeminiMarker([hashtable]$D) {
@@ -4329,28 +5014,9 @@ function Test-GeminiMarker([hashtable]$D) {
     return $false
 }
 
-function Update-CodexCoordinatorFollow([hashtable]$State, [bool]$ReadOnly, [hashtable]$C) {
-    # Placeholder (a Codex coordinator): a Codex coordinator's thread name is not followed yet.
-}
-
-function Invoke-EnrollCodexCoordinator {
-    # Placeholder (a Codex coordinator): refuses, and saves nothing.
-    Fail 'A coordinator in Codex is not ready in this copy of the relay yet. Enroll a Claude Code coordinator for now (-Enroll -SessionName <name>). Nothing was saved.' 64
-}
-
 function Invoke-EnrollGeminiCoordinator {
     # Placeholder (a Gemini CLI coordinator): refuses, and saves nothing.
-    Fail 'A coordinator in Gemini CLI is not ready in this copy of the relay yet. Enroll a Claude Code coordinator for now (-Enroll -SessionName <name>). Nothing was saved.' 64
-}
-
-function Get-ThreadJobText([string]$ThreadId, [string]$Except) {
-    # Placeholder (one thread, one job): no other job of a thread is known yet, so nothing is refused.
-    return ''
-}
-
-function Get-CoordinatorCodexFolder {
-    # Placeholder (one thread, one job): no coordinator works in a folder of its own yet.
-    return ''
+    Fail 'A coordinator in Gemini CLI is not ready in this copy of the relay yet. Enroll a Claude Code coordinator (-Enroll -SessionName <name>) or a Codex coordinator (-Enroll -Tool codex -ThreadName <name>) for now. Nothing was saved.' 64
 }
 
 # ---------- main ----------

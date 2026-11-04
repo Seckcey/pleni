@@ -43,7 +43,16 @@
   still runs, and the launcher's own words), none during a coordinator turn; a new worktree made from the brief's Base
   commit, a missing repository refused by the launcher, a stop while starting settled as unknown and never run again,
   the daily limit of worker starts, PAUSE, and the guard on the relay's own files: a changed bin\spawn-worker.ps1
-  halts the relay loop, and no worker starts until -ClearHalt.
+  halts the relay loop, and no worker starts until -ClearHalt. 28 a Codex coordinator (-Enroll -Tool codex, with
+  tests\stub-codex.js): refusals in plain words (another tool's word, the planner's thread, the mailbox folder, max
+  effort, -AllowCheck, a session's options), enrolled by name with a copy of the old coordinator.json, its thread
+  refused as the planner and as an agent, a dry run, a turn with only the relay's own sandbox options in its own folder
+  (never codex_exec_args), its STATUS.md copied into the mailbox, waits while another program holds the thread or a
+  window has it open, a planted bin file halts the relay after the turn, a turn in another thread halts it, a .codex
+  folder or an AGENTS.override.md halts it before the turn, a rollover to a newer thread with the name (the new folder's
+  old board kept in .relay\backups), none to one that is already an agent, a tool the relay does not know, -Status and
+  -ShowCoordinatorArgs, a mailbox path with an & refused, and HQ: a project cannot enroll HQ's orchestrator thread as
+  its coordinator, and a project coordinator.json that names it stops HQ's wakes.
   It runs only the bridge-relay.ps1, agent-mail.ps1 and spawn-worker.ps1 beside it, ..\tests\stub-claude.js,
   ..\tests\stub-codex.js, ..\tests\stub-gemini.js and ..\tests\stub-agy.js; other -RelayScript/-StubCli values are
   refused.
@@ -52,7 +61,7 @@
   launcher refuse.
   Prints one PASS/FAIL line per check, then a summary. Exit 0 only when every check passes (2 = could not set up).
   No network, no API key, no real claude.exe. It removes its temp folder and stops any process it started
-  (only processes whose command line names this run's temp folder). Takes about 8-13 minutes.
+  (only processes whose command line names this run's temp folder). Takes about 10-16 minutes.
   Windows PowerShell 5.1. ASCII only.
 
 .EXAMPLE
@@ -564,6 +573,29 @@ function Get-ClaudeWorkerCalls([hashtable]$Fx, [string]$W) {
 }
 
 function Get-CoordinatorCalls([hashtable]$Fx) { return @(Get-Calls $Fx 'start' | Where-Object { $_.resume }) }   # the Claude stub's coordinator turns (--resume)
+
+function Get-CodexResumeCalls([hashtable]$Fx) { return @(Get-CodexCalls $Fx 'start' | Where-Object { $_.kind -ne 'worker' }) }   # resume calls carry no kind
+
+function Get-ThreadFile([hashtable]$Fx, [string]$Id) {
+    # The fake Codex thread file that Write-Thread (or New-Fixture) wrote for this thread id, or ''.
+    $f = @(Get-ChildItem -LiteralPath (Join-Path $Fx.codex 'sessions') -Recurse -File -Filter "rollout-*$Id.jsonl" -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($f.Count) { return $f[0].FullName }
+    return ''
+}
+
+function Get-NoticeCount([string]$Path, [string]$Letter) {
+    # How many relay notices ([bridge-relay <Letter>...]) a session or thread file holds.
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return 0 }
+    return ([regex]::Matches((Read-Shared $Path), '\[bridge-relay ' + $Letter + '\d')).Count
+}
+
+function Start-OpenWindow([hashtable]$Fx, [string]$Id) {
+    # A process whose command line names the session or thread, as a window that has it open would. It names this run's
+    # temp folder too, so the cleanup stops it if a check leaves it running.
+    $p = Start-Process -FilePath $PsExe -ArgumentList ('-NoProfile -Command "Start-Sleep -Seconds 60 # ' + $Id + ' ' + $Token + '"') -WindowStyle Hidden -PassThru
+    [void]$script:Spawned.Add($p)
+    return $p
+}
 
 function Set-AgyStubMode([hashtable]$Fx, [string]$Mode) { [IO.File]::WriteAllText((Join-Path $Fx.stub 'agy-mode.txt'), $Mode, $Utf8) }
 
@@ -2292,6 +2324,235 @@ try {
         $null = Invoke-Relay $fx 'Once' $null
         Check (Wait-Until { @(Get-ClaudeWorkerCalls $fx 'W6').Count -ge 1 } 60) 'W6 did not start after the launcher was put back and the halt was cleared'
         Check (@(Get-ClaudeWorkerCalls $fx 'W6').Count -eq 1) "W6 started $(@(Get-ClaudeWorkerCalls $fx 'W6').Count) times, want once"
+    }
+
+    Invoke-Scenario '28 a Codex coordinator: refusals, enrolled by name, a sandboxed turn, the board copy, waits, halts, rollover, one thread one job, HQ' {
+        $fx = New-Fixture 'cc1'
+        Initialize-Fixture $fx   # a Claude Code coordinator first, so there is a coordinator.json to keep a copy of
+        $cf = Join-Path $fx.mb '.relay\coordinator.json'
+        $coord = Join-Path $fx.dir 'coord'
+        New-Item -ItemType Directory -Path $coord -Force | Out-Null
+        $ct = [guid]::NewGuid().ToString()
+        Write-Thread $fx $ct '2026-11-04T05:00:00Z' $coord 'Coordinator'
+        $ctFile = Get-ThreadFile $fx $ct
+        $r = Invoke-Relay $fx 'EnrollCodex' @{ ThreadId = $fx.tid }   # the planner, in its own folder
+        if ($r.code -ne 0) { throw "-EnrollCodex failed (exit $($r.code)): $(Get-Tail $r.out)" }
+        $hash0 = (Get-FileHash -LiteralPath $cf -Algorithm SHA256).Hash
+        # Refusals: each one ends with an error and saves nothing. $rt works in the mailbox folder itself.
+        $rt = [guid]::NewGuid().ToString()
+        Write-Thread $fx $rt '2026-11-04T04:00:00Z' $fx.mb 'Mailbox Thread'
+        foreach ($x in @(
+                @{ mode = 'Enroll'; opt = @{ Tool = 'antigravity'; ThreadName = 'Coordinator' }; words = 'not possible yet' },
+                @{ mode = 'Enroll'; opt = @{ Tool = 'grok'; ThreadName = 'Coordinator' }; words = '-Tool must be claude, codex or gemini' },
+                @{ mode = 'Status'; opt = @{ Tool = 'codex' }; words = '-Tool is accepted only with -Enroll' },
+                @{ mode = 'Enroll'; opt = @{ Tool = 'codex'; ThreadId = $fx.tid }; words = "this mailbox's planner" },
+                @{ mode = 'Enroll'; opt = @{ Tool = 'codex'; ThreadId = $rt }; words = 'the mailbox folder itself' },
+                @{ mode = 'Enroll'; opt = @{ Tool = 'codex'; ThreadName = 'Coordinator'; Effort = 'max' }; words = 'no max effort' },
+                @{ mode = 'Enroll'; opt = @{ Tool = 'codex'; ThreadName = 'Coordinator'; AllowCheck = 'php -l' }; words = 'not used for a Codex coordinator' },
+                @{ mode = 'Enroll'; opt = @{ Tool = 'codex'; SessionName = 'x' }; words = 'A Codex coordinator is a thread' })) {
+            $r = Invoke-Relay $fx $x.mode $x.opt
+            $optText = (@($x.opt.Keys | Sort-Object) | ForEach-Object { '-' + $_ + ' ' + [string]$x.opt[$_] }) -join ' '
+            Check ($r.code -ne 0 -and (Test-SaidText $r.out $x.words)) "-$($x.mode) $optText was not refused with '$($x.words)' (exit $($r.code)): $(Get-Tail $r.out 200)"
+        }
+        Check ((Get-FileHash -LiteralPath $cf -Algorithm SHA256).Hash -eq $hash0) 'a refused -Enroll changed coordinator.json'
+        # Enrolled by name, with an effort: a Codex coordinator in a folder of its own.
+        $r = Invoke-Relay $fx 'Enroll' @{ Tool = 'codex'; ThreadName = 'Coordinator'; Effort = 'high' }
+        Check ($r.code -eq 0) "-Enroll -Tool codex exit code $($r.code): $(Get-Tail $r.out)"
+        $cj = Get-RelayJson $fx 'coordinator.json'
+        Check ($cj -and $cj.tool -eq 'codex' -and $cj.session_id -eq $ct -and $cj.cwd -eq $coord -and $cj.effort -eq 'high' -and $cj.follow_name -eq 'Coordinator') ("coordinator.json does not hold the Codex coordinator (tool '{0}', thread '{1}', folder '{2}', effort '{3}', name '{4}')" -f $cj.tool, $cj.session_id, $cj.cwd, $cj.effort, $cj.follow_name)
+        $baks = @(Get-ChildItem -LiteralPath (Join-Path $fx.mb '.relay\backups') -File -Filter 'coordinator.json.*.bak' -ErrorAction SilentlyContinue)
+        Check ($baks.Count -eq 1) "expected exactly 1 copy of the old coordinator.json in .relay\backups, got $($baks.Count)"
+        Check (Test-Said $r.out 'AGENTS\.md is not there') 'the enrollment did not warn that AGENTS.md is not in the coordinator folder'
+        Check (Test-Path -LiteralPath (Join-Path $coord 'STATUS.md') -PathType Leaf) "the enrollment did not make the coordinator's own STATUS.md"
+        # One Codex thread, one job: the coordinator's thread is refused as the planner and as an agent.
+        $r = Invoke-Relay $fx 'EnrollCodex' @{ ThreadId = $ct }
+        Check ($r.code -ne 0 -and (Test-SaidText $r.out "this mailbox's coordinator")) "-EnrollCodex accepted the coordinator's thread as the planner (exit $($r.code)): $(Get-Tail $r.out 200)"
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Coordinator' }
+        Check ($r.code -ne 0 -and (Test-SaidText $r.out "this mailbox's coordinator")) "-EnrollAgent accepted the coordinator's thread as an agent (exit $($r.code)): $(Get-Tail $r.out 200)"
+        Check ((Get-RelayJson $fx 'codex.json').thread_id -eq $fx.tid) 'a refused -EnrollCodex changed codex.json'
+        # codex_exec_args is the planner's setting, and a coordinator turn never gets it: the turn's exact options are
+        # checked below. Written before the next -Once, so that relay's first look already has the file.
+        Write-Text (Join-Path $fx.mb 'bin\relay-settings.json') (ConvertTo-Json -InputObject @{ codex_exec_args = @('-c', 'model_verbosity=low') } -Depth 4 -Compress)
+        # A new assignment: the dry run shows the Codex command and changes nothing.
+        Write-Text (Join-Path $fx.mb 'tasks\T-C05\assignment.md') $NewAssignment
+        $sf = Join-Path $fx.mb '.relay\state.json'
+        $before = (Get-FileHash -LiteralPath $sf -Algorithm SHA256).Hash
+        $r = Invoke-Relay $fx 'DryRun' $null
+        Check ($r.code -eq 0 -and (Test-Said $r.out 'would dispatch 1 item\(s\) to the Codex coordinator thread')) "the dry run did not tell the Codex coordinator turn: $(Get-Tail $r.out)"
+        Check ((Test-SaidText $r.out 'workspace-write') -and (Test-SaidText $r.out "resume $ct")) 'the dry run command does not show the sandbox and the thread'
+        Check ((Get-FileHash -LiteralPath $sf -Algorithm SHA256).Hash -eq $before) 'the dry run changed state.json'
+        Check (@(Get-CodexCalls $fx '').Count -eq 0) 'the dry run called the Codex stub'
+        # One turn: the relay's own sandbox options, in the coordinator's folder, in the enrolled thread.
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ($r.code -eq 0) "-Once exit code $($r.code)"
+        $calls = @(Get-CodexResumeCalls $fx)
+        Check ($calls.Count -eq 1) "expected 1 Codex coordinator turn, got $($calls.Count)"
+        if ($calls.Count -ge 1) {
+            $c = $calls[0]
+            $want = @('--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]',
+                '-c', 'mcp_servers={}', '--add-dir', (Join-Path $fx.mb 'tasks'), '-c', 'model_reasoning_effort=high')
+            $why = Compare-ArgList @($c.extra) $want
+            Check (-not $why) "the Codex coordinator turn's options are not the relay's own: $why"
+            Check ([string]$c.cwd -like '*\cc1\coord') "the Codex coordinator turn ran in '$($c.cwd)', not in its own folder"
+            Check ($c.thread -eq $ct) "the turn went to thread '$($c.thread)', not to the coordinator's"
+            Check ($c.exec -and $c.json -and $c.skip_git -and -not $c.last -and -not $c.bypass) 'unsafe or missing Codex options (want exec --json --skip-git-repo-check; never --last or a sandbox bypass)'
+            Check ([bool]$c.key_absent) 'the Codex coordinator turn inherited an OpenAI or Codex API key'
+            Check ([string]$c.prompt -match '\[bridge-relay R' -and [string]$c.prompt -match 'T-C05') 'the notice does not carry its marker and the new assignment'
+        }
+        Check ((Get-NoticeCount $ctFile 'R') -eq 1) "the coordinator's thread file does not hold exactly one notice"
+        $d = @(Get-Dispatches $fx | Where-Object { $_.tool -eq 'codex' })
+        Check ($d.Count -eq 1 -and $d[0].outcome -eq 'success' -and $d[0].billing -eq 'chatgpt-sign-in') "the Codex coordinator turn is not recorded once as a success with the ChatGPT sign-in ($($d.Count) record(s))"
+        $st = Get-RelayState $fx
+        Check ([int]$st.daily.wakes -eq 1 -and [int]$st.daily.codex_wakes -eq 0) "today's counts are $($st.daily.wakes) coordinator turn(s) and $($st.daily.codex_wakes) planner wake(s); want 1 and 0"
+        Check (@(Get-Calls $fx 'start').Count -eq 0) 'the Claude Code stub was called for a Codex coordinator'
+        # The board: the turn writes STATUS.md in its own folder, and the relay copies it into the mailbox.
+        Set-CodexStubMode $fx 'write-board'
+        Write-Text (Join-Path $fx.mb 'tasks\T-C07\assignment.md') $NewAssignment
+        $null = Invoke-Relay $fx 'Once' $null
+        Set-CodexStubMode $fx 'ok'
+        $mbBoard = Join-Path $fx.mb 'STATUS.md'
+        Check ((Test-Path -LiteralPath $mbBoard) -and (Read-Shared $mbBoard) -match 'board line from the stub Codex coordinator') "the coordinator's STATUS.md was not copied into the mailbox"
+        # Waits: another program holds the thread (as the Codex app does), then a window has it open.
+        $lock = Join-Path $fx.codex ('thread-writer-locks\' + $ct + '.lock')
+        Write-Text $lock ''
+        Write-Text (Join-Path $fx.mb 'tasks\T-C08\assignment.md') $NewAssignment
+        $before = @(Get-CodexResumeCalls $fx).Count
+        $held = [IO.File]::Open($lock, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try {
+            $r = Invoke-Relay $fx 'Once' $null
+            Check (Test-SaidText $r.out 'another Codex program has thread') "the relay did not wait while another program held the coordinator's thread: $(Get-Tail $r.out)"
+            Check (@(Get-CodexResumeCalls $fx).Count -eq $before) 'the coordinator was woken while another program held its thread'
+        } finally { $held.Dispose() }
+        $win = Start-OpenWindow $fx $ct
+        try {
+            $r = Invoke-Relay $fx 'Once' $null
+            Check (Test-SaidText $r.out "thread $ct is open in pid") "the relay did not wait while a window had the coordinator's thread open: $(Get-Tail $r.out)"
+            Check (@(Get-CodexResumeCalls $fx).Count -eq $before) 'the coordinator was woken while a window had its thread open'
+        } finally {
+            try { Stop-Process -Id $win.Id -Force -ErrorAction SilentlyContinue } catch { }
+            [void]$win.WaitForExit(10000)
+        }
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexResumeCalls $fx).Count -eq $before + 1) 'the coordinator was not woken once its thread was free'
+        # A turn that plants a relay file: its outcome is kept, and then the guard halts the relay.
+        Set-CodexStubMode $fx 'write-bin'
+        Write-Text (Join-Path $fx.mb 'tasks\T-C09\assignment.md') $NewAssignment
+        $null = Invoke-Relay $fx 'Once' $null
+        Set-CodexStubMode $fx 'ok'
+        $last = @(Get-Dispatches $fx | Where-Object { $_.tool -eq 'codex' }) | Select-Object -Last 1
+        Check ($last -and $last.outcome -eq 'success') "the turn that wrote bin\planted.ps1 is not recorded as delivered (outcome '$($last.outcome)')"
+        $st = Get-RelayState $fx
+        Check ([string]$st.halt -match 'planted\.ps1') "a file that a coordinator turn planted in bin did not halt the relay (halt '$($st.halt)')"
+        $af = Join-Path $fx.mb '.relay\alerts.md'
+        Check ((Test-Path -LiteralPath $af) -and (Read-Shared $af) -match 'planted\.ps1 changed') 'alerts.md does not say that bin\planted.ps1 changed'
+        $planted = Join-Path $fx.mb 'bin\planted.ps1'   # only the planted file: bin keeps the test's relay-settings.json
+        if (Test-Path -LiteralPath $planted) { Remove-Item -LiteralPath $planted -Force }
+        $r = Invoke-Relay $fx 'ClearHalt' $null
+        Check ($r.code -eq 0) "-ClearHalt exit code $($r.code)"
+        # A turn that runs in another thread: delivered (not replayed), and the relay halts.
+        Set-CodexStubMode $fx 'wrong-thread'
+        Write-Text (Join-Path $fx.mb 'tasks\T-C10\assignment.md') $NewAssignment
+        $null = Invoke-Relay $fx 'Once' $null
+        Set-CodexStubMode $fx 'ok'
+        Check ([string](Get-RelayState $fx).halt -match 'mismatch') 'a coordinator turn in another thread did not halt the relay'
+        $nt = @(Get-Note $fx 'tasks/T-C10/assignment.md')
+        Check ($nt.Count -eq 1 -and $nt[0].state -eq 'completed') 'the notice that went to another thread is not recorded as completed (not replayed)'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        # A .codex folder in the coordinator's folder: the relay halts before the turn starts, and the notice waits.
+        $dotCodex = Join-Path $coord '.codex'
+        New-Item -ItemType Directory -Path $dotCodex -Force | Out-Null
+        Write-Text (Join-Path $fx.mb 'tasks\T-C11\assignment.md') $NewAssignment
+        $before = @(Get-CodexResumeCalls $fx).Count
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ([string](Get-RelayState $fx).halt -match '\.codex is there') "a .codex folder in the coordinator's folder did not halt the relay"
+        Check (@(Get-CodexResumeCalls $fx).Count -eq $before) 'a coordinator turn started while a .codex folder was in its folder'
+        Check (Test-Pending $fx 'tasks/T-C11/assignment.md') 'the held notice is not kept pending'
+        Remove-Item -LiteralPath $dotCodex -Recurse -Force
+        # An AGENTS.override.md there: Codex would read it in place of AGENTS.md, so the relay halts the same way.
+        $override = Join-Path $coord 'AGENTS.override.md'
+        Write-Text $override "# Other orders (synthetic)`r`n"
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ([string](Get-RelayState $fx).halt -match 'AGENTS\.override\.md is there') "an AGENTS.override.md in the coordinator's folder did not halt the relay"
+        Check (@(Get-CodexResumeCalls $fx).Count -eq $before) 'a coordinator turn started while an AGENTS.override.md was in its folder'
+        Remove-Item -LiteralPath $override -Force
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexResumeCalls $fx).Count -eq $before + 1) 'the held notice was not delivered after the .codex folder and AGENTS.override.md were gone and the halt was cleared'
+        # Rollover: a newer thread named Coordinator, in a folder of its own, takes over between turns. That folder has
+        # an old board of its own: it is kept in .relay\backups, and a copy of the mailbox's board takes its place.
+        $coord2 = Join-Path $fx.dir 'coord2'
+        New-Item -ItemType Directory -Path $coord2 -Force | Out-Null
+        $board2 = Join-Path $coord2 'STATUS.md'
+        $oldBoard = "# Status board (synthetic, an old copy)`r`n"
+        Write-Text $board2 $oldBoard
+        $ct2 = [guid]::NewGuid().ToString()
+        Write-Thread $fx $ct2 '2026-11-04T06:00:00Z' $coord2 'Coordinator'
+        $r = Invoke-Relay $fx 'Once' $null
+        Check (Test-SaidText $r.out 'Rollover:') "the relay did not log the rollover: $(Get-Tail $r.out)"
+        $cj = Get-RelayJson $fx 'coordinator.json'
+        Check ($cj.session_id -eq $ct2 -and $cj.cwd -eq $coord2 -and $cj.previous_session_id -eq $ct) ("coordinator.json does not record the switch to the newer thread (thread '{0}', folder '{1}', previous '{2}')" -f $cj.session_id, $cj.cwd, $cj.previous_session_id)
+        Check ((Test-Path -LiteralPath $board2 -PathType Leaf) -and (Read-Shared $board2) -ceq (Read-Shared $mbBoard)) "the rollover did not give the new folder a copy of the mailbox's STATUS.md"
+        $boardBaks = @(Get-ChildItem -LiteralPath (Join-Path $fx.mb '.relay\backups') -File -Filter 'STATUS.md.*.bak' -ErrorAction SilentlyContinue)
+        Check ($boardBaks.Count -eq 1 -and (Read-Shared $boardBaks[0].FullName) -ceq $oldBoard) "the new folder's old STATUS.md was not kept once in .relay\backups ($($boardBaks.Count) copies)"
+        # A newer thread with the name that already has another job (an agent's) is not followed.
+        $coord3 = Join-Path $fx.dir 'coord3'
+        New-Item -ItemType Directory -Path $coord3 -Force | Out-Null
+        $ct3 = [guid]::NewGuid().ToString()
+        $agents = @{ 'sergeant-x' = @{ name = 'Sergeant X'; key = 'sergeant-x'; thread_id = $ct3; cwd = (Join-Path $fx.dir 'sergeant-x') } }
+        Write-Text (Join-Path $fx.mb '.relay\agents.json') (ConvertTo-Json -InputObject $agents -Depth 4)
+        Write-Thread $fx $ct3 '2026-11-04T07:00:00Z' $coord3 'Coordinator'
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ((Get-RelayJson $fx 'coordinator.json').session_id -eq $ct2) 'the relay followed a newer thread that is already an agent'
+        Check ((Read-Shared (Join-Path $fx.mb '.relay\relay.log')) -match "is already the agent 'Sergeant X'") 'relay.log does not say that the newer thread is already an agent'
+        Remove-Item -LiteralPath (Join-Path $fx.mb '.relay\agents.json') -Force
+        # A coordinator.json that names a tool the relay does not know: nothing is sent.
+        $cjo = ConvertFrom-Json -InputObject (Read-Shared $cf)
+        $cjo.tool = 'grok'
+        Write-Text $cf (ConvertTo-Json -InputObject $cjo -Depth 6)
+        Write-Text (Join-Path $fx.mb 'tasks\T-C14\assignment.md') $NewAssignment
+        $before = @(Get-CodexResumeCalls $fx).Count
+        $r = Invoke-Relay $fx 'Once' $null
+        Check (Test-SaidText $r.out 'cannot wake') "the relay did not say that it cannot wake a coordinator in that tool: $(Get-Tail $r.out)"
+        Check (@(Get-CodexResumeCalls $fx).Count -eq $before -and @(Get-Calls $fx 'start').Count -eq 0) 'a coordinator in a tool the relay does not know was woken'
+        $cjo.tool = 'codex'
+        Write-Text $cf (ConvertTo-Json -InputObject $cjo -Depth 6)
+        # -Status and -ShowCoordinatorArgs show the Codex coordinator.
+        $r = Invoke-Relay $fx 'Status' $null
+        Check ($r.code -eq 0 -and (Test-SaidText $r.out 'Coordinator: ENROLLED Codex thread') -and (Test-SaidText $r.out 'follows the Codex thread name')) "-Status does not show the Codex coordinator and the name it follows: $(Get-Tail $r.out)"
+        $r = Invoke-Relay $fx 'ShowCoordinatorArgs' $null
+        Check ($r.code -eq 0) "-ShowCoordinatorArgs exit code $($r.code)"
+        $j = $null
+        try { $j = ConvertFrom-Json -InputObject $r.out } catch { $j = $null }
+        Check ($j -and $j.tool -eq 'codex' -and @($j.codexArgs) -contains 'workspace-write' -and $j.network -eq $false -and @($j.writableFolders).Count -eq 2) "-ShowCoordinatorArgs does not show the Codex coordinator's turn: $(Get-Tail $r.out)"
+        Check ($j -and @($j.codexArgs) -notcontains 'model_verbosity=low') '-ShowCoordinatorArgs shows codex_exec_args (the planner''s setting) in the coordinator''s turn'
+        # A mailbox whose path has an &: refused, as each turn names the mailbox's tasks folder on Codex's command line,
+        # which codex.cmd hands to cmd.exe.
+        $amp = New-Fixture 'cc3&x'
+        $r = Invoke-Relay $amp 'Enroll' @{ Tool = 'codex'; ThreadId = $amp.tid }
+        Check ($r.code -ne 0 -and (Test-SaidText $r.out 'cmd.exe treats specially')) "-Enroll -Tool codex accepted a mailbox whose path has an & (exit $($r.code)): $(Get-Tail $r.out 200)"
+        Check (-not (Test-Path -LiteralPath (Join-Path $amp.mb '.relay\coordinator.json'))) 'a refused -Enroll -Tool codex saved coordinator.json'
+        # HQ: a project may not enroll HQ's orchestrator thread as its coordinator, and HQ stops its wakes when a
+        # project's coordinator.json names that thread.
+        $hq = New-HqFixture 'cc2'
+        Initialize-Fixture $hq
+        $r = Invoke-Relay $hq 'EnrollCodex' @{ ThreadId = $hq.tid }
+        if ($r.code -ne 0) { throw "-EnrollCodex in HQ failed (exit $($r.code)): $(Get-Tail $r.out)" }
+        Write-Text (Join-Path $hq.p2.mb 'bin\relay-settings.json') (ConvertTo-Json -InputObject @{ hq_dir = $hq.mb } -Compress)
+        $r = Invoke-Relay $hq.p2 'Enroll' @{ Tool = 'codex'; ThreadId = $hq.tid }
+        Check ($r.code -ne 0 -and (Test-SaidText $r.out "HQ's orchestrator")) "a project enrolled HQ's orchestrator thread as its coordinator (exit $($r.code)): $(Get-Tail $r.out 200)"
+        $notesCoord = Join-Path $hq.dir 'notes-coordinator'
+        New-Item -ItemType Directory -Path $notesCoord -Force | Out-Null
+        $rec = @{ tool = 'codex'; session_id = $hq.tid; cwd = $notesCoord; enrolled = '2026-11-04 05:00:00' }
+        Write-Text (Join-Path $hq.p1.mb '.relay\coordinator.json') (ConvertTo-Json -InputObject $rec -Depth 4)
+        Write-Text (Join-Path $hq.p2.mb 'tasks\T-BASE\questions.md') (Get-Questions @(2))
+        $r = Invoke-Relay $hq 'Once' $null
+        Check ($r.code -eq 0) "HQ -Once exit code $($r.code)"
+        Check (@(Get-CodexCalls $hq 'start').Count -eq 0) "HQ woke the orchestrator although a project's coordinator.json names its thread"
+        $st = Get-RelayState $hq
+        Check ([string]$st.codex_halt -match 'project notes' -and [string]$st.codex_halt -match 'coordinator') "HQ did not stop its orchestrator wakes for the coordinator of project notes (codex_halt '$($st.codex_halt)')"
+        Check ((Read-Shared (Join-Path $hq.mb '.relay\alerts.md')) -match '-Enroll') 'the alert does not say to enroll another coordinator in the project'
+        Check (-not $st.halt) "the shared thread stopped HQ's coordinator direction too"
     }
 } catch {
     $script:Fail++
