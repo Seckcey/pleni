@@ -36,6 +36,14 @@
     the init event) or a new Antigravity conversation (its conversation_id from the init event, saved as soon as agy
     reports it). Pleni can show it, and once a Claude run has ended, the owner can open it with
     claude --resume <session_id> in the worktree.
+  - -ResultFile and -NewWorktree: only bin\bridge-relay.ps1 passes them, for a start request (W<n>-start.md).
+      -ResultFile   a .relay\dispatch\S<time>-<id>.result.json file of this mailbox (any other path is refused). The
+                    launcher writes what happened there: ok (true or false), its own words, and the runner's pid and
+                    start time. A refusal writes its words too.
+      -NewWorktree  first makes the brief's worktree, <worktrees folder>\<TASK-ID>\<repo>, on the new branch
+                    claude/<TASK-ID> from the brief's Base commit, out of <projects_dir>\<repo> (git worktree add, which
+                    runs that repository's own post-checkout hook, if it has one). It never changes a worktree or a
+                    branch that is already there.
   - Test only. bin\bridge-relay-check.ps1 sets these; each one can only make the launcher refuse:
       RELAY_TEST_GEMINI_POLICY_DIR  one more folder for the Gemini system policy check, read like
                                     C:\ProgramData\gemini-cli\policies (which is always read too)
@@ -65,7 +73,10 @@ param(
     [string]$Model = 'claude-opus-5-5[1m]',
     [ValidateSet('low', 'medium', 'high', 'xhigh', 'max')][string]$Effort = 'xhigh',
     [switch]$Status,
-    [switch]$Foreground
+    [switch]$Foreground,
+    # Only bin\bridge-relay.ps1 passes these, for a start request (W<n>-start.md).
+    [string]$ResultFile,     # where to write what happened: .relay\dispatch\S<time>-<id>.result.json of this mailbox
+    [switch]$NewWorktree     # make <worktrees>\<TASK-ID>\<repo> on claude/<TASK-ID> from the brief's Base commit first
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,6 +97,37 @@ $ClaudeDefaultModel = 'claude-opus-5-5[1m]'
 # --admin-policy, and with it the relay's policy for the worker.
 $GeminiSystemPolicies = 'C:\ProgramData\gemini-cli\policies'
 $Notes = New-Object System.Collections.Generic.List[string]   # Codex and Gemini: the launcher's notes for <W>.log
+
+function Write-StartResult([bool]$Ok, [string]$Message, $RunnerPid, [string]$RunnerStart) {
+    # For the relay (-ResultFile): what happened, in the launcher's own words. Never throws.
+    if (-not $ResultPath) { return }
+    try {
+        $o = [ordered]@{ ok = $Ok; message = $Message; runner_pid = $RunnerPid; runner_start = $RunnerStart; task = $TaskId; worker = $Worker; tool = $Tool }
+        [IO.File]::WriteAllText($ResultPath, (ConvertTo-Json -InputObject $o -Depth 3), $Utf8)
+    } catch { }
+}
+
+# -ResultFile: only a .relay\dispatch\S<time>-<4 hex>.result.json file of this mailbox. A refused path gets no file.
+$ResultPath = ''
+if ($ResultFile) {
+    $full = [IO.Path]::GetFullPath($ResultFile)
+    $want = [IO.Path]::GetFullPath((Join-Path $Bridge '.relay\dispatch'))
+    if ((Split-Path -Parent $full) -ne $want -or (Split-Path -Leaf $full) -notmatch '^S\d{8}-\d{6}-[0-9a-f]{4}\.result\.json$') {
+        throw "Refusing: -ResultFile must be a .relay\dispatch\S<time>-<id>.result.json file of this mailbox (got $ResultFile). Nothing was started."
+    }
+    $ResultPath = $full
+}
+
+# Any refusal below ends the script, as before; the relay gets its words (the message only, without PowerShell's
+# position lines). A trap covers the whole script, wherever it stands; break ends the script with the error, as a
+# throw with no trap does. Errors that a try/catch inside the script catches never reach it. When -NewWorktree made
+# the worktree before a later refusal, the words say so: the worktree stays, so the next request needs New worktree: no.
+trap {
+    $trapWords = $_.Exception.Message
+    if ($script:WorktreeNote) { $trapWords += $script:WorktreeNote + ' It stays: to ask again, set New worktree to no.' }
+    Write-StartResult $false $trapWords $null ''
+    break
+}
 
 function Write-RunState([string]$Path, [hashtable]$State) {
     # Another program (Pleni, the relay, a test) may be reading run.json just then, so a failed write is tried again.
@@ -345,6 +387,53 @@ $Worktree = [IO.Path]::GetFullPath($Worktree)
 if (-not $Worktree.StartsWith($WorktreesDir, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing: worktree must be under $WorktreesDir (got $Worktree)"
 }
+
+function New-TaskWorktree {
+    # -NewWorktree: makes only <worktrees>\<TASK-ID>\<repo>, on the new branch claude/<TASK-ID>, from the brief's Base
+    # commit, out of <projects_dir>\<repo>. It never changes a worktree or a branch that is already there.
+    $parts = @($Worktree.Substring($WorktreesDir.Length).Split('\') | Where-Object { $_ })
+    if ($parts.Count -ne 2 -or $parts[0] -ne $TaskId) { throw "Refusing: a new worktree must be $WorktreesDir$TaskId\<repo folder> (got $Worktree). Nothing was started." }
+    $repoName = $parts[1]
+    if ($repoName -notmatch '^[A-Za-z0-9._-]{1,100}$' -or $repoName -match '^\.+$') { throw "Refusing: '$repoName' is not a plain repo folder name. Nothing was started." }
+    if (Test-Path -LiteralPath $Worktree) { throw "Refusing: $Worktree is already there; New worktree: yes only makes a new one. Set it to no. Nothing was started." }
+    if (-not ($rs -and $rs.projects_dir)) { throw "Refusing: a new worktree needs projects_dir in $rsFile (the folder that holds $repoName). Nothing was started." }
+    $repo = Join-Path ([IO.Path]::GetFullPath([string]$rs.projects_dir).TrimEnd('\')) $repoName
+    if (-not (Test-Path -LiteralPath (Join-Path $repo '.git') -PathType Container)) { throw "Refusing: $repo is not a Git repository folder (it has no .git folder). Nothing was started." }
+    $branchLine = Select-String -LiteralPath $Brief -Pattern '^\s*-\s*\*\*Branch:\*\*\s*`?([^\s`]+)' | Select-Object -First 1
+    $baseLine = Select-String -LiteralPath $Brief -Pattern '^\s*-\s*\*\*Base commit:\*\*\s*`?([0-9a-fA-F]{7,40})(?![0-9A-Za-z])' | Select-Object -First 1
+    $branch = "claude/$TaskId"
+    if (-not $branchLine -or $branchLine.Matches[0].Groups[1].Value -ne $branch) { throw "Refusing: for a new worktree the brief's Branch line must be $branch. Nothing was started." }
+    if (-not $baseLine) { throw 'Refusing: for a new worktree the brief needs a Base commit line with the commit (7 to 40 hex characters). Nothing was started.' }
+    $base = $baseLine.Matches[0].Groups[1].Value
+    $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $git) { throw 'Refusing: git.exe was not found, so the new worktree cannot be made. Nothing was started.' }
+    $keep = $ErrorActionPreference
+    $baseOk = $false
+    $branchThere = $false
+    $addExit = 0
+    $addText = ''
+    try {
+        $ErrorActionPreference = 'Continue'   # Windows PowerShell 5.1 turns native stderr into errors under Stop
+        $null = & $git.Path -C $repo cat-file -e "$base^{commit}" 2>&1
+        $baseOk = ($LASTEXITCODE -eq 0)
+        $null = & $git.Path -C $repo show-ref --verify --quiet "refs/heads/$branch" 2>&1
+        $branchThere = ($LASTEXITCODE -eq 0)
+        if ($baseOk -and -not $branchThere) {
+            # Native output goes through [string], so an error record becomes plain text.
+            $addText = ((& $git.Path -C $repo worktree add -b $branch $Worktree $base 2>&1) | ForEach-Object { [string]$_ }) -join ' '
+            $addExit = $LASTEXITCODE
+        }
+    } finally { $ErrorActionPreference = $keep }
+    if (-not $baseOk) { throw "Refusing: the Base commit $base from the brief is not in $repo. Nothing was started." }
+    if ($branchThere) { throw "Refusing: the branch $branch is already in $repo; a new worktree needs a new branch. Nothing was started." }
+    if ($addText.Length -gt 200) { $addText = $addText.Substring(0, 200) }
+    if ($addExit -ne 0) { throw "Refusing: git worktree add failed ($addText). Nothing was started." }
+    $script:WorktreeNote = " Made the worktree $Worktree on $branch from $base."
+}
+
+# -NewWorktree (a start request with New worktree: yes): make the worktree first. The runner never gets it.
+$script:WorktreeNote = ''
+if ($NewWorktree) { New-TaskWorktree }
 if (-not (Test-Path $Worktree)) { throw "Worktree from brief does not exist: $Worktree" }
 
 $RunFile = Join-Path $WorkerDir "$Worker.run.json"
@@ -562,6 +651,12 @@ if (-not $Foreground) {
     if ($Model) { $argList += @('-Model', $Model) }
     if ($Tool -ne 'claude') { $argList += @('-Tool', $Tool) }
     $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden -PassThru
+    # For the relay (-ResultFile): the runner's pid and start time name it until its run.json says more. The runner never
+    # gets -ResultFile or -NewWorktree, so only the launcher writes the result.
+    $ticks = ''
+    try { $ticks = [string]$p.StartTime.ToUniversalTime().Ticks } catch { }
+    Write-StartResult $true ("Launched $Worker ($Type, $ToolName) for $TaskId - runner pid $($p.Id)." + $script:WorktreeNote) $p.Id $ticks
+    if ($script:WorktreeNote) { Write-Output $script:WorktreeNote.Trim() }
     if ($Tool -eq 'claude') {
         Write-Output "Launched $Worker ($Type) for $TaskId - runner pid $($p.Id), model $Model, effort $Effort. Check: -Status"
     } else {

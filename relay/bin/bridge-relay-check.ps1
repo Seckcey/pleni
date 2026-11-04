@@ -131,6 +131,7 @@ function ConvertTo-Token([string]$A) {
 function Get-RelayArgs([hashtable]$Fx, [string]$Mode, [hashtable]$Opt) {
     $o = @{ MailboxRoot = $Fx.mb; ClaudeExe = $StubCli; KeyFile = $KeyPath; ClaudeConfigDir = $Fx.cfg; ProjectsDir = $Base;
         CodexExe = $StubCodex; CodexHome = $Fx.codex; DesktopRoot = (Join-Path $Fx.dir 'desktop');
+        GeminiExe = $StubGemini; GeminiCliHome = (Join-Path $Fx.dir 'gemini-home');
         DebounceSeconds = 0; QuietSeconds = 0; PollSeconds = 1; BackoffSeconds = 60 }
     if ($Opt) { foreach ($k in @($Opt.Keys)) { $o[$k] = $Opt[$k] } }
     # Safety: only synthetic mailboxes under this run's temp folder, only the stub CLIs and the dummy key.
@@ -139,6 +140,8 @@ function Get-RelayArgs([hashtable]$Fx, [string]$Mode, [hashtable]$Opt) {
     if ([string]$o.CodexExe -ne $StubCodex) { throw 'refusing: -CodexExe must be the Codex stub' }
     if (-not ([string]$o.CodexHome).StartsWith($Base + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "refusing: Codex home outside $Base" }
     if (-not ([string]$o.DesktopRoot).StartsWith($Base + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "refusing: desktop app folder outside $Base" }
+    if ([string]$o.GeminiExe -ne $StubGemini) { throw 'refusing: -GeminiExe must be the Gemini stub' }
+    if (-not ([string]$o.GeminiCliHome).StartsWith($Base + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "refusing: Gemini home outside $Base" }
     $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $RelayScript, "-$Mode")
     foreach ($k in @($o.Keys | Sort-Object)) {
         if ($null -eq $o[$k]) { continue }   # an option set to $null is left out

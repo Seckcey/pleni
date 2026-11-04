@@ -8,6 +8,11 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **A relay coordinator shows under its own AI tool.** The mailbox relay is learning to wake a
+  coordinator in Codex or Gemini CLI, not only in Claude Code. Its `.relay\coordinator.json` then
+  names the tool (`tool`: `claude`, `codex` or `gemini`). Pleni reads it and shows the coordinator
+  as that tool's session, under the relay. A file with no tool means Claude Code, as before. A tool
+  Pleni does not know is not shown as the coordinator.
 - **Relay workers in Codex, Gemini CLI or Antigravity CLI.** The mailbox relay's coordinator can
   now start a worker in Codex, Gemini CLI or Antigravity CLI, not only in Claude Code. Each one
   stays off until you add it to `worker_tools` in the mailbox's `bin\relay-settings.json`, and each

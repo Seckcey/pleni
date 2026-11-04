@@ -1058,6 +1058,17 @@ test('the mailbox runs planner -> relay -> coordinator, the planner found by nam
   assert.equal(lines[0].active, 'up');
 });
 
+test('a coordinator in Codex sits under the relay by its codex: key, one line into the relay', () => {
+  const box = mailbox({ relay: { running: true, paused: false, halted: false, coordinatorKey: SGT_A } });
+  const s = snap({ ...army(), mailbox: box, settings: { groupBy: 'none', chain: CHAIN, sources: { mailbox: { enabled: true, planner: 'Sergeant Claude' } } } });
+  assert.equal(node(s, 'relay').parent, SGT_CLAUDE);
+  assert.equal(node(s, SGT_A).parent, 'relay', 'the mailbox wins over the Sergeant chain rule');
+  assert.equal(s.edges.filter((e) => e.to === 'relay').length, 1);
+  const lines = s.edges.filter((e) => e.to === SGT_A);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].kind, 'mailbox');
+});
+
 test('a rule whose boss is missing, or that would make a loop, does no harm', () => {
   const lonely = snap({ ...army(), settings: { groupBy: 'none', chain: [{ match: 'Sergeant', reportsTo: 'Nobody here', role: null }] } });
   assert.equal(node(lonely, SGT_A).parent, 'you');
