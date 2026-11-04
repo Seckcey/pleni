@@ -190,12 +190,14 @@ Live GitHub status is off until you turn it on in **Settings → Sources**. Then
 
 - Pleni runs the GitHub CLI (`gh`) on the computer that runs Pleni. gh signs in to GitHub with
   your own gh login. Pleni never sees your GitHub password or token.
-- It asks only while a page shows the Pull requests view, about once a minute, and only about the
-  GitHub repositories your sessions work in (at most 12). Each time, gh sends GitHub the owner and
-  name of each repository. It gets back the 30 newest pull requests of each one: number, title,
-  branches, state, checks, reviews, and whether it can be merged.
-- Pleni keeps that answer in memory for a minute and shows it on the Pull requests page, to every
-  device that may open Pleni. It writes none of it to a file.
+- It asks only while a page shows the Pull requests or Cloud view, about once a minute, and only
+  about the GitHub repositories your sessions work in and those of your projects (at most 12). Each
+  time, gh sends GitHub the owner and name of each repository. It gets back the 30 newest pull
+  requests of each one: number, title, branches, state, checks, reviews, and whether it can be
+  merged.
+- Pleni keeps that answer in memory for a minute and shows it on the Pull requests page, and the
+  pull requests on `claude/...` branches on the Cloud page, to every device that may open Pleni. It
+  writes none of it to a file. Pleni never reads your Claude login to list Claude cloud sessions.
 - **Merge** is off until you turn it on too. It works only on the computer that runs Pleni, after
   you confirm, and only when every check passes and GitHub says the pull request is ready. Pleni
   then runs `gh pr merge` the way you picked in Settings, and tells GitHub to refuse if anyone

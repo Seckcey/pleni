@@ -45,12 +45,14 @@ Made by 8 West Ventures, LLC.
 | `bin\agent-mail.ps1`                | Agent mail: agents send each other messages by name, and read their own.       |
 | `bin\bridge-relay-check.ps1`        | The relay's test. It uses fake mailboxes and a fake Claude, so it costs nothing. |
 | `bin\relay-settings.example.json`   | An example of the settings file.                                               |
+| `bin\relay-settings.hq.example.json` | An example of the settings file for HQ (see [Run several projects](#run-several-projects-hq)). |
 | `bin\cost-limits.example.json`      | An example of the cost settings file.                                          |
 | `tests\stub-claude.js`              | The fake Claude that the test uses.                                            |
 | `tests\stub-codex.js`               | The fake Codex that the test uses.                                             |
 | `templates\`                        | Blank task files: assignment, status, questions, answers, handoff, review, and a worker's brief and report. |
 | `PROTOCOL.md`                       | The rules everyone follows. In a mailbox it is called `README.md`.             |
 | `COORDINATOR.md`                    | Standing orders for the coordinator. In a mailbox it is called `CLAUDE.md`.     |
+| `ORCHESTRATOR.md`                   | Standing orders for the orchestrator, the planner of several projects. In HQ it is called `AGENTS.md`. |
 
 The scripts expect to live in the mailbox's `bin` folder. The relay treats the folder above `bin`
 as the mailbox.
@@ -88,6 +90,9 @@ has just the examples. The relay reads them when it starts.
 | `owner_name`    | Your name, for the relay's notes: "Any other command needs Ada", and the tag `NEEDS-ADA`. Leave it out and they say "the owner" and `NEEDS-OWNER`. |
 | `codex_exe`     | Only for the Codex wake: the full path of the Codex command. Leave it out to use `codex` from your PATH. |
 | `codex_exec_args` | Only for the Codex wake: extra options for `codex exec`, one per entry, such as `["--sandbox", "workspace-write"]`. Options that turn the sandbox off are refused. |
+| `role`          | Only in HQ: `"hq"`. Then the relay also wakes the orchestrator for the projects in `projects`. Leave it out in every other mailbox. |
+| `projects`      | Only in HQ: the project mailboxes, each one `{ "id": "notes", "name": "Notes", "mailbox": "C:\\Users\\ada\\mailboxes\\notes" }`. The id is 1 to 40 small letters, digits or hyphens, and never `hq`. The mailbox is the full path of a folder that is there, and not HQ itself. The relay skips a bad entry and says why in `-Status` and `relay.log`. |
+| `hq_dir`        | Only in a project mailbox: the HQ folder. `-NewProject` writes it, and `-Status` shows it. Nothing else uses it yet. |
 
 `bin\cost-limits.json` (if there is no such file, the limits are on):
 
@@ -149,6 +154,10 @@ Run these in the mailbox folder.
 | `-UnenrollCodex`      | Turns the Codex wake off again.                                                                |
 | `-EnrollAgent -AgentName <name>` | Wakes that agent's Codex thread when mail waits for it. See [Agent mail](#agent-mail-optional). |
 | `-UnenrollAgent -AgentName <name>` | Stops waking that agent for its mail.                                              |
+| `-NewProject -ProjectId <id> -ProjectName <name>` | Only in HQ: makes a project mailbox in `projects\<id>` (or in `-ProjectFolder <folder>`), and adds it to HQ's list. See [Run several projects](#run-several-projects-hq). |
+| `-UpdateProjects`     | Only in HQ: copies HQ's scripts into each project whose relay does not run.                    |
+| `-StartAll`           | Only in HQ: starts each project's relay in a new window, then HQ's own relay in this window.   |
+| `-StopAll`            | Only in HQ: asks every relay to stop, HQ's too. A turn that runs is never cut off.             |
 
 To pause sending without stopping the relay, create an empty file named `PAUSE` in `.relay`.
 Delete it to go on. Nothing is lost while paused: notes wait in a queue.
@@ -291,6 +300,80 @@ With the mailbox turned on in Pleni, Pleni reads the `mail` folder too. It never
 - Pleni matches a mail name to a tile by the Codex thread the relay wakes for it, else by the
   session's name. Mail for `owner_name`, for `Owner`, or for your name in Pleni's Settings is yours.
 
+## Run several projects (HQ)
+
+One relay runs for each mailbox. With **HQ**, one Codex thread, the **orchestrator**, is the planner
+for several mailboxes at once:
+
+- Each **project mailbox** is a normal mailbox. It has its own relay, coordinator, limits, `PAUSE`
+  file and halts.
+- **HQ** is a mailbox too. Its settings list the projects. Only the HQ relay wakes the orchestrator:
+  once for the new items that wait in HQ or in any project, with up to 10 items in one wake. Each
+  item names its project and that project's mailbox folder.
+- A project's item waits while a coordinator turn runs in that project. The other projects' items
+  still go. There is never more than one orchestrator turn at a time.
+- HQ only reads the projects' files. It writes there only when you run `-NewProject`,
+  `-UpdateProjects` or `-StopAll`.
+
+1. **Turn a mailbox into HQ.** Set up a mailbox as in [Set up a new mailbox](#set-up-a-new-mailbox).
+   Copy `relay\ORCHESTRATOR.md` into it as `AGENTS.md`, so the orchestrator reads its orders. Then
+   add `"role": "hq"` and `"projects": []` to its `bin\relay-settings.json` (see
+   `bin\relay-settings.hq.example.json`). To let the orchestrator write in the projects, also set
+   `"codex_exec_args": ["--sandbox", "workspace-write"]`. The relay then adds each project's folder
+   to the orchestrator's turns (with `--add-dir`).
+2. **Enroll the orchestrator.** Start a Codex thread in the HQ folder and name it `Orchestrator`.
+   Then, in the HQ folder:
+
+   ```powershell
+   .\bin\bridge-relay.ps1 -EnrollCodex -ThreadName 'Orchestrator'
+   ```
+
+3. **Make each project.** In the HQ folder:
+
+   ```powershell
+   .\bin\bridge-relay.ps1 -NewProject -ProjectId notes -ProjectName 'Notes'
+   ```
+
+   This makes the folder `projects\notes` in HQ, or the empty folder you name with
+   `-ProjectFolder`. It copies the relay, the tests, the templates, `README.md` and `CLAUDE.md` from
+   HQ, and makes `tasks`, `CODEX-QUEUE.md` and `STATUS.md`. The project's settings are HQ's, without
+   `role` and `projects`, and with `hq_dir`. Then it adds the project to HQ's `projects` list, and
+   keeps a copy of the old settings as `relay-settings.json.bak-<time>`. It refuses an id that HQ
+   already has, and a folder that is not empty.
+
+   You may also add a mailbox you already have to `projects` by hand. What already waits in a new
+   project counts as known, so adding a project wakes nothing.
+4. **Enroll each project's coordinator** in that project's own folder, as in step 2 of
+   [Start the relay](#start-the-relay). Never enroll the orchestrator's thread in a project (with
+   `-EnrollCodex` or `-EnrollAgent`). If a project wakes the same thread, HQ stops waking the
+   orchestrator and writes an alert that says which command to run in that project.
+5. **Start and stop them all** from the HQ folder:
+
+   ```powershell
+   .\bin\bridge-relay.ps1 -StartAll
+   .\bin\bridge-relay.ps1 -StopAll
+   ```
+
+   `-StartAll` opens a new PowerShell window for each project's relay that does not run yet, then
+   runs HQ's own relay in this window. `-StopAll`, from another window, asks every relay to stop,
+   HQ's too. It never cuts off a turn that runs.
+6. **Update them all.** Update HQ as in [Update the relay in a mailbox](#update-the-relay-in-a-mailbox)
+   (with `-StopAll` in place of `-Stop`). Then, in the HQ folder:
+
+   ```powershell
+   .\bin\bridge-relay.ps1 -UpdateProjects
+   .\bin\bridge-relay.ps1 -StartAll
+   ```
+
+   `-UpdateProjects` copies HQ's scripts (`bin\*.ps1` and `tests\stub-*.js`) into each project, and
+   keeps each file it replaces as `<name>.bak-<time>`. It never copies settings, templates,
+   `README.md` or `CLAUDE.md`. It skips a project whose relay runs, and says so.
+
+In HQ, `-Status` and `-DryRun` list each project: whether its folder was found, how many items wait
+in it, and whether its relay runs. HQ's `.relay\codex-attention.md` has a Project column, where `hq`
+is HQ itself. The HQ relay reads its settings when it starts, so after a change to `projects`, stop
+it and start it again.
+
 ## Roll sessions over
 
 Starting a fresh session now and then keeps each turn small and cheap. If you enrolled by name
@@ -383,7 +466,7 @@ Then tell the coordinator to read `CLAUDE.md` again, or roll it over: a new sess
 powershell -NoProfile -ExecutionPolicy Bypass -File bin\bridge-relay-check.ps1
 ```
 
-It takes 4 to 7 minutes. It builds fake mailboxes in your temp folder, runs the relay and agent
+It takes 5 to 9 minutes. It builds fake mailboxes in your temp folder, runs the relay and agent
 mail against them with a fake Claude and a fake Codex, and removes them at the end. It never touches a real mailbox or a real session,
 and it costs nothing. Each pull request to this repository runs it on Windows too.
 
@@ -398,6 +481,8 @@ The relay:
 - never wakes a session that looks open in another window, and never stops or kills a process;
 - keeps its own notes only in the mailbox's `.relay` folder, with no secrets and no copies of the
   conversation;
+- in HQ, only reads the project mailboxes, except when you run `-NewProject`, `-UpdateProjects` or
+  `-StopAll`;
 - installs nothing: no service, no scheduled task, and no registry entry;
 - gives each coordinator turn a fixed list of commands it may run, and a list it may not. The
   coordinator may not change the relay's own files, and a worker may not push or merge. These

@@ -32,6 +32,12 @@
   Settings: <MailboxRoot>\bin\cost-limits.json and bin\relay-settings.json (projects_dir, owner_name, and for the
     Codex wake codex_exe and codex_exec_args), both optional.
   The mailbox is the folder above bin\, where this script lives, unless -MailboxRoot names another one.
+  HQ (off unless bin\relay-settings.json has "role": "hq"): HQ is a mailbox whose settings also list project mailboxes
+    ("projects": [{ id, name, mailbox }]). Each project keeps its own relay, coordinator, caps, PAUSE and halts. The HQ
+    relay alone wakes the ONE orchestrator (HQ's enrolled Codex thread) for new items in HQ and in every project, up to
+    10 in one wake. A project's item waits while that project's coordinator turn runs (its .relay\state.json, read
+    only). HQ stops its Codex wakes when a project's .relay\codex.json or agents.json names the orchestrator's thread.
+    Owner commands, HQ only: -NewProject, -UpdateProjects, -StartAll, -StopAll.
   No installation: no scheduled task, service, registry entry or permanent background process.
   Windows PowerShell 5.1 compatible. ASCII only.
 
@@ -54,6 +60,10 @@
   .\bridge-relay.ps1 -Once
   .\bridge-relay.ps1 -Start        (foreground; stop with -Stop from another window, or Ctrl+C)
   .\bridge-relay.ps1 -Stop
+  .\bridge-relay.ps1 -NewProject -ProjectId notes -ProjectName 'Notes'   (HQ only: make projects\notes and list it)
+  .\bridge-relay.ps1 -UpdateProjects   (HQ only: copy HQ's scripts into each project whose relay does not run)
+  .\bridge-relay.ps1 -StartAll         (HQ only: a new window for each project's relay, then HQ's own loop here)
+  .\bridge-relay.ps1 -StopAll          (HQ only: ask every relay to stop, HQ's too)
 #>
 [CmdletBinding()]
 param(
@@ -69,6 +79,13 @@ param(
     [switch]$UnenrollCodex,
     [switch]$EnrollAgent,
     [switch]$UnenrollAgent,
+    [switch]$NewProject,    # HQ only: make a project mailbox and add it to HQ's projects list
+    [switch]$UpdateProjects, # HQ only: copy HQ's scripts into each project
+    [switch]$StartAll,      # HQ only: start each project's relay in a new window, then HQ's own loop
+    [switch]$StopAll,       # HQ only: ask every relay to stop, HQ's too
+    [string]$ProjectId,     # -NewProject: 1-40 small letters, digits or hyphens
+    [string]$ProjectName,   # -NewProject: the project's name
+    [string]$ProjectFolder, # -NewProject: the new mailbox folder (default <HQ>\projects\<id>)
     [string]$AgentName,     # -EnrollAgent, -UnenrollAgent: the agent's name, the same as its Codex thread's name
     [string]$SessionId,
     [string]$ThreadId,      # -EnrollCodex: the Codex thread to wake
@@ -125,6 +142,10 @@ if ($EnrollCodex) { $modes += 'EnrollCodex' }
 if ($UnenrollCodex) { $modes += 'UnenrollCodex' }
 if ($EnrollAgent) { $modes += 'EnrollAgent' }
 if ($UnenrollAgent) { $modes += 'UnenrollAgent' }
+if ($NewProject) { $modes += 'NewProject' }
+if ($UpdateProjects) { $modes += 'UpdateProjects' }
+if ($StartAll) { $modes += 'StartAll' }
+if ($StopAll) { $modes += 'StopAll' }
 if ($modes.Count -gt 1) { Fail ('Pick one mode, got: ' + ($modes -join ', ')) 64 }
 if ($modes.Count -eq 0) { $modes = @('Status') }
 $Mode = $modes[0]
@@ -135,6 +156,10 @@ if ($SessionId -and $SessionName) { Fail 'Give -SessionId or -SessionName, not b
 if ($ThreadId -and $ThreadName) { Fail 'Give -ThreadId or -ThreadName, not both.' 64 }
 if ($AgentName -and @('EnrollAgent', 'UnenrollAgent') -notcontains $Mode) { Fail '-AgentName is accepted only with -EnrollAgent or -UnenrollAgent.' 64 }
 if (@('EnrollAgent', 'UnenrollAgent') -contains $Mode -and -not $AgentName) { Fail "-$Mode needs -AgentName <the agent's name>." 64 }
+if (($ProjectId -or $ProjectName -or $ProjectFolder) -and $Mode -ne 'NewProject') { Fail '-ProjectId, -ProjectName and -ProjectFolder are accepted only with -NewProject.' 64 }
+if ($Mode -eq 'NewProject' -and (-not $ProjectId -or -not $ProjectName)) {
+    Fail '-NewProject needs -ProjectId <id> and -ProjectName <name>, and -ProjectFolder <folder> for a folder other than projects\<id> in HQ.' 64
+}
 
 # The mailbox is the folder above bin\ unless -MailboxRoot names another one.
 if (-not $MailboxRoot) {
@@ -167,6 +192,9 @@ if (Test-Path -LiteralPath $clFile -PathType Leaf) {
 $OwnerName = 'the owner'
 $OwnerTag = 'NEEDS-OWNER'
 $CodexArgsRaw = @()   # codex_exec_args: extra codex exec options for the Codex wake (checked below)
+$HqRole = $false      # "role": "hq": this mailbox is HQ, and "projects" lists its project mailboxes (checked below)
+$HqProjectsRaw = @()
+$HqDirSetting = ''    # "hq_dir" in a project mailbox: its HQ folder (-NewProject writes it; -Status shows it)
 $rsFile = Join-Path ([IO.Path]::GetFullPath($MailboxRoot).TrimEnd('\')) 'bin\relay-settings.json'
 if (Test-Path -LiteralPath $rsFile -PathType Leaf) {
     try {
@@ -179,6 +207,9 @@ if (Test-Path -LiteralPath $rsFile -PathType Leaf) {
         } elseif ($on) { Write-Host "WARNING: owner_name in $rsFile must be 1-40 letters, spaces, dots, apostrophes or hyphens; using 'the owner'" }
         if (-not $CodexExe -and $rs.codex_exe) { $CodexExe = [string]$rs.codex_exe }
         if ($null -ne $rs.codex_exec_args) { $CodexArgsRaw = @($rs.codex_exec_args) }
+        if (([string]$rs.role).Trim() -eq 'hq') { $HqRole = $true }
+        if ($null -ne $rs.projects) { $HqProjectsRaw = @($rs.projects) }
+        if ($rs.hq_dir) { $HqDirSetting = ([string]$rs.hq_dir).Trim() }
     } catch { Write-Host "WARNING: could not read $rsFile; using the defaults" }
 }
 if ($ProjectsDir) { $ProjectsDir = [IO.Path]::GetFullPath($ProjectsDir).TrimEnd('\') }
@@ -277,6 +308,77 @@ $AttnFile    = Join-Path $RelayDir 'codex-attention.md'
 $DispatchDir = Join-Path $RelayDir 'dispatch'
 $AgentsFile  = Join-Path $RelayDir 'agents.json'
 $MailDir     = Join-Path $Root 'mail'
+
+# ---------- HQ projects (role hq only) ----------
+function Get-ProjectFolderError([string]$Path, [bool]$MustExist) {
+    # A project mailbox folder: a full path with no quotes, control characters or characters that Windows or cmd.exe
+    # treat specially; not HQ itself, not a folder that holds HQ, and not inside HQ's own folders. '' when it is fine.
+    $p = [string]$Path
+    if (-not $p) { return 'it is empty' }
+    if ($p -match '[\x00-\x1f"%!^&|<>`*?]') { return 'it holds a quote, a control character, or a character that Windows or cmd.exe treats specially' }
+    if ($p -notmatch '^([A-Za-z]:\\|\\\\[^\\]+\\[^\\]+)') { return 'it is not a full path (like C:\Users\ada\mailboxes\notes)' }
+    $full = ''
+    try { $full = [IO.Path]::GetFullPath($p).TrimEnd('\') } catch { return 'Windows cannot use it as a folder path' }
+    $f = $full.ToLowerInvariant() + '\'
+    $h = $Root.ToLowerInvariant() + '\'
+    if ($f -eq $h) { return 'it is HQ itself' }
+    if ($h.StartsWith($f, [StringComparison]::Ordinal)) { return 'it holds HQ' }
+    foreach ($sub in @('tasks', 'mail', 'bin', 'tests', 'templates', '.relay')) {
+        if ($f.StartsWith($h + $sub + '\', [StringComparison]::Ordinal)) { return "it is inside HQ's $sub folder" }
+    }
+    if ($MustExist -and -not (Test-Path -LiteralPath $full -PathType Container)) { return 'the folder was not found' }
+    return ''
+}
+
+function Get-HqProjectList {
+    # The entries of "projects" that HQ uses, and a plain reason for each one it skips.
+    $list = New-Object System.Collections.ArrayList
+    $bad = New-Object System.Collections.Generic.List[string]
+    $byId = @{}
+    $dirs = @{}
+    $i = 0
+    foreach ($pe in @($HqProjectsRaw)) {
+        $i++
+        if (-not ($pe -is [System.Management.Automation.PSCustomObject])) { $bad.Add("projects entry $i is skipped: it is not an object with id, name and mailbox"); continue }
+        $projId = ([string]$pe.id).Trim()
+        $label = "projects entry $i"
+        if ($projId) { $label = "projects entry $i ($projId)" }
+        $dir = ([string]$pe.mailbox).Trim()
+        $why = ''
+        if ($projId -cnotmatch '^[a-z0-9][a-z0-9-]{0,39}$') { $why = 'its id must be 1-40 small letters, digits or hyphens, starting with a letter or a digit' }
+        elseif ($projId -eq 'hq') { $why = 'its id may not be hq, the name HQ keeps for itself' }
+        elseif ($byId.ContainsKey($projId)) { $why = 'another entry has the same id' }
+        else {
+            $de = Get-ProjectFolderError $dir $true
+            if ($de) { $why = "its mailbox '$dir' cannot be used: $de" }
+        }
+        $full = ''
+        if (-not $why) {
+            $full = [IO.Path]::GetFullPath($dir).TrimEnd('\')
+            if ($dirs.ContainsKey($full.ToLowerInvariant())) { $why = "another entry has the same mailbox $full" }
+        }
+        if ($why) { $bad.Add("$label is skipped: $why"); continue }
+        $nm = (([string]$pe.name) -replace '[\x00-\x1f]', ' ').Trim()
+        if (-not $nm) { $nm = $projId }
+        if ($nm.Length -gt 80) { $nm = $nm.Substring(0, 80) }
+        $p = @{ id = $projId; name = $nm; mailbox = $full }
+        [void]$list.Add($p)
+        $byId[$projId] = $p
+        $dirs[$full.ToLowerInvariant()] = $true
+    }
+    return @{ list = $list; problems = $bad; byId = $byId }
+}
+
+$script:HqProjects = New-Object System.Collections.ArrayList   # @{ id; name; mailbox } for each project HQ uses
+$script:HqProblems = New-Object System.Collections.Generic.List[string]
+$script:HqById = @{}
+$script:StartHq = $false
+if ($HqRole) {
+    $hqList = Get-HqProjectList
+    $script:HqProjects = $hqList.list
+    $script:HqProblems = $hqList.problems
+    $script:HqById = $hqList.byId
+}
 
 $script:CanWrite     = $false   # true only while this process holds relay.lock (the single writer)
 $script:LockStream   = $null
@@ -412,15 +514,17 @@ function Exit-WriterLock {
     $script:CanWrite = $false
 }
 
-function Get-LockInfo {
+function Get-LockInfo([string]$Path) {
+    # This mailbox's relay.lock, or (HQ) the one at $Path in a project's .relay. It only looks; it writes nothing.
+    if (-not $Path) { $Path = $LockFile }
     $r = @{ held = $false; info = @{} }
-    if (-not (Test-Path -LiteralPath $LockFile)) { return $r }
+    if (-not (Test-Path -LiteralPath $Path)) { return $r }
     try {
-        $t = [IO.File]::Open($LockFile, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+        $t = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
         $t.Dispose()
     } catch { $r.held = $true }
     try {
-        $txt = Read-SharedText $LockFile
+        $txt = Read-SharedText $Path
         if ($txt.Trim()) { $r.info = ConvertTo-HT (ConvertFrom-Json -InputObject $txt) }
     } catch { }
     return $r
@@ -570,9 +674,11 @@ function Update-Workers([hashtable]$State, [bool]$Baseline) {
 }
 
 # ---------- return direction: what needs Codex (listed, never sent) ----------
-function Get-AttentionItems {
+function Get-AttentionItems([string]$Dir) {
+    # What waits for the planner in the mailbox $Dir (default: this one). HQ also reads its projects with it.
+    if (-not $Dir) { $Dir = $Root }
     $list = @{}
-    $td = Join-Path $Root 'tasks'
+    $td = Join-Path $Dir 'tasks'
     if (-not (Test-Path -LiteralPath $td -PathType Container)) { return $list }
     foreach ($d in @(Get-ChildItem -LiteralPath $td -Directory -ErrorAction SilentlyContinue)) {
         $task = $d.Name
@@ -631,19 +737,34 @@ function Write-AttentionFile([hashtable]$State) {
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine('Generated: ' + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv))
     [void]$sb.AppendLine('')
-    [void]$sb.AppendLine('| Item | Task | What | First seen by relay |')
-    [void]$sb.AppendLine('|---|---|---|---|')
     $keys = @($State.attention.Keys | Sort-Object)
-    foreach ($k in $keys) {
-        $a = $State.attention[$k]
-        [void]$sb.AppendLine(('| {0} | {1} | {2} | {3} |' -f $k, $a.task, $a.what, (Format-Unix $a.first_seen_utc)))
+    if ($HqRole) {
+        [void]$sb.AppendLine("HQ: this list holds the items of HQ itself (project hq) and of its $($script:HqProjects.Count) project(s) in bin\relay-settings.json.")
+        [void]$sb.AppendLine('')
+        [void]$sb.AppendLine('| Item | Project | Task | What | First seen by relay |')
+        [void]$sb.AppendLine('|---|---|---|---|---|')
+        foreach ($k in $keys) {
+            $a = $State.attention[$k]
+            $proj = [string]$a.project
+            if (-not $proj) { $proj = 'hq' }
+            [void]$sb.AppendLine(('| {0} | {1} | {2} | {3} | {4} |' -f $k, $proj, $a.task, $a.what, (Format-Unix $a.first_seen_utc)))
+        }
+        if ($keys.Count -eq 0) { [void]$sb.AppendLine('| (none) | | | | |') }
+    } else {
+        [void]$sb.AppendLine('| Item | Task | What | First seen by relay |')
+        [void]$sb.AppendLine('|---|---|---|---|')
+        foreach ($k in $keys) {
+            $a = $State.attention[$k]
+            [void]$sb.AppendLine(('| {0} | {1} | {2} | {3} |' -f $k, $a.task, $a.what, (Format-Unix $a.first_seen_utc)))
+        }
+        if ($keys.Count -eq 0) { [void]$sb.AppendLine('| (none) | | | |') }
     }
-    if ($keys.Count -eq 0) { [void]$sb.AppendLine('| (none) | | | |') }
     [IO.File]::WriteAllText($AttnFile, $sb.ToString(), $Utf8)
 }
 
 function Update-Attention([hashtable]$State, [bool]$Baseline) {
     # With CodexWake on, each NEW item (not one already listed, and never at the baseline) is queued to wake Codex once.
+    if ($HqRole) { Update-HqAttention $State $Baseline; return }
     $cur = Get-AttentionItems
     $codexOn = [bool](Get-CodexConfig)
     $changed = $false
@@ -822,7 +943,7 @@ function Get-CoordinatorDeny {
     # The coordinator may not edit relay code, harness, tests or relay state (its own allow-list lives in .relay),
     # may not write scripts into the mailbox (task folders hold Markdown only) and may not pass git configuration options.
     $a = ConvertTo-RulePath $Root
-    return @('WebFetch', 'WebSearch',
+    $deny = @('WebFetch', 'WebSearch',
         "Edit($a/bin/**)", "Write($a/bin/**)", "Edit($a/.relay/**)", "Write($a/.relay/**)", "Edit($a/tests/**)", "Write($a/tests/**)",
         "Edit($a/**/*.js)", "Write($a/**/*.js)", "Edit($a/**/*.mjs)", "Write($a/**/*.mjs)", "Edit($a/**/*.cjs)", "Write($a/**/*.cjs)",
         'Bash(git -c *)', 'Bash(git * -c *)', 'Bash(git * --config-env*)', 'Bash(git * --exec-path*)',
@@ -843,6 +964,13 @@ function Get-CoordinatorDeny {
         'Bash(git -C * switch*)', 'Bash(git -C * commit*)', 'Bash(git -C * tag*)', 'Bash(git -C * stash*)', 'Bash(git -C * config*)',
         'Bash(git -C * fetch*)', 'Bash(git -C * pull*)', 'Bash(git -C * worktree remove*)', 'Bash(git -C * branch -d*)', 'Bash(git -C * branch -D*)',
         'Bash(claude*)', 'Bash(codex*)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(rm *)')
+    # HQ: a project mailbox inside HQ (such as projects\<id>) falls under the Edit rule above, so its relay files are
+    # denied the same way.
+    foreach ($p in @($script:HqProjects)) {
+        $b = ConvertTo-RulePath ([string]$p.mailbox)
+        $deny += @("Edit($b/bin/**)", "Write($b/bin/**)", "Edit($b/.relay/**)", "Write($b/.relay/**)", "Edit($b/tests/**)", "Write($b/tests/**)")
+    }
+    return $deny
 }
 
 function New-Prompt([string]$Id, [object[]]$Batch) {
@@ -1306,6 +1434,7 @@ function ConvertTo-SafeText([string]$Text) {
 }
 
 function New-CodexPrompt([string]$Id, [object[]]$Batch) {
+    if ($HqRole) { return (New-HqCodexPrompt $Id $Batch) }
     $parts = New-Object System.Collections.Generic.List[string]
     $i = 0
     foreach ($n in $Batch) { $i++; $parts.Add(('{0}) {1}: {2}' -f $i, $n.task, $n.what)) }
@@ -1322,6 +1451,7 @@ function Get-CodexArguments([hashtable]$Cx, [string]$Prompt) {
     $a = New-Object System.Collections.Generic.List[string]
     foreach ($x in @('exec', '--json', '--skip-git-repo-check')) { $a.Add($x) }
     foreach ($x in $CodexArgs) { $a.Add([string]$x) }
+    foreach ($d in @(Get-HqAddDirs $Cx)) { $a.Add('--add-dir'); $a.Add([string]$d) }   # HQ only: each project mailbox
     foreach ($x in @('resume', [string]$Cx.thread_id, $Prompt)) { $a.Add([string]$x) }
     return , $a
 }
@@ -1403,8 +1533,10 @@ function Test-CodexMarker([hashtable]$D) {
 }
 
 function Add-CodexWakeNote([hashtable]$State, [string]$Key, [hashtable]$Item) {
-    $State.codex_notes[$Key] = @{ id = $Key; key = $Key; task = [string]$Item.task; what = [string]$Item.what; state = 'pending'; detected_utc = (Get-Now);
+    $n = @{ id = $Key; key = $Key; task = [string]$Item.task; what = [string]$Item.what; state = 'pending'; detected_utc = (Get-Now);
         dispatch_id = ''; attempts = 0; outcome = ''; accepted_utc = 0; completed_utc = 0 }
+    if ($Item.project) { $n.project = [string]$Item.project; $n.mailbox = [string]$Item.mailbox }   # HQ only
+    $State.codex_notes[$Key] = $n
 }
 
 function Set-CodexItemsDone([hashtable]$State, [hashtable]$D, [string]$Outcome) {
@@ -1472,8 +1604,10 @@ function Get-CodexBlockReason([hashtable]$State, [hashtable]$Cx, [object[]]$Pend
     $now = Get-Now
     if (Test-Path -LiteralPath $PauseFile) { return @{ code = 'paused'; text = "PAUSED ($PauseFile exists); pending items are kept" } }
     if ($State.codex_halt) { return @{ code = 'halted'; text = "Codex wakes STOPPED: $($State.codex_halt). Pending items are kept; check .relay\alerts.md, then run -ClearHalt" } }
-    foreach ($d in @($State.dispatches.Values)) {
-        if ($d.state -eq 'running' -or $d.state -eq 'launching') { return @{ code = 'coordinator-turn'; text = "a coordinator turn is still running ($($d.id)); the planner is woken after it ends, so it reads finished work" } }
+    if (-not $HqRole) {   # HQ holds back only the items of the mailbox whose coordinator turn runs (Split-HqPending)
+        foreach ($d in @($State.dispatches.Values)) {
+            if ($d.state -eq 'running' -or $d.state -eq 'launching') { return @{ code = 'coordinator-turn'; text = "a coordinator turn is still running ($($d.id)); the planner is woken after it ends, so it reads finished work" } }
+        }
     }
     $newest = [int64](@($Pending | ForEach-Object { [int64]$_.detected_utc }) | Measure-Object -Maximum).Maximum
     if ($DebounceSeconds -gt 0 -and ($now - $newest) -lt $DebounceSeconds) { return @{ code = 'settling'; text = "settling: an item for Codex appeared less than $DebounceSeconds s ago (debounce)" } }
@@ -1674,11 +1808,42 @@ function Update-CodexDispatches([hashtable]$State) {
 function Invoke-CodexTick([hashtable]$State, [bool]$ReadOnly) {
     $cx = Get-CodexConfig
     if (-not $cx) { return }
+    if ($HqRole) {
+        # One owner for the orchestrator's thread: HQ stops its wakes when a project's relay wakes that thread too.
+        $own = Get-HqOwnerProblem ([string]$cx.thread_id)
+        if ($own -and $own.hold) {
+            $text = "the orchestrator is not woken this round: $($own.hold)"
+            if ($ReadOnly) { Write-Note "DRY-RUN: $text" }
+            elseif ($State.flags['last_codex_block'] -ne 'owner-unread') { $State.flags['last_codex_block'] = 'owner-unread'; Write-Log $text }
+            else { Write-Note $text }
+            return
+        }
+        if ($own -and $own.halt -and -not $State.codex_halt) {
+            if ($ReadOnly) { Write-Note "DRY-RUN: would stop the orchestrator's wakes now: $($own.halt)"; return }
+            Set-CodexHalt $State $own.reason "Codex wakes stopped: $($own.halt)"
+        }
+    }
     $pending = @($State.codex_notes.Values | Where-Object { $_.state -eq 'pending' } | Sort-Object { [int64]$_.detected_utc })
     if ($pending.Count -eq 0) {
         [void]$State.flags.Remove('last_codex_block')
         if ($ReadOnly) { Write-Note 'DRY-RUN: nothing to wake Codex for.' }
         return
+    }
+    if ($HqRole) {
+        # An item waits while a coordinator turn runs in its own mailbox; the other projects' items still go.
+        $split = Split-HqPending $State $pending
+        foreach ($proj in @($split.held.Keys | Sort-Object)) {
+            $text = "$($split.count[$proj]) item(s) of project $proj wait for the orchestrator: $($split.held[$proj])"
+            $flag = 'last_hq_hold_' + $proj
+            if ($ReadOnly) { Write-Note "DRY-RUN: $text" }
+            elseif ($State.flags[$flag] -ne $split.held[$proj]) { $State.flags[$flag] = $split.held[$proj]; Write-Log $text }
+            else { Write-Note $text }
+        }
+        foreach ($f in @($State.flags.Keys | Where-Object { $_ -like 'last_hq_hold_*' })) {
+            if (-not $split.held.ContainsKey($f.Substring(13))) { [void]$State.flags.Remove($f) }
+        }
+        $pending = @($split.ready)
+        if ($pending.Count -eq 0) { return }
     }
     $why = Get-CodexBlockReason $State $cx $pending
     if ($why) {
@@ -1696,6 +1861,449 @@ function Invoke-CodexTick([hashtable]$State, [bool]$ReadOnly) {
         return
     }
     Start-CodexDispatch $State $cx $pending
+}
+
+# ---------- HQ (off unless bin\relay-settings.json has "role": "hq") ----------
+# HQ is a mailbox whose settings also list project mailboxes. Each project keeps its own relay, coordinator, caps,
+# PAUSE and halts. Only the HQ relay wakes the orchestrator: HQ's enrolled Codex thread, the planner of every project.
+# HQ only reads the projects (their task files, and their relays' state.json, codex.json, agents.json and relay.lock);
+# it writes there only for the owner commands -NewProject, -UpdateProjects and -StopAll.
+function Get-HqAttentionItems([hashtable]$Missing) {
+    # HQ's own items (with their old keys) and each project's, keyed <project id>:<old key>. A project whose folder is
+    # not found now is left out, and named in $Missing.
+    $all = @{}
+    $own = Get-AttentionItems $Root
+    foreach ($k in @($own.Keys)) {
+        $it = $own[$k]
+        $it.project = 'hq'
+        $it.mailbox = $Root
+        $all[$k] = $it
+    }
+    foreach ($p in $script:HqProjects) {
+        if (-not (Test-Path -LiteralPath $p.mailbox -PathType Container)) {
+            if ($null -ne $Missing) { $Missing[$p.id] = $true }
+            continue
+        }
+        $items = Get-AttentionItems $p.mailbox
+        foreach ($k in @($items.Keys)) {
+            $it = $items[$k]
+            $it.project = $p.id
+            $it.mailbox = $p.mailbox
+            $all[$p.id + ':' + $k] = $it
+        }
+    }
+    return $all
+}
+
+function Update-HqAttention([hashtable]$State, [bool]$Baseline) {
+    # Update-Attention for HQ and every project. A project this relay has not looked at before (or one that moved to
+    # another folder) is new: what already waits in it counts as known, the way -EnrollCodex counts what waits, so
+    # adding a project wakes nothing. A project whose folder is not found right now keeps its items as they were.
+    if (-not ($State.hq_projects -is [hashtable])) { $State.hq_projects = @{} }
+    $missing = @{}
+    $cur = Get-HqAttentionItems $missing
+    $codexOn = [bool](Get-CodexConfig)
+    $changed = $false
+    $fresh = @{}
+    foreach ($p in $script:HqProjects) {
+        if ($missing.ContainsKey($p.id)) { continue }
+        $seen = $State.hq_projects[$p.id]
+        if (($seen -is [hashtable]) -and [string]$seen.mailbox -eq $p.mailbox) { continue }
+        $fresh[$p.id] = $true
+        $State.hq_projects[$p.id] = @{ mailbox = $p.mailbox; added_utc = (Get-Now) }
+        $n = @($cur.Keys | Where-Object { $cur[$_].project -eq $p.id }).Count
+        Write-Log "HQ: project $($p.id) ($($p.mailbox)) is new to this relay. The $n item(s) that wait in it now count as known, so adding it wakes nothing."
+        $changed = $true
+    }
+    foreach ($id in @($State.hq_projects.Keys)) {
+        if (-not $script:HqById.ContainsKey($id)) { [void]$State.hq_projects.Remove($id) }   # no longer in the list
+    }
+    foreach ($k in @($cur.Keys)) {
+        if ($State.attention.ContainsKey($k)) { continue }
+        $it = $cur[$k]
+        $State.attention[$k] = @{ task = $it.task; what = $it.what; project = $it.project; mailbox = $it.mailbox; first_seen_utc = (Get-Now) }
+        $how = '(listed in .relay\codex-attention.md; CodexWake=NOT_CONFIGURED, not delivered)'
+        if ($fresh.ContainsKey([string]$it.project)) { $how = '(already waiting when HQ added the project; listed, not sent)' }
+        elseif ($codexOn -and $Baseline) { $how = '(already waiting at the first run; listed, not sent)' }
+        elseif ($codexOn) { Add-CodexWakeNote $State $k $it; $how = '(queued to wake the orchestrator)' }
+        Write-Log "Return direction: NEW for Codex - $($it.project) $($it.task): $($it.what) $how"
+        $changed = $true
+    }
+    foreach ($k in @($State.attention.Keys)) {
+        if ($cur.ContainsKey($k)) { continue }
+        $proj = [string]$State.attention[$k].project
+        if ($proj -and $missing.ContainsKey($proj)) { continue }   # its folder is not found right now: kept as it was
+        [void]$State.attention.Remove($k)
+        $cn = $State.codex_notes[$k]
+        if ($cn -and $cn.state -eq 'pending') { [void]$State.codex_notes.Remove($k) }   # resolved before it was sent
+        Write-Log "Return direction: no longer pending for Codex - $k"
+        $changed = $true
+    }
+    if ($changed -or -not (Test-Path -LiteralPath $AttnFile)) { Write-AttentionFile $State }
+}
+
+function Get-ProjectTurnReason([hashtable]$P) {
+    # Read-only: the coordinator turn that runs in this project's mailbox now, from its relay's .relay\state.json.
+    # '' when none runs. A state.json that cannot be read counts as a running turn.
+    $f = Join-Path ([string]$P.mailbox) '.relay\state.json'
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return '' }
+    $s = $null
+    try { $s = Read-Json $f } catch { $s = $null }
+    if (-not ($s -is [hashtable])) { return "its relay's .relay\state.json could not be read, so its items wait" }
+    $ds = $s['dispatches']
+    if (-not ($ds -is [hashtable])) { return '' }
+    foreach ($d in @($ds.Values)) {
+        if (-not ($d -is [hashtable]) -or -not $d.id) { continue }
+        if ($d.state -eq 'launching') { return "a coordinator turn is starting there ($($d.id))" }
+        if ($d.state -eq 'running' -and (Test-DispatchAlive $d)) { return "a coordinator turn runs there ($($d.id), pid $($d.pid))" }
+    }
+    return ''
+}
+
+function Get-HqItemWaitReason([hashtable]$State, [string]$Project) {
+    # Why the items of one project (or of HQ itself, 'hq') wait this round; '' when they may go.
+    if ($Project -eq 'hq') {
+        foreach ($d in @($State.dispatches.Values)) {
+            if ($d.state -eq 'running' -or $d.state -eq 'launching') { return "a coordinator turn of HQ is still running ($($d.id)); the orchestrator is woken after it ends, so it reads finished work" }
+        }
+        return ''
+    }
+    $p = $script:HqById[$Project]
+    if (-not $p) { return 'the project is not in the projects list any more' }
+    if (-not (Test-Path -LiteralPath $p.mailbox -PathType Container)) { return "its mailbox folder $($p.mailbox) was not found" }
+    $t = Get-ProjectTurnReason $p
+    if ($t) { return "$t; the orchestrator is woken for them after it ends" }
+    return ''
+}
+
+function Split-HqPending([hashtable]$State, [object[]]$Pending) {
+    # HQ: an item waits while a coordinator turn runs in its own mailbox; the other projects' items still go.
+    # Returns @{ ready = the items that may go; held = @{ project = why }; count = @{ project = items held } }.
+    $ready = New-Object System.Collections.ArrayList
+    $held = @{}
+    $count = @{}
+    $why = @{}
+    foreach ($n in $Pending) {
+        $proj = [string]$n.project
+        if (-not $proj) { $proj = 'hq' }
+        if (-not $why.ContainsKey($proj)) { $why[$proj] = Get-HqItemWaitReason $State $proj }
+        if ($why[$proj]) {
+            $held[$proj] = $why[$proj]
+            $count[$proj] = [int]$count[$proj] + 1
+        } else { [void]$ready.Add($n) }
+    }
+    return @{ ready = $ready.ToArray(); held = $held; count = $count }
+}
+
+function Get-HqOwnerProblem([string]$ThreadId) {
+    # Read-only: a project whose own relay also wakes the orchestrator's thread, as its planner (.relay\codex.json) or
+    # for an agent's mail (.relay\agents.json). Two relays must never wake one thread.
+    # Returns @{ halt; reason } for such a project, @{ hold } when a file could not be read, else $null.
+    $tid = ([string]$ThreadId).ToLowerInvariant()
+    if (-not $tid) { return $null }
+    foreach ($p in $script:HqProjects) {
+        $rd = Join-Path $p.mailbox '.relay'
+        $cf = Join-Path $rd 'codex.json'
+        if (Test-Path -LiteralPath $cf -PathType Leaf) {
+            $c = $null
+            try { $c = Read-Json $cf } catch { return @{ hold = "the .relay\codex.json of project $($p.id) could not be read" } }
+            if (($c -is [hashtable]) -and ([string]$c.thread_id).ToLowerInvariant() -eq $tid) {
+                return @{ reason = "project $($p.id) also wakes the orchestrator's Codex thread $tid (its planner wake)";
+                    halt = ("project $($p.id) also wakes the orchestrator's Codex thread $tid, as its own planner. Two relays must never wake the same thread. " +
+                        "To fix it, run .\bin\bridge-relay.ps1 -UnenrollCodex in that project's folder ($($p.mailbox)).") }
+            }
+        }
+        $af = Join-Path $rd 'agents.json'
+        if (Test-Path -LiteralPath $af -PathType Leaf) {
+            $ag = $null
+            try { $ag = Read-Json $af } catch { return @{ hold = "the .relay\agents.json of project $($p.id) could not be read" } }
+            if (-not ($ag -is [hashtable])) { continue }
+            foreach ($k in @($ag.Keys)) {
+                $one = $ag[$k]
+                if (-not ($one -is [hashtable]) -or ([string]$one.thread_id).ToLowerInvariant() -ne $tid) { continue }
+                $nm = [string]$one.name
+                if (-not $nm) { $nm = [string]$k }
+                return @{ reason = "project $($p.id) also wakes the orchestrator's Codex thread $tid (for the mail of its agent '$nm')";
+                    halt = ("project $($p.id) also wakes the orchestrator's Codex thread $tid, for the mail of its agent '$nm'. Two relays must never wake the same thread. " +
+                        "To fix it, run .\bin\bridge-relay.ps1 -UnenrollAgent -AgentName '$nm' in that project's folder ($($p.mailbox)).") }
+            }
+        }
+    }
+    return $null
+}
+
+function Get-HqAddDirs([hashtable]$Target) {
+    # HQ only: when codex_exec_args asks for workspace-write, the orchestrator's turn may also write in each project
+    # mailbox (--add-dir). Each folder is checked again first, the way codex_exec_args entries are: a full path to a
+    # folder that is there, with no quotes or control characters. Agents' mail wakes get none.
+    if (-not $HqRole -or -not $Target) { return @() }
+    $ww = $false
+    foreach ($x in $CodexArgs) { if ([string]$x -match '(^|=)workspace-write$') { $ww = $true } }
+    if (-not $ww) { return @() }
+    $cx = Get-CodexConfig
+    if (-not $cx -or [string]$cx.thread_id -ne [string]$Target.thread_id) { return @() }
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($p in $script:HqProjects) {
+        if (Get-ProjectFolderError ([string]$p.mailbox) $true) { continue }
+        if (-not $out.Contains([string]$p.mailbox)) { $out.Add([string]$p.mailbox) }
+    }
+    return $out.ToArray()
+}
+
+function New-HqCodexPrompt([string]$Id, [object[]]$Batch) {
+    # The orchestrator's notice: the items grouped by project, each project with its mailbox folder.
+    $groups = [ordered]@{}
+    foreach ($n in $Batch) {
+        $proj = [string]$n.project
+        if (-not $proj) { $proj = 'hq' }
+        if (-not $groups.Contains($proj)) { $groups[$proj] = New-Object System.Collections.ArrayList }
+        [void]$groups[$proj].Add($n)
+    }
+    $parts = New-Object System.Collections.Generic.List[string]
+    $i = 0
+    foreach ($proj in @($groups.Keys)) {
+        $items = @($groups[$proj])
+        $mb = [string]$items[0].mailbox
+        if (-not $mb -and $proj -eq 'hq') { $mb = $Root }
+        if (-not $mb -and $script:HqById.ContainsKey($proj)) { $mb = [string]$script:HqById[$proj].mailbox }
+        $one = New-Object System.Collections.Generic.List[string]
+        foreach ($n in $items) { $i++; $one.Add(('{0}) {1}: {2}' -f $i, $n.task, $n.what)) }
+        $label = "project $proj"
+        if ($proj -eq 'hq') { $label = 'HQ itself (project hq)' }
+        $parts.Add(('{0}, mailbox {1}: {2}' -f $label, $mb, ($one -join '; ')))
+    }
+    $text = "[bridge-relay $Id] Mailbox notice for the Codex orchestrator of HQ. bin/bridge-relay.ps1 in $Root started this turn from the command line ($OwnerName did not type it). " +
+        "$i new item(s) wait for the planner. " + ($parts -join '. ') + '. ' +
+        "For each item, read STATUS.md and the named task files in that project's mailbox, then act as that project's planner under the README.md there: " +
+        "write your answer, review or assignment in that project's mailbox only, in planner-owned files (CODEX-QUEUE.md and the tasks assignment.md, answers.md and review.md). " +
+        "Work with no project goes on HQ's own board in $Root. .relay/codex-attention.md in $Root lists everything that still waits, with its project. " +
+        'Codex app thread tools may be unavailable in this turn. Do not invent tasks. If nothing is actionable, change nothing. End with a one to three sentence summary.'
+    return (ConvertTo-SafeText $text)
+}
+
+function Write-HqProblems([hashtable]$State) {
+    # The entries of "projects" that HQ skips, in the log once (again only when they change).
+    $txt = ($script:HqProblems -join ' | ')
+    if ([string]$State.flags['hq_problems'] -eq $txt) { return }
+    if ($txt) { $State.flags['hq_problems'] = $txt } else { [void]$State.flags.Remove('hq_problems') }
+    foreach ($m in $script:HqProblems) { Write-Log "HQ: in bin\relay-settings.json, $m" }
+}
+
+function Get-ProjectRelayText([hashtable]$P) {
+    # Read-only: whether the project's relay runs, from the lock it holds while it runs.
+    $li = Get-LockInfo (Join-Path $P.mailbox '.relay\relay.lock')
+    if ($li.held -and $li.info.mode -eq 'Start') { return "yes (pid $($li.info.pid), since $($li.info.started))" }
+    if ($li.held) { return "a short '$($li.info.mode)' command holds its lock (pid $($li.info.pid))" }
+    $sf = Join-Path $P.mailbox '.relay\state.json'
+    if (Test-Path -LiteralPath $sf -PathType Leaf) { return ('no (it last ran ' + (Get-Item -LiteralPath $sf).LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss', $Inv) + ')') }
+    return 'no'
+}
+
+function Show-HqProjects {
+    Write-Host ("HQ: this mailbox is HQ for {0} project(s) (role hq in bin\relay-settings.json). Each project runs its own relay; this relay alone wakes the orchestrator for them all." -f $script:HqProjects.Count)
+    foreach ($m in $script:HqProblems) { Write-Host "  - $m" }
+    foreach ($p in $script:HqProjects) {
+        $found = Test-Path -LiteralPath $p.mailbox -PathType Container
+        $waiting = '-'
+        if ($found) { $waiting = [string](Get-AttentionItems $p.mailbox).Count }
+        Write-Host ("  - {0} ({1}): mailbox {2}; folder found: {3}; items waiting for the planner: {4}; its relay runs: {5}" -f
+            $p.id, $p.name, $p.mailbox, $found, $waiting, (Get-ProjectRelayText $p))
+    }
+}
+
+function Assert-Hq([string]$What) {
+    if (-not $HqRole) {
+        Fail "This mailbox is not HQ, so $What does not work here. HQ is the mailbox whose bin\relay-settings.json has ""role"": ""hq"" (see Run several projects in the relay's README.md)." 64
+    }
+}
+
+function Write-TextSafely([string]$Path, [string]$Text) {
+    # For the owner commands, which run without the writer lock: the whole new file, or the old one stays.
+    $tmp = $Path + '.tmp'
+    [IO.File]::WriteAllText($tmp, $Text, $Utf8)
+    if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($tmp, $Path, [NullString]::Value) } else { [IO.File]::Move($tmp, $Path) }
+}
+
+function Copy-FolderFiles([string]$From, [string]$To) {
+    # Every file under $From to the same place under $To. Returns how many it copied.
+    if (-not (Test-Path -LiteralPath $From -PathType Container)) { return 0 }
+    $n = 0
+    $base = (Get-Item -LiteralPath $From).FullName.TrimEnd('\')
+    foreach ($f in @(Get-ChildItem -LiteralPath $From -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+        $dest = Join-Path $To ($f.FullName.Substring($base.Length + 1))
+        $dd = Split-Path -Parent $dest
+        if (-not (Test-Path -LiteralPath $dd -PathType Container)) { New-Item -ItemType Directory -Path $dd -Force | Out-Null }
+        Copy-Item -LiteralPath $f.FullName -Destination $dest -Force
+        $n++
+    }
+    return $n
+}
+
+function Invoke-NewProject {
+    # Owner only, in HQ: makes a project mailbox from HQ's own copy of the relay, then adds it to HQ's projects list.
+    Assert-Hq '-NewProject'
+    $projId = ([string]$ProjectId).Trim()
+    if ($projId -cnotmatch '^[a-z0-9][a-z0-9-]{0,39}$' -or $projId -eq 'hq') {
+        Fail "-ProjectId must be 1-40 small letters, digits or hyphens, start with a letter or a digit, and not be hq (got '$ProjectId'). Nothing was made." 64
+    }
+    $projName = (([string]$ProjectName) -replace '[\x00-\x1f]', ' ').Trim()
+    if (-not $projName -or $projName.Length -gt 80) { Fail "-ProjectName must be 1 to 80 characters (got '$ProjectName'). Nothing was made." 64 }
+    $raw = $null
+    try { $raw = Get-Content -LiteralPath $rsFile -Raw | ConvertFrom-Json } catch { Fail "Could not read $rsFile ($($_.Exception.Message)). Nothing was made." }
+    if (-not $raw) { Fail "Could not read $rsFile. Nothing was made." }
+    $folder = [string]$ProjectFolder
+    if (-not $folder) { $folder = Join-Path (Join-Path $Root 'projects') $projId }
+    $why = Get-ProjectFolderError $folder $false
+    if ($why) { Fail "The project folder '$folder' cannot be used: $why. Nothing was made." 64 }
+    $folder = [IO.Path]::GetFullPath($folder).TrimEnd('\')
+    $old = @()
+    if ($null -ne $raw.projects) { $old = @($raw.projects | Where-Object { $null -ne $_ }) }
+    foreach ($pe in $old) {
+        if (([string]$pe.id).Trim() -eq $projId) { Fail "HQ already has a project with the id '$projId' (in $rsFile). Pick another id. Nothing was made." }
+        $pm = ''
+        try { $pm = [IO.Path]::GetFullPath(([string]$pe.mailbox).Trim()).TrimEnd('\') } catch { $pm = '' }
+        if ($pm -and $pm -eq $folder) { Fail "The project '$($pe.id)' already uses the folder $folder. Pick another folder with -ProjectFolder. Nothing was made." }
+    }
+    if (Test-Path -LiteralPath $folder -PathType Leaf) { Fail "$folder is a file, not a folder. Nothing was made." }
+    if ((Test-Path -LiteralPath $folder -PathType Container) -and @(Get-ChildItem -LiteralPath $folder -Force -ErrorAction SilentlyContinue).Count) {
+        Fail "The folder $folder already exists and is not empty. Pick a new or empty folder with -ProjectFolder. Nothing was made."
+    }
+    $hqBin = Join-Path $Root 'bin'
+    foreach ($d in @($folder, (Join-Path $folder 'bin'), (Join-Path $folder 'tasks'))) {
+        if (-not (Test-Path -LiteralPath $d -PathType Container)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    }
+    $made = 0
+    foreach ($f in @(Get-ChildItem -LiteralPath $hqBin -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.ps1$' -or $_.Name -match '\.example\.json$' })) {
+        Copy-Item -LiteralPath $f.FullName -Destination (Join-Path (Join-Path $folder 'bin') $f.Name)
+        $made++
+    }
+    foreach ($sub in @('tests', 'templates')) { $made += Copy-FolderFiles (Join-Path $Root $sub) (Join-Path $folder $sub) }
+    foreach ($doc in @('README.md', 'CLAUDE.md')) {
+        $src = Join-Path $Root $doc
+        if (Test-Path -LiteralPath $src -PathType Leaf) { Copy-Item -LiteralPath $src -Destination (Join-Path $folder $doc); $made++ }
+    }
+    [IO.File]::WriteAllText((Join-Path $folder 'CODEX-QUEUE.md'), "# Codex queue (owner: Codex)`r`n", $Utf8)
+    [IO.File]::WriteAllText((Join-Path $folder 'STATUS.md'), "# Status board (owner: Claude)`r`n", $Utf8)
+    # The project's settings: HQ's, without role and projects, and with hq_dir.
+    $projSettings = [ordered]@{}
+    foreach ($prop in @($raw.PSObject.Properties)) {
+        if (@('role', 'projects', 'hq_dir') -contains $prop.Name) { continue }
+        $projSettings[$prop.Name] = $prop.Value
+    }
+    $projSettings['hq_dir'] = $Root
+    [IO.File]::WriteAllText((Join-Path $folder 'bin\relay-settings.json'), (ConvertTo-Json -InputObject $projSettings -Depth 12), $Utf8)
+    $cl = Join-Path $hqBin 'cost-limits.json'
+    if (Test-Path -LiteralPath $cl -PathType Leaf) { Copy-Item -LiteralPath $cl -Destination (Join-Path $folder 'bin\cost-limits.json') }
+    # Then HQ's list, after a copy of the old settings.
+    $bak = $rsFile + '.bak-' + (Get-Date).ToString('yyyyMMdd-HHmmss', $Inv)
+    Copy-Item -LiteralPath $rsFile -Destination $bak -Force
+    $list = New-Object System.Collections.ArrayList
+    foreach ($pe in $old) { [void]$list.Add($pe) }
+    [void]$list.Add([pscustomobject]@{ id = $projId; name = $projName; mailbox = $folder })
+    $hqSettings = [ordered]@{}
+    foreach ($prop in @($raw.PSObject.Properties)) { $hqSettings[$prop.Name] = $prop.Value }
+    $hqSettings['projects'] = $list.ToArray()
+    Write-TextSafely $rsFile (ConvertTo-Json -InputObject $hqSettings -Depth 12)
+    Write-Host "Made the project mailbox $folder for '$projName' (id $projId): $made relay file(s) from HQ, a tasks folder, CODEX-QUEUE.md, STATUS.md, and bin\relay-settings.json with hq_dir."
+    Write-Host "Added it to the projects list in $rsFile. The old settings are kept in $bak."
+    Write-Host 'Next:'
+    Write-Host "  1. Enroll the project's coordinator in the project's own folder: cd '$folder', then .\bin\bridge-relay.ps1 -Enroll -SessionName '<its name>'."
+    Write-Host '  2. The HQ relay reads its settings when it starts. If it runs now, run -StopAll, then -StartAll, so it watches the new project.'
+}
+
+function Invoke-UpdateProjects {
+    # Owner only, in HQ: copies HQ's scripts into each project whose relay does not run. Never settings, templates,
+    # README.md or CLAUDE.md. Each file it replaces is kept as <name>.bak-<time>.
+    Assert-Hq '-UpdateProjects'
+    $hqBin = Join-Path $Root 'bin'
+    $scripts = @(Get-ChildItem -LiteralPath $hqBin -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.ps1$' })
+    $stubs = @(Get-ChildItem -LiteralPath (Join-Path $Root 'tests') -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^stub-.*\.js$' })
+    if ($scripts.Count -eq 0) { Fail "No relay scripts were found in $hqBin. Nothing was copied." }
+    foreach ($m in $script:HqProblems) { Write-Host "In bin\relay-settings.json, $m" }
+    if ($script:HqProjects.Count -eq 0) { Write-Host 'HQ has no project to update (projects in bin\relay-settings.json).'; return }
+    $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss', $Inv)
+    foreach ($p in $script:HqProjects) {
+        if (-not (Test-Path -LiteralPath $p.mailbox -PathType Container)) { Write-Host "Skipped $($p.id): its mailbox folder $($p.mailbox) was not found."; continue }
+        $li = Get-LockInfo (Join-Path $p.mailbox '.relay\relay.lock')
+        if ($li.held) {
+            Write-Host "Skipped $($p.id): its relay runs now (pid $($li.info.pid)). Stop it first (-StopAll here, or -Stop in $($p.mailbox)), then run -UpdateProjects again."
+            continue
+        }
+        $copied = 0
+        $same = 0
+        foreach ($pair in @(@{ files = $scripts; dir = 'bin' }, @{ files = $stubs; dir = 'tests' })) {
+            $to = Join-Path $p.mailbox $pair.dir
+            if (-not (Test-Path -LiteralPath $to -PathType Container)) { New-Item -ItemType Directory -Path $to -Force | Out-Null }
+            foreach ($f in @($pair.files)) {
+                $dest = Join-Path $to $f.Name
+                if (Test-Path -LiteralPath $dest -PathType Leaf) {
+                    if ((Get-FileSha256 $dest) -eq (Get-FileSha256 $f.FullName)) { $same++; continue }
+                    Copy-Item -LiteralPath $dest -Destination ($dest + '.bak-' + $stamp) -Force
+                }
+                Copy-Item -LiteralPath $f.FullName -Destination $dest -Force
+                $copied++
+            }
+        }
+        Write-Host ("Updated {0} ({1}): {2} file(s) copied, {3} already the same. Each file it replaced is kept as <name>.bak-{4}." -f $p.id, $p.mailbox, $copied, $same, $stamp)
+    }
+    Write-Host 'Settings, templates, README.md and CLAUDE.md stay as they are in each project. Start the relays again with -StartAll.'
+}
+
+function Invoke-StartAll {
+    # Owner only, in HQ: one new PowerShell window for each project's relay that does not run yet. Sets
+    # $script:StartHq when this window should then run HQ's own loop.
+    Assert-Hq '-StartAll'
+    $script:StartHq = $false
+    $psExe = Join-Path $PSHOME 'powershell.exe'
+    foreach ($m in $script:HqProblems) { Write-Host "In bin\relay-settings.json, $m" }
+    foreach ($p in $script:HqProjects) {
+        $relayPs1 = Join-Path $p.mailbox 'bin\bridge-relay.ps1'
+        if (-not (Test-Path -LiteralPath $relayPs1 -PathType Leaf)) { Write-Host "Skipped $($p.id): $relayPs1 was not found (run -UpdateProjects to copy the relay there)."; continue }
+        $li = Get-LockInfo (Join-Path $p.mailbox '.relay\relay.lock')
+        if ($li.held) { Write-Host "Skipped $($p.id): its relay already runs (pid $($li.info.pid))."; continue }
+        # One argument string with each part quoted as needed: Start-Process would join a list without quotes.
+        $argString = (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-File', $relayPs1, '-Start') | ForEach-Object { ConvertTo-ArgToken $_ }) -join ' '
+        try {
+            $proc = Start-Process -FilePath $psExe -ArgumentList $argString -WorkingDirectory $p.mailbox -PassThru
+            Write-Host "Started the relay of $($p.id) ($($p.name)) in a new window (pid $($proc.Id)), for the mailbox $($p.mailbox)."
+        } catch { Write-Host "Could not start the relay of $($p.id): $($_.Exception.Message)" }
+    }
+    $li = Get-LockInfo
+    if ($li.held) { Write-Host "HQ's own relay already runs (pid $($li.info.pid)), so it is not started again."; return }
+    Write-Host "HQ's own relay runs in this window now. To stop them all, run -StopAll from another window."
+    $script:StartHq = $true
+}
+
+function Invoke-StopAll {
+    # Owner only, in HQ: asks every relay loop to stop the way -Stop does (a STOP file in its .relay), HQ's too.
+    # It never kills anything; a turn that runs keeps running.
+    Assert-Hq '-StopAll'
+    $targets = New-Object System.Collections.ArrayList
+    foreach ($p in $script:HqProjects) { [void]$targets.Add(@{ label = "Project $($p.id)"; dir = $p.mailbox }) }
+    [void]$targets.Add(@{ label = 'HQ'; dir = $Root })
+    $asked = New-Object System.Collections.ArrayList
+    $poll = 1
+    foreach ($t in $targets) {
+        $lf = Join-Path $t.dir '.relay\relay.lock'
+        $li = Get-LockInfo $lf
+        if (-not $li.held) { Write-Host "$($t.label): its relay is not running."; continue }
+        if ($li.info.mode -ne 'Start') { Write-Host "$($t.label): a short relay command (pid $($li.info.pid), mode $($li.info.mode)) holds the lock and ends by itself."; continue }
+        [IO.File]::WriteAllText((Join-Path $t.dir '.relay\STOP'), (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv), $Utf8)
+        $poll = [Math]::Max($poll, [int]$li.info.poll_seconds)
+        [void]$asked.Add(@{ label = $t.label; lock = $lf; pid = $li.info.pid })
+        Write-Host "$($t.label): asked its relay (pid $($li.info.pid)) to stop. A turn that runs is never cut off."
+    }
+    if ($asked.Count -eq 0) { return }
+    $wait = 10 + 3 * $poll
+    $deadline = (Get-Date).AddSeconds($wait)
+    while ((Get-Date) -lt $deadline) {
+        if (@($asked | Where-Object { (Get-LockInfo $_.lock).held }).Count -eq 0) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    foreach ($a in $asked) {
+        if ((Get-LockInfo $a.lock).held) { Write-Host "$($a.label): its relay has not stopped after $wait s. It may be finishing a round. Check -Status there." }
+        else { Write-Host "$($a.label): its relay stopped." }
+    }
 }
 
 # ---------- agent mail (optional; off until -EnrollAgent) ----------
@@ -2375,6 +2983,7 @@ function Invoke-Tick([hashtable]$State, [bool]$ReadOnly) {
     $script:MailLaunched = New-Object System.Collections.ArrayList
     $baseline = (-not $State.baseline_utc)
     Update-Daily $State
+    if ($HqRole) { Write-HqProblems $State }
     Update-Dispatches $State
     Update-CodexDispatches $State
     Update-MailDispatches $State
@@ -2460,7 +3069,9 @@ function Invoke-Loop {
     $agl = Get-Agents
     $amWord = 'AgentMail=OFF'
     if ($agl.Count) { $amWord = "AgentMail=ON ($($agl.Count) agent(s))" }
-    Write-Log "Relay loop started (pid $PID; mailbox $Root; poll $PollSeconds s; debounce $DebounceSeconds s). Stop: bridge-relay.ps1 -Stop, or Ctrl+C here. $cxWord. $amWord."
+    $hqWord = ''
+    if ($HqRole) { $hqWord = " HQ for $($script:HqProjects.Count) project(s)." }
+    Write-Log "Relay loop started (pid $PID; mailbox $Root; poll $PollSeconds s; debounce $DebounceSeconds s). Stop: bridge-relay.ps1 -Stop, or Ctrl+C here. $cxWord. $amWord.$hqWord"
     $state = Get-State
     try {
         try { Invoke-Tick $state $false } catch { Write-Log "Tick error: $($_.Exception.Message)" }
@@ -2469,7 +3080,9 @@ function Invoke-Loop {
         while ($true) {
             if (Test-Path -LiteralPath $StopFile) { Write-Log 'Stop requested; leaving the loop. An in-flight coordinator turn keeps running and is reconciled on the next start.'; break }
             $r = $fsw.WaitForChanged([IO.WatcherChangeTypes]::All, 1000)
-            if (-not $r.TimedOut -and $r.Name -and -not $r.Name.StartsWith('.relay', [StringComparison]::OrdinalIgnoreCase)) { $dirty = $true }
+            # HQ: a project relay's own notes (projects\<id>\.relay\...) are not news for HQ either.
+            if (-not $r.TimedOut -and $r.Name -and -not $r.Name.StartsWith('.relay', [StringComparison]::OrdinalIgnoreCase) -and
+                -not ($HqRole -and $r.Name -match '\\\.relay(\\|$)')) { $dirty = $true }
             $now = Get-Now
             if (($dirty -and ($now - $last) -ge 2) -or ($now - $last) -ge $PollSeconds) {
                 $dirty = $false
@@ -2724,6 +3337,8 @@ function Show-Status {
         Write-Host '             coordinator session and run bridge-relay.ps1 -Enroll -SessionId <its uuid>. Nothing is sent until then.'
     }
     Write-Host ('Projects folder (the coordinator may read it): ' + $(if ($ProjectsDir) { $ProjectsDir } else { 'not set (projects_dir in bin\relay-settings.json)' }))
+    if ($HqDirSetting) { Write-Host "HQ folder of this project mailbox: $HqDirSetting (hq_dir in bin\relay-settings.json)" }
+    if ($HqRole) { Show-HqProjects }
     Write-Host ('Baseline: ' + $(if ($state.baseline_utc) { Format-Unix $state.baseline_utc } else { 'not yet recorded (the first -Once/-Start records it)' }))
     $fly = @($state.dispatches.Values | Where-Object { $_.state -eq 'running' -or $_.state -eq 'launching' })
     if ($fly.Count -eq 0) { Write-Host 'In flight: none' }
@@ -2760,7 +3375,11 @@ function Show-Status {
         foreach ($d in $cfly) { Write-Host ("Codex in flight: {0} pid {1} started {2} alive {3}" -f $d.id, $d.pid, (Format-Unix $d.started_utc), (Test-DispatchAlive $d)) }
         $cpend = @($state.codex_notes.Values | Where-Object { $_.state -eq 'pending' } | Sort-Object { [int64]$_.detected_utc })
         Write-Host "Codex items pending: $($cpend.Count)"
-        foreach ($n in $cpend) { Write-Host ("  - {0}: {1} (detected {2}, attempts {3})" -f $n.task, $n.what, (Format-Unix $n.detected_utc), $n.attempts) }
+        foreach ($n in $cpend) {
+            $where = [string]$n.task
+            if ($n.project) { $where = "$($n.project) $($n.task)" }
+            Write-Host ("  - {0}: {1} (detected {2}, attempts {3})" -f $where, $n.what, (Format-Unix $n.detected_utc), $n.attempts)
+        }
         Write-Host ('Codex halt: ' + $(if ($state.codex_halt) { $state.codex_halt } else { 'none' }) + "; consecutive failures: $($state.codex_failures)" +
             $(if ($state.codex_next_attempt_utc) { '; next attempt not before ' + (Format-Unix $state.codex_next_attempt_utc) } else { '' }))
         $cLimit = $(if ($MaxCodexWakesPerDay -eq 0) { 'unlimited' } else { [string]$MaxCodexWakesPerDay })
@@ -2793,7 +3412,8 @@ function Show-Status {
     } else {
         Write-Host 'Agent mail: no agent enrolled (to wake an agent when mail waits for it: bridge-relay.ps1 -EnrollAgent -AgentName <its name>)'
     }
-    $att = Get-AttentionItems
+    $att = $null
+    if ($HqRole) { $att = Get-HqAttentionItems } else { $att = Get-AttentionItems }
     Write-Host "Codex attention (return direction): $($att.Count)"
     foreach ($k in @($att.Keys | Sort-Object)) { Write-Host ("  - {0}: {1}" -f $k, $att[$k].what) }
     if ($cx) { Write-Host "CodexWake=ON (each new item above wakes Codex thread $($cx.thread_id) once; -UnenrollCodex turns it off)" }
@@ -2817,8 +3437,18 @@ switch ($Mode) {
     'DryRun' {
         $dry = Get-State   # in-memory copy only; CanWrite stays false, so nothing is written
         Write-Note "DRY-RUN on $Root (read-only; no CLI, no key, no API credit)."
+        if ($HqRole) { Show-HqProjects }
         Invoke-Tick $dry $true
         exit 0
+    }
+    # HQ owner commands. They change no relay state, so they run without the writer lock.
+    'NewProject'     { Invoke-NewProject; exit 0 }
+    'UpdateProjects' { Invoke-UpdateProjects; exit 0 }
+    'StopAll'        { Invoke-StopAll; exit 0 }
+    'StartAll' {
+        Invoke-StartAll   # the projects' windows; then HQ's own loop runs here, as with -Start
+        if (-not $script:StartHq) { exit 0 }
+        $Mode = 'Start'
     }
 }
 

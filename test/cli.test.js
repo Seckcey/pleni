@@ -449,6 +449,29 @@ test('check finds a relay script that defines the same function twice', (t) => {
   assert.match(result.stdout, /Found 1 problem\(s\)/);
 });
 
+test('check finds a file named CLAUDE.md, AGENTS.md or GEMINI.md inside relay, in any letter case, and only there', (t) => {
+  const root = tempDir(t, 'pleni-check-');
+  writeFiles(root, {
+    'relay/COORDINATOR.md': '# Standing orders\n',
+    'relay/ORCHESTRATOR.md': '# Standing orders\n',
+    'relay/templates/Claude.md': '# A template\n',
+    'relay/bin/agents.MD': '# A template\n',
+    'relay/GEMINI.md': '# A template\n',
+    'CLAUDE.md': '# The repository orders\n',
+    'docs/AGENTS.md': '# Not in relay\n',
+  });
+  const result = runCheck(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /relay\/templates\/Claude\.md: agents read a file with this name/);
+  assert.match(result.stdout, /relay\/bin\/agents\.MD: agents read a file with this name/);
+  assert.match(result.stdout, /relay\/GEMINI\.md: agents read a file with this name/);
+  assert.ok(!result.stdout.includes('COORDINATOR.md'));
+  assert.ok(!result.stdout.includes('ORCHESTRATOR.md'));
+  assert.ok(!result.stdout.includes('  CLAUDE.md'), 'the repository root may have its own CLAUDE.md');
+  assert.ok(!result.stdout.includes('docs/AGENTS.md'));
+  assert.match(result.stdout, /Found 3 problem\(s\)/);
+});
+
 test('check stays fast on a long run of letters', (t) => {
   const root = tempDir(t, 'pleni-check-');
   // A token-like run with no "@" once made the address search take minutes.

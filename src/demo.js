@@ -45,12 +45,14 @@ export const DEMO_KEYS = Object.freeze({ planner: PLANNER, coordinator: COORDINA
 // since the last change; `checks` are the results of the checks below, in order.
 const PULLS = {
   [GITHUB.billing]: [
+    { number: 43, title: 'Add late fee rules to invoices', branch: 'claude/late-fee-rules-k2p7', age: 25, checks: ['SUCCESS', 'SUCCESS', 'SUCCESS'], review: 'REVIEW_REQUIRED', status: 'BLOCKED' },
     { number: 42, title: 'Split the billing API into invoices and refunds', branch: 'refactor/billing-api', age: 3, checks: ['SUCCESS', 'SUCCESS', 'IN_PROGRESS'], review: 'REVIEW_REQUIRED', status: 'BLOCKED' },
     { number: 41, title: 'Add the 2027 sales tax table', branch: 'tax-table-2027', age: 50, checks: ['SUCCESS', 'SUCCESS', 'SUCCESS'], review: 'APPROVED', status: 'CLEAN' },
     { number: 40, title: 'Fix rounding in refund totals', branch: 'fix/refund-rounding', age: 300, state: 'MERGED', checks: ['SUCCESS', 'SUCCESS', 'SUCCESS'], review: 'APPROVED', status: 'UNKNOWN' },
   ],
   [GITHUB.field]: [
     { number: 17, title: 'Polish the login screen', branch: 'login-polish', age: 12, checks: ['SUCCESS', 'SUCCESS', 'SUCCESS'], review: 'APPROVED', status: 'CLEAN' },
+    { number: 18, title: 'Cache map tiles for offline use', branch: 'claude/offline-map-tiles-q9d4', age: 140, draft: true, checks: ['SUCCESS', 'IN_PROGRESS', 'SUCCESS'], review: '', status: 'DRAFT' },
     { number: 16, title: 'Try offline sync', branch: 'spike/offline-sync', age: 30, draft: true, checks: ['SUCCESS', 'FAILURE', 'SUCCESS'], review: '', status: 'DRAFT' },
   ],
 };

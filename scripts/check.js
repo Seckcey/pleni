@@ -1,5 +1,6 @@
 // Repository checks: every script parses, the relay's PowerShell scripts are plain ASCII and define
-// each function once, and no text file holds a personal Windows folder path or a real e-mail address.
+// each function once, relay/ holds no file that an AI agent would read as its own orders, and no text
+// file holds a personal Windows folder path or a real e-mail address.
 // Usage: node scripts/check.js [folder]
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -14,6 +15,9 @@ const CODE_EXTENSIONS = new Set(['.js', '.mjs']);
 const ASCII_DIR = 'relay';
 const ASCII_EXTENSIONS = new Set(['.ps1']);
 const SKIP_DIRS = new Set(['.git', 'node_modules']);
+// Claude Code, Codex and Gemini read a file with one of these names as their orders, so one inside relay/
+// would give an agent working on Pleni a mailbox's orders. Mailbox templates get other names.
+const AGENT_FILES = new Set(['claude.md', 'agents.md', 'gemini.md']);
 const MAX_SCAN_BYTES = 5 * 1024 * 1024;
 
 // C:\Users\<name>, also written with doubled backslashes or forward slashes.
@@ -36,6 +40,7 @@ const problems = [];
 const parsed = checkSyntax();
 checkAscii();
 checkFunctionNames();
+checkAgentFiles();
 const scanned = scanFiles();
 
 if (problems.length) {
@@ -87,6 +92,14 @@ function checkFunctionNames() {
         first.set(name, index + 1);
       }
     });
+  }
+}
+
+// Any letter case: Windows and macOS find CLAUDE.md under the name claude.md too.
+function checkAgentFiles() {
+  for (const file of walk(path.join(ROOT, ASCII_DIR))) {
+    if (!AGENT_FILES.has(path.basename(file).toLowerCase())) continue;
+    problems.push(`${relative(file)}: agents read a file with this name as their orders; inside relay/ give it another name`);
   }
 }
 

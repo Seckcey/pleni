@@ -187,6 +187,9 @@ const isWorkerKey = (key) => String(key || '').startsWith('mailbox:');
 // Open in PowerShell opens a window on the computer that runs Pleni, so it is offered only on a page
 // opened there, not through a proxy from another device.
 const LOCAL_PAGE = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+// A page opened by any other address (Tailscale, Wi-Fi) counts as another device, even in a browser
+// on the computer that runs Pleni, so the notes about buttons that act say how to get there.
+const HERE_HOW = 'On that computer, open the address that starts with http://localhost (Pleni prints it when it starts; pleni --url shows it again).';
 const svgIcon = (paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
 
 function serverNow() {
@@ -897,7 +900,7 @@ function usageLimitsHtml(key, name, t, now, limitsOn = false) {
   if (key === 'claude') {
     const connect = LOCAL_PAGE
       ? `Connect Claude Code to see your plan limits here. <a href="#/settings/buttons" id="usage-connect">Go to Connect in Settings</a>.`
-      : 'Connect Claude Code to see your plan limits here. Connect it on the computer that runs Pleni.';
+      : `Connect Claude Code to see your plan limits here. Connect it on the computer that runs Pleni. ${HERE_HOW}`;
     return `<div class="u-limits"><p>${connect}</p><p class="u-src">Limits show up after your next reply in Claude Code. They are there for Pro, Max and Ultra plans.</p>` +
       `<p><a href="${USAGE_LIMIT_PAGES.claude}" id="usage-claude-site" target="_blank" rel="noopener noreferrer">See them on claude.ai</a><span class="sr-only"> (opens in a new tab)</span></p></div>`;
   }
@@ -1091,7 +1094,6 @@ function render() {
   renderSignIn();
   $('#nav-tasks').hidden = !(S.snap && Array.isArray(S.snap.tasks));
   $('#nav-pulls').hidden = !repoGroups().length;
-  $('#nav-cloud').hidden = !cloudOn();
   paintMailNav();
   const asking = (S.snap && S.snap.counts && S.snap.counts.needs) || 0;
   document.title = `${asking ? `(${asking}) ` : ''}${pageName()} · Pleni`;
@@ -2146,7 +2148,7 @@ function renderList() {
 const PROJECT_ID = /^[a-z0-9]{8,32}$/;
 const MAX_PROJECT_FOLDER = 500;
 const MAX_PROJECT_LIST = 50;
-const PROJECT_ONLY_HERE = 'Projects can be added and changed only on the computer that runs Pleni.';
+const PROJECT_ONLY_HERE = `Projects can be added and changed only on the computer that runs Pleni. ${HERE_HOW}`;
 const PROJECT_DEMO = 'In the demo, the projects are made up, so they cannot be changed.';
 
 // New, Edit and Delete: only on this computer, and never in the demo.
@@ -2853,6 +2855,7 @@ async function askGithub(fresh) {
     S.gh.asking = false;
     S.gh.askedAt = Date.now();
     if (S.view === 'pulls') renderPulls();
+    else if (S.view === 'cloud') renderCloud();
   }
 }
 
@@ -3112,24 +3115,30 @@ function cloudTaskHtml(t) {
   );
 }
 
+// The Cloud page has two parts: Codex cloud tasks (listed by Codex, when turned on) and Claude Code
+// cloud sessions (a link to claude.ai/code and the pull requests they opened).
 function renderCloud() {
   const meta = $('#cloud-meta');
   const box = $('#cloud');
-  if (!S.snap) {
-    setText(meta, '');
-    return;
-  }
+  setText(meta, '');
+  if (!S.snap) return;
+  askGithubSoon();
+  setHtml(
+    box,
+    `<section class="cloud-part" aria-labelledby="cloud-codex-h"><h2 id="cloud-codex-h">Codex cloud tasks</h2>${codexCloudHtml()}</section>` +
+      `<section class="cloud-part" aria-labelledby="cloud-claude-h"><h2 id="cloud-claude-h">Claude Code cloud sessions</h2>${claudeCloudHtml()}</section>`,
+  );
+}
+
+function codexCloudHtml() {
   if (!cloudOn()) {
-    setText(meta, '');
-    setHtml(box, '<p class="empty">Codex cloud tasks are turned off. To see them here, turn on "Show my Codex cloud tasks" in Settings, under Sources.</p>');
-    return;
+    return '<p class="empty">Codex cloud tasks are turned off. To see them here, turn on "Show my Codex cloud tasks" in Settings, under Sources.</p>';
   }
   askCloudSoon();
   const d = S.cloud.data;
   const tasks = cloudTasks();
   const error = (d && d.on === true && typeof d.error === 'string' ? d.error : '') || S.cloud.error;
   const at = d && isTime(d.at) ? d.at : null;
-  setText(meta, d ? plural(tasks.length, 'task', 'tasks') : '');
   const bar =
     `<div class="gh-bar"><span>${S.cloud.asking ? 'Asking Codex…' : at ? `${error ? 'Asked Codex' : 'Listed by Codex'} ${agoHtml(at)}` : ''}</span>` +
     '<button type="button" class="btn" data-cloud-again="1">Look again</button></div>';
@@ -3139,7 +3148,56 @@ function renderCloud() {
   else if (!tasks.length) body = '<p class="empty">No Codex cloud tasks.</p>';
   else body = `<ul class="cloud-list" aria-label="Codex cloud tasks, newest first">${tasks.map(cloudTaskHtml).join('')}</ul>`;
   const note = 'These are your Codex cloud tasks, listed by Codex on this computer. Pleni shows their titles and status, never their messages.';
-  setHtml(box, bar + body + `<p class="note">${esc(note)}</p>`);
+  return bar + body + `<p class="note">${esc(note)}</p>`;
+}
+
+// Claude Code gives other programs no list of its cloud sessions, and reading the person's claude.ai
+// login is not allowed, so Pleni links to claude.ai/code and shows the pull requests the sessions
+// opened (their branches are named claude/...), from the Live GitHub status answer (GET
+// /api/github) the Pull requests page uses.
+const CLAUDE_CLOUD_URL = 'https://claude.ai/code';
+const MAX_CLAUDE_PULLS = 20;
+
+function claudeCloudPulls(gh) {
+  const out = [];
+  for (const [repo, info] of gh.repos) {
+    for (const p of info.pulls) if (typeof p.branch === 'string' && p.branch.startsWith('claude/')) out.push({ repo, p });
+  }
+  const when = (x) => (isTime(x.p.updatedAt) ? x.p.updatedAt : 0);
+  out.sort((a, b) => Number(isOpenPull(b.p)) - Number(isOpenPull(a.p)) || when(b) - when(a));
+  return out.slice(0, MAX_CLAUDE_PULLS);
+}
+
+function claudePullHtml(repo, p) {
+  const pills = [ghPill(PULL_STATES, p.state)];
+  if (isOpenPull(p)) pills.push(ghPill(CHECK_WORDS, p.checks));
+  const title = typeof p.title === 'string' && p.title ? p.title : 'Pull request';
+  const facts = [`<span>${esc(repo)}</span>`, `<span><code>${esc(p.branch)}</code></span>`];
+  if (isTime(p.updatedAt)) facts.push(`<span>Updated ${agoHtml(p.updatedAt)}</span>`);
+  return (
+    `<li class="cloud-task"><div class="pull-head">${githubLink(repo, `/pull/${p.number}`, `#${p.number} ${title}`)}${pills.join('')}</div>` +
+    `<p class="cloud-facts">${facts.join('')}</p></li>`
+  );
+}
+
+function claudeCloudHtml() {
+  const link = `<p><a class="btn" id="cloud-claude-open" href="${CLAUDE_CLOUD_URL}" target="_blank" rel="noopener noreferrer">Open your Claude cloud sessions<span class="sr-only"> on claude.ai (opens in a new tab)</span></a></p>`;
+  const note = '<p class="note">Claude Code has no official way for other programs to list cloud sessions, so Pleni shows the pull requests they opened (branches named claude/…). A session that has not opened one shows only on claude.ai/code.</p>';
+  const gh = githubView();
+  let body;
+  if (!gh.on) {
+    body = !S.gh.data && !S.gh.error
+      ? '<p class="empty">Checking Live GitHub status…</p>'
+      : '<p class="note">Turn on Live GitHub status in Settings, under Sources, to see the pull requests your Claude cloud sessions opened.</p>';
+  } else if (gh.error) {
+    body = `<p class="note bad">${esc(gh.error)}</p>`;
+  } else {
+    const pulls = claudeCloudPulls(gh);
+    body = pulls.length
+      ? `<ul class="cloud-list" aria-label="Pull requests from Claude cloud sessions, open ones first">${pulls.map((x) => claudePullHtml(x.repo, x.p)).join('')}</ul>`
+      : '<p class="empty">No pull requests from Claude cloud sessions in the repositories Pleni watches.</p>';
+  }
+  return link + body + note;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -4120,7 +4178,7 @@ function paintHooks() {
 
 function hooksHtml() {
   const st = S.set;
-  if (!LOCAL_PAGE) return '<p class="note">Pleni can be connected to Claude Code only on the computer that runs it.</p>';
+  if (!LOCAL_PAGE) return `<p class="note">Pleni can be connected to Claude Code only on the computer that runs it. ${esc(HERE_HOW)}</p>`;
   if (st.hooksError) return `<p class="note bad">Pleni could not check Claude Code's settings. ${esc(st.hooksError)}</p>`;
   const h = st.hooks;
   if (!h) return '<p class="note">Checking Claude Code\'s settings…</p>';
@@ -4192,7 +4250,7 @@ function paintLimits() {
 
 function limitsHtml() {
   const st = S.set;
-  if (!LOCAL_PAGE) return '<p class="note">Only on the computer that runs Pleni.</p>';
+  if (!LOCAL_PAGE) return `<p class="note">Only on the computer that runs Pleni. ${esc(HERE_HOW)}</p>`;
   if (st.limitsError) return `<p class="note bad">Pleni could not check Claude Code's settings. ${esc(st.limitsError)}</p>`;
   const l = st.limits;
   if (!l) return '<p class="note">Checking Claude Code\'s settings…</p>';
@@ -5667,7 +5725,7 @@ function appModelsHtml(app) {
   const why = !m.data.edit
     ? 'To change these here, tick the box above, then choose Save settings at the bottom of the page.'
     : !m.data.here
-      ? 'Models can be changed only on the computer that runs Pleni.'
+      ? `Models can be changed only on the computer that runs Pleni. ${HERE_HOW}`
       : '';
   const kept = c.found
     ? `${a.name} keeps these in <code>${esc(c.file)}</code>.`
@@ -6128,7 +6186,7 @@ function cloudRow() {
   if (LOCAL_PAGE) return checkRow('s-cloud-live', 'Codex cloud tasks', 'codexCloud.live', 'Show my Codex cloud tasks', help);
   const on = getPath(S.set.draft, 'codexCloud.live', false) === true;
   return (
-    `<div class="srow"><span class="lbl" id="s-cloud-live-lbl">Codex cloud tasks</span><div><p>Show my Codex cloud tasks: <strong>${on ? 'On' : 'Off'}</strong>. Only the computer that runs Pleni can change this.</p></div>` +
+    `<div class="srow"><span class="lbl" id="s-cloud-live-lbl">Codex cloud tasks</span><div><p>Show my Codex cloud tasks: <strong>${on ? 'On' : 'Off'}</strong>. Only the computer that runs Pleni can change this. ${esc(HERE_HOW)}</p></div>` +
     `${helpHtml('s-cloud-live', help)}</div>`
   );
 }
