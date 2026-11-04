@@ -21,10 +21,10 @@ const FILTERS = [['all', 'All'], ['needs', 'Needs you'], ['working', 'Working'],
 const FEED_FILTERS = [['all', 'Everything'], ['down', 'Work handed out'], ['up', 'Reports back'], ['error', 'Errors']];
 // Kimi Code models that can only turn thinking on or off record "on" or "off" as their effort.
 const EFFORT_WORDS = { minimal: 'minimal effort', low: 'low effort', medium: 'medium effort', high: 'high effort', xhigh: 'extra high effort', max: 'max effort', on: 'thinking on', off: 'thinking off' };
-const PLATFORM_WORDS = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', relay: 'Mailbox' };
+const PLATFORM_WORDS = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', gemini: 'Gemini CLI', relay: 'Mailbox' };
 // The tools whose sessions Pleni reads. Each one has a word above and a mark in ICONS.
-const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
-const KIND_WORDS = { person: 'Person', project: 'Project', session: 'Session', agent: 'Helper agent', reviewer: 'Automatic reviewer', relay: 'Relay' };
+const TOOLS = ['claude', 'codex', 'grok', 'kimi', 'gemini'];
+const KIND_WORDS = { person: 'Person', project: 'Project', tool: 'AI tool', session: 'Session', agent: 'Helper agent', reviewer: 'Automatic reviewer', relay: 'Relay' };
 const ENTRY_WORDS = { 'claude-desktop': 'Claude desktop app', 'claude-vscode': 'VS Code', cli: 'Terminal', 'sdk-cli': 'Agent SDK', 'relay worker': 'The mailbox relay' };
 const PLACEMENT_WORDS = { manual: 'You chose this.', rule: 'Set by a chain rule.', auto: 'Chosen automatically.' };
 const MOVE_PX = 6; // how far a pressed tile must travel before it is being moved, not clicked
@@ -52,6 +52,7 @@ const DEFAULTS = {
   titles: 'plain',
   content: 'snippets',
   groupBy: 'none',
+  toolTiles: false,
   window: { activeMinutes: 10, recentHours: 24, staleMinutes: 30 },
   showReviewers: false,
   modelTiers: { senior: ['opus', 'fable', 'astra'], junior: ['sonnet', 'haiku', 'sol', 'luna', 'mini'] },
@@ -61,6 +62,7 @@ const DEFAULTS = {
     codex: { enabled: true, root: null },
     grok: { enabled: true, root: null },
     kimi: { enabled: true, root: null },
+    gemini: { enabled: true, root: null },
     mailbox: { enabled: false, root: null, planner: null, coordinator: null },
   },
   people: {},
@@ -81,9 +83,10 @@ const DEFAULTS = {
 const ICONS = {
   claude: '<path d="M12 3.5v17M4.6 7.75l14.8 8.5M4.6 16.25l14.8-8.5"/>',
   codex: '<rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="m7.5 10 3 2.5-3 2.5M13 15.5h3.5"/>',
-  // Grok and Kimi Code get plain letters, G and K, not their makers' logos.
+  // Grok and Kimi Code get plain letters, G and K, and Gemini CLI a plain diamond, not their makers' logos.
   grok: '<path d="M17.75 7.2A7.5 7.5 0 1 0 19.5 12H13"/>',
   kimi: '<path d="M7 4.5v15M17 4.5 7 12.5l10 7"/>',
+  gemini: '<path d="M12 3.5 20.5 12 12 20.5 3.5 12z"/>',
   human: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
   group: '<path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h4l2 2h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/>',
   relay: '<path d="M4 8h13.5M14 4.5 17.5 8 14 11.5M20 16H6.5M10 12.5 6.5 16l3.5 3.5"/>',
@@ -179,8 +182,35 @@ const isSession = (n) => !!n && (n.kind === 'session' || n.kind === 'agent' || n
 const isRelay = (n) => !!n && n.kind === 'relay';
 // Sessions and the relay can be put under a new boss; the person and project tiles cannot.
 const canMove = (n) => isSession(n) || isRelay(n);
-// A mailbox worker run (mailbox:<task>/W1) keeps no session file of its own.
+// A mailbox worker run (mailbox:<task>/W1, or mailbox:<box>:<task>/W1 in a project mailbox of an HQ)
+// keeps no session file of its own.
 const isWorkerKey = (key) => String(key || '').startsWith('mailbox:');
+// A relay's tile: 'relay' (HQ's own, or a lone mailbox's) or 'relay:<box>' (a project mailbox's).
+const isRelayKey = (key) => key === 'relay' || /^relay:[a-z0-9][a-z0-9-]{0,39}$/.test(String(key || ''));
+
+// An HQ and its project mailboxes (snapshot.boxes, HQ first), or none for a lone mailbox.
+function hqBoxes() {
+  const list = S.snap && Array.isArray(S.snap.boxes) ? S.snap.boxes : [];
+  return list.filter((b) => b && typeof b.id === 'string' && typeof b.name === 'string');
+}
+
+// The mailbox a relay, task or worker key belongs to in an HQ: 'relay', 'task:<id>' and
+// 'mailbox:<task>/W1' are HQ's own, 'relay:<box>', 'task:<box>:<id>' and 'mailbox:<box>:<task>/W1' a
+// project's. Null without an HQ.
+function boxOfKey(key) {
+  const list = hqBoxes();
+  if (!list.length) return null;
+  const k = String(key || '');
+  const m = /^relay:([a-z0-9-]+)$/.exec(k) || /^(?:task|mailbox):([a-z0-9-]+):/.exec(k);
+  return list.find((b) => b.id === (m ? m[1] : 'hq')) || null;
+}
+
+// The project mailboxes that hang under a project tile.
+function boxesOfTile(n) {
+  if (!n || n.kind !== 'project') return [];
+  return hqBoxes().filter((b) => b.id !== 'hq' && b.project === n.project);
+}
+const BOX_UNREAD = 'Mailbox not read';
 // Open in PowerShell opens a window on the computer that runs Pleni, so it is offered only on a page
 // opened there, not through a proxy from another device.
 const LOCAL_PAGE = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
@@ -262,7 +292,7 @@ function setText(el, text) {
 // Repaint a region only when its markup changed, so clicks and focus are not lost to a refresh.
 // If something inside had focus, the matching new element gets it back.
 const painted = new WeakMap();
-const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-ask-send', 'data-ask-approve', 'data-ask-keep', 'data-ask-allow', 'data-ask-deny', 'data-ask-back', 'data-hooks', 'data-limits', 'data-merge', 'data-merge-yes', 'data-merge-no', 'data-gh-again', 'data-cloud-again', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-pw', 'data-wifi-address', 'data-wifi', 'data-wifi-copy', 'data-device-out', 'data-hide', 'data-zoom', 'data-map-mode', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
+const FOCUS_ATTRS = ['data-node', 'data-dismiss', 'data-open', 'data-teleport', 'data-ask-send', 'data-ask-approve', 'data-ask-keep', 'data-ask-allow', 'data-ask-deny', 'data-ask-back', 'data-hooks', 'data-limits', 'data-merge', 'data-merge-yes', 'data-merge-no', 'data-gh-again', 'data-cloud-again', 'data-roll', 'data-copy', 'data-copy-addr', 'data-allow', 'data-pw', 'data-wifi-address', 'data-wifi', 'data-wifi-copy', 'data-device-out', 'data-hide', 'data-zoom', 'data-map-mode', 'data-tool-tiles', 'data-list-filter', 'data-feed-filter', 'data-tab', 'data-person', 'data-project', 'data-model'];
 let restoringFocus = false;
 function setHtml(el, html) {
   if (!el) return false;
@@ -435,6 +465,7 @@ function titleOf(n) {
   if (n.title) return String(n.title);
   if (n.kind === 'person') return 'You';
   if (n.kind === 'project') return n.project || 'Project';
+  if (n.kind === 'tool') return PLATFORM_WORDS[n.platform] || 'AI tool';
   if (n.kind === 'agent') return 'Helper agent';
   if (n.kind === 'reviewer') return 'Reviewer';
   if (n.kind === 'relay') return 'Relay';
@@ -452,12 +483,15 @@ function keyName(key) {
   if (n) return titleOf(n);
   const k = String(key || '');
   if (k === 'you') return personName();
-  const m = /^(claude|codex|grok|kimi):([0-9a-f]{8})/i.exec(k);
+  const m = /^(claude|codex|grok|kimi|gemini):([0-9a-f]{8})/i.exec(k);
   if (m) return `${PLATFORM_WORDS[m[1].toLowerCase()]} session ${m[2]}`;
   if (k.startsWith('path:')) return `agent ${k.slice(5).split('/').filter(Boolean).pop() || ''}`.trim();
   if (k.startsWith('project:')) return k.slice(8);
-  if (k === 'relay') return 'the mailbox relay';
-  const w = /^mailbox:(.+)\/(W\d+)$/.exec(k);
+  if (k.startsWith('tool:')) return PLATFORM_WORDS[k.slice(5)] || k.slice(5);
+  if (k === 'relay') return hqBoxes().length ? 'the HQ relay' : 'the mailbox relay';
+  const r = /^relay:([a-z0-9-]+)$/.exec(k);
+  if (r) return `the ${(boxOfKey(k) || { name: r[1] }).name} relay`;
+  const w = /^mailbox:(?:[a-z0-9-]+:)?(.+)\/(W\d+)$/.exec(k);
   if (w) return `worker ${w[2]} on ${w[1]}`;
   return k || 'a session not shown here';
 }
@@ -478,9 +512,19 @@ function projectLabel(name) {
 function rankLine(n) {
   if (n.kind === 'person') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'Your sessions';
   if (n.kind === 'project') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'Project';
+  if (n.kind === 'tool') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'AI tool';
   if (isRelay(n)) return ['Relay', n.subtitle].filter(Boolean).join(' · ');
-  const folder = S.snap && S.snap.nodes && !S.snap.nodes.some((x) => x.kind === 'project') ? n.projectLabel : null;
+  // A session under a project tile does not need its folder said again.
+  const folder = underProject(n) ? null : n.projectLabel;
   return [n.rank, PLATFORM_WORDS[n.platform], folder, n.subtitle].filter(Boolean).join(' · ');
+}
+
+function underProject(n) {
+  const byKey = S.index && S.index.byKey;
+  if (!byKey) return false;
+  let p = byKey.get(n.parent);
+  for (let i = 0; p && i < 64; i++, p = byKey.get(p.parent)) if (p.kind === 'project') return true;
+  return false;
 }
 
 // A worker's model or effort that its sergeant did not choose is marked "(default)".
@@ -825,8 +869,10 @@ function popOut(kind) {
 // the words changed, and keeps the scroll place, so reading is never interrupted.
 
 const USAGE_REFRESH_MS = 60000;
-const USAGE_TOOLS = [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code']];
+const USAGE_TOOLS = [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code'], ['gemini', 'Gemini CLI']];
 const USAGE_LIMIT_PAGES = { claude: 'https://claude.ai/settings/usage', codex: 'https://chatgpt.com/codex/settings/usage' };
+// What to type in a tool that saves no plan limits on this computer, to see them there.
+const USAGE_COMMANDS = { grok: '/usage', kimi: '/usage', gemini: '/stats' };
 const USAGE = { open: false, data: null, error: '', busy: false, timer: 0, run: 0, opener: null, leaving: false };
 
 // 900 -> "900", 1200 -> "1.2k", 250000 -> "250k", 1200000 -> "1.2 million".
@@ -900,7 +946,7 @@ function usageLimitsHtml(key, name, t, now, limitsOn = false) {
     return `<div class="u-limits"><p>Codex saves its limits after each reply. None in the last 7 days.</p>` +
       `<p><a href="${USAGE_LIMIT_PAGES.codex}" id="usage-codex-site" target="_blank" rel="noopener noreferrer">See them on chatgpt.com</a><span class="sr-only"> (opens in a new tab)</span></p></div>`;
   }
-  return `<div class="u-limits"><p>${esc(name)} does not save plan limits on this computer. In ${esc(name)}, type /usage.</p></div>`;
+  return `<div class="u-limits"><p>${esc(name)} does not save plan limits on this computer. In ${esc(name)}, type ${esc(USAGE_COMMANDS[key] ?? '/usage')}.</p></div>`;
 }
 
 function usageTokensHtml(t) {
@@ -1165,9 +1211,13 @@ function renderNotices() {
   if (newer) out.push(notice(false, 'Pleni was updated.', `It now runs version ${versionText(newer, true)}. Reload this page to use it.`));
   if (S.conn === 'error') out.push(notice(true, 'Cannot reach Pleni.', `${S.connError} The page keeps trying every few seconds.`));
   const src = (S.snap && S.snap.sources) || {};
-  for (const [name, label] of [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code'], ['mailbox', 'The mailbox']]) {
+  for (const [name, label] of [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code'], ['gemini', 'Gemini CLI'], ['mailbox', 'The mailbox']]) {
     const s = src[name];
     if (s && s.enabled && s.ok === false) out.push(notice(false, `${label} could not be read.`, s.error || 'Pleni will try again.'));
+  }
+  // HQ's own trouble is the mailbox's, above; each project mailbox says its own.
+  for (const b of hqBoxes()) {
+    if (b.id !== 'hq' && b.error) out.push(notice(false, `The mailbox of the project ${b.name} could not be read.`, `${b.error} The other projects go on.`));
   }
   setHtml($('#notices'), out.join(''));
 }
@@ -1342,7 +1392,7 @@ function welcomeHtml() {
     <img src="/brand/pip-welcome.webp" alt="" width="168" height="168">
     <div>
       <h2>No sessions to show yet</h2>
-      <p>Pleni shows the Claude Code, Codex, Grok and Kimi Code sessions on this computer that were active in the last ${esc(plural(hours, 'hour', 'hours'))}, the helpers they start, and the work they hand to each other. It only reads their files. It never changes them, and nothing leaves this computer.</p>
+      <p>Pleni shows the Claude Code, Codex, Grok, Kimi Code and Gemini CLI sessions on this computer that were active in the last ${esc(plural(hours, 'hour', 'hours'))}, the helpers they start, and the work they hand to each other. It only reads their files. It never changes them, and nothing leaves this computer.</p>
       <h3>Where Pleni looks</h3>
       <ul>
         <li><b>Claude Code:</b> ${where(join(roots.claude, 'projects'), '~/.claude/projects')}, or the folder in <code>CLAUDE_CONFIG_DIR</code>.${state(src.claude)}</li>
@@ -1350,9 +1400,10 @@ function welcomeHtml() {
         <li><b>Codex:</b> ${where(join(roots.codex, 'sessions'), '~/.codex/sessions')}, or the folder in <code>CODEX_HOME</code>.${state(src.codex)}</li>
         <li><b>Grok:</b> ${where(join(roots.grok, 'sessions'), '~/.grok/sessions')}, or the folder in <code>GROK_HOME</code>.${state(src.grok)}</li>
         <li><b>Kimi Code:</b> ${where(join(roots.kimi, 'sessions'), '~/.kimi-code/sessions')}, or the folder in <code>KIMI_CODE_HOME</code>.${state(src.kimi)}</li>
+        <li><b>Gemini CLI:</b> ${where(join(roots.gemini, 'tmp'), '~/.gemini/tmp')}, or the <code>.gemini</code> folder in <code>GEMINI_CLI_HOME</code>.${state(src.gemini)}</li>
         ${mailbox}
       </ul>
-      <p>Start a Claude Code, Codex, Grok or Kimi Code session and it shows up here within a few seconds.</p>
+      <p>Start a Claude Code, Codex, Grok, Kimi Code or Gemini CLI session and it shows up here within a few seconds.</p>
       <h3>Just want to look around?</h3>
       <p>In the Pleni folder, run <code>node bin/pleni.js --demo</code> in a terminal and open the address it prints. The demo uses made-up sessions, so it needs nothing from you.</p>
       <p><a href="#/settings/sources">Change where Pleni looks</a></p>
@@ -1371,12 +1422,14 @@ function workingSet(ix) {
   const now = serverNow();
   const live = (n) =>
     n.needs || n.status === 'working' || n.status === 'ready' || n.status === 'error' || ix.lit.has(n.key) || (isTime(n.lastAt) && now - n.lastAt < QUIET_MS);
-  // A running relay is its normal state, not news: it shows when it halts or carries a hand-off.
-  const relayNews = (n) => isRelay(n) && (n.status === 'error' || ix.lit.has(n.key));
+  // A running relay is its normal state, not news: it shows when it halts or carries a hand-off,
+  // and always while the AI tools button is on, with a tile for each AI tool.
+  const tools = toolTilesOn();
+  const relayNews = (n) => isRelay(n) && (tools || n.status === 'error' || ix.lit.has(n.key));
   const visit = (n) => {
     let any = false;
     for (const k of ix.kids.get(n.key) || []) any = visit(k) || any;
-    if (any || n.kind === 'person' || (isSession(n) && live(n)) || relayNews(n)) {
+    if (any || n.kind === 'person' || n.kind === 'tool' || (isSession(n) && live(n)) || relayNews(n)) {
       keep.add(n.key);
       return true;
     }
@@ -1518,6 +1571,7 @@ function tileHtml(p, L, ix, i) {
   const n = p.n;
   const status = statusOf(n);
   const cls = ['tile', `k-${safeClass(n.kind || 'session')}`];
+  if (n.kind === 'tool') cls.push(`pf-${safeClass(n.platform)}`);
   if (status) cls.push(`st-${status}`);
   if (ix.lit.has(n.key)) cls.push('lit');
   const title = titleOf(n);
@@ -1544,8 +1598,11 @@ function tileHtml(p, L, ix, i) {
     label = [title, rank, words, c.total ? countsPlain(c) : ''].filter(Boolean).join(', ');
   } else {
     const c = ix.counts.get(n.key) || { total: 0 };
-    body = `<span class="tile-meta">${countsHtml(c)}</span>`;
-    label = [title, rank, countsPlain(c)].filter(Boolean).join(', ');
+    // A project mailbox of an HQ that Pleni cannot read shows so on its project's tile.
+    const unread = boxesOfTile(n).some((b) => b.error);
+    if (unread) cls.push('st-error');
+    body = `<span class="tile-meta">${unread ? `<span class="pill">${esc(BOX_UNREAD)}</span>` : ''}${countsHtml(c)}</span>`;
+    label = [title, rank, unread ? BOX_UNREAD : '', countsPlain(c)].filter(Boolean).join(', ');
   }
   if (quiet) label += `, ${quiet} quiet not shown`;
   const mail = mailText(n);
@@ -1594,9 +1651,11 @@ function flowsHtml(ix) {
 
 function renderMap() {
   for (const b of $$('[data-map-mode]')) b.setAttribute('aria-pressed', String(b.dataset.mapMode === S.mapMode));
+  for (const b of $$('[data-tool-tiles]')) b.setAttribute('aria-pressed', String(toolTilesOn()));
   if (!S.snap) return;
   const ix = S.index;
-  const empty = !hasSessions();
+  // With the AI tools button on, the tool tiles show even before any session does.
+  const empty = !hasSessions() && !(ix && ix.nodes.some((n) => n.kind === 'tool'));
   setText($('#map-meta'), countsLine());
   setHtml($('#map-attention'), attentionHtml());
   setHtml($('#map-welcome'), empty ? welcomeHtml() : '');
@@ -1670,6 +1729,30 @@ function setMapMode(mode) {
   writeStore('pleni.mapMode', S.mapMode);
   if (!S.fv.user) S.fv.sig = '';
   renderMap();
+}
+
+// Whether the Map's AI tools button is pressed (settings.toolTiles, from the snapshot).
+function toolTilesOn() {
+  return !!S.snap && S.snap.toolTiles === true;
+}
+
+// The AI tools button: saves settings.toolTiles for every device, then shows the new map.
+async function toggleToolTiles(btn) {
+  if (S.toolBusy) return;
+  const on = !toolTilesOn();
+  S.toolBusy = true;
+  btn.setAttribute('aria-busy', 'true');
+  try {
+    await changeSetting('toolTiles', () => on, (v) => v === true);
+    if (!S.fv.user) S.fv.sig = '';
+    say(on ? 'Each AI tool has a tile now, with its sessions under it.' : 'The AI tool tiles are hidden.');
+  } catch (err) {
+    showMoved({ key: null, spot: 'note', bad: true, fadeMs: MOVED_MS, text: `The AI tools button did not change. ${plainError(err)}` });
+  } finally {
+    S.toolBusy = false;
+    btn.removeAttribute('aria-busy');
+    renderMap();
+  }
 }
 
 // ---------- pan and zoom ----------
@@ -2387,23 +2470,28 @@ async function postSettingsObject(settings) {
   return body;
 }
 
-// Gets the saved settings, changes only projectList with `change(list)`, saves them all, and
-// returns the list Pleni kept. Pleni's Settings page, if it was opened, learns the new list too.
-async function changeProjectList(change) {
+// Gets the saved settings, changes only settings[key] with `change(value)`, saves them all, and
+// returns `keep(the value Pleni kept)`. Pleni's Settings page, if it was opened, learns it too.
+async function changeSetting(key, change, keep) {
   const info = await getJson('/api/settings');
   if (!info || typeof info.settings !== 'object' || info.settings === null) throw new Error('Pleni sent settings this page cannot read.');
   const settings = info.settings;
-  const list = Array.isArray(settings.projectList) ? settings.projectList : [];
-  settings.projectList = change(list);
+  settings[key] = change(settings[key]);
   const body = await postSettingsObject(settings);
-  const kept = body && body.settings && Array.isArray(body.settings.projectList) ? body.settings.projectList : [];
+  const kept = keep(body && body.settings ? body.settings[key] : undefined);
   if (S.set && S.set.info && S.set.info.settings) {
-    S.set.info.settings.projectList = clone(kept);
-    if (S.set.draft) S.set.draft.projectList = clone(kept);
+    S.set.info.settings[key] = clone(kept);
+    if (S.set.draft) S.set.draft[key] = clone(kept);
   }
   S.etag = null;
   await pollNow().catch(() => {});
   return kept;
+}
+
+// changeSetting for projectList, which is always a list.
+function changeProjectList(change) {
+  const list = (v) => (Array.isArray(v) ? v : []);
+  return changeSetting('projectList', (v) => change(list(v)), list);
 }
 
 // What Pleni changed in the project it kept, in plain words.
@@ -2713,17 +2801,50 @@ function renderTasks() {
     );
     return;
   }
-  const sorted = tasks.slice().sort((a, b) => String(b.id).localeCompare(String(a.id)));
-  const open = sorted.filter((t) => !taskState(t.state).closed);
-  const closed = sorted.filter((t) => taskState(t.state).closed);
+  const open = tasks.filter((t) => !taskState(t.state).closed);
   const needs = open.filter((t) => Array.isArray(t.attention) && t.attention.length).length;
-  setText($('#tasks-meta'), `${open.length} open · ${needs} need a look · ${closed.length} closed`);
-  const details = $('#tasks details.fold');
-  const wasOpen = details ? details.open : false;
+  setText($('#tasks-meta'), `${open.length} open · ${needs} need a look · ${tasks.length - open.length} closed`);
+  // Each list of closed tasks stays open or shut as the person left it.
+  const folds = new Map($$('#tasks details.fold').map((d) => [d.dataset.box || '', d.open]));
+  const groups = taskGroups(tasks);
+  if (groups.length === 1 && groups[0].id === '') {
+    setHtml($('#tasks'), taskListHtml(groups[0], folds.get('') === true));
+    return;
+  }
   setHtml(
     $('#tasks'),
+    groups
+      .map((g, i) => {
+        const count = g.tasks.filter((t) => !taskState(t.state).closed).length;
+        const bad = g.error ? `<p class="note src-bad">Pleni could not read this mailbox. ${esc(g.error)}</p>` : '';
+        return (
+          `<section class="task-group" aria-labelledby="tasks-g${i}"><h2 id="tasks-g${i}">${esc(g.name)} <span class="quiet">${esc(`${count} open`)}</span></h2>` +
+          `${bad}${taskListHtml(g, folds.get(g.id) === true)}</section>`
+        );
+      })
+      .join(''),
+  );
+}
+
+// The Tasks page's groups: one for a lone mailbox (id ''); in an HQ, HQ first, then each project
+// mailbox by name.
+function taskGroups(tasks) {
+  const boxes = hqBoxes();
+  if (!boxes.length) return [{ id: '', name: '', error: null, tasks }];
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || a.id.localeCompare(b.id);
+  const order = [...boxes.filter((b) => b.id === 'hq'), ...boxes.filter((b) => b.id !== 'hq').sort(byName)];
+  return order.map((b) => ({ id: b.id, name: b.name, error: b.error || null, tasks: tasks.filter((t) => (t.box || 'hq') === b.id) }));
+}
+
+// One mailbox's open tasks, newest id first, then its closed ones folded away.
+function taskListHtml(group, wasOpen) {
+  const sorted = group.tasks.slice().sort((a, b) => String(b.id).localeCompare(String(a.id)));
+  const open = sorted.filter((t) => !taskState(t.state).closed);
+  const closed = sorted.filter((t) => taskState(t.state).closed);
+  const box = group.id ? ` data-box="${esc(group.id)}"` : '';
+  return (
     (open.length ? `<ul class="tasks">${open.map(taskHtml).join('')}</ul>` : '<p class="empty">No open tasks.</p>') +
-      (closed.length ? `<details class="fold"${wasOpen ? ' open' : ''}><summary>${esc(plural(closed.length, 'closed task', 'closed tasks'))}</summary><ul class="tasks">${closed.map(taskHtml).join('')}</ul></details>` : ''),
+    (closed.length ? `<details class="fold"${box}${wasOpen ? ' open' : ''}><summary>${esc(plural(closed.length, 'closed task', 'closed tasks'))}</summary><ul class="tasks">${closed.map(taskHtml).join('')}</ul></details>` : '')
   );
 }
 
@@ -3548,7 +3669,7 @@ function rollStepsHtml(n, r) {
   const copy = (which, what) => `<button type="button" class="btn" data-copy="${which}">Copy ${what}</button>`;
   const check = found
     ? `<p>New session found: <button type="button" class="linkish" data-node="${esc(found.key)}">${esc(titleOf(found))}</button>, started ${agoHtml(found.startedAt)}.` +
-      `${found.parent === 'relay' ? ' The relay now wakes it.' : ''}</p>` +
+      `${isRelayKey(found.parent) ? ' The relay now wakes it.' : ''}</p>` +
       `<div class="roll-btns"><button type="button" class="btn" data-hide="${esc(n.key)}" data-title="${esc(titleOf(n))}">Hide the old session</button></div>`
     : '<p>Pleni has not found the new session yet.</p>';
   return (
@@ -4309,10 +4430,12 @@ function mailHtml(n) {
 }
 
 // The command that answers a message: agent-mail.ps1 by its full path when Pleni knows the mailbox
-// folder, so it runs from any folder. PowerShell writes a ' inside '...' as ''.
-function mailAnswerCommand(me, to) {
+// folder, so it runs from any folder. PowerShell writes a ' inside '...' as ''. A project mailbox of
+// an HQ (`box`) has a folder the page is never told, so its command runs in that folder.
+function mailAnswerCommand(me, to, box = null) {
   const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
-  const root = S.roots && typeof S.roots.mailbox === 'string' ? S.roots.mailbox.replace(/[\\/]+$/, '') : '';
+  const own = !box || box === 'hq';
+  const root = own && S.roots && typeof S.roots.mailbox === 'string' ? S.roots.mailbox.replace(/[\\/]+$/, '') : '';
   const sep = root.includes('/') && !root.includes('\\') ? '/' : '\\';
   const script = root ? `& ${q(`${root}${sep}bin${sep}agent-mail.ps1`)}` : '.\\bin\\agent-mail.ps1';
   return `${script} -Send -From ${q(me)} -To ${q(to)} -Text 'your answer'`;
@@ -4416,12 +4539,16 @@ function mailItemHtml(x, fresh, me) {
     ? `<div class="mail-text">${esc(x.text)}</div>`
     : '<p class="note">The message is hidden: session text is off in Settings.</p>';
   let answer = '';
+  const project = str(x.box) && x.box !== 'hq' ? str(x.boxName) || str(x.box) : '';
   if (x.toYou && !x.fromYou) {
-    const i = S.mail.cmds.push(mailAnswerCommand(me, str(x.fromName) || str(x.from))) - 1;
-    answer = `<div class="mail-answer"><code>${esc(S.mail.cmds[i])}</code><button type="button" class="btn" data-mail-copy="${i}">Copy the answer command</button></div>`;
+    const i = S.mail.cmds.push(mailAnswerCommand(me, str(x.fromName) || str(x.from), str(x.box) || null)) - 1;
+    const where = project ? `<p class="note">Run it in the mailbox folder of ${esc(project)}.</p>` : '';
+    answer = `<div class="mail-answer"><code>${esc(S.mail.cmds[i])}</code><button type="button" class="btn" data-mail-copy="${i}">Copy the answer command</button></div>${where}`;
   }
+  // In an HQ, each message says which mailbox it is in.
+  const box = str(x.boxName) ? `<span class="quiet">in ${esc(x.boxName)}</span>` : '';
   return (
-    `<li class="mail-msg${fresh ? ' is-new' : ''}"><div class="mail-head"><span class="mail-who"><b>${esc(from)}</b> to <b>${esc(to)}</b></span>${state}` +
+    `<li class="mail-msg${fresh ? ' is-new' : ''}"><div class="mail-head"><span class="mail-who"><b>${esc(from)}</b> to <b>${esc(to)}</b></span>${box}${state}` +
     `${timeHtml(x.at, stamp(x.at))}</div>${text}${answer}</li>`
   );
 }
@@ -4482,7 +4609,7 @@ function squeezedHtml(m) {
 
 // ---- Hide from the map ----
 
-const HIDE_KEY = /^(claude|codex|grok|kimi):/;
+const HIDE_KEY = /^(claude|codex|grok|kimi|gemini):/;
 const hiding = new Set(); // tiles whose Hide is on its way to Pleni
 
 function hideHtml(n) {
@@ -4539,8 +4666,32 @@ function groupNowHtml(n) {
       return `<li><button type="button" data-node="${esc(k.key)}">${markHtml(k, 'small')}<span class="t">${esc(titleOf(k))}</span>${right}</button></li>`;
     })
     .join('');
-  const heading = n.kind === 'person' ? 'Under you' : isRelay(n) ? 'Under the relay' : 'In this project';
-  return `${n.kind === 'person' ? asksHtml('you') : ''}<p class="dnow">${esc(cap(countsPlain(c)))}.</p>${mailHtml(n)}<h3>${heading}</h3>${list ? `<ul class="kids">${list}</ul>` : '<p class="empty">Nothing listed right now.</p>'}`;
+  const heading = n.kind === 'person' ? 'Under you' : isRelay(n) ? 'Under the relay' : n.kind === 'tool' ? `${esc(titleOf(n))} sessions` : 'In this project';
+  return `${n.kind === 'person' ? asksHtml('you') : ''}<p class="dnow">${esc(cap(countsPlain(c)))}.</p>${hqNowHtml(n)}${n.kind === 'tool' ? toolNowHtml(n) : ''}${mailHtml(n)}<h3>${heading}</h3>${list ? `<ul class="kids">${list}</ul>` : '<p class="empty">Nothing listed right now.</p>'}`;
+}
+
+// In an HQ: which mailbox a relay runs, what a project's tile holds, and a mailbox Pleni cannot read.
+function hqNowHtml(n) {
+  const bad = (b) => (b.error ? `<p class="dnow src-bad">Pleni could not read the mailbox of ${esc(b.name)}. ${esc(b.error)}</p>` : '');
+  if (isRelay(n)) {
+    const b = boxOfKey(n.key);
+    if (!b) return '';
+    if (b.id === 'hq') return '<p class="dnow">This is the relay of HQ. It wakes the orchestrator when something new waits for it in HQ or in any of its projects.</p>';
+    return `<p class="dnow">This relay runs the mailbox of the project <b>${esc(b.name)}</b>. It wakes that project's coordinator.</p>${bad(b)}`;
+  }
+  const boxes = boxesOfTile(n);
+  if (!boxes.length) return '';
+  const names = boxes.map((b) => `<b>${esc(b.name)}</b>`).join(', ');
+  return `<p class="dnow">A project of HQ: ${names}. Its relay, coordinator and workers hang under this tile, under the orchestrator.</p>${boxes.map(bad).join('')}`;
+}
+
+// An AI tool's tile: what hangs under it, and where to see its token use or change where Pleni looks.
+function toolNowHtml(n) {
+  const name = esc(titleOf(n));
+  return (
+    `<p class="dnow">${name} sessions that don't report to another tile hang under this tile. The AI tools button above the map hides these tiles again.</p>` +
+    `<p class="dnow"><button type="button" class="btn" data-usage>See token use</button> <a href="#/settings/sources">Change where Pleni looks for ${name}</a></p>`
+  );
 }
 
 function detailsHtml(n) {
@@ -4554,6 +4705,8 @@ function detailsHtml(n) {
   add('Rank', esc(n.rank || ''));
   add('Role', esc(cap(n.role || '')));
   add('Project', esc(n.project ? projectLabel(n.project) : ''));
+  // A relay in an HQ names the mailbox it runs.
+  if (isRelay(n)) add('Project', esc((boxOfKey(n.key) || { name: '' }).name));
   if (isSession(n) && typeof n.github === 'string' && GITHUB_PATH.test(n.github)) {
     add('GitHub', `<span class="gh-links">${githubLink(n.github, '', n.github)}${branchLinks(n.github, n.subtitle)}</span>`);
   }
@@ -6110,18 +6263,28 @@ function sourceRow(name, label, text, help) {
   );
 }
 
+// When the mailbox is an HQ: its projects, and whether Pleni can read each one.
+function hqSourceHtml() {
+  const projects = hqBoxes().filter((b) => b.id !== 'hq');
+  if (!hqBoxes().length) return '';
+  const list = projects
+    .map((b) => `<li><b>${esc(b.name)}</b>: ${b.error ? `<span class="src-bad">${esc(b.error)}</span>` : 'read.'}</li>`)
+    .join('');
+  return `<p class="note hq-note">This folder is an HQ with ${esc(plural(projects.length, 'project mailbox', 'project mailboxes'))}.</p>${list ? `<ul class="note hq-list">${list}</ul>` : ''}`;
+}
+
 function mailboxRows() {
   const d = S.set.draft;
   const id = 's-src-mailbox';
   const on = getPath(d, 'sources.mailbox.enabled', false) === true;
   const root = getPath(d, 'sources.mailbox.root', null);
-  const help = 'A folder where a planner agent hands out tasks and a coordinator agent reports back in Markdown files. Pleni only reads it.';
+  const help = 'A folder where a planner agent hands out tasks and a coordinator agent reports back in Markdown files. If it is an HQ, which lists project mailboxes, Pleni reads those too. Pleni only reads them.';
   return (
     `<div class="srow"><span class="lbl" id="${id}-lbl">Folder</span><div class="src">` +
     `<div class="checks"><label><input type="checkbox" id="${id}-on" data-path="sources.mailbox.enabled" data-kind="bool"${on ? ' checked' : ''}>Read a coordination mailbox</label></div>` +
     `<label class="sr-only" for="${id}-root">Mailbox folder</label>` +
     `<input class="field" id="${id}-root" type="text" data-path="sources.mailbox.root" data-kind="root" value="${esc(root || '')}" placeholder="The full path of the mailbox folder" autocomplete="off" spellcheck="false"${desc(id, help)}>` +
-    `</div>${helpHtml(id, help)}</div>` +
+    `${hqSourceHtml()}</div>${helpHtml(id, help)}</div>` +
     sessionNameRow('s-planner', 'Planner', 'sources.mailbox.planner', 'The session that hands out the tasks. Type part of its name, or pick one from the list. Pleni uses the newest session whose name has that text.') +
     sessionNameRow('s-coordinator', 'Coordinator', 'sources.mailbox.coordinator', 'The session that reports back. Type part of its name. If you leave it empty, Pleni uses the one the mailbox names, if any.')
   );
@@ -6404,6 +6567,7 @@ function renderSettingsForm() {
       </select></div><p class="help" id="s-theme-help">Kept in this browser only. It changes right away.</p></div>
       ${selectRow('s-titles', 'Rank words', 'titles', [['plain', 'Plain: Lead and Agent (plus Superintendent and Coordinator for those roles)'], ['military', 'Military: General, Colonel, Sergeant, Specialist, Private'], ['company', 'Company: Owner, Vice President, Manager, Supervisor, Worker']], 'The words used for ranks on the tiles.')}
       ${selectRow('s-group', 'Group sessions', 'groupBy', [['none', 'Not at all'], ['project', 'By project folder']], 'By project folder puts a folder tile between you and its sessions.')}
+      ${checkRow('s-tooltiles', 'AI tool tiles', 'toolTiles', 'Show a tile for each AI tool, with its sessions under it', 'The AI tools button on the Map does the same. While it is on, sessions group by AI tool instead of by folder, and the relay stays on the map.')}
     </section>
     <section class="panel" aria-labelledby="s-h-show" data-find="snippets text privacy hours days time window old finished stuck idle reviewers"><h2 id="s-h-show">What the page shows</h2>
       <div class="srow" role="radiogroup" aria-labelledby="s-content-lbl" aria-describedby="s-content-help"><span class="lbl" id="s-content-lbl">Session text</span><div class="checks">
@@ -6455,12 +6619,13 @@ function renderSettingsForm() {
       <div id="models-claude" data-models="claude">${appModelsHtml('claude')}</div>
     </section>`)}
     ${group('sources', 'Which tools Pleni reads, and where their files are.', `
-    <section class="panel" aria-labelledby="s-h-where" data-find="folders paths sources read claude codex grok kimi desktop"><h2 id="s-h-where">Where Pleni looks</h2>
+    <section class="panel" aria-labelledby="s-h-where" data-find="folders paths sources read claude codex grok kimi gemini google desktop"><h2 id="s-h-where">Where Pleni looks</h2>
       ${sourceRow('claude', 'Claude Code', 'Read Claude Code sessions', 'Leave the folder empty to use CLAUDE_CONFIG_DIR, or the .claude folder in your home folder.')}
       ${sourceRow('claudeDesktop', 'Claude desktop app', 'Read session names from the Claude desktop app', 'Gives desktop sessions the names you see in the app.')}
       ${sourceRow('codex', 'Codex', 'Read Codex threads', 'Leave the folder empty to use CODEX_HOME, or the .codex folder in your home folder.')}
       ${sourceRow('grok', 'Grok', 'Read Grok sessions', "Pleni reads Grok's session logs in this folder.")}
       ${sourceRow('kimi', 'Kimi Code', 'Read Kimi Code sessions', "Pleni reads Kimi Code's session logs in this folder.")}
+      ${sourceRow('gemini', 'Gemini CLI', 'Read Gemini CLI sessions', "Leave the folder empty to use the .gemini folder in GEMINI_CLI_HOME, or in your home folder. Pleni reads the chat logs in its tmp folder and its list of your project folders, never your login.")}
     </section>
     <section class="panel" aria-labelledby="s-h-cloud" data-find="codex cloud tasks chatgpt openai internet network login web"><h2 id="s-h-cloud">Codex cloud tasks</h2>
       ${cloudRow()}
@@ -6743,7 +6908,7 @@ const MAX_REMOTE = 20;
 // final check for its own system.
 const FULL_PATH = /^(?:[A-Za-z]:[\\/]|[\\/])/;
 // A session key, as isNodeKey in src/config.js checks it.
-const NODE_KEY = /^(claude|codex|grok|kimi):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
+const NODE_KEY = /^(claude|codex|grok|kimi|gemini):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
 
 function listWords(el) {
   return el.value.split(/[\s,]+/).map((w) => w.trim()).filter(Boolean);
@@ -6985,6 +7150,7 @@ document.addEventListener('click', (ev) => {
   if (el.id === 'theme-toggle') return toggleTheme();
   if (el.dataset.zoom) return zoomButton(el.dataset.zoom);
   if (el.dataset.mapMode) return setMapMode(el.dataset.mapMode);
+  if (el.hasAttribute('data-tool-tiles')) return toggleToolTiles(el);
   if (el.dataset.tab) return selectTab(el.dataset.tab, false);
   if (el.dataset.dismiss) return dismissNotice(el);
   if (el.id === 's-alerts-test') return testAlert();

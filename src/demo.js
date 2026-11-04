@@ -18,6 +18,9 @@ const MIN = 60000;
 const HOME = '/home/ada';
 const BILLING = `${HOME}/code/billing-service`;
 const FIELD = `${HOME}/code/field-app`;
+// The demo's mailboxes: an HQ, whose orchestrator plans two projects, each with a mailbox, a relay
+// and a coordinator of its own (made with the relay's -NewProject, in HQ's projects folder).
+const HQ = `${HOME}/hq`;
 
 const PLANNER = 'codex:019a3f2e-7c41-7d20-9b6e-5a1c2d3e4f50';
 const SCHEMA = 'codex:019a3f30-1b22-7e31-8c4d-6b2e3f405162';
@@ -32,12 +35,17 @@ const OFFLINE = 'codex:019a3e10-2f77-7c54-b15a-9e5162738495';
 const TILES = 'claude:3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f';
 const RATES = 'grok:01a13b20-5c6d-7e8f-9a0b-1c2d3e4f5a6b';
 const ROUNDING = 'kimi:7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+const HELP_PAGES = 'gemini:4b5c6d7e-8f90-4a1b-9c2d-3e4f5a6b7c8d';
+const SCREENSHOTS = `${HELP_PAGES}/codebase_investigator-5e6f`;
+const FIELD_LEAD = 'claude:6e1f2a3b-4c5d-4e6f-8a7b-9c0d1e2f3a4b';
+const DOWNLOADS = 'claude:7f2a3b4c-5d6e-4f70-8a9b-0c1d2e3f4a5c';
 // Made-up GitHub repositories for the Pull requests view.
 const GITHUB = { billing: 'example/billing-service', field: 'example/field-app' };
-const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
-const ROOTS = { claude: '.claude', codex: '.codex', grok: '.grok', kimi: '.kimi-code' };
+const TOOLS = ['claude', 'codex', 'grok', 'kimi', 'gemini'];
+const ROOTS = { claude: '.claude', codex: '.codex', grok: '.grok', kimi: '.kimi-code', gemini: '.gemini' };
 
-export const DEMO_KEYS = Object.freeze({ planner: PLANNER, coordinator: COORDINATOR });
+// The planner is HQ's orchestrator; the coordinator runs the Billing service project mailbox.
+export const DEMO_KEYS = Object.freeze({ planner: PLANNER, coordinator: COORDINATOR, fieldCoordinator: FIELD_LEAD });
 
 // Made-up pull requests, shown when live GitHub status is turned on in the demo. `age` is minutes
 // since the last change; `checks` are the results of the checks below, in order.
@@ -59,12 +67,12 @@ const CHECK_NAMES = ['Test (ubuntu-latest, Node 22)', 'Test (windows-latest, Nod
 // `start` and `end` are minutes before the current ten-minute mark; working sessions have no end.
 const CAST = [
   {
-    key: PLANNER, kind: 'session', title: 'Q4 billing plan', cwd: BILLING, branch: 'main',
+    key: PLANNER, kind: 'session', title: 'Orchestrator', cwd: HQ, branch: null,
     entrypoint: 'codex_cli_rs', model: 'gpt-6.1-astra', effort: 'high', status: 'working', start: 75,
-    prompt: 'Plan the Q4 billing work and hand the tasks out.',
+    prompt: 'Plan the Q4 work of every project and hand the tasks out.',
     tools: [
-      ['exec', 'git log --oneline -20', '20 commits since the last release.'],
-      ['exec', 'rg "invoice_id" src', 'Found 41 matches in 12 files.'],
+      ['exec', 'Read the Billing service status', 'T-101 is half done. T-102 waits for a review.'],
+      ['exec', 'Read the Field app status', 'T-201 has two workers.'],
       ['update_plan', null, 'Plan updated: 4 steps, 2 done.'],
     ],
     texts: ['Schema review is checking the invoice tables next.', 'T-101 is moving. Waiting on the index report.'],
@@ -161,9 +169,49 @@ const CAST = [
     texts: ['Two screens round prices down instead of to the nearest cent.', 'The cart and the receipt now round the same way.'],
   },
   {
+    key: HELP_PAGES, kind: 'session', title: 'Help pages refresh', cwd: FIELD, branch: 'main', entrypoint: null,
+    model: 'gemini-3-pro-preview', effort: null, status: 'working', start: 28,
+    prompt: 'Bring the help pages up to date with the new login screen.',
+    tools: [
+      ['ReadFile', 'login-help.md', 'Read 64 lines.'],
+      ['Shell', 'Build the help pages', 'Built 12 pages.'],
+      ['WriteFile', 'login-help.md', 'Wrote 70 lines.'],
+    ],
+    texts: ['The login help page still shows the old buttons.', 'The help pages now match the new login screen.'],
+  },
+  {
+    key: SCREENSHOTS, parent: HELP_PAGES, kind: 'agent', title: 'Find the old screenshots', cwd: FIELD, branch: 'main',
+    entrypoint: null, model: 'gemini-3-flash-preview', effort: null, status: 'done', start: 24, end: 14,
+    prompt: 'Find every help page that shows the old login screen.',
+    last: 'Three help pages show the old login screen: login-help.md, first-run.md and faq.md.',
+  },
+  {
     key: TILES, kind: 'session', title: 'Map tile cache', cwd: FIELD, branch: 'main', entrypoint: 'cli',
     model: 'claude-opus-5-5', effort: 'low', status: 'idle', start: 140, end: 95,
     prompt: 'Check the map tile cache sizes.', last: 'Cache sizes look fine. Nothing else to do here.',
+  },
+  // The Field app project mailbox's coordinator, which its relay wakes, and its worker W2.
+  {
+    key: FIELD_LEAD, kind: 'session', title: 'Field app coordinator', cwd: `${HQ}/projects/field-app`, branch: null,
+    entrypoint: 'cli', model: 'claude-opus-5-5', effort: 'high', status: 'working', start: 55,
+    prompt: 'Read the Field app mailbox and run task T-201.',
+    tools: [
+      ['Read', 'assignment.md', 'Read 38 lines.'],
+      ['Bash', 'Check on the W2 worker', 'W2 is still running.'],
+      ['Edit', 'status.md', 'Updated 2 lines.'],
+    ],
+    texts: ['W1 finished the tile cache. W2 is on the download screen.', 'T-201 is moving. W2 should be done soon.'],
+  },
+  {
+    key: DOWNLOADS, kind: 'session', title: 'Download screen', cwd: `${FIELD}/.claude/worktrees/t-201`, branch: 'claude/T-201',
+    entrypoint: 'sdk-cli', model: 'claude-sonnet-5-5', effort: 'medium', status: 'working', start: 15,
+    prompt: 'Build the screen that downloads map tiles for offline use.',
+    tools: [
+      ['Write', 'download-screen.tsx', 'Wrote 120 lines.'],
+      ['Bash', 'Run the screen tests', '14 passed, 0 failed.'],
+      ['Edit', 'tile-store.ts', 'Updated 6 lines.'],
+    ],
+    texts: ['The download screen shows each area and its size.', 'Downloads pause and go on again when the phone sleeps.'],
   },
 ];
 
@@ -177,6 +225,7 @@ const SPAWNS = {
   [TESTS]: 'Write tests for the refund endpoint',
   [LAYOUT]: 'Lay out the new invoice PDF',
   [LEDGER]: 'Check the ledger migration',
+  [SCREENSHOTS]: 'Find the help pages with old screenshots',
 };
 
 // One loop of hand-offs; the number is the beat inside the loop.
@@ -203,16 +252,17 @@ const MAIL_HISTORY = [
   { ago: 20, dir: 'up', taskId: 'T-103', file: 'questions.md', title: 'Q1: Which tax year should the table use?' },
 ];
 
-// Agent mail (relay/bin/agent-mail.ps1): sessions and the person write to each other by name. The
-// relay wakes the planner when mail waits for it. `read` is how many beats a message waits.
+// Agent mail (relay/bin/agent-mail.ps1), in HQ: sessions and the person write to each other by
+// name. HQ's relay wakes the orchestrator when mail waits for it. `read` is how many beats a message
+// waits.
 const MAIL_AGENTS = [
-  { key: 'q4-billing-plan', name: 'Q4 billing plan', thread: PLANNER },
+  { key: 'orchestrator', name: 'Orchestrator', thread: PLANNER },
   { key: 'sales-tax-research', name: 'Sales tax research', thread: null },
   { key: 'ada', name: 'Ada', thread: null },
 ];
 const MAIL_NAMES = new Map(MAIL_AGENTS.map((a) => [a.key, a.name]));
 const LETTERS = [
-  { ago: 34, from: 'q4-billing-plan', to: 'sales-tax-research', text: 'Find the sales tax changes coming next year in our three states.' },
+  { ago: 34, from: 'orchestrator', to: 'sales-tax-research', text: 'Find the sales tax changes coming next year in our three states.' },
   {
     ago: 6, from: 'sales-tax-research', to: 'ada', unread: true,
     text: 'Two of our three states change their sales tax next year:\n\n- North: 6.5% from January 1\n- South: 7% from July 1\n\nShould I update the tax table now, or wait for T-103?',
@@ -220,26 +270,58 @@ const LETTERS = [
   { ago: 52, from: 'ada', to: 'sales-tax-research', text: 'Please find the sales tax changes coming next year in our three states, and tell me before you change anything.' },
 ];
 const LETTER_SCRIPT = [
-  { beat: 6, from: 'q4-billing-plan', to: 'sales-tax-research', read: 4, text: 'Which of the rate changes start in January?' },
-  { beat: 10, from: 'sales-tax-research', to: 'q4-billing-plan', read: 2, text: 'Both of them. The dates are in docs/tax-rates.md.' },
+  { beat: 6, from: 'orchestrator', to: 'sales-tax-research', read: 4, text: 'Which of the rate changes start in January?' },
+  { beat: 10, from: 'sales-tax-research', to: 'orchestrator', read: 2, text: 'Both of them. The dates are in docs/tax-rates.md.' },
   { beat: 18, from: 'ada', to: 'sales-tax-research', read: 3, text: 'Thanks. Wait for T-103 before you change the table.' },
 ];
 
+// The Billing service project mailbox's tasks.
 const TASKS = [
-  { id: 'T-100', title: 'Ledger cleanup', state: 'DONE', attention: [], worker: { model: 'claude-haiku-5-5', start: 80, end: 56 } },
-  { id: 'T-101', title: 'Split the invoice service', state: 'IN_PROGRESS', attention: [], worker: { model: 'claude-sonnet-5-5', start: 30 } },
+  { id: 'T-100', title: 'Ledger cleanup', state: 'DONE', attention: [], workers: [{ id: 'W1', model: 'claude-haiku-5-5', start: 80, end: 56 }] },
+  { id: 'T-101', title: 'Split the invoice service', state: 'IN_PROGRESS', attention: [], workers: [{ id: 'W1', model: 'claude-sonnet-5-5', start: 30 }] },
   { id: 'T-102', title: 'Refund rules for partial orders', state: 'IN_REVIEW', attention: ['review'] },
   { id: 'T-103', title: 'Tax table update', state: 'BLOCKED', attention: ['question'] },
+];
+
+// The Field app project mailbox: one task with two workers, W2 a Claude Code session of its own.
+const FIELD_TASKS = [
+  {
+    id: 'T-201', title: 'Offline map tiles', state: 'IN_PROGRESS', attention: [],
+    workers: [{ id: 'W1', model: 'claude-sonnet-5-5', start: 50, end: 20 }, { id: 'W2', model: 'claude-sonnet-5-5', start: 15, session: DOWNLOADS }],
+  },
+];
+const FIELD_HISTORY = [
+  { ago: 58, dir: 'down', taskId: 'T-201', file: 'assignment.md', title: 'Offline map tiles' },
+  { ago: 52, dir: 'up', taskId: 'T-201', file: 'status.md', title: 'Status: accepted, W1 is on the tile cache' },
+];
+const FIELD_SCRIPT = [
+  { beat: 2, dir: 'up', taskId: 'T-201', file: 'status.md', title: 'Status: W2 started the download screen' },
+  { beat: 9, dir: 'up', taskId: 'T-201', file: 'questions.md', title: 'Q1: Keep the tiles for 7 or 30 days?' },
+  { beat: 15, dir: 'down', taskId: 'T-201', file: 'answers.md', title: 'A1: Keep them for 30 days' },
+];
+
+// HQ's own board: work with no project.
+const HQ_TASKS = [{ id: 'T-001', title: 'Pick the Q4 projects', state: 'DONE', attention: [] }];
+const HQ_HISTORY = [
+  { ago: 130, dir: 'down', taskId: 'T-001', file: 'assignment.md', title: 'Pick the Q4 projects' },
+  { ago: 110, dir: 'down', taskId: 'T-001', file: 'review.md', title: 'Review: done, two projects' },
+];
+// HQ's relay wakes the orchestrator a moment after something new waits for it in a project.
+const PLANNER_WAKES = [{ beat: 10, count: 1 }, { beat: 22, count: 1 }];
+// The two project mailboxes, in HQ's bin/relay-settings.json order.
+const PROJECTS = [
+  { id: 'billing', name: 'Billing service', folder: `${HQ}/projects/billing` },
+  { id: 'field-app', name: 'Field app', folder: `${HQ}/projects/field-app` },
 ];
 
 export function createDemoSource({ now = Date.now } = {}) {
   return {
     poll() {
       const clock = clockAt(now());
-      const { handoffs, mail, letters } = history(clock);
-      const sessions = CAST.map((member) => session(member, clock, handoffs));
+      const past = history(clock);
+      const sessions = CAST.map((member) => session(member, clock, past.handoffs));
       const read = (name) => ({ ok: true, error: null, root: `${HOME}/${ROOTS[name]}`, sessions: sessions.filter((s) => s.platform === name) });
-      return { ...Object.fromEntries(TOOLS.map((name) => [name, read(name)])), mailbox: mailbox(clock, mail, letters) };
+      return { ...Object.fromEntries(TOOLS.map((name) => [name, read(name)])), mailbox: hqMailbox(clock, past) };
     },
     // The Mail page's messages, in the shape src/sources/mailbox.js gives them.
     mail({ keys = [], all = false } = {}) {
@@ -257,6 +339,9 @@ export function createDemoSource({ now = Date.now } = {}) {
           at: m.at,
           unread: m.unread,
           text: m.text,
+          // The demo's mail is in HQ's mailbox.
+          box: 'hq',
+          boxName: 'HQ',
         }));
     },
     detail(key, since) {
@@ -364,7 +449,7 @@ export function demoClaudeModels() {
 
 // What GET /api/usage gives in the demo, in the same shape as createUsage().read() in src/usage.js:
 // made-up token counts for the last 7 days, limits for Claude Code (from its status line) and Codex
-// (from its files), and none for Grok and Kimi Code. The same time always gives the same numbers.
+// (from its files), and none for Grok, Kimi Code and Gemini CLI. The same time always gives the same numbers.
 export function demoUsage(now = Date.now()) {
   const win = lastDays(now);
   // [input, output, cacheRead, cacheWrite] per day, oldest first, in thousands of tokens.
@@ -373,6 +458,7 @@ export function demoUsage(now = Date.now()) {
     codex: [[150, 60, 900, 0], [220, 80, 1400, 0], [180, 70, 1100, 0], [0, 0, 0, 0], [260, 95, 1700, 0], [310, 120, 2100, 0], [140, 52, 800, 0]],
     grok: [[80, 30, 200, 20], [0, 0, 0, 0], [95, 38, 260, 24], [60, 22, 150, 12], [0, 0, 0, 0], [110, 44, 310, 30], [45, 18, 120, 9]],
     kimi: [[0, 0, 0, 0], [120, 50, 640, 70], [140, 56, 700, 80], [0, 0, 0, 0], [90, 36, 480, 52], [0, 0, 0, 0], [75, 30, 400, 44]],
+    gemini: [[60, 22, 310, 0], [0, 0, 0, 0], [0, 0, 0, 0], [130, 48, 880, 0], [85, 31, 540, 0], [0, 0, 0, 0], [105, 40, 690, 0]],
   };
   const tool = (name, limits) => {
     const days = win.keys.map((date, i) => {
@@ -408,6 +494,7 @@ export function demoUsage(now = Date.now()) {
       }),
       grok: tool('grok', null),
       kimi: tool('kimi', null),
+      gemini: tool('gemini', null),
     },
   };
 }
@@ -436,7 +523,8 @@ function ghPull(p, now) {
   };
 }
 
-// The demo's own people and mailbox wiring, so ranks and the mailbox line show up without setup.
+// The demo's own people and mailbox wiring, so ranks and the mailbox lines show up without setup.
+// HQ's orchestrator comes from its relay (relay.plannerKey); the planner here is the same thread.
 export function demoSettings(settings) {
   const clean = cleanSettings(settings);
   clean.sources.mailbox.planner = PLANNER;
@@ -450,7 +538,7 @@ export function demoSettings(settings) {
       { id: 'demofieldapp1', name: 'Field app', folder: FIELD, repo: GITHUB.field },
     ],
   }).projectList;
-  for (const [key, role] of [[PLANNER, 'superintendent'], [COORDINATOR, 'coordinator']]) {
+  for (const [key, role] of [[PLANNER, 'superintendent'], [COORDINATOR, 'coordinator'], [FIELD_LEAD, 'coordinator'], [DOWNLOADS, 'worker']]) {
     clean.people[key] = { ...clean.people[key], role: clean.people[key]?.role || role };
   }
   // The demo always shows the Cloud page, with made-up tasks: it runs nothing.
@@ -475,12 +563,21 @@ function endOf(member, clock) {
 
 function history(clock) {
   const handoffs = [];
-  const mail = MAIL_HISTORY.map(({ ago, ...rest }) => ({ at: clock.mark - ago * MIN, ...rest }));
-  const letters = LETTERS.map(({ ago, unread = false, ...rest }) => ({ ...rest, at: clock.mark - ago * MIN, unread }));
-  // Each scripted letter once, at the last time the loop sent it, so the Mail page shows no copies.
+  const ago = (list) => list.map(({ ago: minutes, ...rest }) => ({ at: clock.mark - minutes * MIN, ...rest }));
+  const mail = ago(MAIL_HISTORY);
+  const field = ago(FIELD_HISTORY);
+  const own = ago(HQ_HISTORY);
+  const letters = LETTERS.map(({ ago: minutes, unread = false, ...rest }) => ({ ...rest, at: clock.mark - minutes * MIN, unread }));
+  // Each scripted letter and wake once, at the last time the loop sent it, so nothing shows twice.
   for (const step of LETTER_SCRIPT) {
-    const beat = clock.beat - (((clock.beat - step.beat) % LOOP_BEATS) + LOOP_BEATS) % LOOP_BEATS;
+    const beat = lastBeat(clock, step.beat);
     if (beat >= 0) letters.push({ from: step.from, to: step.to, text: step.text, at: beat * BEAT_MS, unread: clock.beat - beat < step.read });
+  }
+  const wakes = [];
+  for (const step of PLANNER_WAKES) {
+    const beat = lastBeat(clock, step.beat);
+    const running = clock.beat - beat < 2;
+    if (beat >= 0) wakes.push({ at: beat * BEAT_MS, endAt: running ? null : beat * BEAT_MS + 6000, running, count: step.count });
   }
   for (const member of CAST) {
     if (!member.parent) continue;
@@ -497,8 +594,14 @@ function history(clock) {
       if (step.mail) mail.push({ at, dir: step.mail, taskId: step.taskId, file: step.file, title: step.title });
       else handoffs.push({ at, parent: step.parent, child: step.child, dir: step.dir, label: step.label });
     }
+    for (const { beat: when, ...step } of FIELD_SCRIPT) if (when === beat % LOOP_BEATS) field.push({ at, ...step });
   }
-  return { handoffs, mail, letters };
+  return { handoffs, mail, field, own, letters, wakes };
+}
+
+// The newest beat at or before now on which a step of the loop came round (negative before the first).
+function lastBeat(clock, step) {
+  return clock.beat - (((clock.beat - step) % LOOP_BEATS) + LOOP_BEATS) % LOOP_BEATS;
 }
 
 function session(member, clock, handoffs) {
@@ -520,7 +623,7 @@ function session(member, clock, handoffs) {
     titleSource: 'demo',
     cwd: member.cwd,
     branch: member.branch,
-    github: GITHUB[member.cwd.startsWith(FIELD) || member.cwd.includes('field-app') ? 'field' : 'billing'],
+    github: githubOf(member.cwd),
     entrypoint: member.entrypoint,
     model: member.model,
     effort: member.effort,
@@ -540,45 +643,78 @@ function session(member, clock, handoffs) {
   };
 }
 
-function mailbox(clock, mail, letters) {
-  const events = mail.sort((a, b) => b.at - a.at).slice(0, 300);
-  const tasks = TASKS.map((task) => {
+// The made-up repositories the sessions work in; HQ's folders are no repository.
+function githubOf(cwd) {
+  if (cwd.startsWith(HQ)) return null;
+  return GITHUB[cwd.startsWith(FIELD) || cwd.includes('field-app') ? 'field' : 'billing'];
+}
+
+// HQ's mailbox, in the shape src/sources/mailbox.js's createMailboxesSource gives it: its own board,
+// its relay (which wakes the orchestrator, for mail and for new items in the projects), the agent
+// mail, and the two project mailboxes, each with a relay and a coordinator of its own.
+function hqMailbox(clock, past) {
+  const billing = projectMailbox(clock, {
+    name: 'billing', folder: PROJECTS[0].folder, tasks: TASKS, events: past.mail, coordinator: COORDINATOR,
+    // A note the coordinator left for the person, in NEEDS-ADA.md at the mailbox root.
+    notes: [{ file: 'NEEDS-ADA.md', count: 1, at: clock.mark - 12 * MIN, text: 'Approve the new tax-rate source before W1 ships the change.' }],
+  });
+  const field = projectMailbox(clock, { name: 'field-app', folder: PROJECTS[1].folder, tasks: FIELD_TASKS, events: past.field, coordinator: FIELD_LEAD, notes: [] });
+  const own = projectMailbox(clock, { name: 'hq', folder: HQ, tasks: HQ_TASKS, events: past.own, coordinator: null, notes: [] });
+  const threadId = PLANNER.slice(PLANNER.indexOf(':') + 1);
+  const plannerWakes = past.wakes.map((w) => ({ key: null, name: null, ...w, planner: true, threadId }));
+  own.relay.plannerKey = PLANNER;
+  own.relay.wakes = [...relayWakes(past.letters), ...plannerWakes].sort((a, b) => b.at - a.at);
+  return {
+    ...own,
+    mail: agentMail(past.letters),
+    hq: {
+      projects: [
+        { id: PROJECTS[0].id, name: PROJECTS[0].name, mailbox: billing },
+        { id: PROJECTS[1].id, name: PROJECTS[1].name, mailbox: field },
+      ],
+      skipped: [],
+    },
+  };
+}
+
+// One mailbox, as createMailboxSource gives it, with its relay running.
+function projectMailbox(clock, { name, folder, tasks: list, events: all, coordinator, notes }) {
+  const events = all.sort((a, b) => b.at - a.at).slice(0, 300);
+  const tasks = list.map((task) => {
     const newest = events.find((event) => event.taskId === task.id);
-    const worker = task.worker && {
-      id: 'W1',
-      state: task.worker.end ? 'done' : 'running',
-      model: task.worker.model,
-      startedAt: clock.mark - task.worker.start * MIN,
-      finishedAt: task.worker.end ? clock.mark - task.worker.end * MIN : null,
-    };
     return {
       id: task.id,
       title: task.title,
       state: task.state,
       updatedAt: newest ? newest.at : null,
       attention: [...task.attention],
-      workers: worker ? [worker] : [],
+      workers: (task.workers ?? []).map((w) => ({
+        id: w.id,
+        state: w.end ? 'done' : 'running',
+        model: w.model,
+        startedAt: clock.mark - w.start * MIN,
+        finishedAt: w.end ? clock.mark - w.end * MIN : null,
+        ...(w.session ? { sessionId: w.session.slice(w.session.indexOf(':') + 1) } : {}),
+      })),
     };
   });
   return {
     ok: true,
     error: null,
-    root: `${HOME}/mailboxes/billing`,
-    name: 'billing',
+    root: folder,
+    name,
     tasks,
     events,
-    // A note the coordinator left for the person, in NEEDS-ADA.md at the mailbox root.
-    notes: [{ file: 'NEEDS-ADA.md', count: 1, at: clock.mark - 12 * MIN, text: 'Approve the new tax-rate source before W1 ships the change.' }],
+    notes,
     relay: {
-      running: true, paused: false, halted: false, coordinatorKey: COORDINATOR,
-      lastAt: clock.beatAt, pausedAt: null, haltReason: null, alerts: null,
-      wakes: relayWakes(letters),
+      running: true, paused: false, halted: false, coordinatorKey: coordinator,
+      lastAt: clock.beatAt, pausedAt: null, haltReason: null, alerts: null, wakes: [],
     },
-    mail: agentMail(letters),
+    mail: null,
   };
 }
 
-// The relay wakes each agent it knows, a moment after mail comes for it.
+// HQ's relay wakes each agent it knows, a moment after mail comes for it.
 function relayWakes(letters) {
   const woken = new Map(MAIL_AGENTS.filter((a) => a.thread).map((a) => [a.key, a.name]));
   return letters

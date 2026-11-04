@@ -113,6 +113,7 @@
   --pl-codex: #b4c2d6;
   --pl-grok: #ef8bcb;
   --pl-kimi: #a6d46e;
+  --pl-gemini: #7cc4f2;
   --pl-person: #ffd166;
   --pl-logo-dark: inline-block;
   --pl-logo-light: none;
@@ -191,6 +192,7 @@
     --pl-codex: #3f4f66;
     --pl-grok: #a52f7a;
     --pl-kimi: #4a6b14;
+    --pl-gemini: #0e6596;
     --pl-person: #8a5c00;
     --pl-logo-dark: none;
     --pl-logo-light: inline-block;
@@ -269,6 +271,7 @@
   --pl-codex: #3f4f66;
   --pl-grok: #a52f7a;
   --pl-kimi: #4a6b14;
+  --pl-gemini: #0e6596;
   --pl-person: #8a5c00;
   --pl-logo-dark: none;
   --pl-logo-light: inline-block;
@@ -314,6 +317,8 @@ h1, h2, h3 { line-height: var(--ui-leading-tight); }
 .btn.primary:hover { background: var(--ui-accent); }
 .btn-ic { display: inline-flex; align-items: center; gap: var(--ui-space-3); }
 .btn-ic svg { width: 16px; height: 16px; flex: none; }
+.btn[aria-pressed="true"] { border-color: var(--ui-accent); color: var(--ui-accent-strong); background: var(--ui-accent-soft); }
+.btn[aria-busy="true"] { cursor: progress; }
 .link { background: none; border: 0; padding: 0; color: var(--ui-accent); font-weight: var(--ui-weight-medium); text-decoration: underline; text-underline-offset: 2px; }
 .icon-btn {
   display: inline-grid; place-items: center; width: 34px; height: 34px; flex: none;
@@ -460,6 +465,7 @@ main:focus { outline: none; }
 .mark.mk-codex { color: var(--pl-codex); background: color-mix(in srgb, var(--pl-codex) 14%, transparent); }
 .mark.mk-grok { color: var(--pl-grok); background: color-mix(in srgb, var(--pl-grok) 14%, transparent); }
 .mark.mk-kimi { color: var(--pl-kimi); background: color-mix(in srgb, var(--pl-kimi) 14%, transparent); }
+.mark.mk-gemini { color: var(--pl-gemini); background: color-mix(in srgb, var(--pl-gemini) 14%, transparent); }
 .mark.mk-human { color: var(--pl-person); background: color-mix(in srgb, var(--pl-person) 14%, transparent); }
 .mark.mk-group { color: var(--ui-accent-strong); background: var(--ui-accent-soft); }
 .mark.mk-relay { color: var(--ui-pending-text); background: var(--ui-pending-soft); }
@@ -513,6 +519,12 @@ main:focus { outline: none; }
 .tile.st-error { border-color: color-mix(in srgb, var(--ui-error) 55%, var(--ui-map-node-border)); }
 .tile.k-person { background: color-mix(in srgb, var(--ui-accent) 12%, var(--ui-map-node)); border-color: var(--ui-accent); }
 .tile.k-project { background: color-mix(in srgb, var(--ui-surface-raised) 60%, var(--ui-map-node)); }
+.tile.k-tool { background: color-mix(in srgb, var(--ui-surface-raised) 60%, var(--ui-map-node)); border-left-width: 3px; }
+.tile.k-tool.pf-claude { border-left-color: var(--pl-claude); }
+.tile.k-tool.pf-codex { border-left-color: var(--pl-codex); }
+.tile.k-tool.pf-grok { border-left-color: var(--pl-grok); }
+.tile.k-tool.pf-kimi { border-left-color: var(--pl-kimi); }
+.tile.k-tool.pf-gemini { border-left-color: var(--pl-gemini); }
 .tile.lit { box-shadow: 0 0 0 1px var(--ui-map-link-glow), 0 0 26px var(--ui-map-link-glow); }
 .tile-title { font-weight: var(--ui-weight-semibold); font-size: 14px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile-rank { font-size: var(--ui-font-sm); color: var(--ui-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -632,7 +644,10 @@ main:focus { outline: none; }
 .welcome ul { margin: var(--ui-space-3) 0; padding-left: var(--ui-space-7); max-width: 80ch; }
 .welcome li { margin: var(--ui-space-2) 0; color: var(--ui-text-secondary); }
 .welcome li b { color: var(--ui-text-primary); }
-.welcome .src-bad { color: var(--ui-error-text); }
+.src-bad { color: var(--ui-error-text); }
+/* Settings, Sources: the project mailboxes of an HQ. */
+.hq-note { margin: var(--ui-space-4) 0 0; }
+.hq-list { margin: var(--ui-space-2) 0 0; padding-left: var(--ui-space-7); }
 .welcome .src-ok { color: var(--ui-ok-text); }
 
 /* ---------- list ---------- */
@@ -688,6 +703,11 @@ button.name:hover { color: var(--ui-accent-strong); }
 /* ---------- tasks ---------- */
 
 ul.tasks { list-style: none; margin: var(--ui-space-5) 0 0; padding: 0; display: grid; gap: var(--ui-space-4); }
+/* In an HQ, one group of tasks for each mailbox: HQ first, then each project. */
+.task-group { margin-top: var(--ui-space-6); }
+.task-group + .task-group { margin-top: var(--ui-space-8); }
+.task-group h2 { margin: 0; font-size: var(--ui-font-xl); overflow-wrap: anywhere; }
+.task-group h2 .quiet { font-size: var(--ui-font-sm); font-weight: var(--ui-weight-regular); margin-left: var(--ui-space-3); }
 .task { padding: var(--ui-space-5) var(--ui-space-6); background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); }
 /* Pull requests: one card per GitHub repository, its branches, and who works on each. */
 #pulls { display: grid; gap: var(--ui-space-6); max-width: 980px; }

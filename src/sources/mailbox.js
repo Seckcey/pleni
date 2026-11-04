@@ -75,7 +75,9 @@ const STAMP = new RegExp(
   'g',
 );
 
-export function createMailboxSource({ root = null, settings = null, now = Date.now } = {}) {
+// `hq` is true for an HQ (see readHqProjects): its relay also names the orchestrator it wakes
+// (relay.plannerKey, from .relay/codex.json) and lists those wakes with its mail wakes.
+export function createMailboxSource({ root = null, settings = null, now = Date.now, hq = false } = {}) {
   const files = createFileCache();
   const relayFiles = createFileCache();
   const mail = typeof root === 'string' && root ? createMailReader(root, now) : null;
@@ -162,7 +164,7 @@ export function createMailboxSource({ root = null, settings = null, now = Date.n
     const alerts = relayFiles.get(path.join(dir, 'alerts.md'), readNotes);
     // The relay writes the reason it halted into state.json ("halt"); it stays until -ClearHalt.
     const halt = typeof state?.halt === 'string' && state.halt.trim() ? state.halt : null;
-    return {
+    const relay = {
       running: isRunning(lock),
       paused: exists(path.join(dir, 'PAUSE')) || state?.paused === true,
       halted: exists(path.join(dir, 'STOP')) || state?.halted === true || halt !== null,
@@ -172,8 +174,11 @@ export function createMailboxSource({ root = null, settings = null, now = Date.n
       pausedAt: statFile(path.join(dir, 'PAUSE'))?.mtimeMs ?? null,
       haltReason: hide ? null : shortText(halt, MAX_NOTE),
       alerts: alerts ? { count: alerts.count, at: alerts.at, text: hide ? null : alerts.text } : null,
-      wakes: relayWakes(state?.mail_dispatches),
+      wakes: relayWakes(state?.mail_dispatches, hq ? state?.codex_dispatches : null),
     };
+    // HQ's orchestrator is the Codex thread its relay wakes as the planner (-EnrollCodex).
+    if (hq) relay.plannerKey = plannerKeyOf(relayFiles.get(path.join(dir, 'codex.json'), readJson));
+    return relay;
   }
 
   // Every message to or from the person's mail names, newest first, with each whole text: what the
@@ -184,6 +189,157 @@ export function createMailboxSource({ root = null, settings = null, now = Date.n
   }
 
   return { poll, mail: readMail };
+}
+
+// ---- HQ: one folder that lists project mailboxes ----
+
+// The folder in Settings: a lone mailbox, as always, or an HQ (see readHqProjects), whose project
+// mailboxes Pleni reads too, each with a createMailboxSource of its own. A project mailbox that is
+// missing or cannot be read gives that project's error; the others go on. poll() gives the folder's
+// MailboxState plus `hq`: null for a lone mailbox, else { projects: [{ id, name, mailbox }],
+// skipped: [{ entry, id, why }] }, where each `mailbox` is that project's MailboxState.
+export function createMailboxesSource({ root = null, settings = null, now = Date.now, platform = process.platform } = {}) {
+  const file = typeof root === 'string' && root ? path.join(root, 'bin', 'relay-settings.json') : null;
+  const projects = new Map(); // project folder -> its createMailboxSource
+  let main = null; // { hq, source } for the folder itself
+  let listed = { sig: null, value: null };
+  let shown = []; // the projects of the newest poll
+
+  // relay-settings.json is read again only when its size or times move.
+  function hqList() {
+    const st = file ? statFile(file) : null;
+    const sig = st ? `${st.size}:${st.mtimeMs}:${st.ctimeMs}:${st.ino}` : '';
+    if (sig !== listed.sig) listed = { sig, value: st ? readHqProjects(root, { platform }) : null };
+    return listed.value;
+  }
+
+  function poll() {
+    let hq = null;
+    try {
+      hq = hqList();
+    } catch {
+      hq = null;
+    }
+    const isHq = hq !== null;
+    if (!main || main.hq !== isHq) main = { hq: isHq, source: createMailboxSource({ root, settings, now, hq: isHq }) };
+    const state = main.source.poll();
+    if (!isHq) {
+      projects.clear();
+      shown = [];
+      return { ...state, hq: null };
+    }
+    const keep = new Set(hq.projects.map((p) => p.root));
+    for (const folder of projects.keys()) if (!keep.has(folder)) projects.delete(folder);
+    shown = hq.projects;
+    const list = hq.projects.map((p) => {
+      if (!projects.has(p.root)) projects.set(p.root, createMailboxSource({ root: p.root, settings, now }));
+      return { id: p.id, name: p.name, mailbox: projects.get(p.root).poll() };
+    });
+    return { ...state, hq: { projects: list, skipped: hq.skipped } };
+  }
+
+  // The Mail page (see createMailReader's browse). In HQ it is every mailbox's mail, newest first,
+  // each message with its mailbox: `box` ('hq' or the project's id) and `boxName`.
+  function mail(options = {}) {
+    if (!main) return null;
+    const own = main.source.mail(options);
+    if (!main.hq) return own;
+    const lists = [Array.isArray(own) ? own.map((m) => ({ ...m, box: 'hq', boxName: 'HQ' })) : null];
+    for (const p of shown) {
+      const got = projects.get(p.root)?.mail(options);
+      lists.push(Array.isArray(got) ? got.map((m) => ({ ...m, id: `${p.id}:${m.id}`, box: p.id, boxName: p.name })) : null);
+    }
+    if (lists.every((list) => list === null)) return null;
+    return lists
+      .flatMap((list) => list ?? [])
+      .sort((a, b) => b.at - a.at || ORDER.compare(a.id, b.id))
+      .slice(0, MAX_BROWSE);
+  }
+
+  return { poll, mail };
+}
+
+const MAX_PROJECTS = 20;
+const PROJECT_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const MAX_PROJECT_NAME = 80;
+const MAX_SETTINGS_BYTES = 1024 * 1024;
+const MAX_FOLDER = 4096;
+// The relay refuses a project folder that holds a quote, a control character or a mark that Windows
+// or cmd.exe treats specially, so Pleni does too.
+const BAD_FOLDER = /[\p{Cc}"%!^&|<>`*?]/u;
+// A full path on Windows, as the relay checks it: C:\... or \\server\share\...
+const WINDOWS_FULL = /^(?:[A-Za-z]:\\|\\\\[^\\]+\\[^\\]+)/;
+// HQ's own folders, which never hold a project mailbox. The relay makes new projects in HQ's
+// "projects" folder, so that one may.
+const HQ_FOLDERS = ['tasks', 'mail', 'bin', 'tests', 'templates', '.relay'];
+
+// An HQ is a mailbox whose bin/relay-settings.json has "role": "hq" and lists its project mailboxes:
+// "projects": [{ "id", "name", "mailbox" }]. Gives { projects: [{ id, name, root }], skipped:
+// [{ entry, id, why }] }, or null when the folder is not an HQ. Entries are checked the way the relay
+// checks them: an id of 1-40 small letters, digits or hyphens that is not "hq" and not taken, and a
+// mailbox that is a full path, not HQ itself, not a folder that holds HQ, not inside HQ's own folders
+// and not taken. A folder that is not there is kept: it shows as that project's error. Pleni keeps
+// at most 20. `relaySettings` is the file's contents, when the caller has read it already.
+export function readHqProjects(root, { platform = process.platform, relaySettings } = {}) {
+  if (typeof root !== 'string' || !root.trim()) return null;
+  const json = relaySettings !== undefined ? relaySettings : readJsonFile(path.join(root, 'bin', 'relay-settings.json'), MAX_SETTINGS_BYTES);
+  if (json === null || typeof json !== 'object' || typeof json.role !== 'string' || json.role.trim().toLowerCase() !== 'hq') return null;
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const fold = platform === 'win32' || platform === 'darwin' ? (s) => s.toLowerCase() : (s) => s;
+  const hq = withSep(fold(p.resolve(root.trim())), p.sep);
+  const projects = [];
+  const skipped = [];
+  const ids = new Set();
+  const folders = new Set();
+  const entries = Array.isArray(json.projects) ? json.projects : [];
+  entries.forEach((raw, i) => {
+    const entry = i + 1;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      skipped.push({ entry, id: null, why: 'it is not an object with id, name and mailbox' });
+      return;
+    }
+    const id = typeof raw.id === 'string' || typeof raw.id === 'number' ? String(raw.id).trim() : '';
+    const dir = typeof raw.mailbox === 'string' ? raw.mailbox.trim() : '';
+    let why = null;
+    let full = null;
+    if (!PROJECT_ID.test(id)) why = 'its id must be 1 to 40 small letters, digits or hyphens, starting with a letter or a digit';
+    else if (id === 'hq') why = 'its id may not be hq, the name HQ keeps for itself';
+    else if (ids.has(id)) why = 'another entry has the same id';
+    else {
+      why = folderProblem(dir, hq, p, fold, platform);
+      if (!why) {
+        full = p.resolve(dir);
+        if (folders.has(fold(full))) why = 'another entry has the same mailbox';
+        else if (projects.length >= MAX_PROJECTS) why = `Pleni shows at most ${MAX_PROJECTS} projects`;
+      }
+    }
+    if (why) {
+      skipped.push({ entry, id: PROJECT_ID.test(id) ? id : null, why });
+      return;
+    }
+    ids.add(id);
+    folders.add(fold(full));
+    const name = typeof raw.name === 'string' ? Array.from(raw.name.replace(/\p{Cc}/gu, ' ').trim()).slice(0, MAX_PROJECT_NAME).join('').trim() : '';
+    projects.push({ id, name: name || id, root: full });
+  });
+  return { projects, skipped };
+}
+
+// Why a project's mailbox folder cannot be used, in plain words, or null when it can.
+function folderProblem(dir, hq, p, fold, platform) {
+  if (!dir) return 'its mailbox is empty';
+  if (dir.length > MAX_FOLDER) return 'its mailbox is too long to be a folder path';
+  if (BAD_FOLDER.test(dir)) return 'its mailbox holds a quote, a control character or a mark that Windows treats specially';
+  if (platform === 'win32' ? !WINDOWS_FULL.test(dir) : !p.isAbsolute(dir)) return 'its mailbox is not a full path';
+  const f = withSep(fold(p.resolve(dir)), p.sep);
+  if (f === hq) return 'its mailbox is HQ itself';
+  if (hq.startsWith(f)) return 'its mailbox holds HQ';
+  const inside = HQ_FOLDERS.find((sub) => f.startsWith(withSep(hq + fold(sub), p.sep)));
+  return inside ? `its mailbox is inside HQ's ${inside} folder` : null;
+}
+
+function withSep(folder, sep) {
+  return folder.endsWith(sep) ? folder : folder + sep;
 }
 
 // Finds the first valid time stamp in `text`: { at, index, length } or null.
@@ -547,6 +703,18 @@ function coordinatorKeyOf(coordinator) {
   return SESSION_ID.test(id) ? `claude:${id}` : null;
 }
 
+// .relay/codex.json: { thread_id, follow_name?, ... }, the planner's Codex thread. The relay keeps
+// thread_id current when it follows a newer thread with the same name.
+function plannerKeyOf(codex) {
+  const id = threadIdOf(codex?.thread_id);
+  return id ? `codex:${id}` : null;
+}
+
+function threadIdOf(value) {
+  const id = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return SESSION_ID.test(id) ? id : null;
+}
+
 function shortText(value, max) {
   if (typeof value !== 'string') return null;
   return clip(value, max) || null;
@@ -733,25 +901,50 @@ function parseMail(text, max = MAX_MAIL_TEXT) {
 }
 
 // The turns the relay started to wake an agent for its mail (state.json "mail_dispatches"), newest
-// first: { key, name, at, endAt, running, count }. Times are in milliseconds.
-function relayWakes(dispatches) {
-  if (dispatches === null || typeof dispatches !== 'object' || Array.isArray(dispatches)) return [];
+// first: { key, name, at, endAt, running, count }. Times are in milliseconds. In HQ, `planner` holds
+// the turns that woke the orchestrator for new items in HQ or a project ("codex_dispatches"):
+// { key: null, name: null, at, endAt, running, count, planner: true, threadId }. A turn that never
+// reached the thread ("failed" or "abandoned") is left out.
+function relayWakes(dispatches, planner = null) {
   const out = [];
-  for (const d of Object.values(dispatches)) {
-    if (d === null || typeof d !== 'object' || typeof d.agent !== 'string' || !MAIL_AGENT.test(d.agent)) continue;
+  for (const d of objectValues(dispatches)) {
+    if (typeof d.agent !== 'string' || !MAIL_AGENT.test(d.agent)) continue;
     const at = unixMs(d.started_utc);
     if (at === null) continue;
-    const count = Array.isArray(d.items) ? d.items.length : typeof d.items === 'string' ? 1 : 0;
     out.push({
       key: d.agent,
       name: shortText(d.name, MAX_MAIL_NAME),
       at,
       endAt: unixMs(d.finished_utc),
       running: d.state === 'running' || d.state === 'launching',
-      count,
+      count: itemCount(d.items),
     });
   }
-  return out.sort((a, b) => b.at - a.at || ORDER.compare(a.key, b.key)).slice(0, MAX_WAKES);
+  for (const d of objectValues(planner)) {
+    const at = unixMs(d.started_utc);
+    if (at === null || d.state === 'failed' || d.state === 'abandoned') continue;
+    out.push({
+      key: null,
+      name: null,
+      at,
+      endAt: unixMs(d.finished_utc),
+      running: d.state === 'running' || d.state === 'launching',
+      count: itemCount(d.items),
+      planner: true,
+      threadId: threadIdOf(d.thread_id),
+    });
+  }
+  return out.sort((a, b) => b.at - a.at || ORDER.compare(a.key ?? '', b.key ?? '')).slice(0, MAX_WAKES);
+}
+
+// The objects in a JSON map such as { M1: {...}, M2: {...} }; nothing for anything else.
+function objectValues(map) {
+  if (map === null || typeof map !== 'object' || Array.isArray(map)) return [];
+  return Object.values(map).filter((d) => d !== null && typeof d === 'object' && !Array.isArray(d));
+}
+
+function itemCount(items) {
+  return Array.isArray(items) ? items.length : typeof items === 'string' ? 1 : 0;
 }
 
 // The relay keeps times as whole seconds since 1970; 0 means not yet.

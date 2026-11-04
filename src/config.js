@@ -13,6 +13,8 @@ export const DEFAULTS = deepFreeze({
   titles: 'plain',
   content: 'snippets',
   groupBy: 'none',
+  // The Map's AI tools button: a tile for each AI tool, with its sessions under it.
+  toolTiles: false,
   window: { activeMinutes: 10, recentHours: 24, staleMinutes: 30 },
   showReviewers: false,
   modelTiers: { senior: ['opus', 'fable', 'astra'], junior: ['sonnet', 'haiku', 'sol', 'luna', 'mini'] },
@@ -22,6 +24,7 @@ export const DEFAULTS = deepFreeze({
     codex: { enabled: true, root: null },
     grok: { enabled: true, root: null },
     kimi: { enabled: true, root: null },
+    gemini: { enabled: true, root: null },
     mailbox: { enabled: false, root: null, planner: null, coordinator: null },
   },
   people: {},
@@ -80,9 +83,13 @@ const MAX_REMOTE = 20;
 const MAX_LAN_ADDRESSES = 10;
 const MAX_TIER_WORDS = 50;
 const MAX_PATH = 4096;
-const NODE_KEY = /^(claude|codex|grok|kimi):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
-// A mailbox worker run: mailbox:<task id>/W<n>. It keeps no session file of its own.
-const MAILBOX_KEY = /^mailbox:[A-Za-z0-9][A-Za-z0-9._-]{0,120}\/W\d{1,4}$/;
+const NODE_KEY = /^(claude|codex|grok|kimi|gemini):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
+// A mailbox worker run: mailbox:<task id>/W<n>, or mailbox:<box>:<task id>/W<n> in a project
+// mailbox of an HQ, where <box> is the project's id (never "hq", which is HQ itself). It keeps no
+// session file of its own. A task id never holds ':'.
+const MAILBOX_KEY = /^mailbox:(?:(?!hq:)[a-z0-9][a-z0-9-]{0,39}:)?[A-Za-z0-9][A-Za-z0-9._-]{0,120}\/W\d{1,4}$/;
+// The relay of a project mailbox: relay:<box>. HQ's own relay, or a lone mailbox's, is 'relay'.
+const RELAY_KEY = /^relay:(?!hq$)[a-z0-9][a-z0-9-]{0,39}$/;
 const CONTROL = /\p{Cc}/u;
 const RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 
@@ -109,14 +116,21 @@ export function resolveRoots(settings, env = process.env, platform = process.pla
     codex: pick('codex', envPath(env, 'CODEX_HOME', p) || p.join(home, '.codex')),
     grok: pick('grok', envPath(env, 'GROK_HOME', p) || p.join(home, '.grok')),
     kimi: pick('kimi', envPath(env, 'KIMI_CODE_HOME', p) || p.join(home, '.kimi-code')),
+    // GEMINI_CLI_HOME names the home folder that holds .gemini, not .gemini itself.
+    gemini: pick('gemini', p.join(envPath(env, 'GEMINI_CLI_HOME', p) || home, '.gemini')),
     mailbox: pick('mailbox', null),
   };
 }
 
 export function isNodeKey(s) {
   if (typeof s !== 'string') return false;
-  if (s === 'you' || s === 'relay' || NODE_KEY.test(s) || MAILBOX_KEY.test(s)) return true;
+  if (s === 'you' || s === 'relay' || NODE_KEY.test(s) || MAILBOX_KEY.test(s) || RELAY_KEY.test(s)) return true;
   return s.startsWith('project:') && isProjectName(s.slice('project:'.length));
+}
+
+// A relay's tile: 'relay' (HQ's own, or a lone mailbox's) or 'relay:<box>' (a project mailbox's).
+export function isRelayKey(s) {
+  return s === 'relay' || (typeof s === 'string' && RELAY_KEY.test(s));
 }
 
 export function cleanSettings(raw) {
@@ -128,6 +142,7 @@ export function cleanSettings(raw) {
     titles: oneOf(r.titles, TITLES, DEFAULTS.titles),
     content: oneOf(r.content, CONTENT, DEFAULTS.content),
     groupBy: oneOf(r.groupBy, GROUP_BY, DEFAULTS.groupBy),
+    toolTiles: cleanBool(r.toolTiles, DEFAULTS.toolTiles),
     window: cleanWindow(r.window),
     showReviewers: cleanBool(r.showReviewers, DEFAULTS.showReviewers),
     modelTiers: cleanTiers(r.modelTiers),
@@ -209,7 +224,7 @@ function cleanTiers(raw) {
 function cleanSources(raw) {
   const s = isObject(raw) ? raw : {};
   const out = {};
-  for (const name of ['claude', 'claudeDesktop', 'codex', 'grok', 'kimi']) {
+  for (const name of ['claude', 'claudeDesktop', 'codex', 'grok', 'kimi', 'gemini']) {
     const src = isObject(s[name]) ? s[name] : {};
     out[name] = { enabled: cleanBool(src.enabled, DEFAULTS.sources[name].enabled), root: cleanRoot(src.root) };
   }

@@ -1,6 +1,6 @@
 # Privacy in Pleni
 
-Pleni runs on your own computer. It reads files that Claude Code, Codex, Grok and Kimi Code already write, and it
+Pleni runs on your own computer. It reads files that Claude Code, Codex, Grok, Kimi Code and Gemini CLI already write, and it
 shows what it finds in your browser. This page says exactly what it reads, what it shows, and
 what it never does.
 
@@ -29,7 +29,7 @@ what it never does.
 ## What Pleni reads
 
 Pleni reads only the places below, and only the parts it needs. For session files (the
-transcripts of Claude Code, Codex, Grok and Kimi Code sessions and their helpers) it looks only at files that
+transcripts of Claude Code, Codex, Grok, Kimi Code and Gemini CLI sessions and their helpers) it looks only at files that
 changed in the last 24 hours (the `recentHours` setting). The small notes files of the Claude
 desktop app, the mailbox's task files, and the Codex list of session names are read whatever
 their age, because they are small and say which session is which. For big files Pleni reads from
@@ -43,10 +43,12 @@ read the start of a file once, to find a session's name and where it started.
 | Codex folder (usually `~/.codex`)        | Session files in `sessions/` and `archived_sessions/`, and the list of session names in `session_index.jsonl` |
 | Grok folder (usually `~/.grok`)          | Each session's summary and its event, chat and update logs in `sessions/` |
 | Kimi Code folder (usually `~/.kimi-code`) | Each session's `state.json` and its agents' `wire.jsonl` logs in `sessions/` |
+| Gemini CLI folder (usually `~/.gemini`)  | Only three things in it: each session's chat log in `tmp/<project>/chats/` (and its helpers' logs in a folder there named after the session), the small `.project_root` file in `tmp/<project>/` that names the project's folder, and `projects.json`, the list of your project folders. Never the login files (`oauth_creds.json`, `google_accounts.json`, `gemini-credentials.json`), `settings.json`, `trustedFolders.json` or any `.env` file. Of each reply's thoughts, Pleni keeps only that there were some, and when |
 | Codex folder, while Settings → Models is open | From `config.toml`, only the model and effort lines (`model`, `model_reasoning_effort`, and `default_subagent_model` and `default_subagent_reasoning_effort` under `[agents]`); the whole file is read to find them, and nothing else in it is kept or shown. From each worker type file in `agents/`, its name, description, model and effort. From `models_cache.json`, the list of models Codex offers you: each model's name and the effort levels it takes |
 | Claude Code folder, while Settings → Models is open | From `settings.json`, only `model`, the effort kept for each model under `modelSettings`, and from its `env` block only `CLAUDE_CODE_SUBAGENT_MODEL`, `ANTHROPIC_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL` and `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`; the whole file is read to find them, and nothing else in it is shown. From each agent file in `agents/`, the name, description, model and effort in the block at its top. The same three setting names are also looked up in Pleni's own environment |
 | Codex coordinator list, if present      | `coordinators/registry.sqlite3` (opened read-only) and `coordinators/superintendent.json`, only to learn which coordinator started which worker |
-| A mailbox folder, if you turn one on    | The Markdown files of the queue, the status board, and each task (with any worker run notes), the notes for you (`NEEDS-<NAME>.md`), plus the small relay files in `.relay/`, its alerts (`alerts.md`) and the list of agents it wakes for mail (`agents.json`) among them. With agent mail, also the `mail/` folder: each agent's name (`name.txt`) and its messages, the newest 100 unread and the newest 30 read (the first 80 KB of each). While the Mail page is open, Pleni reads the whole of the newest 100 messages it shows. From the relay's settings (`bin/relay-settings.json`) Pleni reads only `owner_name`, the name agents use to write to you |
+| A mailbox folder, if you turn one on    | The Markdown files of the queue, the status board, and each task (with any worker run notes), the notes for you (`NEEDS-<NAME>.md`), plus the small relay files in `.relay/`, its alerts (`alerts.md`) and the list of agents it wakes for mail (`agents.json`) among them. With agent mail, also the `mail/` folder: each agent's name (`name.txt`) and its messages, the newest 100 unread and the newest 30 read (the first 80 KB of each). While the Mail page is open, Pleni reads the whole of the newest 100 messages it shows. From the relay's settings (`bin/relay-settings.json`) Pleni reads only `owner_name`, the name agents use to write to you, and `role` and `projects`, which say whether the folder is an HQ and which project mailboxes it lists |
+| The project mailboxes an HQ lists, if your mailbox folder is an HQ | The same files as in a mailbox folder, in each project mailbox that HQ's `bin/relay-settings.json` lists (at most 20, each a full path that is not HQ itself or inside HQ's own folders). In HQ itself, Pleni also reads `.relay/codex.json`, only for the id of the Codex thread HQ's relay wakes (the orchestrator), and from `.relay/state.json` when that relay woke it. Pleni only reads these mailboxes: it never writes to them, and it never sends their folder paths to the page |
 | A session's project folder, only when it is inside a `_worktrees` folder on a local drive | Only the small `.git` pointer file (at most 4 KB) of that worktree, to learn the name of the repository it belongs to |
 | A session's project folder, on a local drive | Only the git settings file (`.git/config`, at most 64 KB) of the repository it is in, and in a worktree the small `.git` and `commondir` files that lead there. Pleni keeps only the address of the `origin` remote, and from it only the owner and name of a GitHub repository, to link to its pull requests. It never keeps a login or token that the address may hold. Nothing else in your project is read |
 | Claude Code folder, only when you click Open in PowerShell | The small files in `sessions/` that Claude Code keeps for each running process. Pleni reads only which session each one has open, whether it runs in the background or in a terminal, and its process number, to be sure no other window has that session open. To tell a live Claude Code from a leftover file, it then asks Windows (through a hidden PowerShell) only when the program with that number started |
@@ -63,7 +65,8 @@ many tokens the newest step used, how big the model's memory is (Codex), and whe
 squeezed into a summary and by how much.
 
 Pleni also reads a few settings from your environment: `PLENI_PORT`, `PLENI_HOME`,
-`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and the usual system folders (`APPDATA` on Windows,
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, `KIMI_CODE_HOME`, `GEMINI_CLI_HOME` (the folder
+that holds Gemini CLI's `.gemini` folder), and the usual system folders (`APPDATA` on Windows,
 `XDG_CONFIG_HOME` on Linux). With Live GitHub status or Codex cloud tasks on, it also reads
 `PATH`, to find gh or codex.
 
@@ -110,8 +113,8 @@ recent pop-ups in its notification list until you clear them.
 
 ## What Pleni never does
 
-- It never writes, moves, or deletes anything in the Claude Code, Codex, Claude desktop app, or
-  mailbox folders. The exceptions are **Save to Codex** and **Save to Claude Code** on the Models
+- It never writes, moves, or deletes anything in the Claude Code, Codex, Grok, Kimi Code, Gemini CLI,
+  Claude desktop app, or mailbox folders. The exceptions are **Save to Codex** and **Save to Claude Code** on the Models
   page (see [below](#models)), and **Connect** and **Disconnect** for **Answer questions**, which add
   and take out Pleni's own two hooks in Claude Code's `settings.json` (see below), and **Connect**
   and **Disconnect** for **plan limits**, which add and take out Pleni's status line there.
@@ -168,7 +171,7 @@ recent pop-ups in its notification list until you clear them.
   command the way Claude Code would and shows what it prints, and **Disconnect** puts your old
   status line back and deletes Pleni's three files. If you changed the status line yourself in the
   meantime, Pleni leaves your file alone and says so. Claude Code only runs a status line in a
-  folder you trust. Grok and Kimi Code save no limits, so Pleni shows where to look in each tool
+  folder you trust. Grok, Kimi Code and Gemini CLI save no limits, so Pleni shows where to look in each tool
   instead.
 - **New agent** (Settings → Buttons, off until you turn it on, Windows only, this computer only)
   opens one PowerShell window in the folder of a session you pick and runs `claude --name <name>`

@@ -8,7 +8,7 @@
 <h1 align="center">Pleni — Plenipo Browser</h1>
 
 <p align="center">
-  See your Claude Code, Codex, Grok and Kimi Code sessions work together, live in your browser.
+  See your Claude Code, Codex, Grok, Kimi Code and Gemini CLI sessions work together, live in your browser.
   Send them a message and answer their questions there too.
 </p>
 
@@ -38,7 +38,7 @@
 When you use Claude Code or Codex, each session can start helpers of its own (sub-agents) and
 hand work to them. With a few of these running at once, it gets hard to tell who is doing what.
 
-Pleni shows you. It reads the files that Claude Code, Codex, Grok and Kimi Code already write on your computer,
+Pleni shows you. It reads the files that Claude Code, Codex, Grok, Kimi Code and Gemini CLI already write on your computer,
 works out who started whom, and draws it as a live map in your browser. Lines light up when work
 is handed down and when a report comes back up.
 
@@ -118,6 +118,8 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   purple dots travel up when a report comes back. Drag to move around. Use Ctrl + scroll, a
   pinch, or the `+` and `−` buttons to zoom. The **Working** switch hides sessions that are
   quiet. The **full screen** button (or `F`) shows only the map; Esc or the button leaves it.
+  The **AI tools** button gives each AI tool a tile of its own, with its sessions under it,
+  even when none is running. The relay's tile stays on the map too. Click it again to hide them.
 - **List** — the same sessions as a table, grouped by project, with filters. It also works well
   with a screen reader.
 - **Pop out** — the Map, the List, or one session's side panel can open in a window of its own,
@@ -138,14 +140,14 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   **Connect plan limits** under **Plan limits from Claude Code**. Pleni adds a small status line
   to Claude Code's settings file (a copy of the file goes to Pleni's backups folder first, your
   own status line keeps showing, and **Disconnect** puts it back). This works for Pro, Max and
-  Ultra plans, and Claude Code needs a trusted folder. Grok and Kimi Code save no limits, so
-  their cards say to type `/usage` in the tool.
+  Ultra plans, and Claude Code needs a trusted folder. Grok, Kimi Code and Gemini CLI save no
+  limits, so their cards say what to type in the tool: `/usage`, or `/stats` in Gemini CLI.
 - **Activity** — every hand-off, newest first.
 - **Mail** — shown when your agents use agent mail (see below). It shows every message between you
   and your agents in full, newest first, marks the new ones, and gives the command to answer each.
   **All mail** shows the mail between your agents too.
 - **Tasks** — shown only when you turn on a mailbox (see below). It lists each task, its state,
-  and which ones need you.
+  and which ones need you. With an HQ, it groups them by project.
 - **Pull requests** — shown when your sessions work in GitHub repositories. For each repository it
   lists the branches your agents work on, who is on each, and links to its pull request on GitHub,
   or to open one. With [Live GitHub status](#live-github-status) on, it also shows each pull
@@ -514,6 +516,7 @@ Pleni finds the usual folders on its own. You can change any of them in **Settin
 | Codex sessions and helpers          | `~/.codex` (on Windows, `C:\Users\<you>\.codex`)                                                                   | `CODEX_HOME`        |
 | Grok sessions                       | `~/.grok` (on Windows, `C:\Users\<you>\.grok`)                                                                     | `GROK_HOME`         |
 | Kimi Code sessions and helpers      | `~/.kimi-code` (on Windows, `C:\Users\<you>\.kimi-code`)                                                           | `KIMI_CODE_HOME`    |
+| Gemini CLI sessions and helpers     | `~/.gemini` (on Windows, `C:\Users\<you>\.gemini`)                                                                 | `GEMINI_CLI_HOME`   |
 | A coordination mailbox (optional)   | Off until you choose a folder                                                                                      | Settings            |
 
 Pleni shows sessions that were active in the last 24 hours. You can change that in
@@ -535,6 +538,7 @@ Pleni keeps its own settings in one file, `settings.json`:
 | `CODEX_HOME`                 | Where Codex keeps its files                |
 | `GROK_HOME`                  | Where Grok keeps its files                 |
 | `KIMI_CODE_HOME`             | Where Kimi Code keeps its files            |
+| `GEMINI_CLI_HOME`            | Where Gemini CLI's `.gemini` folder is     |
 
 **The mailbox** is for people who have two AI sessions work through a shared folder of
 Markdown files: one hands out tasks, the other reports back. If you do not use one, leave it off.
@@ -550,6 +554,24 @@ lights up between two tiles when mail goes from one to the other, a tile says ho
 messages wait for it, and mail for you shows under **Needs you**. Read your mail in full on the
 **Mail** page, where each message has the PowerShell command that answers it. Click a tile to see
 whether the relay wakes it for its mail. Pleni never sends mail itself.
+
+### HQ and project mailboxes
+
+One planner can run several projects. The relay calls this **HQ** (see "Run several projects (HQ)"
+in the [relay README](relay/README.md)). HQ is a mailbox that lists your project mailboxes. Each
+project has its own mailbox, relay and coordinator, and one Codex session, the **orchestrator**,
+plans for all of them.
+
+Point Pleni's mailbox folder at HQ, and Pleni reads the project mailboxes that HQ lists too. The map
+shows you, then the orchestrator, then HQ's relay and one tile for each project. Under each project
+tile are that project's relay, its coordinator, and the coordinator's workers. The Tasks page groups
+the tasks by project, HQ first. A notice for a relay, a task or a note says which project it is
+about. If Pleni cannot find a project's mailbox folder, that project's tile and the Tasks page say
+so, and the other projects still show.
+
+A project tile takes the name of the project on Pleni's Projects page with the same name, or whose
+name matches the project's id. So when you group sessions by project, that project's other sessions
+show under the same tile. Pleni only reads HQ and its project mailboxes. It never writes to them.
 
 ## Privacy and safety
 
@@ -678,7 +700,7 @@ You hire roles, give the team a goal, and Plenipo starts the workers, checks the
 and keeps a record of what they did.
 
 Pleni is a separate, simpler edition. It does not run any workers. It watches the Claude Code,
-Codex, Grok and Kimi Code sessions you already run yourself, on Windows, macOS, or Linux. You can use either one, or
+Codex, Grok, Kimi Code and Gemini CLI sessions you already run yourself, on Windows, macOS, or Linux. You can use either one, or
 both. Both are made by 8 West Ventures, LLC.
 
 ## What comes next

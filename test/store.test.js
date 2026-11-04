@@ -142,8 +142,9 @@ test('the snapshot carries a weak ETag of its JSON without the time', () => {
   assert.equal(snap.etag, `W/"${crypto.createHash('sha1').update(untimed).digest('hex')}"`);
   assert.equal(snap.json, json);
   assert.equal(json.includes('etag'), false);
-  assert.deepEqual(Object.keys(snap), ['version', 'now', 'demo', 'sources', 'nodes', 'edges', 'events', 'counts', 'attention', 'asks', 'tasks', 'mail', 'hiddenSessions', 'projects', 'actions', 'codexCloud']);
+  assert.deepEqual(Object.keys(snap), ['version', 'now', 'demo', 'sources', 'nodes', 'edges', 'events', 'counts', 'attention', 'asks', 'tasks', 'mail', 'hiddenSessions', 'projects', 'actions', 'codexCloud', 'toolTiles']);
   assert.deepEqual(snap.codexCloud, { live: false });
+  assert.equal(snap.toolTiles, false);
   assert.ok(snap.nodes.some((n) => n.key === CLAUDE_KEY));
   assert.ok(snap.nodes.some((n) => n.key === CODEX_KEY));
 });
@@ -329,6 +330,7 @@ test('session() gives the folder, state, name, model, effort and permission mode
   assert.deepEqual(store.session(CODEX_KEY), { id: CODEX_KEY.slice('codex:'.length), ...rest, model: 'gpt-6.1-sol' });
   assert.equal(store.session(`${CLAUDE_KEY}/a1b2c3`), null);
   assert.equal(store.session('grok:cccccccc-0000-4000-8000-000000000001'), null);
+  assert.equal(store.session('gemini:dddddddd-0000-4000-8000-000000000001'), null);
   assert.equal(store.session('claude:aaaaaaaa-0000-4000-8000-00000000ffff'), null);
   assert.equal(store.session(null), null);
   assert.equal(store.demo, false);

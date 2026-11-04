@@ -21,9 +21,11 @@ const NEWLINE = 0x0a;
 const SYNTHETIC = '<synthetic>';
 const ROLLOUT = /^rollout-.*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
 const DATE_DIR = /^\d{1,4}$/;
+const GEMINI_FILE = /^session-.*\.jsonl?$/;
+const GEMINI_ID = /^[0-9a-f-]{8,64}$/i;
 
-export const TOOLS = ['claude', 'codex', 'grok', 'kimi'];
-const NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code' };
+export const TOOLS = ['claude', 'codex', 'grok', 'kimi', 'gemini'];
+const NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', gemini: 'Gemini CLI' };
 
 // ---- days ----
 
@@ -509,6 +511,77 @@ async function kimiFiles(root, win, budget, limits) {
   return newestFiles(found, limits.maxFiles, budget);
 }
 
+// ---- Gemini CLI ----
+
+// A reply's `tokens`: { input, output, cached, thoughts, tool, total }. As with Codex, `input` holds
+// the cached part, so that is taken out. Thinking counts as written back and tool-use prompts as
+// sent, the way Gemini adds up its own total. A message is keyed by its id: Gemini CLI writes a
+// message again when it changes, and an older project folder may hold a copy of the session.
+function geminiAdd(ledger, win, msg) {
+  if (!isObject(msg) || msg.type !== 'gemini' || !isObject(msg.tokens)) return;
+  const key = text(msg.id);
+  const ts = millis(msg.timestamp);
+  if (!key || dayIndex(win, ts) < 0) return;
+  const t = msg.tokens;
+  const cached = num(t.cached);
+  ledger.add(key, ts, Math.max(0, num(t.input) - cached) + num(t.tool), num(t.output) + num(t.thoughts), cached, 0);
+}
+
+// One line of a session log: a message, or the older $set that gives the whole list at once.
+function geminiLine(ledger, win) {
+  return (rec) => {
+    if (isObject(rec.$set) && Array.isArray(rec.$set.messages)) {
+      for (const msg of rec.$set.messages) geminiAdd(ledger, win, msg);
+    } else {
+      geminiAdd(ledger, win, rec);
+    }
+  };
+}
+
+// The older one-object session file is written again whole, so it is read again when it changes.
+async function followGeminiJson(cand, state, budget, ledger, win) {
+  if (cand.size > MAX_JSON_BYTES || cand.size > budget.bytes) {
+    budget.cut = true;
+    return;
+  }
+  if (state.size === cand.size && state.mtimeMs === cand.mtimeMs) return;
+  let raw;
+  try {
+    raw = JSON.parse(stripBom(await fsp.readFile(cand.file, 'utf8')));
+  } catch {
+    return; // caught half-written: tried again next time
+  }
+  budget.bytes -= cand.size;
+  state.size = cand.size;
+  state.mtimeMs = cand.mtimeMs;
+  for (const msg of Array.isArray(raw?.messages) ? raw.messages : []) geminiAdd(ledger, win, msg);
+}
+
+// tmp/<project>/chats/session-*.jsonl (and the older session-*.json), and
+// tmp/<project>/chats/<session id>/*.jsonl for each helper. Nothing else in the folder is read.
+async function geminiFiles(root, win, budget, limits) {
+  const found = [];
+  const base = path.join(root, 'tmp');
+  for (const folder of await listDir(base)) {
+    if (!folder.isDirectory() || folder.name.startsWith('.')) continue;
+    const chats = path.join(base, folder.name, 'chats');
+    for (const entry of await listDir(chats)) {
+      const full = path.join(chats, entry.name);
+      if (entry.isFile() && GEMINI_FILE.test(entry.name)) {
+        const cand = await candidate(full, win);
+        if (cand) found.push(cand);
+      } else if (entry.isDirectory() && GEMINI_ID.test(entry.name)) {
+        for (const helper of await listDir(full)) {
+          if (!helper.isFile() || !helper.name.endsWith('.jsonl')) continue;
+          const cand = await candidate(path.join(full, helper.name), win);
+          if (cand) found.push(cand);
+        }
+      }
+    }
+  }
+  return newestFiles(found, limits.maxFiles, budget);
+}
+
 // ---- Claude Code's limits, from Pleni's status line (src/statusline.js) ----
 
 const MAX_LIMITS_BYTES = 64 * 1024;
@@ -555,7 +628,7 @@ function finite(value) {
 //                      gives a function that returns { at, from: 'statusLine', plan, windows } or
 //                      null; it may be async. Without it, Claude Code has no limits here.
 //   maxBytes, maxFiles -> what one read may take from each tool (tests make them small)
-// read({ fresh }) -> { at, tools: { claude, codex, grok, kimi } }, the last answer reused for 30 s.
+// read({ fresh }) -> { at, tools: { claude, codex, grok, kimi, gemini } }, the last answer reused for 30 s.
 export function createUsage({ getRoots, getSettings, now = Date.now, claudeLimits = null, maxBytes = MAX_BYTES, maxFiles = MAX_FILES } = {}) {
   const limits = { maxFiles };
   const state = Object.fromEntries(TOOLS.map((name) => [name, { rootKey: null, files: new Map(), ledger: createLedger() }]));
@@ -654,10 +727,21 @@ export function createUsage({ getRoots, getSettings, now = Date.now, claudeLimit
       await follow(cands, mine, budget, (cand, file) => followGrok(cand, file, budget, mine.ledger, win));
       return mine.ledger.buckets(win);
     }
-    if (!(await isDirectory(folders[0]))) return null;
-    const cands = await kimiFiles(folders[0], win, budget, limits);
-    await follow(cands, mine, budget, (cand, file) => followLines(cand, file, budget, (l) => l.includes('usage.record'), kimiLine(mine.ledger, win)));
-    return mine.ledger.buckets(win);
+    if (name === 'kimi') {
+      if (!(await isDirectory(folders[0]))) return null;
+      const cands = await kimiFiles(folders[0], win, budget, limits);
+      await follow(cands, mine, budget, (cand, file) => followLines(cand, file, budget, (l) => l.includes('usage.record'), kimiLine(mine.ledger, win)));
+      return mine.ledger.buckets(win);
+    }
+    if (name === 'gemini') {
+      if (!(await isDirectory(folders[0]))) return null;
+      const cands = await geminiFiles(folders[0], win, budget, limits);
+      await follow(cands, mine, budget, (cand, file) => (cand.file.endsWith('.jsonl')
+        ? followLines(cand, file, budget, (l) => l.includes('"tokens"'), geminiLine(mine.ledger, win))
+        : followGeminiJson(cand, file, budget, mine.ledger, win)));
+      return mine.ledger.buckets(win);
+    }
+    return null;
   }
 
   // Runs `step` on each file, forgetting files that are no longer in the list, and yielding to the

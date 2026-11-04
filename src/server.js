@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   cleanSettings,
   isNodeKey,
+  isRelayKey,
   loadSettings,
   renameWithRetry,
   resolveRoots,
@@ -131,7 +132,7 @@ const MESSAGES = {
   loopMove: 'A session cannot report to one of its own helpers.',
   badDismiss: 'Pleni could not read which notice to dismiss.',
   badWatch: 'Pleni could not read that. Only a session or the relay can be watched.',
-  badHide: 'Pleni could not read that. Only a Claude Code, Codex, Grok or Kimi Code session can be hidden.',
+  badHide: 'Pleni could not read that. Only a Claude Code, Codex, Grok, Kimi Code or Gemini CLI session can be hidden.',
   goneHide: 'That session is not on the map any more, so there is nothing to hide.',
   goneWatch: 'That tile is not on the map any more.',
   openRemote: 'A session can be opened in a window only on the computer that runs Pleni, not from another device.',
@@ -720,7 +721,7 @@ async function postPlacement(app, req, res, host) {
 // 'hidden', the same as Settings' Role "Hide it", and answers { ok: true, role } with the role it
 // had before (null for none). Undo sends { key, hide: false, role } to put that role back. Hiding
 // only changes Pleni's settings: no session file is touched.
-const HIDE_KEY = /^(claude|codex|grok|kimi):/;
+const HIDE_KEY = /^(claude|codex|grok|kimi|gemini):/;
 const UNHIDE_ROLES = new Set(['superintendent', 'coordinator', 'lead', 'worker']);
 async function postHide(app, req, res, host) {
   const body = await readJsonPost(req, res, host);
@@ -748,16 +749,18 @@ async function postHide(app, req, res, host) {
 }
 
 // "Tell me if this stops working" from a tile's side panel: { key, watch: true | false }. Only a
-// session or the relay can be watched; it is saved with the person's other choices (people[key]).
+// session or a relay (HQ's, a lone mailbox's, or a project mailbox's relay:<box>) can be watched;
+// it is saved with the person's other choices (people[key]).
 async function postWatch(app, req, res, host) {
   const body = await readJsonPost(req, res, host);
   if (body === undefined) return undefined;
   const key = typeof body.key === 'string' ? body.key : '';
-  const watchable = key === 'relay' || (isNodeKey(key) && !['you', 'project:', 'mailbox:'].some((start) => key.startsWith(start)));
+  const relay = isRelayKey(key);
+  const watchable = relay || (isNodeKey(key) && !['you', 'project:', 'mailbox:'].some((start) => key.startsWith(start)));
   if (!watchable || typeof body.watch !== 'boolean') return sendError(req, res, 400, MESSAGES.badWatch);
   const node = (app.store.snapshot()?.nodes ?? []).find((n) => n.key === key);
   if (!node) return sendError(req, res, 404, MESSAGES.goneWatch);
-  if (key !== 'relay' && !['session', 'agent', 'reviewer'].includes(node.kind)) return sendError(req, res, 400, MESSAGES.badWatch);
+  if (relay ? node.kind !== 'relay' : !['session', 'agent', 'reviewer'].includes(node.kind)) return sendError(req, res, 400, MESSAGES.badWatch);
   const next = structuredClone(app.readSettings().settings);
   const own = { ...(next.people[key] ?? {}) };
   if (body.watch) own.watch = true;
@@ -1116,7 +1119,7 @@ function sendModels(app, req, res, host) {
   return sendJson(req, res, 200, { ...base, codex, claude });
 }
 
-// The Usage popup: { demo, at, tools: { claude, codex, grok, kimi } }, tokens used in the last 7
+// The Usage popup: { demo, at, tools: { claude, codex, grok, kimi, gemini } }, tokens used in the last 7
 // days and plan limits (src/usage.js), and `limitsOn`: whether Connect for plan limits is on. Read-only,
 // so any signed-in device may read it. `?fresh=1` skips the 30-second reuse. The demo answers
 // made-up numbers.

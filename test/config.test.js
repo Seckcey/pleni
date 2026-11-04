@@ -9,6 +9,7 @@ import {
   cleanSettings,
   configDir,
   isNodeKey,
+  isRelayKey,
   loadSettings,
   resolveRoots,
   saveSettings,
@@ -56,6 +57,7 @@ test('cleanSettings keeps good values', () => {
     titles: 'military',
     content: 'none',
     groupBy: 'none',
+    toolTiles: true,
     window: { activeMinutes: 15, recentHours: 48, staleMinutes: 60 },
     showReviewers: true,
     modelTiers: { senior: ['opus'], junior: [] },
@@ -65,6 +67,7 @@ test('cleanSettings keeps good values', () => {
       codex: { enabled: true, root: null },
       grok: { enabled: true, root: null },
       kimi: { enabled: true, root: null },
+      gemini: { enabled: false, root: null },
       mailbox: { enabled: true, root, planner: `codex:${UUID}`, coordinator: `claude:${UUID}` },
     },
     people: { you: { label: 'Ada' }, [`claude:${UUID}`]: { label: 'Builder', role: 'coordinator', watch: true, answer: true }, relay: { watch: true } },
@@ -218,7 +221,7 @@ test('cleanSettings drops unknown keys', () => {
   assert.deepEqual(Object.keys(settings), Object.keys(DEFAULTS));
   assert.deepEqual(Object.keys(settings.window), ['activeMinutes', 'recentHours', 'staleMinutes']);
   assert.deepEqual(Object.keys(settings.modelTiers), ['senior', 'junior']);
-  assert.deepEqual(Object.keys(settings.sources), ['claude', 'claudeDesktop', 'codex', 'grok', 'kimi', 'mailbox']);
+  assert.deepEqual(Object.keys(settings.sources), ['claude', 'claudeDesktop', 'codex', 'grok', 'kimi', 'gemini', 'mailbox']);
   assert.deepEqual(settings.sources.claude, { enabled: true, root: null });
   assert.deepEqual(settings.remote, { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] });
   assert.deepEqual(settings.people, { you: { label: 'Ada' } });
@@ -230,6 +233,7 @@ test('cleanSettings replaces wrong types with defaults', () => {
     titles: 'royal',
     content: 5,
     groupBy: ['project'],
+    toolTiles: 'yes',
     window: 'soon',
     showReviewers: 'yes',
     modelTiers: 'opus',
@@ -264,6 +268,8 @@ test('isNodeKey accepts only real node keys', () => {
     `codex:${UUID}`,
     `claude:${UUID}/a1b2c3d4e5f6`,
     `claude:${UUID}/agent_one-2`,
+    `gemini:${UUID}`,
+    `gemini:${UUID}/codebase_investigator-a1b2`,
     'project:pleni',
     'project:My Project (old)',
     `project:${'p'.repeat(120)}`,
@@ -281,7 +287,8 @@ test('isNodeKey accepts only real node keys', () => {
     `claude:${UUID}/`,
     `claude:${UUID}/Agent`,
     `claude:${UUID}/a/b`,
-    `gemini:${UUID}`,
+    `other:${UUID}`,
+    `gemini:${UUID}/Agent.One`,
     `claude:${UUID}\n`,
     'project:',
     `project:${'p'.repeat(121)}`,
@@ -379,6 +386,7 @@ test('resolveRoots uses platform defaults', () => {
     codex: '/home/ada/.codex',
     grok: '/home/ada/.grok',
     kimi: '/home/ada/.kimi-code',
+    gemini: '/home/ada/.gemini',
     mailbox: null,
   });
   assert.deepEqual(resolveRoots(DEFAULTS, {}, 'darwin', '/Users/ada'), {
@@ -387,6 +395,7 @@ test('resolveRoots uses platform defaults', () => {
     codex: '/Users/ada/.codex',
     grok: '/Users/ada/.grok',
     kimi: '/Users/ada/.kimi-code',
+    gemini: '/Users/ada/.gemini',
     mailbox: null,
   });
   assert.deepEqual(resolveRoots(DEFAULTS, { APPDATA: 'C:\\Users\\ada\\AppData\\Roaming' }, 'win32', 'C:\\Users\\ada'), {
@@ -395,6 +404,7 @@ test('resolveRoots uses platform defaults', () => {
     codex: 'C:\\Users\\ada\\.codex',
     grok: 'C:\\Users\\ada\\.grok',
     kimi: 'C:\\Users\\ada\\.kimi-code',
+    gemini: 'C:\\Users\\ada\\.gemini',
     mailbox: null,
   });
   assert.equal(resolveRoots(DEFAULTS, {}, 'win32', 'C:\\Users\\ada').claudeDesktop, 'C:\\Users\\ada\\AppData\\Roaming\\Claude');
@@ -431,6 +441,7 @@ test('resolveRoots prefers roots from settings', () => {
     codex: '/opt/codex',
     grok: '/home/ada/.grok',
     kimi: '/home/ada/.kimi-code',
+    gemini: '/home/ada/.gemini',
     mailbox: '/data/mailbox',
   });
   assert.deepEqual(resolveRoots(null, {}, 'linux', '/home/ada').mailbox, null);
@@ -531,22 +542,32 @@ test('node keys include the relay and mailbox worker runs, and people keep a val
   assert.equal(people[`codex:${UUID}/a1`], undefined, 'not a project');
 });
 
-test('Grok and Kimi Code have their own folders, environment variables and node keys', () => {
+test('Grok, Kimi Code and Gemini CLI have their own folders, environment variables and node keys', () => {
   const home = path.resolve(os.tmpdir(), 'home-ada');
   const roots = resolveRoots(cleanSettings({}), {}, process.platform, home);
   assert.equal(roots.grok, path.join(home, '.grok'));
   assert.equal(roots.kimi, path.join(home, '.kimi-code'));
+  assert.equal(roots.gemini, path.join(home, '.gemini'));
   const grokHome = path.resolve(os.tmpdir(), 'grok-home');
   const kimiHome = path.resolve(os.tmpdir(), 'kimi-home');
-  const fromEnv = resolveRoots(cleanSettings({}), { GROK_HOME: grokHome, KIMI_CODE_HOME: kimiHome }, process.platform, home);
+  const geminiHome = path.resolve(os.tmpdir(), 'gemini-home');
+  const fromEnv = resolveRoots(cleanSettings({}), { GROK_HOME: grokHome, KIMI_CODE_HOME: kimiHome, GEMINI_CLI_HOME: geminiHome }, process.platform, home);
   assert.equal(fromEnv.grok, grokHome);
   assert.equal(fromEnv.kimi, kimiHome);
-  const off = cleanSettings({ sources: { grok: { enabled: false }, kimi: { enabled: false, root: 'not absolute' } } });
+  // GEMINI_CLI_HOME names the home folder; Gemini CLI keeps its files in .gemini inside it.
+  assert.equal(fromEnv.gemini, path.join(geminiHome, '.gemini'));
+  assert.equal(resolveRoots(cleanSettings({}), { GEMINI_CLI_HOME: 'C:\\Users\\ada\\work' }, 'win32', 'C:\\Users\\ada').gemini, 'C:\\Users\\ada\\work\\.gemini');
+  assert.equal(resolveRoots(cleanSettings({}), { GEMINI_CLI_HOME: '  ' }, 'linux', '/home/ada').gemini, '/home/ada/.gemini');
+  const own = path.resolve(os.tmpdir(), 'my-gemini');
+  assert.equal(resolveRoots(cleanSettings({ sources: { gemini: { root: own } } }), { GEMINI_CLI_HOME: geminiHome }, process.platform, home).gemini, own);
+  const off = cleanSettings({ sources: { grok: { enabled: false }, kimi: { enabled: false, root: 'not absolute' }, gemini: { enabled: false, root: 'not absolute' } } });
   assert.deepEqual(off.sources.grok, { enabled: false, root: null });
   assert.deepEqual(off.sources.kimi, { enabled: false, root: null });
+  assert.deepEqual(off.sources.gemini, { enabled: false, root: null });
   assert.deepEqual(cleanSettings({}).sources.grok, { enabled: true, root: null });
-  for (const key of [`grok:${UUID}`, `kimi:${UUID}`, `kimi:${UUID}/agent-0`]) assert.equal(isNodeKey(key), true, key);
-  assert.equal(isNodeKey(`gemini:${UUID}`), false);
+  assert.deepEqual(cleanSettings({}).sources.gemini, { enabled: true, root: null });
+  for (const key of [`grok:${UUID}`, `kimi:${UUID}`, `kimi:${UUID}/agent-0`, `gemini:${UUID}`, `gemini:${UUID}/helper-1`]) assert.equal(isNodeKey(key), true, key);
+  assert.equal(isNodeKey(`other:${UUID}`), false);
 });
 
 test('rollSoon limits are whole numbers in range, and 0 turns one off', () => {
@@ -618,4 +639,16 @@ test('a saved project list survives cleaning and is part of cleanSettings', () =
   assert.deepEqual(cleanSettings(clean), clean);
   // The older "projects" map (labels and hiding, by folder name) is a different thing.
   assert.deepEqual(cleanSettings({ projects: { app: { label: 'App' } } }).projects, { app: { label: 'App' } });
+});
+
+test('node keys include the relay and worker runs of a project mailbox in an HQ, by its id', () => {
+  const good = ['relay:notes', 'relay:field-app', 'relay:a', `relay:${'a'.repeat(40)}`, 'mailbox:notes:T-1/W1', 'mailbox:field-app:T-20261013-02-business/W12', 'mailbox:hq/W1'];
+  for (const key of good) assert.equal(isNodeKey(key), true, key);
+  const bad = ['relay:', 'relay:hq', 'relay:Notes', 'relay:-notes', `relay:${'a'.repeat(41)}`, 'relay:notes/W1', 'mailbox:hq:T-1/W1', 'mailbox:Notes:T-1/W1', 'mailbox:notes:T:1/W1', 'mailbox:notes:/W1', 'mailbox:a:b:c/W1'];
+  for (const key of bad) assert.equal(isNodeKey(key), false, key);
+  assert.deepEqual(['relay', 'relay:notes', 'relay:hq', 'relay2', 'mailbox:notes:T-1/W1', null].map(isRelayKey), [true, true, false, false, false, false]);
+  // A project relay's choices are kept like the relay's: a label, watching it, and who it reports to.
+  const people = cleanSettings({ people: { 'relay:notes': { label: 'Notes runner', watch: true, reportsTo: `claude:${UUID}` }, 'relay:hq': { watch: true } } }).people;
+  assert.deepEqual(people, { 'relay:notes': { label: 'Notes runner', reportsTo: `claude:${UUID}`, watch: true } });
+  assert.equal(cleanSettings({ people: { [`claude:${UUID}`]: { reportsTo: 'relay:notes' } } }).people[`claude:${UUID}`].reportsTo, 'relay:notes');
 });
