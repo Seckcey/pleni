@@ -35,16 +35,24 @@
   folder; antigravity_sandbox; exits 1 and 3, an ERROR result, a reason only on stderr and "authentication required"
   in plain words, with nothing committed; off with no worker_tools; refusals for .agents, .agent, _agents and _agent
   items and a .gemini\config.json in the worktree, the workers folder and the folders up to the worktree's top, a
-  folder that is not a Git worktree, a Claude model, max effort and the daily limit.
+  folder that is not a Git worktree, a Claude model, max effort and the daily limit. 26-27 start requests
+  (tasks\<TASK-ID>\workers\W<n>-start.md, which the relay runs with the mailbox's own bin\spawn-worker.ps1): off for
+  a Claude Code coordinator until start_requests turns them on, a start file there at enrollment never runs, a dry
+  run, the request's budget and effort reach the worker, one start per version (the same bytes again start nothing),
+  refusals as notes in one coordinator turn (an unknown tool, a tool that worker_tools does not list, a worker that
+  still runs, and the launcher's own words), none during a coordinator turn; a new worktree made from the brief's Base
+  commit, a missing repository refused by the launcher, a stop while starting settled as unknown and never run again,
+  the daily limit of worker starts, PAUSE, and the guard on the relay's own files: a changed bin\spawn-worker.ps1
+  halts the relay loop, and no worker starts until -ClearHalt.
   It runs only the bridge-relay.ps1, agent-mail.ps1 and spawn-worker.ps1 beside it, ..\tests\stub-claude.js,
   ..\tests\stub-codex.js, ..\tests\stub-gemini.js and ..\tests\stub-agy.js; other -RelayScript/-StubCli values are
   refused.
-  Scenarios 24 and 25 need git.exe, for a Git folder in their fixtures. Scenario 24 sets two test-only variables that
-  spawn-worker.ps1 reads (RELAY_TEST_GEMINI_POLICY_DIR and RELAY_TEST_CHANGE_POLICY); each one can only make the
+  Scenarios 24, 25 and 27 need git.exe, for a Git folder in their fixtures. Scenario 24 sets two test-only variables
+  that spawn-worker.ps1 reads (RELAY_TEST_GEMINI_POLICY_DIR and RELAY_TEST_CHANGE_POLICY); each one can only make the
   launcher refuse.
   Prints one PASS/FAIL line per check, then a summary. Exit 0 only when every check passes (2 = could not set up).
   No network, no API key, no real claude.exe. It removes its temp folder and stops any process it started
-  (only processes whose command line names this run's temp folder). Takes about 6-10 minutes.
+  (only processes whose command line names this run's temp folder). Takes about 8-13 minutes.
   Windows PowerShell 5.1. ASCII only.
 
 .EXAMPLE
@@ -447,11 +455,54 @@ function Set-WorkerSettings([hashtable]$Fx, [hashtable]$Extra) {
     Write-Text (Join-Path $Fx.mb 'bin\relay-settings.json') (ConvertTo-Json -InputObject $s -Depth 4)
 }
 
-function Write-Brief([hashtable]$Fx, [string]$W, [string]$Type, [string]$Tool) {
+function Write-Brief([hashtable]$Fx, [string]$W, [string]$Type, [string]$Tool, [string]$Worktree = '', [string]$BaseCommit = '') {
+    # Without the last two, the brief is the same as before start requests: the fixture's worktree and no Base commit.
+    if (-not $Worktree) { $Worktree = $Fx.wt }
     $t = "# Worker brief - $($Fx.task) / $W   (owner: Claude coordinator)`r`n`r`n- **Type:** $Type`r`n- **Tool:** $Tool`r`n" +
-        "- **Worktree (your only working directory):** $($Fx.wt)`r`n- **Branch:** claude/$($Fx.task)`r`n`r`n" +
-        "## Do`r`n1. Nothing: this is a synthetic brief (BRIEF-MARKER-$W).`r`n"
+        "- **Worktree (your only working directory):** $Worktree`r`n- **Branch:** claude/$($Fx.task)`r`n"
+    if ($BaseCommit) { $t += "- **Base commit:** $BaseCommit`r`n" }
+    $t += "`r`n## Do`r`n1. Nothing: this is a synthetic brief (BRIEF-MARKER-$W).`r`n"
     Write-Text (Join-Path $Fx.workers "$W-brief.md") $t
+}
+
+function Write-StartRequest([hashtable]$Fx, [string]$W, [hashtable]$Fields) {
+    # A start request (W<n>-start.md) as templates\worker-start.md shapes it. A new Requested value makes each call a
+    # new version of the file.
+    $f = [ordered]@{ 'Tool' = 'claude'; 'Type' = 'implementation'; 'Budget USD' = ''; 'Model' = ''; 'Effort' = ''; 'New worktree' = 'no'; 'Requested' = [guid]::NewGuid().ToString() }
+    if ($Fields) { foreach ($k in @($Fields.Keys)) { $f[$k] = $Fields[$k] } }
+    $t = "# Start request - $($Fx.task) / $W   (owner: coordinator)`r`n`r`n"
+    foreach ($k in @($f.Keys)) { $t += "- **${k}:** $($f[$k])`r`n" }
+    Write-Text (Join-Path $Fx.workers "$W-start.md") $t
+}
+
+function Get-StartRecord([hashtable]$Fx, [string]$W) {
+    # The relay's record of one worker's start request (starts['<task>/<W>'] in state.json), or $null.
+    $s = Get-RelayState $Fx
+    if (-not $s -or -not $s.starts) { return $null }
+    return $s.starts."$($Fx.task)/$W"
+}
+
+function Initialize-GitRepo([string]$Dir) {
+    # A Git repository with one commit, for a start request with New worktree: yes. Returns the commit id ('' when git
+    # failed).
+    New-Item -ItemType Directory -Path $Dir -Force | Out-Null
+    Write-Text (Join-Path $Dir 'README.md') "synthetic repo`n"
+    $sha = ''
+    $keep = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'   # Windows PowerShell 5.1 turns a native program's stderr into errors under Stop
+        foreach ($gitArgs in @(@('init', '-q'), @('config', 'user.email', 'ada@example.com'), @('config', 'user.name', 'Ada'), @('add', '-A'), @('commit', '-q', '-m', 'first'))) {
+            $null = & git.exe -C $Dir @gitArgs 2>&1
+        }
+        $sha = ((& git.exe -C $Dir rev-parse HEAD 2>$null) | Out-String).Trim()
+    } finally { $ErrorActionPreference = $keep }
+    return $sha
+}
+
+function Wait-LoopStarted([hashtable]$Fx) {
+    # The loop writes 'Relay loop started' after the guard's first look, so a file the test changes after this is seen.
+    $log = Join-Path $Fx.mb '.relay\relay.log'
+    return (Wait-Until { (Test-Path -LiteralPath $log) -and ((Read-Shared $log) -match 'Relay loop started') } 30)
 }
 
 function Start-Spawn([hashtable]$Fx, [string[]]$SpawnArgs) {
@@ -504,6 +555,15 @@ function Get-GeminiCalls([hashtable]$Fx, [string]$Phase) {
 }
 
 function Get-CodexWorkerCalls([hashtable]$Fx) { return @(Get-CodexCalls $Fx 'start' | Where-Object { $_.kind -eq 'worker' }) }
+
+function Get-ClaudeWorkerCalls([hashtable]$Fx, [string]$W) {
+    # The Claude stub's worker runs (a new session: --session-id), all of them or one worker's (its brief in the prompt).
+    $all = @(Get-Calls $Fx 'start' | Where-Object { $_.session_id_flag })
+    if (-not $W) { return $all }
+    return @($all | Where-Object { [string]$_.prompt -match ('\\' + [regex]::Escape($W) + '-brief\.md') })
+}
+
+function Get-CoordinatorCalls([hashtable]$Fx) { return @(Get-Calls $Fx 'start' | Where-Object { $_.resume }) }   # the Claude stub's coordinator turns (--resume)
 
 function Set-AgyStubMode([hashtable]$Fx, [string]$Mode) { [IO.File]::WriteAllText((Join-Path $Fx.stub 'agy-mode.txt'), $Mode, $Utf8) }
 
@@ -2019,6 +2079,219 @@ try {
             $leak = Test-NoKeyText $fx $k
             Check (-not $leak) "a dummy key's text was written to: $leak"
         }
+    }
+
+    Invoke-Scenario '26 start requests: off for a Claude coordinator until turned on, a dry run, one start per version, refusals as notes, none during a coordinator turn' {
+        $fx = New-WorkerFixture 'sr1'
+        Set-WorkerSettings $fx @{ claude_exe = $StubCli }   # no start_requests: off for a Claude Code coordinator
+        # A start file that is there when the coordinator is enrolled counts as known: it never runs.
+        Write-Brief $fx 'W0' 'implementation' 'claude'
+        Write-StartRequest $fx 'W0' $null
+        Initialize-Fixture $fx
+        $rec = Get-StartRecord $fx 'W0'
+        Check ($rec -and $rec.state -eq 'known') "a start file there at the first look does not count as known (state '$($rec.state)')"
+        # A new version while start requests are off: recorded, and it waits.
+        Write-Brief $fx 'W1' 'implementation' 'claude'
+        Write-StartRequest $fx 'W1' @{ 'Budget USD' = '2'; 'Effort' = 'high' }
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ($r.code -eq 0 -and (Test-Said $r.out 'start request\(s\) wait: start requests are off')) "the start request did not wait while start requests are off: $(Get-Tail $r.out)"
+        Check (@(Get-ClaudeWorkerCalls $fx).Count -eq 0) 'a worker started while start requests were off'
+        $rec = Get-StartRecord $fx 'W1'
+        Check ($rec -and $rec.state -eq 'new') "the new start request is not recorded as new (state '$($rec.state)')"
+        # Turned on: a dry run tells what it would start, and changes nothing.
+        Set-WorkerSettings $fx @{ claude_exe = $StubCli; start_requests = $true }
+        $sf = Join-Path $fx.mb '.relay\state.json'
+        $before = (Get-FileHash -LiteralPath $sf -Algorithm SHA256).Hash
+        $r = Invoke-Relay $fx 'DryRun' $null
+        Check ($r.code -eq 0 -and (Test-Said $r.out 'would start worker W1') -and (Test-Said $r.out 'spawn-worker\.ps1')) "the dry run did not tell the worker start and its command: $(Get-Tail $r.out)"
+        Check ((Get-FileHash -LiteralPath $sf -Algorithm SHA256).Hash -eq $before) 'the dry run changed state.json'
+        Check (@(Get-ClaudeWorkerCalls $fx).Count -eq 0) 'the dry run started a worker'
+        # One start: the worker gets the request's budget and effort, in the brief's worktree.
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ($r.code -eq 0) "-Once exit code $($r.code)"
+        Check (Wait-Until { @(Get-ClaudeWorkerCalls $fx 'W1').Count -ge 1 } 60) 'the start request did not start the worker'
+        $w = @(Get-ClaudeWorkerCalls $fx 'W1')
+        if ($w.Count -ge 1) {
+            $a = @($w[0].args)
+            foreach ($pair in @(@('--max-budget-usd', '2'), @('--effort', 'high'))) {
+                $got = @()
+                for ($i = 0; $i -lt $a.Count - 1; $i++) { if ([string]$a[$i] -ceq $pair[0]) { $got = @($a[$i], $a[$i + 1]) } }
+                $why = Compare-ArgList $got $pair
+                Check (-not $why) "the worker's $($pair[0]) is not the start request's: $why"
+            }
+            Check ([string]$w[0].cwd -like '*\sr1\worktrees\*\repo') "the worker ran in '$($w[0].cwd)', not in the brief's worktree"
+        }
+        $rec = Get-StartRecord $fx 'W1'
+        Check ($rec -and $rec.state -eq 'started' -and [int]$rec.runner_pid -gt 0) "the start record is not 'started' with its runner's pid (state '$($rec.state)', runner pid '$($rec.runner_pid)')"
+        $firstId = ''
+        if ($rec) { $firstId = [string]$rec.id }
+        $st = Get-RelayState $fx
+        Check ([int]$st.daily.worker_starts -eq 1) "daily.worker_starts is '$($st.daily.worker_starts)', want 1"
+        $leftover = @(Get-ChildItem -LiteralPath (Join-Path $fx.mb '.relay\dispatch') -Filter 'S*.result.json' -File -ErrorAction SilentlyContinue)
+        Check ($leftover.Count -eq 0) ('result files were left in .relay\dispatch: ' + (($leftover | ForEach-Object { $_.Name }) -join ', '))
+        Check (Wait-Until { $rj = Get-RunJson $fx 'W1'; [bool]($rj -and $rj.state -and $rj.state -ne 'running') } 60) 'the W1 worker run did not end'
+        # The same version again, even written again with the same bytes: never a second start.
+        $null = Invoke-Relay $fx 'Once' $null
+        $null = Invoke-Relay $fx 'Once' $null
+        $sp = Join-Path $fx.workers 'W1-start.md'
+        [IO.File]::WriteAllBytes($sp, [IO.File]::ReadAllBytes($sp))
+        (Get-Item -LiteralPath $sp).LastWriteTimeUtc = [DateTime]::UtcNow
+        $null = Invoke-Relay $fx 'Once' $null
+        $rec = Get-StartRecord $fx 'W1'
+        Check ($rec -and $rec.state -eq 'started' -and [string]$rec.id -eq $firstId) "the same version of W1-start.md was started again (start request '$($rec.id)', first '$firstId')"
+        Check (@(Get-ClaudeWorkerCalls $fx).Count -eq 1) "one start request version started $(@(Get-ClaudeWorkerCalls $fx).Count) worker runs, want 1"
+        # Refusals in one round, each a note for the next coordinator turn: an unknown tool, a tool that worker_tools does
+        # not list, a worker that still runs (its run.json names this test's own process), and the launcher's refusal in
+        # its own words, whole.
+        Write-StartRequest $fx 'W2' @{ 'Tool' = 'grok' }
+        Write-StartRequest $fx 'W3' @{ 'Tool' = 'codex' }
+        Write-Brief $fx 'W4' 'implementation' 'claude'
+        Write-Text (Join-Path $fx.workers 'W4.run.json') (ConvertTo-Json -InputObject @{ task = $fx.task; worker = 'W4'; state = 'running'; pid = $PID } -Compress)
+        Write-StartRequest $fx 'W4' $null
+        $outside = Join-Path $fx.dir 'outside\repo'
+        New-Item -ItemType Directory -Path $outside -Force | Out-Null
+        Write-Brief $fx 'W5' 'implementation' 'claude' $outside
+        Write-StartRequest $fx 'W5' $null
+        $coordBefore = @(Get-CoordinatorCalls $fx).Count
+        $workersBefore = @(Get-ClaudeWorkerCalls $fx).Count
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ($r.code -eq 0) "-Once exit code $($r.code)"
+        foreach ($x in @(@{ w = 'W2'; words = 'Tool must be' }, @{ w = 'W3'; words = 'worker_tools' }, @{ w = 'W4'; words = 'still running' }, @{ w = 'W5'; words = 'worktree must be under' })) {
+            $rec = Get-StartRecord $fx $x.w
+            Check ($rec -and $rec.state -eq 'refused' -and [string]$rec.message -match $x.words) "$($x.w) was not refused with '$($x.words)' (state '$($rec.state)', message '$($rec.message)')"
+        }
+        $rec = Get-StartRecord $fx 'W5'
+        Check ($rec -and [string]$rec.message -notmatch 'At line|char:') "the launcher's refusal of W5 holds PowerShell's position lines: '$($rec.message)'"
+        $cc = @(Get-CoordinatorCalls $fx)
+        Check ($cc.Count -eq $coordBefore + 1) "expected exactly one new coordinator turn for the refusals, got $($cc.Count - $coordBefore)"
+        if ($cc.Count -gt $coordBefore) {
+            $p = [string]$cc[$cc.Count - 1].prompt
+            foreach ($wn in @('W2', 'W3', 'W4', 'W5')) { Check ($p -match "did not start worker $wn of") "the coordinator's notice does not say that $wn did not start" }
+        }
+        Check (@(Get-ClaudeWorkerCalls $fx).Count -eq $workersBefore) 'a refused start request started a worker'
+        # Held while a coordinator turn runs; started once the turn has ended.
+        Set-StubMode $fx 'sleep:12'
+        Write-Text (Join-Path $fx.mb 'tasks\T-NEW\assignment.md') $NewAssignment
+        $null = Invoke-Relay $fx 'Once' @{ NoWait = $true }
+        Check (Wait-Until { (Get-RunningStubs $fx) -eq 1 } 15) 'the coordinator turn did not start'
+        Write-Brief $fx 'W6' 'implementation' 'claude'
+        Write-StartRequest $fx 'W6' $null
+        $r = Invoke-Relay $fx 'Once' $null
+        if ((Get-RunningStubs $fx) -ne 1) { throw 'timing: the 12 s coordinator turn ended before the check; re-run on a less loaded machine' }
+        Check (Test-Said $r.out 'start request\(s\) wait: a coordinator turn runs') "the start request did not wait for the coordinator turn: $(Get-Tail $r.out)"
+        Check (@(Get-ClaudeWorkerCalls $fx 'W6').Count -eq 0) 'a worker started during a coordinator turn'
+        Check (Wait-Until { (Get-RunningStubs $fx) -eq 0 } 30) 'the coordinator turn did not end'
+        Set-StubMode $fx 'ok'
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (Wait-Until { @(Get-ClaudeWorkerCalls $fx 'W6').Count -ge 1 } 60) 'the start request did not start the worker after the coordinator turn'
+        Check (@(Get-ClaudeWorkerCalls $fx 'W6').Count -eq 1) "W6 started $(@(Get-ClaudeWorkerCalls $fx 'W6').Count) times, want once"
+        $rec = Get-StartRecord $fx 'W6'
+        Check ($rec -and $rec.state -eq 'started') "W6 is not recorded as started (state '$($rec.state)')"
+    }
+
+    Invoke-Scenario '27 start requests: a new worktree, refusals from the launcher, a stop while starting, the daily limit, PAUSE, and a changed launcher halts' {
+        $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $git) { throw 'git.exe not found: a new worktree needs a Git repository' }
+        $fx = New-WorkerFixture 'sr2'
+        $projects = Join-Path $fx.dir 'projects'
+        $sha = Initialize-GitRepo (Join-Path $projects 'app')
+        if ($sha -notmatch '^[0-9a-f]{40}$') { throw "could not make the test's Git repository (commit '$sha')" }
+        Set-WorkerSettings $fx @{ claude_exe = $StubCli; start_requests = $true; projects_dir = $projects }
+        Initialize-Fixture $fx
+        $af = Join-Path $fx.mb '.relay\alerts.md'
+        # New worktree: yes. The launcher makes <worktrees>\<task>\app on claude/<task> from the brief's Base commit.
+        $wt = Join-Path $fx.wtroot "$($fx.task)\app"
+        Write-Brief $fx 'W1' 'implementation' 'claude' $wt $sha
+        Write-StartRequest $fx 'W1' @{ 'New worktree' = 'yes' }
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ($r.code -eq 0) "-Once exit code $($r.code)"
+        Check (Wait-Until { @(Get-ClaudeWorkerCalls $fx 'W1').Count -ge 1 } 60) 'the start request with a new worktree did not start the worker'
+        $branch = ''
+        $tip = ''
+        $gitPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $branch = ((& $git.Path -C $wt rev-parse --abbrev-ref HEAD 2>$null) | Out-String).Trim()
+            $tip = ((& $git.Path -C $wt rev-parse HEAD 2>$null) | Out-String).Trim()
+        } finally { $ErrorActionPreference = $gitPreference }
+        Check ($branch -ceq "claude/$($fx.task)" -and $tip -eq $sha) "the new worktree is on '$branch' at '$tip', want claude/$($fx.task) at $sha"
+        $w = @(Get-ClaudeWorkerCalls $fx 'W1')
+        if ($w.Count -ge 1) { Check ([string]$w[0].cwd -like '*\worktrees\*\app') "the worker ran in '$($w[0].cwd)', not in the new worktree" }
+        $rec = Get-StartRecord $fx 'W1'
+        Check ($rec -and $rec.state -eq 'started' -and [string]$rec.message -match 'Made the worktree') "the start record does not say that the launcher made the worktree (state '$($rec.state)', message '$($rec.message)')"
+        # A repository that is not there: the launcher refuses in its own words, and makes nothing.
+        $nope = Join-Path $fx.wtroot "$($fx.task)\nope"
+        Write-Brief $fx 'W2' 'implementation' 'claude' $nope $sha
+        Write-StartRequest $fx 'W2' @{ 'New worktree' = 'yes' }
+        $null = Invoke-Relay $fx 'Once' $null
+        $rec = Get-StartRecord $fx 'W2'
+        Check ($rec -and $rec.state -eq 'refused' -and [string]$rec.message -match 'is not a Git repository folder') "W2 was not refused for its missing repository (state '$($rec.state)', message '$($rec.message)')"
+        Check (-not (Test-Path -LiteralPath $nope)) 'the refused start request made the nope folder'
+        Check (@(Get-ClaudeWorkerCalls $fx 'W2').Count -eq 0) 'the refused start request started a worker'
+        # A stop while starting: a record that a stopped relay left 'launching', with nothing that shows what happened, is
+        # settled as unknown, with a note for the coordinator, and never runs again. state.json is changed by hand while
+        # no relay runs; ConvertFrom-Json gives objects, so the record is added with Add-Member.
+        Write-Brief $fx 'W3' 'implementation' 'claude'
+        Write-StartRequest $fx 'W3' $null
+        $sf = Join-Path $fx.mb '.relay\state.json'
+        $st = ConvertFrom-Json -InputObject (Read-Shared $sf)
+        $sid3 = 'S20261104-050000-abcd'
+        $rec3 = [pscustomobject]@{ key = "$($fx.task)/W3"; task = $fx.task; worker = 'W3'
+            version = (Get-FileHash -LiteralPath (Join-Path $fx.workers 'W3-start.md') -Algorithm SHA256).Hash.ToLowerInvariant()
+            state = 'launching'; id = $sid3; launched_utc = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); launcher_pid = 0
+            result_file = (Join-Path $fx.mb ".relay\dispatch\$sid3.result.json") }
+        $st.starts | Add-Member -NotePropertyName "$($fx.task)/W3" -NotePropertyValue $rec3
+        Write-Text $sf (ConvertTo-Json -InputObject $st -Depth 12)
+        $coordBefore = @(Get-CoordinatorCalls $fx).Count
+        $null = Invoke-Relay $fx 'Once' $null
+        $rec = Get-StartRecord $fx 'W3'
+        Check ($rec -and $rec.state -eq 'unknown') "a start left 'launching' was not settled as unknown (state '$($rec.state)')"
+        $cc = @(Get-CoordinatorCalls $fx)
+        $told = $false
+        for ($i = $coordBefore; $i -lt $cc.Count; $i++) { if ([string]$cc[$i].prompt -match 'stopped while it started worker W3') { $told = $true } }
+        Check $told 'the coordinator was not told that the relay stopped while it started W3'
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-ClaudeWorkerCalls $fx 'W3').Count -eq 0) 'a start request whose outcome is unknown was run'
+        $rec = Get-StartRecord $fx 'W3'
+        Check ($rec -and $rec.state -eq 'unknown') "the unknown start request did not stay unknown (state '$($rec.state)')"
+        # The daily limit: W1 and W2 count today (the launcher refused W2, but it ran); this relay never started W3.
+        Write-Brief $fx 'W4' 'implementation' 'claude'
+        Write-StartRequest $fx 'W4' $null
+        $r = Invoke-Relay $fx 'Once' @{ MaxWorkerStartsPerDay = 1 }
+        Check (Test-Said $r.out 'daily limit of worker starts') "the daily limit did not hold the start request: $(Get-Tail $r.out)"
+        Check ((Test-Path -LiteralPath $af) -and (Read-Shared $af) -match 'Daily limit of worker starts reached') 'alerts.md does not hold the daily limit alert'
+        Check (@(Get-ClaudeWorkerCalls $fx 'W4').Count -eq 0) 'a worker started past the daily limit'
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (Wait-Until { @(Get-ClaudeWorkerCalls $fx 'W4').Count -ge 1 } 60) 'the start request did not run under the usual daily limit'
+        # PAUSE holds start requests too.
+        Write-Brief $fx 'W5' 'implementation' 'claude'
+        Write-StartRequest $fx 'W5' $null
+        $pause = Join-Path $fx.mb '.relay\PAUSE'
+        Write-Text $pause 'fixture pause'
+        $r = Invoke-Relay $fx 'Once' $null
+        Remove-Item -LiteralPath $pause -Force
+        Check (Test-Said $r.out 'start request\(s\) wait: PAUSED') "PAUSE did not hold the start request: $(Get-Tail $r.out)"
+        Check (@(Get-ClaudeWorkerCalls $fx 'W5').Count -eq 0) 'a worker started while PAUSE was there'
+        # The guard on the relay's own files, in a loop: a changed bin\spawn-worker.ps1 halts the relay, and no worker
+        # starts until the owner clears the halt.
+        $loop = Start-Relay $fx 'Start' $null
+        Check (Wait-LoopStarted $fx) 'the relay loop did not start'
+        Check (Wait-Until { @(Get-ClaudeWorkerCalls $fx 'W5').Count -ge 1 } 60) 'the loop did not start W5'
+        [IO.File]::AppendAllText($fx.spawn, "`r`n# changed by the relay test`r`n", $Utf8)
+        Write-Brief $fx 'W6' 'implementation' 'claude'
+        Write-StartRequest $fx 'W6' $null
+        $halted = Wait-Until { $hs = Get-RelayState $fx; [bool]($hs -and [string]$hs.halt -match 'spawn-worker\.ps1') } 30
+        Check (Stop-Loop $fx $loop) 'the loop did not stop on -Stop'
+        Check $halted 'a changed bin\spawn-worker.ps1 did not halt the relay'
+        Check ((Test-Path -LiteralPath $af) -and (Read-Shared $af) -match 'spawn-worker\.ps1 changed') 'alerts.md does not say that spawn-worker.ps1 changed'
+        Check (@(Get-ClaudeWorkerCalls $fx 'W6').Count -eq 0) 'a worker started after the launcher changed'
+        # The launcher put back and the halt cleared: the next relay takes a fresh first look and starts W6.
+        Copy-Item -LiteralPath $SpawnWorker -Destination $fx.spawn -Force
+        $r = Invoke-Relay $fx 'ClearHalt' $null
+        Check ($r.code -eq 0) "-ClearHalt exit code $($r.code)"
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (Wait-Until { @(Get-ClaudeWorkerCalls $fx 'W6').Count -ge 1 } 60) 'W6 did not start after the launcher was put back and the halt was cleared'
+        Check (@(Get-ClaudeWorkerCalls $fx 'W6').Count -eq 1) "W6 started $(@(Get-ClaudeWorkerCalls $fx 'W6').Count) times, want once"
     }
 } catch {
     $script:Fail++

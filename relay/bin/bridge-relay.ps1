@@ -3188,7 +3188,7 @@ function Invoke-Tick([hashtable]$State, [bool]$ReadOnly) {
     Update-CodexDispatches $State
     Update-MailDispatches $State
     Update-StartLaunching $State $ReadOnly   # start requests left 'launching' are settled first
-    if (-not $ReadOnly) { [void](Test-RelayFiles $State 'while the relay ran') }   # the guard on the relay's own files; off unless on
+    if (-not $ReadOnly) { [void](Test-RelayFiles $State 'while the relay ran') }   # the guard on the relay's own files (nothing while it is off)
     # After the turns that ended are recorded, so a rollover never cuts into a running turn.
     Update-Follow $State $ReadOnly
     $coord = Get-Coordinator
@@ -3698,42 +3698,607 @@ function Show-CoordinatorArgs {
     Write-Output (ConvertTo-Json -InputObject $o -Depth 4)
 }
 
-# ---------- Phase 6: placeholders for later steps ----------
-# The coordinator's plumbing already calls these. Each one refuses or does nothing, in plain words, until a later step
-# of Phase 6 builds it: the guard on the relay's own files, start requests, a Codex coordinator, a Gemini CLI
-# coordinator, and one thread, one job. scripts/check.js refuses a second definition of a name, so the step that builds
-# one replaces it here. With a Claude Code coordinator (every mailbox today) none of them changes what the relay does.
+# ---------- the guard on the relay's own files ----------
+# The relay runs bin\spawn-worker.ps1 outside any sandbox when a start request asks, and a Codex or Gemini CLI turn
+# works in a folder of its own. So while either can happen, the relay watches its own files: the programs (bin\*.ps1,
+# tests\*.js), the two settings files, a Codex or Gemini CLI coordinator's orders file, and the records the relay writes
+# itself (.relay\coordinator.json, codex.json, agents.json). A change the relay did not make halts it with a plain
+# alert. It is a backstop, not a lock: it sees a change only when it looks (each tick, right before each worker start
+# and each Codex or Gemini CLI turn, and when the next relay starts, for a turn that an earlier relay left running).
+# With a Claude Code coordinator and start requests off (every mailbox today), the guard is off.
 
-function Update-RelayFileStamp([string]$Path) {
-    # Placeholder (the guard): the guard is not built yet, so there is no stamp to keep up to date. Never throws.
+function Test-GuardWanted {
+    # On while .relay\coordinator.json names codex or gemini, or while start requests are on. Initialize-RelayGuard
+    # decides it once per relay process: -Enroll needs the writer lock, so the coordinator's tool cannot change meanwhile.
+    $c = Get-Coordinator
+    $t = Get-CoordTool $c
+    return [bool](($c -and ($t -eq 'codex' -or $t -eq 'gemini')) -or (Get-StartRequestsOn $c))
+}
+
+function Get-GuardFiles {
+    # The program files: bin\*.ps1 and tests\*.js (by their extension, as -Filter also matches 8.3 short names), the
+    # two settings files, and a Codex or Gemini CLI coordinator's orders file in its own folder, which a Codex
+    # coordinator can write. The relay never writes any of them.
+    $list = New-Object System.Collections.Generic.List[string]
+    foreach ($pair in @(@('bin', '.ps1'), @('tests', '.js'))) {
+        $dir = Join-Path $Root $pair[0]
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+        foreach ($f in @(Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue)) {
+            if ($f.Extension -ieq $pair[1]) { $list.Add($f.FullName) }
+        }
+    }
+    foreach ($p in @((Join-Path $Root 'bin\relay-settings.json'), (Join-Path $Root 'bin\cost-limits.json'))) { $list.Add($p) }
+    $c = Get-Coordinator
+    $ct = Get-CoordTool $c
+    if ($c -and $c.cwd -and ($ct -eq 'codex' -or $ct -eq 'gemini')) {
+        $orders = 'AGENTS.md'
+        if ($ct -eq 'gemini') { $orders = 'GEMINI.md' }
+        try { $list.Add((Join-Path ([string]$c.cwd) $orders)) } catch { }
+    }
+    return , $list.ToArray()
+}
+
+function Get-RelayFileStamp([string]$Path) {
+    # missing, folder, unreadable, or <length>:<sha256>. A link (a reparse point) gets link: and then what it points
+    # to, read through the link (folder, missing, unreadable or its SHA-256), so both a link put where the file was and
+    # a change behind a link that was always there count as changes. A read that fails is tried twice more, 100 ms
+    # apart, so a file that another program holds for a moment is no change. Never throws.
+    $stamp = 'unreadable'
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $link = ''
+        try {
+            $fi = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            if ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint) { $link = 'link:' }
+            if ($fi.PSIsContainer) { return ($link + 'folder') }
+            if ($link) { return ($link + (Get-FileSha256 $Path)) }   # a link's own length is not the length of what it points to
+            return ($fi.Length.ToString($Inv) + ':' + (Get-FileSha256 $Path))
+        } catch {
+            $there = $true
+            try { $there = [bool](Test-Path -LiteralPath $Path) } catch { $there = $true }
+            if (-not $there) { return ($link + 'missing') }
+            $stamp = $link + 'unreadable'
+        }
+        if ($attempt -lt 3) { Start-Sleep -Milliseconds 100 }
+    }
+    return $stamp
+}
+
+function Get-RelayFileStamps([bool]$ProgramOnly = $false) {
+    # Each watched file's stamp, by its full path. $ProgramOnly: the program files only (what a Codex or Gemini CLI
+    # turn's record keeps); else the relay's records too.
+    $s = @{}
+    $files = Get-GuardFiles   # a variable first: @(<function>) would keep the list as one item
+    foreach ($f in $files) { $s[$f] = Get-RelayFileStamp $f }
+    if (-not $ProgramOnly) { foreach ($f in @($CoordFile, $CodexFile, $AgentsFile)) { $s[$f] = Get-RelayFileStamp $f } }
+    return $s
+}
+
+function Get-RelayFileChange([hashtable]$Old, [hashtable]$New) {
+    # The paths whose stamps differ, files that came or went included. Only the keys of $New are looked up in $Old, so
+    # a set of program files only is compared with the program files only. A file that is missing now and was not
+    # looked at before is no change.
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($k in @($New.Keys)) {
+        $was = $Old[$k]
+        if ($null -eq $was) {
+            if ([string]$New[$k] -cne 'missing') { $out.Add([string]$k) }
+        } elseif ([string]$was -cne [string]$New[$k]) { $out.Add([string]$k) }
+    }
+    foreach ($k in @($Old.Keys)) { if (-not $New.ContainsKey($k) -and [string]$Old[$k] -cne 'missing') { $out.Add([string]$k) } }
+    return , $out.ToArray()
 }
 
 function Initialize-RelayGuard([hashtable]$State) {
-    # Placeholder (the guard): the guard is not built yet, so it stays off.
-    $script:GuardOn = $false
+    # Once per relay process (-Once, -Start), before its first tick and before Invoke-Loop's 'Relay loop started' line,
+    # so a test that waits for that line never changes a file before the first look.
+    $script:GuardOn = Test-GuardWanted
+    $script:RelayStamps = $null
+    if (-not $script:GuardOn) { return }
+    $script:RelayStamps = Get-RelayFileStamps $false
+    # A Codex or Gemini CLI turn that an earlier relay left running keeps the program files' stamps from its start in its
+    # record, so a change made while no relay ran is caught before anything runs.
+    $now = Get-RelayFileStamps $true
+    foreach ($d in @($State.dispatches.Values)) {
+        if (-not ($d -is [hashtable]) -or ($d.state -ne 'running' -and $d.state -ne 'launching') -or -not ($d.guard -is [hashtable])) { continue }
+        $changed = Get-RelayFileChange $d.guard $now
+        if ($changed.Count) { Set-GuardHalt $State $changed "while coordinator turn $($d.id) ran"; $d.guard = $null }
+    }
 }
 
 function Test-RelayFiles([hashtable]$State, [string]$When) {
-    # Placeholder (the guard): the guard is off, so no relay file counts as changed.
-    return $true
-}
-
-function Get-StartRequestsOn($Coord) {
-    # Placeholder (start requests): start requests are not built yet, so they are off for every coordinator.
+    # True when no watched file changed since the last look. Called once per tick, right before each worker start, and
+    # right before each Codex or Gemini CLI turn. A change halts the relay. Always true while the guard is off.
+    if (-not $script:GuardOn -or $null -eq $script:RelayStamps) { return $true }
+    $now = Get-RelayFileStamps $false
+    $changed = Get-RelayFileChange $script:RelayStamps $now
+    if ($changed.Count -eq 0) { return $true }
+    Set-GuardHalt $State $changed $When $now
     return $false
 }
 
+function Set-GuardHalt([hashtable]$State, [string[]]$Changed, [string]$When, $Seen = $null) {
+    # Halts the relay with a plain alert. Each change is reported once: the files as they are now ($Seen, or a new look)
+    # become the next look.
+    $all = @(@($Changed) | ForEach-Object { if ($_.StartsWith($Root + '\', [StringComparison]::OrdinalIgnoreCase)) { $_.Substring($Root.Length + 1) } else { $_ } })
+    $names = (@($all | Select-Object -First 10)) -join ', '
+    if ($all.Count -gt 10) { $names += " and $($all.Count - 10) more" }
+    $State.halt = "relay files changed ${When}: $names"
+    Add-Alert $State '' ("The relay stopped: $names changed ${When}. A session or a worker may have made the change. Look at it before you start the relay again. " +
+        'If you made it yourself, run bridge-relay.ps1 -Stop (if the loop runs), then -ClearHalt, then start the relay again. Until then no coordinator turn and no worker starts.')
+    Write-Log "HALT: relay files changed ${When}: $names"
+    if ($script:GuardOn) {
+        if ($Seen -is [hashtable]) { $script:RelayStamps = $Seen } else { $script:RelayStamps = Get-RelayFileStamps $false }
+    }
+}
+
+function Update-RelayFileStamp([string]$Path) {
+    # Save-Json calls this after each write, so the relay's own changes to its records are no change for the guard.
+    # Never throws, so a save never fails because of the guard.
+    try {
+        if ($null -eq $script:RelayStamps -or -not $script:RelayStamps.ContainsKey($Path)) { return }
+        $script:RelayStamps[$Path] = Get-RelayFileStamp $Path
+    } catch { }
+}
+
+# ---------- start requests (W<n>-start.md) ----------
+# A coordinator that cannot run bin\spawn-worker.ps1 itself writes tasks\<TASK-ID>\workers\W<n>-start.md (from
+# templates\worker-start.md) beside the worker's brief. Between coordinator turns, the relay checks it and runs the
+# mailbox's own bin\spawn-worker.ps1 for it. Each version of the file (its SHA-256) runs at most once: a 'launching'
+# record is saved before the launcher starts, and a stop while it runs is settled from what the files show, never by
+# running it again. Only one launcher runs at a time, at most 5 a round and relay_max_worker_starts_per_day a day
+# (bin\cost-limits.json; 12 unless set). A refusal comes back to the coordinator as a note in its next turn; a worker
+# that started ends as any worker does (its run.json).
+
+function Get-StartRequestsOn($Coord) {
+    # start_requests in bin\relay-settings.json wins when it is a real true or false (the text "true" does not count);
+    # else start requests are on only for a Codex or Gemini CLI coordinator.
+    if ($StartRequestsSetting -is [bool]) { return $StartRequestsSetting }
+    $coordTool = Get-CoordTool $Coord
+    return [bool]($Coord -and ($coordTool -eq 'codex' -or $coordTool -eq 'gemini'))
+}
+
+function Get-StartBlockReason([hashtable]$State, $Coord) {
+    # What holds every start request back this round, as @{ code; text }, or $null. A held request is not refused: it
+    # waits. STOP needs nothing here: the loop leaves before the next tick.
+    if (-not (Get-StartRequestsOn $Coord)) { return @{ code = 'off'; text = 'start requests are off (start_requests in bin\relay-settings.json; on by default only for a Codex or Gemini CLI coordinator)' } }
+    if (Test-Path -LiteralPath $PauseFile) { return @{ code = 'paused'; text = "PAUSED ($PauseFile exists)" } }
+    if ($State.halt) { return @{ code = 'halted'; text = "HALTED: $($State.halt)" } }
+    foreach ($d in @($State.dispatches.Values)) {
+        if ($d.state -eq 'running' -or $d.state -eq 'launching') { return @{ code = 'coordinator-turn'; text = "a coordinator turn runs ($($d.id)); workers start after it ends" } }
+    }
+    if (@($State.starts.Values | Where-Object { ($_ -is [hashtable]) -and $_.state -eq 'launching' }).Count) { return @{ code = 'launching'; text = 'the launcher of an earlier start request has not finished yet' } }
+    if ($MaxWorkerStartsPerDay -gt 0 -and [int]$State.daily.worker_starts -ge $MaxWorkerStartsPerDay) {
+        Add-Alert $State ('cap-starts-' + $State.daily.date) ("Daily limit of worker starts reached ($MaxWorkerStartsPerDay a day: relay_max_worker_starts_per_day in bin\cost-limits.json). " +
+            'The other start requests wait until tomorrow. Possible loop: check .relay\relay.log.')
+        return @{ code = 'cap-starts'; text = "the daily limit of worker starts is reached ($([int]$State.daily.worker_starts)/$MaxWorkerStartsPerDay; relay_max_worker_starts_per_day in bin\cost-limits.json)" }
+    }
+    return $null
+}
+
+function Get-StartFiles {
+    # Every tasks\<TASK-ID>\workers\W<n>-start.md, found with -LiteralPath (a mailbox path may hold [ or ]). Its folder
+    # names the task and its name the worker, both checked as bin\spawn-worker.ps1 checks -TaskId and -Worker.
+    $out = New-Object System.Collections.ArrayList
+    $td = Join-Path $Root 'tasks'
+    if (-not (Test-Path -LiteralPath $td -PathType Container)) { return , $out.ToArray() }
+    foreach ($t in @(Get-ChildItem -LiteralPath $td -Directory -ErrorAction SilentlyContinue)) {
+        if ($t.Name -notmatch '^T-\d{8}-\d{2}-[a-z0-9-]+$') { continue }
+        $wd = Join-Path $t.FullName 'workers'
+        if (-not (Test-Path -LiteralPath $wd -PathType Container)) { continue }
+        foreach ($f in @(Get-ChildItem -LiteralPath $wd -File -ErrorAction SilentlyContinue)) {
+            $m = [regex]::Match($f.Name, '^[Ww](\d{1,3})-start\.md$')
+            if (-not $m.Success) { continue }
+            $w = 'W' + $m.Groups[1].Value
+            [void]$out.Add(@{ key = "$($t.Name)/$w"; task = $t.Name; worker = $w; path = $f.FullName; write = $f.LastWriteTimeUtc })
+        }
+    }
+    return , $out.ToArray()
+}
+
 function Update-StartRequests([hashtable]$State, [bool]$Known, $Coord) {
-    # Placeholder (start requests): start files (W<n>-start.md) are not read yet.
+    # Records each new version (SHA-256) of every start file once it is older than the debounce. At the first look and
+    # at enrollment ($Known) every version there counts as known, however new it is: it never runs. A record that is
+    # being started is left alone.
+    $now = Get-Now
+    $files = Get-StartFiles   # a variable first: @(<function>) would keep the list as one item
+    foreach ($f in $files) {
+        if (-not $Known -and ([DateTime]::UtcNow - $f.write).TotalSeconds -lt $DebounceSeconds) { continue }   # still being written
+        $h = ''
+        try { $h = Get-FileSha256 $f.path } catch { continue }
+        $r = $State.starts[$f.key]
+        if (($r -is [hashtable]) -and $r.state -eq 'launching') { continue }   # settled first (Update-StartLaunching)
+        if (($r -is [hashtable]) -and [string]$r.version -eq $h) {
+            if ($Known -and $r.state -eq 'new') { $r.state = 'known' }   # at enrollment, a version that waits counts as known
+            continue
+        }
+        $word = 'new'   # never $state: PowerShell names are not case-sensitive, so it would be $State
+        if ($Known) { $word = 'known' }
+        # The runner that an earlier version started is kept, so Test-WorkerRuns still sees it while it runs.
+        $runnerPid = 0
+        $runnerStart = ''
+        if ($r -is [hashtable]) {
+            try { $runnerPid = [int]$r.runner_pid } catch { $runnerPid = 0 }
+            $runnerStart = [string]$r.runner_start
+        }
+        $State.starts[$f.key] = @{ key = $f.key; task = $f.task; worker = $f.worker; version = $h; state = $word; id = '';
+            detected_utc = $now; launched_utc = 0; finished_utc = 0; launcher_pid = 0; launcher_start = ''; runner_pid = $runnerPid; runner_start = $runnerStart;
+            tool = ''; type = ''; new_worktree = $false; result_file = ''; out = ''; err = ''; stdin = ''; message = ''; gone_utc = 0 }
+        if (-not $Known) { Write-Log "Detected: start request $($f.worker)-start.md of $($f.task) (version $($h.Substring(0, 12)))" }
+    }
+    if ($Known) { $State.start_baseline_utc = $now }
+}
+
+function Get-StartRequestFields([hashtable]$R) {
+    # Reads W<n>-start.md. Returns @{ wait; problem; tool; type; budget; model; effort; new_worktree }: wait is true when
+    # the file is not the version the record names (the next round looks again); problem says in plain words why the
+    # relay refuses the request. The Tool and Type lines must be there, and a field line in another shape (such as
+    # - **Tool**: codex or * Type: review) is refused, so a request never runs with a tool or a type it did not name.
+    $q = @{ wait = $false; problem = ''; tool = ''; type = ''; budget = ''; model = ''; effort = ''; new_worktree = $false }
+    $fieldNames = @{ tool = 'Tool'; type = 'Type'; budget = 'Budget USD'; budgetusd = 'Budget USD'; model = 'Model'; effort = 'Effort'; newworktree = 'New worktree'; requested = 'Requested' }
+    $seen = @{}
+    $path = Get-StartFilePath ([string]$R.task) ([string]$R.worker)
+    $text = ''
+    try {
+        $fi = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint) { $q.problem = "$($R.worker)-start.md is a link, not a file"; return $q }
+        if ($fi.Length -gt 8192) { $q.problem = "$($R.worker)-start.md is larger than 8 KB"; return $q }
+        $h1 = Get-FileSha256 $path
+        $text = Read-SharedText $path
+        if ($h1 -ne [string]$R.version -or (Get-FileSha256 $path) -ne $h1) { $q.wait = $true; return $q }   # it changed: the next round looks again
+    } catch { $q.wait = $true; return $q }
+    foreach ($line in ($text -split "`r?`n")) {
+        $m = [regex]::Match($line, '^\s*-\s*\*\*([A-Za-z ]+):\*\*\s*(.*?)\s*$')   # [regex]::Match leaves $Matches alone
+        if (-not $m.Success) {
+            # A list item (- * + or 1.), or a line that starts with * _ or `, that names a field in another shape. Plain
+            # lines are no fields: the heading, the words, and the template's help lines (Tool: claude, codex, ...).
+            $o = [regex]::Match($line, '(?i)^\s*(?:[-*+]|\d{1,3}[.)]|[_`])[\s*_`]*(tool|type|budget(?:\s*usd)?|model|effort|new\s*worktree|requested)[\s*_`]*:')
+            if ($o.Success) {
+                $f = $fieldNames[($o.Groups[1].Value -replace '\s', '').ToLowerInvariant()]
+                $q.problem = "the $f line is not in the shape the relay reads; write it as - **${f}:** and then the value"
+                return $q
+            }
+            continue
+        }
+        $label = $m.Groups[1].Value.Trim()
+        $seen[$label.ToLowerInvariant()] = $true
+        $v = $m.Groups[2].Value.Trim().Trim('`').Trim()
+        $vl = $v.ToLowerInvariant()
+        # No continue or break inside this switch: there they would act on the switch, not on the loop.
+        switch ($label.ToLowerInvariant()) {
+            'tool' {
+                $q.tool = $vl
+                if (@('claude', 'codex', 'gemini', 'antigravity') -notcontains $vl) { $q.problem = "Tool must be claude, codex, gemini or antigravity (got '$v')" }
+            }
+            'type' {
+                $q.type = $vl
+                if (@('implementation', 'review') -notcontains $vl) { $q.problem = "Type must be implementation or review (got '$v')" }
+            }
+            'budget usd' {
+                if ($v) {
+                    $b = 0.0
+                    if (-not [double]::TryParse($v, [Globalization.NumberStyles]::Float, $Inv, [ref]$b) -or [double]::IsNaN($b) -or $b -lt 0.05 -or $b -gt 25) {
+                        $q.problem = "Budget USD must be a number from 0.05 to 25 (got '$v')"
+                    } else { $q.budget = $b.ToString($Inv) }
+                }
+            }
+            'model' {
+                # The first character is a letter or a digit: a value that starts with - would be read as a parameter.
+                if ($v) {
+                    if ($v -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,79}$') { $q.problem = "Model must be one word of letters, digits and . _ : [ ] -, starting with a letter or a digit (got '$v')" }
+                    else { $q.model = $v }
+                }
+            }
+            'effort' {
+                if ($v) {
+                    if (@('low', 'medium', 'high', 'xhigh', 'max') -notcontains $vl) { $q.problem = "Effort must be low, medium, high, xhigh or max (got '$v')" }
+                    else { $q.effort = $vl }
+                }
+            }
+            'new worktree' {
+                if ($vl -eq 'yes') { $q.new_worktree = $true }
+                elseif ($vl -and $vl -ne 'no') { $q.problem = "New worktree must be yes or no (got '$v')" }
+            }
+            'requested' { }
+            default { $q.problem = "the line '$label' is not one the relay knows (Tool, Type, Budget USD, Model, Effort, New worktree, Requested)" }
+        }
+        if ($q.problem) { return $q }
+    }
+    # No default tool or type: a request that does not name them is refused, never run as a Claude Code implementation.
+    if (-not $seen.ContainsKey('tool')) { $q.problem = 'the Tool line is missing; write it as - **Tool:** and then claude, codex, gemini or antigravity' }
+    elseif (-not $seen.ContainsKey('type')) { $q.problem = 'the Type line is missing; write it as - **Type:** and then implementation or review' }
+    return $q
+}
+
+function Get-StartRequestProblem([hashtable]$State, [hashtable]$R, [hashtable]$Q) {
+    # Why the relay itself refuses this request, in plain words, or ''. The launcher checks everything else.
+    if ($Q.problem) { return [string]$Q.problem }
+    if ($WorkerToolsSetting -notcontains $Q.tool) {
+        $on = (@($WorkerToolsSetting) -join ', ')
+        if (-not $on) { $on = 'none' }
+        return "$(Get-ToolName $Q.tool) workers are off: worker_tools in bin\relay-settings.json lists the AI tools that may run workers (now: $on)"
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $Root "tasks\$($R.task)\workers\$($R.worker)-brief.md") -PathType Leaf)) { return "its brief $($R.worker)-brief.md is not there; write the brief first" }
+    if (-not (Test-Path -LiteralPath (Join-Path $Root 'bin\spawn-worker.ps1') -PathType Leaf)) { return 'bin\spawn-worker.ps1 is not in the mailbox' }
+    $runs = Test-WorkerRuns $State ([string]$R.task) ([string]$R.worker)
+    if ($runs) { return $runs }
+    return ''
+}
+
+function Test-WorkerRuns([hashtable]$State, [string]$Task, [string]$W) {
+    # '' unless the worker still runs: its run.json says running and its pid is alive, or the runner that a start request
+    # started is still alive. The runner writes run.json only after the launcher returned, so its pid covers that gap.
+    $rf = Join-Path $Root "tasks\$Task\workers\$W.run.json"
+    if (Test-Path -LiteralPath $rf -PathType Leaf) {
+        try {
+            $s = ConvertTo-HT (ConvertFrom-Json -InputObject (Read-SharedText $rf))
+            if (($s -is [hashtable]) -and [string]$s['state'] -eq 'running' -and $s['pid'] -and (Get-Process -Id ([int]$s['pid']) -ErrorAction SilentlyContinue)) {
+                return "worker $W of $Task is still running (pid $($s['pid']))"
+            }
+        } catch { }
+    }
+    $r = $State.starts["$Task/$W"]
+    $runner = 0
+    if ($r -is [hashtable]) { try { $runner = [int]$r.runner_pid } catch { $runner = 0 } }
+    if ($runner -gt 0) {
+        $p = Get-Process -Id $runner -ErrorAction SilentlyContinue
+        if ($p) {
+            $same = $true
+            if ($r.runner_start) { try { $same = ([string]$p.StartTime.ToUniversalTime().Ticks -eq [string]$r.runner_start) } catch { } }
+            if ($same) { return "worker $W of $Task is still starting or running (runner pid $runner)" }
+        }
+    }
+    return ''
 }
 
 function Invoke-StartRequests([hashtable]$State, $Coord, [bool]$ReadOnly) {
-    # Placeholder (start requests): the relay starts no worker for a start file yet.
+    # Runs the start requests that wait (state 'new'), oldest first. Invoke-Tick calls it before the coordinator turn of
+    # the same tick, so the refusal notes ride that turn.
+    $waiting = @($State.starts.Values | Where-Object { ($_ -is [hashtable]) -and $_.state -eq 'new' } | Sort-Object { [int64]$_.detected_utc })
+    if ($waiting.Count -eq 0) { [void]$State.flags.Remove('last_start_block'); return }
+    $why = Get-StartBlockReason $State $Coord
+    if ($why) {
+        $text = "$($waiting.Count) start request(s) wait: $($why.text)"
+        if ($ReadOnly) { Write-Note "DRY-RUN: $text" }
+        elseif ($State.flags['last_start_block'] -ne $why.code) { $State.flags['last_start_block'] = $why.code; Write-Log $text }
+        else { Write-Note $text }
+        return
+    }
+    [void]$State.flags.Remove('last_start_block')
+    $done = 0
+    foreach ($r in $waiting) {
+        if ($done -ge 5) { break }   # at most 5 a round; the rest wait for the next one
+        # Held; the next round says why. Each launcher can take a while, so PAUSE or a halt made meanwhile holds the rest.
+        if ($MaxWorkerStartsPerDay -gt 0 -and [int]$State.daily.worker_starts -ge $MaxWorkerStartsPerDay) { break }
+        if ((Test-Path -LiteralPath $PauseFile) -or $State.halt) { break }
+        $q = Get-StartRequestFields $r
+        if ($q.wait) { continue }
+        $problem = Get-StartRequestProblem $State $r $q
+        if ($ReadOnly) {
+            if ($problem) { Write-Note "DRY-RUN: would not start worker $($r.worker) of $($r.task): $problem" }
+            else {
+                Write-Note ("DRY-RUN: would start worker {0} of {1} ({2}, {3}) with bin\spawn-worker.ps1. Nothing started." -f $r.worker, $r.task, $q.tool, $q.type)
+                $words = Get-LauncherArguments $r $q (Join-Path $DispatchDir 'S-dry-run.result.json')
+                Write-Host ('  command: ' + (Join-Path $PSHOME 'powershell.exe') + ' ' + (($words | ForEach-Object { ConvertTo-ArgToken $_ }) -join ' '))
+            }
+            $done++
+            continue
+        }
+        if ($problem) { Set-StartRefused $State $r $problem; continue }
+        if (-not (Test-RelayFiles $State 'before a worker start')) { break }
+        Start-WorkerRequest $State $r $q
+        $done++
+        if ($r.state -eq 'launching') { break }   # its launcher still runs: only one launcher at a time
+    }
+}
+
+function Get-LauncherArguments([hashtable]$R, [hashtable]$Q, [string]$ResultPath) {
+    # The launcher's command line, from checked values only, each one its own argument.
+    $a = New-Object System.Collections.Generic.List[string]
+    foreach ($x in @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'bin\spawn-worker.ps1'),
+            '-TaskId', [string]$R.task, '-Worker', [string]$R.worker, '-Type', [string]$Q.type, '-Tool', [string]$Q.tool, '-ResultFile', $ResultPath)) { $a.Add([string]$x) }
+    if ($Q.tool -eq 'claude' -and $Q.budget) { $a.Add('-MaxBudgetUsd'); $a.Add([string]$Q.budget) }
+    if ($Q.model) { $a.Add('-Model'); $a.Add([string]$Q.model) }
+    if ($Q.effort) { $a.Add('-Effort'); $a.Add([string]$Q.effort) }
+    if ($Q.new_worktree) { $a.Add('-NewWorktree') }
+    return , $a
+}
+
+function Start-WorkerRequest([hashtable]$State, [hashtable]$R, [hashtable]$Q) {
+    # Saves the 'launching' record first (write-ahead), then runs the mailbox's own bin\spawn-worker.ps1, hidden, with
+    # its standard input from an empty file, and waits for it up to 120 s. It never stops the launcher.
+    if (-not (Test-Path -LiteralPath $DispatchDir)) { New-Item -ItemType Directory -Path $DispatchDir -Force | Out-Null }
+    $id = 'S' + (Get-Date).ToString('yyyyMMdd-HHmmss', $Inv) + '-' + [guid]::NewGuid().ToString('N').Substring(0, 4)
+    $R.id = $id; $R.state = 'launching'; $R.tool = [string]$Q.tool; $R.type = [string]$Q.type; $R.new_worktree = [bool]$Q.new_worktree
+    $R.launched_utc = Get-Now; $R.finished_utc = 0; $R.launcher_pid = 0; $R.launcher_start = ''; $R.message = ''
+    $R.result_file = Join-Path $DispatchDir "$id.result.json"
+    $R.out = Join-Path $DispatchDir "$id.out.txt"
+    $R.err = Join-Path $DispatchDir "$id.err.txt"
+    $R.stdin = Join-Path $DispatchDir "$id.stdin.txt"
+    [IO.File]::WriteAllText([string]$R.stdin, '', $Utf8)
+    $State.daily.worker_starts = [int]$State.daily.worker_starts + 1
+    Save-State $State   # write-ahead: from here on a relay stop is settled from evidence (Update-StartLaunching), never run again
+
+    $words = Get-LauncherArguments $R $Q ([string]$R.result_file)
+    $argString = ($words | ForEach-Object { ConvertTo-ArgToken $_ }) -join ' '
+    $proc = $null
+    $launchError = ''
+    $previousEnvironment = $null
+    $kept = @{}
+    try {
+        $previousEnvironment = Set-SubscriptionEnvironment   # a Claude Code worker uses the saved subscription login only
+        foreach ($name in @('CODEX_HOME', 'GEMINI_CLI_HOME')) { $kept[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+        [Environment]::SetEnvironmentVariable('CODEX_HOME', $CodexHomeDir, 'Process')
+        if ($GeminiHomeDir) { [Environment]::SetEnvironmentVariable('GEMINI_CLI_HOME', $GeminiHomeDir, 'Process') }
+        try {
+            # Hidden, in its own console, standard input from an empty file: nothing can wait for a person.
+            $proc = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $argString -WorkingDirectory $Root -WindowStyle Hidden -PassThru `
+                -RedirectStandardInput ([string]$R.stdin) -RedirectStandardOutput ([string]$R.out) -RedirectStandardError ([string]$R.err)
+        } catch { $launchError = 'could not start bin\spawn-worker.ps1: ' + $_.Exception.Message }
+    } finally {
+        foreach ($name in @($kept.Keys)) { [Environment]::SetEnvironmentVariable($name, $kept[$name], 'Process') }
+        Restore-SubscriptionEnvironment $previousEnvironment
+    }
+    if ($launchError -or -not $proc) {
+        if (-not $launchError) { $launchError = 'could not start bin\spawn-worker.ps1 (no process returned)' }
+        Set-StartRefused $State $R $launchError
+        return
+    }
+    try { $null = $proc.Handle } catch { }   # keep a handle so the exit code stays readable
+    $R.launcher_pid = $proc.Id
+    try { $R.launcher_start = [string]$proc.StartTime.ToUniversalTime().Ticks } catch { }
+    Save-State $State
+    Write-Log ('Starting worker {0} of {1} for the coordinator ({2}, {3}; start request {4}, launcher pid {5}).' -f $R.worker, $R.task, $Q.tool, $Q.type, $id, $proc.Id)
+    if (-not $proc.WaitForExit(120000)) {
+        Write-Log "The launcher for start request $id ($($R.key)) still runs after 120 s (pid $($proc.Id)). The relay never stops it; it looks again next round."
+        return   # Update-StartLaunching settles it later
+    }
+    Resolve-StartResult $State $R $proc.ExitCode
+}
+
+function Resolve-StartResult([hashtable]$State, [hashtable]$R, $Exit) {
+    # Settles a start from the launcher's result file: started (with its runner's pid and start time) or refused, in the
+    # launcher's own words. $Exit is $null when this relay has no handle on the launcher.
+    $res = $null
+    try { $res = Read-Json ([string]$R.result_file) } catch { $res = $null }
+    if (($res -is [hashtable]) -and ($res['ok'] -is [bool]) -and $res['ok']) {
+        $R.state = 'started'; $R.finished_utc = Get-Now
+        $runner = 0
+        try { $runner = [int]$res['runner_pid'] } catch { $runner = 0 }
+        $R.runner_pid = $runner; $R.runner_start = [string]$res['runner_start']
+        $R.message = Get-Short ([string]$res['message']) 300
+        Write-Log "Started worker $($R.worker) of $($R.task) ($($R.tool)) for start request $($R.id): $($R.message)"
+        Remove-StartFiles $R
+        return
+    }
+    if (-not ($res -is [hashtable])) {
+        # No result file: the launcher hides a failed write of it. It prints 'Launched <W> (... - runner pid <n>' only
+        # right after it started the runner, so a start that worked is never told to the coordinator as a refusal.
+        $said = ''
+        try { if ($R.out -and (Test-Path -LiteralPath ([string]$R.out) -PathType Leaf)) { $said = Read-SharedText ([string]$R.out) } } catch { $said = '' }
+        $launch = [regex]::Match([string]$said, '(?m)^Launched ' + [regex]::Escape([string]$R.worker) + ' \([^\r\n]*')
+        if ($launch.Success) {
+            $runner = 0
+            $runnerStart = ''
+            $pm = [regex]::Match($said.Substring($launch.Index), 'runner\s+pid\s+(\d{1,9})')
+            if ($pm.Success) {
+                # Its start time names it, as the result file would: only a process that started after the launch.
+                try {
+                    $t = (Get-Process -Id ([int]$pm.Groups[1].Value) -ErrorAction Stop).StartTime.ToUniversalTime()
+                    if ((ConvertTo-Unix $t) -ge ([int64]$R.launched_utc - 2)) { $runner = [int]$pm.Groups[1].Value; $runnerStart = [string]$t.Ticks }
+                } catch { $runner = 0 }
+            }
+            $R.state = 'started'; $R.finished_utc = Get-Now
+            $R.runner_pid = $runner; $R.runner_start = $runnerStart
+            $R.message = Get-Short ('the launcher wrote no result file, but its output says it started the worker: ' + $launch.Value.Trim()) 300
+            Write-Log "Started worker $($R.worker) of $($R.task) ($($R.tool)) for start request $($R.id): $($R.message)"
+            Remove-StartFiles $R
+            return
+        }
+    }
+    $why = ''
+    if ($res -is [hashtable]) { $why = [string]$res['message'] }
+    if (-not $why) { $why = Get-LauncherText $R }
+    if (-not $why) { $why = "the launcher stopped without saying why (exit $(if ($null -eq $Exit) { 'unknown' } else { $Exit }))" }
+    Set-StartRefused $State $R $why
+}
+
+function Get-LauncherText([hashtable]$R) {
+    # The launcher's own words when it wrote no result (a bad parameter fails before any line of it runs): its first
+    # message on its error output, else on its other output, without PowerShell's position and category lines. Windows
+    # PowerShell wraps a long message at its console's width even into a file, so the lines of that message are joined.
+    foreach ($f in @([string]$R.err, [string]$R.out)) {
+        if (-not $f -or -not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
+        $text = ''
+        try { $text = Read-SharedText $f } catch { continue }
+        $words = New-Object System.Collections.Generic.List[string]
+        foreach ($line in ($text -split "`r?`n")) {
+            $l = $line.Trim()
+            $noise = [regex]::IsMatch($l, '^(At line:|At [A-Za-z]:\\|\+ |CategoryInfo|FullyQualifiedErrorId|~)')
+            if ($words.Count -eq 0) {
+                if ($l -and -not $noise) { $words.Add($l) }
+            } elseif (-not $l -or $noise) { break } else { $words.Add($l) }
+        }
+        if ($words.Count) { return (Get-Short ($words -join ' ') 300) }
+    }
+    return ''
+}
+
+function Set-StartRefused([hashtable]$State, [hashtable]$R, [string]$Why) {
+    # A refusal: the record says why, and the coordinator gets a note in its next turn.
+    $R.state = 'refused'; $R.finished_utc = Get-Now; $R.message = Get-Short $Why 400
+    Add-StartNote $State $R ("The relay did not start worker $($R.worker) of $($R.task): $(([string]$R.message).TrimEnd('.')). Fix it, then change $($R.worker)-start.md to ask again")
+    Write-Log "Did not start worker $($R.worker) of $($R.task): $($R.message)"
+    Remove-StartFiles $R
+}
+
+function Add-StartNote([hashtable]$State, [hashtable]$R, [string]$Detail) {
+    # A note for the coordinator: an ordinary entry of notes, so it batches, debounces and waits like every other one.
+    $rev = [string]$R.version
+    if ($rev.Length -gt 12) { $rev = $rev.Substring(0, 12) }
+    $id = "start:$($R.key)@$rev"
+    if ($State.notes.ContainsKey($id)) { $id = $id + '#' + (Get-Now) }
+    $State.notes[$id] = @{ id = $id; key = "start:$($R.key)"; kind = 'start-note'; task = [string]$R.task; rev = [string]$R.version; detail = $Detail;
+        state = 'pending'; detected_utc = (Get-Now); dispatch_id = ''; attempts = 0; outcome = ''; accepted_utc = 0; completed_utc = 0 }
+}
+
+function Remove-StartFiles([hashtable]$R) {
+    # The launcher's result and output files, once its start is settled: only the relay that holds the writer lock, and
+    # only files in .relay\dispatch.
+    if (-not $script:CanWrite) { return }
+    foreach ($f in @($R.result_file, $R.out, $R.err, $R.stdin)) {
+        $p = [string]$f
+        if (-not $p) { continue }
+        $parent = ''
+        try { $parent = [IO.Path]::GetDirectoryName($p) } catch { continue }
+        if ($parent -ne $DispatchDir) { continue }
+        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 function Update-StartLaunching([hashtable]$State, [bool]$ReadOnly) {
-    # Placeholder (start requests): no start request is ever being started yet, so there is nothing to settle.
+    # A record left 'launching': this relay went on after 120 s, or a relay stopped while the launcher ran. While the
+    # launcher still runs, it waits (it is never stopped). Then the result file settles it, else the worker's run.json
+    # written since the start; with neither it is 'unknown', with a note, and it never runs again.
+    foreach ($r in @($State.starts.Values | Where-Object { ($_ -is [hashtable]) -and $_.state -eq 'launching' })) {
+        if ($ReadOnly) { Write-Note "DRY-RUN: start request $($r.id) for $($r.key) is still being settled"; continue }
+        $lp = 0
+        try { $lp = [int]$r.launcher_pid } catch { $lp = 0 }
+        if ($lp -gt 0) {
+            $p = Get-Process -Id $lp -ErrorAction SilentlyContinue
+            $alive = [bool]$p
+            if ($p -and $r.launcher_start) { try { $alive = ([string]$p.StartTime.ToUniversalTime().Ticks -eq [string]$r.launcher_start) } catch { } }
+            if ($alive) {
+                $mins = [int][Math]::Floor(((Get-Now) - [int64]$r.launched_utc) / 60)
+                if ($mins -ge $WaitMinutes) {
+                    Add-Alert $State ('long-start:' + $r.id) "The launcher for start request $($r.id) ($($r.key)) still runs after $mins min (pid $lp). The relay never stops it; the other start requests wait until it ends."
+                }
+                continue   # still running: looked at again next round
+            }
+        }
+        if ($r.result_file -and (Test-Path -LiteralPath ([string]$r.result_file) -PathType Leaf)) { Resolve-StartResult $State $r $null; continue }
+        $rf = Join-Path $Root "tasks\$($r.task)\workers\$($r.worker).run.json"
+        $newer = $false
+        try { $newer = ((Test-Path -LiteralPath $rf -PathType Leaf) -and (ConvertTo-Unix (Get-Item -LiteralPath $rf).LastWriteTimeUtc) -ge ([int64]$r.launched_utc - 2)) } catch { $newer = $false }
+        if ($newer) {
+            $r.state = 'started'; $r.finished_utc = Get-Now
+            $r.message = 'the relay stopped while the launcher ran; the worker''s run.json was written after the start'
+            Write-Log "Start request $($r.id) for $($r.key) settled as started: its run.json is newer than the start."
+            Remove-StartFiles $r
+            continue
+        }
+        $r.state = 'unknown'; $r.finished_utc = Get-Now
+        $r.message = 'the relay stopped while it started this worker, and nothing shows whether it started'
+        Add-StartNote $State $r ("The relay stopped while it started worker $($r.worker) of $($r.task), so it does not know if the worker started. It will not try again on its own. Look at $($r.worker).run.json; to ask again, change $($r.worker)-start.md")
+        Write-Log "Start request $($r.id) for $($r.key): outcome unknown (the relay stopped while the launcher ran). Not run again."
+        Remove-StartFiles $r
+    }
 }
+
+# ---------- Phase 6: placeholders for later steps ----------
+# The coordinator's plumbing already calls these. Each one refuses or does nothing, in plain words, until a later step
+# of Phase 6 builds it: a Codex coordinator, a Gemini CLI coordinator, and one thread, one job. scripts/check.js refuses
+# a second definition of a name, so the step that builds one replaces it here. With a Claude Code coordinator (every
+# mailbox today) none of them changes what the relay does.
 
 function Get-CodexCoordinatorBusy([hashtable]$State, [hashtable]$Coord) {
     # Placeholder (a Codex coordinator): every turn waits, so nothing is sent, and the reason is logged once.
