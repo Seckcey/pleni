@@ -236,10 +236,12 @@ test('the demo is an HQ: the orchestrator above HQ\'s relay and two projects, ea
     assert.deepEqual(kids(relay), [lead]);
     assert.equal(node(lead).rank, 'Coordinator');
   }
-  // Workers: runs that kept no session file, and one that is a Claude Code session of its own.
+  // Workers: runs that kept no session file (one of them in Codex), and one that is a Claude Code
+  // session of its own.
   assert.ok(kids(DEMO_KEYS.coordinator).includes('mailbox:billing:T-101/W1'));
+  assert.equal(node('mailbox:billing:T-101/W1').platform, 'claude');
   const field = kids(DEMO_KEYS.fieldCoordinator).map((key) => node(key));
-  assert.deepEqual(field.map((n) => [n.title, n.status]), [['W1 · T-201: Offline map tiles', 'done'], ['W2 · T-201: Offline map tiles', 'working']]);
+  assert.deepEqual(field.map((n) => [n.title, n.status, n.platform]), [['W1 · T-201: Offline map tiles', 'done', 'codex'], ['W2 · T-201: Offline map tiles', 'working', 'claude']]);
   assert.ok(field[1].key.startsWith('claude:'));
   assert.deepEqual(s.boxes.map((b) => [b.id, b.name, b.error, b.project]), [['hq', 'HQ', null, null], ['billing', 'Billing service', null, 'Billing service'], ['field-app', 'Field app', null, 'Field app']]);
   assert.deepEqual([...new Set(s.tasks.map((task) => task.boxName))], ['HQ', 'Billing service', 'Field app']);

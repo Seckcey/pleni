@@ -524,7 +524,7 @@ work and a **coordinator** reports back.
 <root>/tasks/<taskId>/status.md       coordinator; holds "**Current state:** <STATE>"
 <root>/tasks/<taskId>/questions.md    coordinator; "## Q<n> — <time> — BLOCKING|NON-BLOCKING"
 <root>/tasks/<taskId>/handoff.md      coordinator
-<root>/tasks/<taskId>/workers/W<n>.run.json, W<n>-report.md   optional worker runs; session_id names the run's Claude session
+<root>/tasks/<taskId>/workers/W<n>.run.json, W<n>-report.md   optional worker runs; tool names the AI tool the run used (claude, codex, gemini or antigravity; none means claude) and session_id its session
 <root>/NEEDS-<NAME>.md                optional notes for the person, such as NEEDS-ADA.md
 <root>/.relay/coordinator.json        optional: { session_id, follow_name?, ... } of the coordinator's Claude session
 <root>/.relay/codex.json              optional: { thread_id, follow_name?, ... } of the planner's Codex thread, if the relay wakes it (Pleni reads it only in an HQ)
@@ -544,7 +544,7 @@ export function createMailboxSource({ root, settings, now = Date.now, hq = false
 // -> { poll(): MailboxState, mail({ keys, all }) }
 MailboxState = {
   ok, error, root, name,
-  tasks: [{ id, title, state, updatedAt, attention: ('question' | 'review')[], workers: [{ id, state, model, startedAt, finishedAt, worktree, sessionId }] }],
+  tasks: [{ id, title, state, updatedAt, attention: ('question' | 'review')[], workers: [{ id, state, model, startedAt, finishedAt, worktree, tool, sessionId }] }],
   events: [{ at, dir: 'down' | 'up', taskId, file, title }],   // newest first, max 300
   notes: [{ file, count, at, text }],                            // one entry per NEEDS-<NAME>.md
   relay: null | {
@@ -716,11 +716,14 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
   `relay`, title "Relay" or the person's label, subtitle the mailbox folder's name, status
   working/idle/error from running, paused and halted) sits between the planner and the coordinator. The relay's worker runs
   (`tasks/<id>/workers/W<n>.run.json`) go under the coordinator; each line lights down when the run
-  starts and up when it finishes. A run whose `session_id` names a top-level Claude Code session that
-  Pleni lists is shown as that session (`claude:<id>`, titled `W<n> · <task>`), so it can be watched
-  and opened like any session. Other runs (older ones kept no session file) become a session-like
-  node `mailbox:<task id>/W<n>` (platform `claude`, kind `agent`, status from the run, project from
-  its worktree).
+  starts and up when it finishes. A run note's `tool` (lower case; `claude` when it has none, as older
+  relays started only Claude Code workers; `unknown` when it is not a plain word) names the AI tool
+  the run used. A run whose `session_id`
+  names a top-level session of that tool that Pleni lists is shown as that session (`<tool>:<id>`,
+  titled `W<n> · <task>`), so it can be watched and opened like any session; an id is never matched
+  in another tool. Other runs (older ones kept no session file) become a session-like node
+  `mailbox:<task id>/W<n>` (platform: the run's tool, or `relay`, the mailbox's mark, for a tool
+  Pleni does not read; kind `agent`, status from the run, project from its worktree).
 - HQ and its project mailboxes ("boxes"): when the mailbox is an HQ, the tree is you → the
   **orchestrator** → HQ's relay (`relay`, titled "HQ relay") and one tile per project → that project's
   relay (`relay:<box>`, titled "<name> relay") → its coordinator → that coordinator's worker runs.

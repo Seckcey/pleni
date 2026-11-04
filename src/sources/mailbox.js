@@ -399,6 +399,7 @@ function buildTask({ id, docs, workers }, events, hide) {
       startedAt: run?.startedAt ?? null,
       finishedAt: run?.finishedAt ?? null,
       worktree: run?.worktree ?? null,
+      tool: run?.tool ?? null,
       sessionId: run?.sessionId ?? null,
     })),
   };
@@ -642,11 +643,22 @@ function readRun(file, st) {
     startedAt: toMillis(run.startedAt ?? run.started_at ?? run.started),
     finishedAt: toMillis(run.finishedAt ?? run.finished_at ?? run.finished ?? run.endedAt ?? run.ended_at),
     worktree: typeof run.worktree === 'string' && run.worktree.trim() ? run.worktree.trim().slice(0, 4096) : null,
+    tool: toolOf(run.tool),
     sessionId: sessionIdOf(run.session_id ?? run.sessionId),
   };
 }
 
-// The Claude Code session a worker ran in, when its launcher saved one.
+// The AI tool a worker ran in: the relay writes claude, codex, gemini or antigravity. Older run
+// notes name none (null). Any other value that is not a plain word is 'unknown', so the map never
+// guesses a tool for it.
+function toolOf(value) {
+  if (value === undefined || value === null) return null;
+  const tool = typeof value === 'string' ? value.trim().toLowerCase() : 'unknown';
+  if (!tool) return null;
+  return /^[a-z][a-z0-9-]{0,19}$/.test(tool) ? tool : 'unknown';
+}
+
+// The session or thread a worker ran in, when its launcher saved one.
 function sessionIdOf(value) {
   const id = typeof value === 'string' ? value.trim().toLowerCase() : '';
   return SESSION_ID.test(id) ? id : null;
