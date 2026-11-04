@@ -509,20 +509,43 @@ function Get-RunsToday([string]$Name) {
     return $n
 }
 
-function Get-CodexConfigModel {
-    # The model that Codex's own settings name: model = "..." at the top of <CODEX_HOME>\config.toml, or ''.
-    # Read only, and only that line.
-    $codexHome = $env:CODEX_HOME
-    if (-not $codexHome) { $codexHome = Join-Path $env:USERPROFILE '.codex' }
-    $f = Join-Path $codexHome 'config.toml'
-    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return '' }
+function Get-CodexConfigTop {
+    # The only three settings that the launcher still takes from Codex's own <CODEX_HOME>\config.toml (CODEX_HOME, else
+    # <USERPROFILE>\.codex), now that a Codex worker starts with --ignore-user-config: model, model_reasoning_effort and
+    # cli_auth_credentials_store. Read only, from the top-level keys (above the first [table]), and nothing else in the
+    # file. Each value is checked; one that fails is left out and its key is named in bad (a key only, never a value).
+    # store is only keyring or auto: file is Codex's default.
+    $r = @{ model = ''; effort = ''; store = ''; bad = @() }
+    $raw = @{}
     try {
+        $codexHome = $env:CODEX_HOME
+        if (-not $codexHome) {
+            if (-not $env:USERPROFILE) { return $r }
+            $codexHome = [IO.Path]::Combine($env:USERPROFILE, '.codex')   # not Join-Path: it throws for a drive that is not there
+        }
+        if (-not [IO.Path]::IsPathRooted($codexHome)) { return $r }
+        $f = [IO.Path]::Combine($codexHome, 'config.toml')
+        if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $r }
         foreach ($line in @(Get-Content -LiteralPath $f -TotalCount 400 -ErrorAction Stop)) {
             if ($line -match '^\s*\[') { break }   # the first table: the top-level keys end here
-            if ($line -match '^\s*model\s*=\s*["'']([^"'']*)["'']') { return $Matches[1] }
+            if ($line -cmatch '^\s*(model|model_reasoning_effort|cli_auth_credentials_store)\s*=\s*["'']([^"'']*)["'']') {
+                if (-not $raw.ContainsKey($Matches[1])) { $raw[$Matches[1]] = $Matches[2] }
+            }
         }
-    } catch { }
-    return ''
+    } catch { return $r }
+    $m = [string]$raw['model']
+    if ($m) {
+        $why = Get-ModelError $m
+        if ($why) { $r.bad = @($r.bad) + 'model' } else { $r.model = $m }
+    }
+    $e = ([string]$raw['model_reasoning_effort']).ToLowerInvariant()
+    if ($e) {
+        if (@('low', 'medium', 'high', 'xhigh') -contains $e) { $r.effort = $e } else { $r.bad = @($r.bad) + 'model_reasoning_effort' }
+    }
+    $s = [string]$raw['cli_auth_credentials_store']
+    if ($s -ceq 'keyring' -or $s -ceq 'auto') { $r.store = $s }
+    elseif ($s -and $s -cne 'file') { $r.bad = @($r.bad) + 'cli_auth_credentials_store' }
+    return $r
 }
 
 function Find-GitTop([string]$Dir) {
@@ -644,13 +667,30 @@ if ($Tool -ne 'claude') {
     }
 }
 
+# Codex: the settings that stay from the owner's config.toml. The effort is the one given with -Effort, else the one in
+# config.toml, else the usual default (xhigh).
+$EffortGiven = $PSBoundParameters.ContainsKey('Effort')
+$CodexCfg = @{ model = ''; effort = ''; store = ''; bad = @() }
+$CodexEffort = $Effort
+$CodexEffortFromConfig = $false
+if ($Tool -eq 'codex') {
+    $CodexCfg = Get-CodexConfigTop
+    if (-not $EffortGiven -and $CodexCfg.effort) { $CodexEffort = $CodexCfg.effort; $CodexEffortFromConfig = $true }
+}
+# An older Codex CLI does not know --ignore-user-config or --ignore-rules: clap's words on standard error, exit code 2.
+$CodexTooOldPattern = "unexpected argument\W+--ignore-(user-config|rules)\b"
+$CodexOptionWords = ('Codex starts with --ignore-user-config and --ignore-rules, so it uses none of the extra folders, MCP servers (add-on tools), ' +
+    'hooks or command rules from your own Codex settings. It keeps your model, effort and sign-in store.')
+$CodexTooOldWords = 'This Codex CLI is too old for the relay. Update it (npm install -g @openai/codex) to a version from April 2026 or newer.'
+
 function Get-ModelText {
     # The model, in words, for the launch line and the log.
     if ($Tool -eq 'claude') { return "model $Model" }
     if ($ToolModel) { return "model $ToolModel (from -Model)" }
     if ($Tool -eq 'codex') {
-        $m = Get-CodexConfigModel
+        $m = [string]$CodexCfg.model
         if ($m) { return "model $m (Codex's default, from its config.toml)" }
+        if (@($CodexCfg.bad) -contains 'model') { return "Codex's own default model (the model in its config.toml cannot be passed on)" }
         return "Codex's own default model (its config.toml names none)"
     }
     if ($Tool -eq 'antigravity') { return "Antigravity CLI's default model" }
@@ -663,13 +703,18 @@ function Get-EffortText {
         if ($Effort -eq 'xhigh') { return "effort $AgyEffort (Antigravity CLI has low, medium and high, so xhigh runs as high)" }
         return "effort $AgyEffort"
     }
+    if ($Tool -eq 'codex') {
+        if ($CodexEffortFromConfig) { return "effort $CodexEffort (Codex's default, from its config.toml)" }
+        return "effort $CodexEffort"
+    }
     return "effort $Effort"
 }
 
 # ---------- detach: re-launch this script hidden in foreground mode ----------
 if (-not $Foreground) {
     $argList = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"",
-        '-TaskId', $TaskId, '-Worker', $Worker, '-Type', $Type, '-MaxBudgetUsd', $MaxBudgetUsd.ToString($Inv), '-Effort', $Effort, '-Foreground')
+        '-TaskId', $TaskId, '-Worker', $Worker, '-Type', $Type, '-MaxBudgetUsd', $MaxBudgetUsd.ToString($Inv), '-Foreground')
+    if ($EffortGiven) { $argList += @('-Effort', $Effort) }   # the runner tells "no effort given" from a given one
     if ($Model) { $argList += @('-Model', $Model) }
     if ($Tool -ne 'claude') { $argList += @('-Tool', $Tool) }
     $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden -PassThru
@@ -698,8 +743,9 @@ if ($Tool -eq 'codex') {
     $state.billing = 'chatgpt-sign-in'
     $state.budget_usd = $null          # Codex reports no cost; worker_runs_per_day limits the runs
     $state.model = $ToolModel
-    if (-not $ToolModel) { $state.model = Get-CodexConfigModel }
+    if (-not $ToolModel) { $state.model = $CodexCfg.model }
     if (-not $state.model) { $state.model = 'codex default' }
+    $state.effort = $CodexEffort
 } elseif ($Tool -eq 'gemini') {
     $state.billing = 'gemini-own-login (paid per use)'
     $state.budget_usd = $null          # Gemini CLI reports no cost; worker_runs_per_day limits the runs
@@ -902,6 +948,10 @@ if ($Tool -eq 'claude') {
     if ($Tool -eq 'antigravity') { Add-Note $AgyWarning }
     Add-Note (Get-ModelText)
     Add-Note (Get-EffortText)
+    if ($Tool -eq 'codex') {
+        Add-Note $CodexOptionWords
+        foreach ($k in @($CodexCfg.bad)) { Add-Note "Codex's config.toml has a '$k' that the relay cannot pass on, so it is left out. Codex uses its own default for it." }
+    }
     Add-Note "$ToolName reports no cost in dollars, so -MaxBudgetUsd does not apply. worker_runs_per_day in bin\cost-limits.json limits the runs."
 
     # The worktree's .git as it is before the run. Save-ToolWork's git commands trust it only if the run left it alone.
@@ -942,20 +992,28 @@ if ($Tool -eq 'claude') {
 
     if ($Tool -eq 'codex') {
         $cwd = $Worktree
-        # The network stays off whatever Codex's own settings say. Git's own folder is not writable, so a worker can
-        # never add a Git hook or change Git's settings; the launcher commits its changes (Save-ToolWork). Codex lays
-        # each -c value over the owner's own config.toml, so two more empty what that file could add: its writable_roots
-        # (then the run can write only its own folder and the --add-dir folder) and its MCP servers (they run outside the
-        # sandbox), as for a Codex coordinator's turn.
-        $cliArgs = @('exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=false',
-            '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'mcp_servers={}')
+        # The network stays off. Git's own folder is not writable, so a worker can never add a Git hook or change Git's
+        # settings; the launcher commits its changes (Save-ToolWork). --ignore-user-config: Codex does not load
+        # <CODEX_HOME>\config.toml (the sign-in still uses CODEX_HOME), so none of its extra writable folders, MCP servers
+        # (add-on tools, which run outside the sandbox) or hooks apply. --ignore-rules: Codex does not load the owner's
+        # command rules, which can let a command run outside the sandbox. Codex's system settings still load, so the two
+        # -c values still hold, and writable_roots=[] leaves the run only its own folder and the --add-dir folder, as for a
+        # Codex coordinator's turn. Codex no longer reads the model, the effort and the sign-in store from config.toml, so
+        # the launcher passes them (Get-CodexConfigTop): -Model, else the config.toml model; the effort chosen above; the
+        # store only when it is keyring or auto.
+        $cliArgs = @('exec', '--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--sandbox', 'workspace-write',
+            '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]')
         if ($Type -eq 'implementation') {
             $cliArgs += @('--add-dir', $WorkerDir)
         } else {
             $cwd = $WorkerDir   # a reviewer can write only in the workers folder, its report's folder
         }
-        if ($ToolModel) { $cliArgs += @('-m', $ToolModel) }
-        $cliArgs += @('-c', "model_reasoning_effort=$($Effort.ToLowerInvariant())", '-')
+        $cliModel = $ToolModel
+        if (-not $cliModel) { $cliModel = [string]$CodexCfg.model }
+        if ($cliModel) { $cliArgs += @('-m', $cliModel) }
+        $cliArgs += @('-c', "model_reasoning_effort=$($CodexEffort.ToLowerInvariant())")
+        if ($CodexCfg.store) { $cliArgs += @('-c', "cli_auth_credentials_store=$($CodexCfg.store)") }
+        $cliArgs += '-'
         # The ChatGPT sign-in, checked the way the relay's Codex wake checks it ('codex login status' may answer on stderr).
         $check = {
             $launch = Get-Launch $Exe
@@ -989,7 +1047,11 @@ if ($Tool -eq 'claude') {
                 $state.state = 'failed'
                 $why = $ev.failed
                 if (-not $why) { $why = $ev.error }
-                if ($why) { $state.note = "Codex stopped: $why (exit $exit)." } else { $state.note = "Codex ended without finishing its turn (exit $exit)." }
+                $errText = ''
+                try { $errText = Read-SharedText $errFile 1048576 } catch { }
+                if ($errText -match $CodexTooOldPattern) { $state.note = $CodexTooOldWords }
+                elseif ($why) { $state.note = "Codex stopped: $why (exit $exit)." }
+                else { $state.note = "Codex ended without finishing its turn (exit $exit)." }
                 Add-Note $state.note
             }
         }

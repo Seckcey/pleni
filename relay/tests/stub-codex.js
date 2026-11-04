@@ -15,6 +15,9 @@
 //                      (<mailbox>\tasks), as a coordinator turn must never do: the relay's check of its own files must see it
 //   not-signed-in      'login status' says Codex is not signed in (exit 1)
 //   api-key            'login status' says Codex is signed in with an API key
+//   old-cli            an older Codex CLI: every exec run (a worker, a planner wake or a coordinator turn) stops at once with
+//                      clap's "unexpected argument '--ignore-user-config' found" on stderr and exit code 2, before it
+//                      does anything else. It is logged as phase 'old-cli' only, never as a 'start'.
 // A missing thread file behaves like the real CLI: an error on stderr, exit 1.
 // It records each call in <RELAY_STUB_DIR>\codex-calls.jsonl. Keys are never written: only booleans about them.
 import fs from 'node:fs';
@@ -42,6 +45,12 @@ if (argv[0] === 'login' && argv[1] === 'status') {
   }
   process.stderr.write(mode === 'api-key' ? 'Logged in using an API key - sk-***\n' : 'Logged in using ChatGPT\n');
   process.exit(0);
+}
+
+if (mode === 'old-cli' && argv[0] === 'exec') {
+  log({ phase: 'old-cli', t: Date.now(), pid: process.pid, args: argv });
+  process.stderr.write("error: unexpected argument '--ignore-user-config' found\n\nUsage: codex exec [OPTIONS] [PROMPT]\n\nFor more information, try '--help'.\n");
+  process.exit(2);
 }
 
 const start = Date.now();
