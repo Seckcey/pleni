@@ -1858,18 +1858,25 @@ try {
         Check ((Read-Shared $led) -match '\| W1 \| implementation \| finished \| 0 \| .*\| antigravity \| 11007 \(in 10418, out 589, cached 8113\) \|') 'runs.md has no Antigravity line with its tokens'
 
         # A worker that changes a file: the launcher commits it, outside Antigravity CLI, and runs no Git hooks. The
-        # repository names a hooks folder inside the worktree, as some projects do, so a worker could write a hook
-        # there. A plain git commit runs the hook; the launcher's commit must not.
-        $hookMark = Join-Path $fx.wt 'hook-ran.txt'
-        Write-Text (Join-Path $fx.wt '.hooks\pre-commit') "#!/bin/sh`necho ran > hook-ran.txt`n"
+        # repository names a hooks folder inside the worktree, as some projects do, so a worker could write hooks
+        # there. --no-verify skips only some of them (pre-commit), so the test also uses two it does not skip:
+        # post-commit, and post-index-change, which runs whenever git writes its list of files (git add, git status).
+        # Each hook leaves a mark beside the worktree, outside it, so the marks never show in git status. A plain git
+        # add and commit run all three; the launcher's git commands must run none.
+        $hooks = @('pre-commit', 'post-commit', 'post-index-change')
+        $marks = @($hooks | ForEach-Object { Join-Path (Split-Path -Parent $fx.wt) "hook-$_.txt" })
+        foreach ($h in $hooks) { Write-Text (Join-Path $fx.wt ".hooks\$h") "#!/bin/sh`necho ran > ../hook-$h.txt`n" }
+        Write-Text (Join-Path $fx.wt 'probe.txt') 'probe'
         $hookPreference = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
             $null = & $git.Path -C $fx.repo config core.hooksPath (Join-Path $fx.wt '.hooks') 2>$null
-            $null = & $git.Path -C $fx.wt commit -q --allow-empty -m 'probe' 2>$null
+            $null = & $git.Path -C $fx.wt add probe.txt 2>$null
+            $null = & $git.Path -C $fx.wt commit -q -m 'probe' 2>$null
         } finally { $ErrorActionPreference = $hookPreference }
-        Check (Test-Path -LiteralPath $hookMark) 'the test hook did not run on a plain git commit, so the hook check below proves nothing'
-        Remove-Item -LiteralPath $hookMark -Force -ErrorAction SilentlyContinue
+        $missing = @($marks | Where-Object { -not (Test-Path -LiteralPath $_) })
+        Check ($missing.Count -eq 0) "a test hook did not run on a plain git add and commit ($($missing -join ', ')), so the hook check below proves nothing"
+        foreach ($m in $marks) { Remove-Item -LiteralPath $m -Force -ErrorAction SilentlyContinue }
         Write-Brief $fx 'W2' 'implementation' 'antigravity'
         Set-AgyStubMode $fx 'write'
         $null = Invoke-Spawn $fx @('-Worker', 'W2', '-Tool', 'antigravity', '-Foreground')
@@ -1884,7 +1891,14 @@ try {
         Check ($s2 -and $s2.state -eq 'finished' -and $s2.commit -and $tip.StartsWith([string]$s2.commit)) "the launcher did not commit the Antigravity worker's change (run.json commit '$($s2.commit)', head '$tip')"
         Check ($tip -match 'W2: changes from the Antigravity worker run') "the launcher's commit has the wrong message: $tip"
         Check ((Read-Shared (Join-Path $fx.workers 'W2.log')) -match "Committed the Antigravity worker's changes as") 'W2.log does not say the launcher committed the changes'
-        Check (-not (Test-Path -LiteralPath $hookMark)) "the launcher's commit ran a Git hook that a worker could have written"
+        $ran = @($marks | Where-Object { Test-Path -LiteralPath $_ })
+        Check ($ran.Count -eq 0) "the launcher's git commands ran Git hooks that a worker could have written: $($ran -join ', ')"
+        # The test's own git calls below must not run those hooks either.
+        $hookPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $null = & $git.Path -C $fx.repo config --unset core.hooksPath 2>$null
+        } finally { $ErrorActionPreference = $hookPreference }
 
         # A worker that changes the worktree's .git file (it tells Git where Git's own folder is): the launcher runs no
         # git command there and commits nothing.
