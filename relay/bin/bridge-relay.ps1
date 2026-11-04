@@ -212,9 +212,12 @@ if (Test-Path -LiteralPath $clFile -PathType Leaf) {
         if (-not $PSBoundParameters.ContainsKey('MaxAgentTurnsAtOnce') -and $null -ne $cl.relay_max_agent_turns_at_once) {
             $MaxAgentTurnsAtOnce = [int][Math]::Max(1, [Math]::Min(10, [int]$cl.relay_max_agent_turns_at_once))
         }
-        # Kept inside 0-500: the parameter's own range check would refuse anything else.
+        # 0 to 500; more counts as 500 (the parameter's own range check would refuse it). A number below 0 is a mistake,
+        # not "no limit" (that is 0): the limit stays 12, with a warning, as a bad value keeps the other limits too.
         if (-not $PSBoundParameters.ContainsKey('MaxWorkerStartsPerDay') -and $null -ne $cl.relay_max_worker_starts_per_day) {
-            $MaxWorkerStartsPerDay = [int][Math]::Max(0, [Math]::Min(500, [int]$cl.relay_max_worker_starts_per_day))
+            $wsValue = [int]$cl.relay_max_worker_starts_per_day
+            if ($wsValue -ge 0) { $MaxWorkerStartsPerDay = [int][Math]::Min(500, $wsValue) }
+            else { Write-Host "WARNING: relay_max_worker_starts_per_day in $clFile must be 0 or more (0 means no limit); using $MaxWorkerStartsPerDay" }
         }
         if ($null -ne $cl.gemini_max_session_turns) { try { $gtValue = [int]$cl.gemini_max_session_turns; if ($gtValue -ge 0) { $script:GeminiTurns = $gtValue } } catch { } }
     } catch { Write-Host "WARNING: could not read $clFile; cost limits stay ON" }
@@ -366,10 +369,17 @@ $AttnFile    = Join-Path $RelayDir 'codex-attention.md'
 $DispatchDir = Join-Path $RelayDir 'dispatch'
 $AgentsFile  = Join-Path $RelayDir 'agents.json'
 $MailDir     = Join-Path $Root 'mail'
-# A Gemini CLI coordinator. $env:USERPROFILE is only read here, never assigned.
+# A Gemini CLI coordinator. $env:USERPROFILE is only read here, never assigned. A home that is not a folder path
+# Windows can use (a quote in GEMINI_CLI_HOME, say) stops no command here, so a mailbox that never uses Gemini CLI
+# works as before: $GeminiHomeDir stays '' and $GeminiHomeError says why, for the Gemini CLI checks.
 $GeminiHomeDir = ''   # where Gemini CLI keeps .gemini: -GeminiCliHome, else GEMINI_CLI_HOME, else the user's home
-if ($GeminiCliHome) { $GeminiHomeDir = [IO.Path]::GetFullPath($GeminiCliHome).TrimEnd('\') }
-elseif ($env:GEMINI_CLI_HOME) { $GeminiHomeDir = [IO.Path]::GetFullPath($env:GEMINI_CLI_HOME).TrimEnd('\') }
+$GeminiHomeError = ''
+try {
+    if ($GeminiCliHome) { $GeminiHomeDir = [IO.Path]::GetFullPath($GeminiCliHome).TrimEnd('\') }
+    elseif ($env:GEMINI_CLI_HOME) { $GeminiHomeDir = [IO.Path]::GetFullPath($env:GEMINI_CLI_HOME).TrimEnd('\') }
+} catch {
+    $GeminiHomeError = "the Gemini CLI home '$(if ($GeminiCliHome) { $GeminiCliHome } else { $env:GEMINI_CLI_HOME })' (-GeminiCliHome, else GEMINI_CLI_HOME) is not a folder path Windows can use"
+}
 $GeminiDataDir = Join-Path $(if ($GeminiHomeDir) { $GeminiHomeDir } else { $env:USERPROFILE }) '.gemini'
 $GeminiPolicyFile   = Join-Path $RelayDir 'coordinator.gemini-policy.toml'
 $GeminiDefaultsFile = Join-Path $RelayDir 'coordinator.gemini-defaults.json'
@@ -3308,9 +3318,21 @@ function Invoke-Loop {
 }
 
 function Get-EnrollWaitText([hashtable]$State) {
-    # -Enroll never changes the coordinator while one of its turns runs (any tool). '' when none runs.
+    # -Enroll never changes the coordinator while one of its turns runs (any tool). '' when nothing holds it. -Enroll
+    # holds the writer lock, so no relay loop runs now: a record still 'running' or 'launching' was left by a relay that
+    # stopped (-Stop). An ended Claude Code turn does not hold it: the next tick settles that turn from its own record.
+    # A Codex or Gemini CLI turn holds it until the relay settles it, even when it has ended, because settling it looks
+    # at the coordinator's own files (its orders file for the guard, its folder's STATUS.md). A 'launching' record has
+    # no process to look at, so it holds it too. The words say how to settle a turn without starting a new one.
+    $how = 'make an empty file named PAUSE in .relay, run -Once, enroll again, then delete PAUSE. Nothing was saved.'
     foreach ($d in @($State.dispatches.Values)) {
-        if ($d.state -eq 'running' -or $d.state -eq 'launching') { return "Coordinator turn $($d.id) is still running. Enroll again after it ends (-Status shows it). Nothing was saved." }
+        $claudeTurn = ((Get-DispatchTool $d) -eq 'claude')
+        if ($d.state -eq 'running' -and (Test-DispatchAlive $d)) {
+            if ($claudeTurn) { return "Coordinator turn $($d.id) is still running. Enroll again after it ends (-Status shows it). Nothing was saved." }
+            return "Coordinator turn $($d.id) is still running. Wait until it ends (-Status shows it). Then settle it without a new turn: $how"
+        }
+        if ($d.state -eq 'running' -and -not $claudeTurn) { return "Coordinator turn $($d.id) has ended, but the relay has not settled it yet. To settle it without a new turn: $how" }
+        if ($d.state -eq 'launching') { return "Coordinator turn $($d.id) was being started when the relay stopped, and the relay has not settled it yet. To settle it without a new turn: $how" }
     }
     return ''
 }

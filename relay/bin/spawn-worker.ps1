@@ -412,6 +412,9 @@ function New-TaskWorktree {
     $branchThere = $false
     $addExit = 0
     $addText = ''
+    $branchLeft = $false
+    $treeLeft = $false
+    $folderLeft = $false
     try {
         $ErrorActionPreference = 'Continue'   # Windows PowerShell 5.1 turns native stderr into errors under Stop
         $null = & $git.Path -C $repo cat-file -e "$base^{commit}" 2>&1
@@ -422,12 +425,31 @@ function New-TaskWorktree {
             # Native output goes through [string], so an error record becomes plain text.
             $addText = ((& $git.Path -C $repo worktree add -b $branch $Worktree $base 2>&1) | ForEach-Object { [string]$_ }) -join ' '
             $addExit = $LASTEXITCODE
+            if ($addExit -ne 0) {
+                # git makes the branch first, so it can fail after that: in the checkout (the branch stays) or in
+                # the repository's post-checkout hook (the whole worktree stays). The words name what is left;
+                # nothing is removed.
+                $null = & $git.Path -C $repo show-ref --verify --quiet "refs/heads/$branch" 2>&1
+                $branchLeft = ($LASTEXITCODE -eq 0)
+                $treeLeft = Test-Path -LiteralPath ([IO.Path]::Combine($Worktree, '.git')) -PathType Leaf   # a worktree's .git is a file
+                $folderLeft = Test-Path -LiteralPath $Worktree
+            }
         }
     } finally { $ErrorActionPreference = $keep }
     if (-not $baseOk) { throw "Refusing: the Base commit $base from the brief is not in $repo. Nothing was started." }
     if ($branchThere) { throw "Refusing: the branch $branch is already in $repo; a new worktree needs a new branch. Nothing was started." }
     if ($addText.Length -gt 200) { $addText = $addText.Substring(0, 200) }
-    if ($addExit -ne 0) { throw "Refusing: git worktree add failed ($addText). Nothing was started." }
+    if ($addExit -ne 0) {
+        # What git left comes before git's own words, so a shortened copy of the message still says it.
+        $left = ''
+        if ($treeLeft) { $left = " git made the worktree $Worktree on $branch before it failed. It stays: to ask again, set New worktree to no." }
+        else {
+            if ($branchLeft) { $left += " git made the branch $branch in $repo before it failed." }
+            if ($folderLeft) { $left += " The folder $Worktree is there now, but it is not a whole worktree." }
+            if ($left) { $left += ' What git left stays, so New worktree: yes is refused until the owner deletes it.' }
+        }
+        throw "Refusing: git worktree add failed.$left Nothing was started. git said: $addText"
+    }
     $script:WorktreeNote = " Made the worktree $Worktree on $branch from $base."
 }
 
