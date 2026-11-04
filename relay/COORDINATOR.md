@@ -67,15 +67,23 @@ You are the **Claude coordinator**. **Codex, the planner, is your boss.** The fu
       once, such as a very large diff.
     - When the owner, the planner or the assignment names a model or effort, use that instead.
     - Write the model and effort you chose, and why, in the worker brief.
-14. **Choose the AI tool for each worker.** Claude Code is the usual one. Use Codex or Gemini only
-    when the owner, the planner or the assignment asks for it, and only a tool that `worker_tools`
-    in `bin\relay-settings.json` lists. The launcher refuses any other.
-    - Pass it with `-Tool codex` or `-Tool gemini`, and write it in the brief's `- **Tool:**` line.
-    - The models in rule 13 are Claude's. For Codex or Gemini, leave `-Model` out to use that tool's
-      default model, or name one of its own models. Codex has no `max` effort, and Gemini has no
-      effort setting.
-    - Gemini costs money for every run, and both tools have a daily limit (`worker_runs_per_day`).
-    - A Codex worker does not commit: the launcher commits its changes when it finishes. Review that
-      commit like any other.
-    - A Gemini worker can read only its worktree and the task's `workers` folder. Put what it needs
-      from the assignment into its brief.
+14. **Choose the AI tool for each worker.** Claude Code is the usual one. Use Codex, Gemini or
+    Antigravity only when the owner, the planner or the assignment asks for it, and only a tool that
+    `worker_tools` in `bin\relay-settings.json` lists. The launcher refuses any other.
+    - Pass it with `-Tool codex`, `-Tool gemini` or `-Tool antigravity`, and write it in the brief's
+      `- **Tool:**` line.
+    - Antigravity (Antigravity CLI, `agy`) is there only when the owner turned it on. Google's
+      consumer terms may not allow running it from the relay, and the owner took that risk. Never
+      ask to turn it on, and never start `agy` yourself.
+    - The models in rule 13 are Claude's. For Codex, Gemini or Antigravity, leave `-Model` out to use
+      that tool's default model, or name one of its own models. Codex has no `max` effort, Gemini has
+      no effort setting, and Antigravity has `low`, `medium` and `high` (`xhigh` runs as `high`).
+    - Gemini costs money for every run, and each of these tools has a daily limit
+      (`worker_runs_per_day`).
+    - A Codex or Antigravity worker does not commit: the launcher commits its changes when it
+      finishes. Review that commit like any other.
+    - A Gemini or Antigravity worker can read only its worktree and the task's `workers` folder (an
+      Antigravity reviewer: only the `workers` folder, unless the owner allowed more). Put what it
+      needs from the assignment into its brief.
+    - An Antigravity worker runs no command, not even a check, unless the owner allowed it in
+      Antigravity's own settings. When it ends, run the brief's checks yourself (the ones you may run).

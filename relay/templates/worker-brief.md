@@ -7,7 +7,7 @@ You are a **worker** session, supervised by the **Claude coordinator**. You neve
 - **Branch:** claude/<TASK-ID>   (already created — do not create/switch branches)
 - **Base commit:** <sha>
 - **Model and effort:** <model>, <effort>   (why: <one line>)
-- **Tool:** claude | codex | gemini   (only a tool that worker_tools in bin\relay-settings.json lists)
+- **Tool:** claude | codex | gemini | antigravity   (only a tool that worker_tools in bin\relay-settings.json lists)
 
 ## Read first
 - `<worktree>\AGENTS.md` (and any CLAUDE.md / docs it names)

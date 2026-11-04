@@ -28,11 +28,18 @@
   and a tool that worker_tools does not list is refused; Codex and Gemini workers with tests\stub-codex.js and
   tests\stub-gemini.js (their commands, prompts on stdin and ids, OPENAI_API_KEY removed, GEMINI_API_KEY passed
   through and never written down, the Gemini policy, exits 41 and 55, and refusals for the daily limit, a
-  .gemini\settings.json in the worktree, Gemini system policies and a changed policy file).
+  .gemini\settings.json in the worktree, Gemini system policies and a changed policy file). 25 Antigravity CLI
+  workers with tests\stub-agy.js: off until worker_tools lists them; the command, the prompt as one stream-json line
+  on stdin, and the conversation id saved while the run goes; the tokens; the warning in the log; the launcher's
+  commit of a change, and none without one; a reviewer in the workers folder; antigravity_sandbox; exits 1 and 3, an
+  ERROR result and "authentication required" in plain words; refusals for an .agents\hooks.json in the worktree, a
+  Claude model, max effort and the daily limit.
   It runs only the bridge-relay.ps1, agent-mail.ps1 and spawn-worker.ps1 beside it, ..\tests\stub-claude.js,
-  ..\tests\stub-codex.js and ..\tests\stub-gemini.js; other -RelayScript/-StubCli values are refused.
-  Scenario 24 needs git.exe, for a Git folder in its fixture. It sets two test-only variables that spawn-worker.ps1
-  reads (RELAY_TEST_GEMINI_POLICY_DIR and RELAY_TEST_CHANGE_POLICY); each one can only make the launcher refuse.
+  ..\tests\stub-codex.js, ..\tests\stub-gemini.js and ..\tests\stub-agy.js; other -RelayScript/-StubCli values are
+  refused.
+  Scenarios 24 and 25 need git.exe, for a Git folder in their fixtures. Scenario 24 sets two test-only variables that
+  spawn-worker.ps1 reads (RELAY_TEST_GEMINI_POLICY_DIR and RELAY_TEST_CHANGE_POLICY); each one can only make the
+  launcher refuse.
   Prints one PASS/FAIL line per check, then a summary. Exit 0 only when every check passes (2 = could not set up).
   No network, no API key, no real claude.exe. It removes its temp folder and stops any process it started
   (only processes whose command line names this run's temp folder). Takes about 6-10 minutes.
@@ -62,16 +69,18 @@ $OwnRelay = Join-Path $HereDir 'bridge-relay.ps1'
 $OwnStub = Join-Path (Split-Path -Parent $HereDir) 'tests\stub-claude.js'
 $StubCodex = Join-Path (Split-Path -Parent $HereDir) 'tests\stub-codex.js'
 $StubGemini = Join-Path (Split-Path -Parent $HereDir) 'tests\stub-gemini.js'
+$StubAgy = Join-Path (Split-Path -Parent $HereDir) 'tests\stub-agy.js'
 $AgentMail = Join-Path $HereDir 'agent-mail.ps1'
 $SpawnWorker = Join-Path $HereDir 'spawn-worker.ps1'
 if (-not $RelayScript) { $RelayScript = $OwnRelay }
 if (-not $StubCli) { $StubCli = $OwnStub }
-foreach ($f in @($RelayScript, $StubCli, $StubCodex, $StubGemini, $AgentMail, $SpawnWorker, $PsExe)) { if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Stop-Setup "not found: $f" } }
+foreach ($f in @($RelayScript, $StubCli, $StubCodex, $StubGemini, $StubAgy, $AgentMail, $SpawnWorker, $PsExe)) { if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Stop-Setup "not found: $f" } }
 if (-not (Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue)) { Stop-Setup 'node.exe not found (the stub CLI needs it)' }
 $RelayScript = (Resolve-Path -LiteralPath $RelayScript).Path
 $StubCli = (Resolve-Path -LiteralPath $StubCli).Path
 $StubCodex = (Resolve-Path -LiteralPath $StubCodex).Path
 $StubGemini = (Resolve-Path -LiteralPath $StubGemini).Path
+$StubAgy = (Resolve-Path -LiteralPath $StubAgy).Path
 $DummyOpenAiKey = 'sk-relay-check-dummy-openai'   # set for every relay run; the Codex stub reports whether it saw it
 $DummyGeminiKey = 'relay-check-dummy-gemini-key'  # set for every run; it must pass through to Gemini and be written nowhere
 # The unattended coordinator may run this harness (bridge-relay.ps1 allows it), so it only ever executes the relay and
@@ -490,6 +499,26 @@ function Get-GeminiCalls([hashtable]$Fx, [string]$Phase) {
 }
 
 function Get-CodexWorkerCalls([hashtable]$Fx) { return @(Get-CodexCalls $Fx 'start' | Where-Object { $_.kind -eq 'worker' }) }
+
+function Set-AgyStubMode([hashtable]$Fx, [string]$Mode) { [IO.File]::WriteAllText((Join-Path $Fx.stub 'agy-mode.txt'), $Mode, $Utf8) }
+
+function Get-AgyCalls([hashtable]$Fx, [string]$Phase) {
+    $f = Join-Path $Fx.stub 'agy-calls.jsonl'
+    if (-not (Test-Path -LiteralPath $f)) { return }
+    foreach ($l in ((Read-Shared $f) -split "`n")) {
+        $l = $l.Trim()
+        if (-not $l) { continue }
+        try { $c = ConvertFrom-Json -InputObject $l } catch { continue }
+        if (-not $Phase -or $c.phase -eq $Phase) { $c }
+    }
+}
+
+function Get-RunningAgyStubs([hashtable]$Fx) { return @(Get-ChildItem -LiteralPath $Fx.stub -Filter 'agy-running-*' -File -ErrorAction SilentlyContinue).Count }
+
+function Test-SaidText([string]$Out, [string]$Text) {
+    # Like Test-Said, for plain text with no pattern in it.
+    return (($Out -replace '\s+', '').Contains(($Text -replace '\s+', '')))
+}
 
 function ConvertTo-BaseText([string]$Text) {
     # Paths in this run's temp folder read as <base>, whether Windows shows it in its short (8.3) or long form.
@@ -1730,6 +1759,140 @@ try {
         } finally {
             if ($null -ne $previousCodexHome) { $env:CODEX_HOME = $previousCodexHome } else { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue }
         }
+        foreach ($k in @($DummyGeminiKey, $DummyOpenAiKey)) {
+            $leak = Test-NoKeyText $fx $k
+            Check (-not $leak) "a dummy key's text was written to: $leak"
+        }
+    }
+
+    Invoke-Scenario '25 workers in Antigravity CLI: off until worker_tools lists it; the command, the stdin line and the id; the warning; commits; exits, ERROR results and sign-in; refusals; the sandbox' {
+        $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $git) { throw 'git.exe not found: an Antigravity worker needs a Git folder' }
+        $fx = New-WorkerFixture 'wk3'
+        $gitExit = 1
+        $gitPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $null = & $git.Path -C $fx.wt init -q 2>$null
+            $gitExit = $LASTEXITCODE
+            if ($gitExit -eq 0) {
+                $null = & $git.Path -C $fx.wt config user.email 'ada@example.com' 2>$null
+                $null = & $git.Path -C $fx.wt config user.name 'Ada' 2>$null
+            }
+        } finally { $ErrorActionPreference = $gitPreference }
+        if ($gitExit -ne 0) { throw "git init failed in $($fx.wt)" }
+        $warning = "Google's consumer terms may not allow running Antigravity CLI from other programs. Your Google account could be suspended. Turn it off by taking antigravity out of worker_tools."
+        $led = Join-Path $fx.workers 'runs.md'
+
+        # Off until worker_tools lists it: refused in words that name worker_tools and the risk, and nothing starts.
+        Set-WorkerSettings $fx @{ worker_tools = @('claude', 'codex', 'gemini'); antigravity_exe = $StubAgy }
+        Write-Brief $fx 'W1' 'implementation' 'antigravity'
+        $r = Invoke-Spawn $fx @('-Worker', 'W1', '-Tool', 'antigravity')
+        Check ($r.code -ne 0 -and (Test-Said $r.out 'Antigravity workers are off') -and (Test-Said $r.out 'worker_tools') -and
+            (Test-Said $r.out 'Your Google account could be suspended')) "-Tool antigravity was not refused in words that name worker_tools and the risk: $(Get-Tail $r.out)"
+        Check (-not (Test-Path -LiteralPath (Join-Path $fx.workers 'W1.run.json')) -and @(Get-AgyCalls $fx '').Count -eq 0) 'a refused Antigravity worker started a program or wrote a run.json'
+
+        # Turned on, with no daily limit (0) until the limit is checked at the end.
+        Set-WorkerSettings $fx @{ worker_tools = @('claude', 'antigravity'); antigravity_exe = $StubAgy }
+        Write-Text (Join-Path $fx.mb 'bin\cost-limits.json') '{"worker_runs_per_day":{"antigravity":0}}'
+
+        # The usual worker, launched as the coordinator does it. The conversation id is saved while the run still goes.
+        Set-AgyStubMode $fx 'sleep:10'
+        $r = Invoke-Spawn $fx @('-Worker', 'W1', '-Tool', 'antigravity')
+        Check ($r.code -eq 0 -and (Test-Said $r.out 'Launched W1 \(implementation, Antigravity\)') -and (Test-SaidText $r.out "Antigravity CLI's default model") -and
+            (Test-SaidText $r.out 'effort high (Antigravity CLI has low, medium and high, so xhigh runs as high)') -and (Test-SaidText $r.out "Warning: $warning")) "the Antigravity launch line does not give the model, the effort and the warning: $(Get-Tail $r.out)"
+        $early = Wait-Until { $s = Get-RunJson $fx 'W1'; [bool]($s -and $s.session_id -and $s.state -eq 'running') } 30
+        Check ($early -and (Get-RunningAgyStubs $fx) -eq 1) 'the Antigravity conversation id was not saved in run.json while the run still went'
+        Check (Wait-Until { (Test-Path -LiteralPath $led) -and (Read-Shared $led) -match '\| W1 \|' } 60) 'the Antigravity worker run did not end with a line in runs.md'
+        Set-AgyStubMode $fx 'ok'
+        $a = @(Get-AgyCalls $fx 'start')
+        $s = Get-RunJson $fx 'W1'
+        Check ($a.Count -eq 1) "expected 1 Antigravity worker run, got $($a.Count)"
+        if ($a.Count -ge 1 -and $s) {
+            $c = $a[0]
+            $why = Compare-ArgList @($c.args) @('--input-format', 'stream-json', '--output-format', 'stream-json', '--mode', 'accept-edits', '--add-dir', $fx.workers, '--effort', 'high')
+            Check (-not $why) "the Antigravity command is not the one asked for: $why"
+            Check (([string]$c.stdin).StartsWith('{"event":"user","message":{"content":"') -and $c.stdin_lines -eq 1 -and $c.stdin_event -eq 'user') 'stdin is not one stream-json user line'
+            $prompt = [string]$c.stdin_content
+            Check ($prompt.Contains((Join-Path $fx.workers 'W1-brief.md')) -and $prompt.Contains((Join-Path $fx.workers 'W1-report.md'))) 'the prompt on stdin does not name the brief and the report'
+            Check ($prompt.Contains('Do not run git add or git commit: when you finish, the launcher commits your changes')) 'the Antigravity worker prompt does not say the launcher commits'
+            Check ([string]$c.cwd -like '*\wk3\worktrees\*\repo') "the Antigravity worker ran in '$($c.cwd)', not in the worktree"
+            Check ([bool]$c.gemini_key_present) 'GEMINI_API_KEY did not pass through to Antigravity CLI'
+            Check ($s.tool -eq 'antigravity' -and $s.state -eq 'finished' -and $s.exit_code -eq 0 -and $s.session_id -eq $c.conversation_id -and $s.billing -eq 'antigravity-own-login' -and
+                $s.model -eq 'antigravity default' -and $s.effort -eq 'high' -and -not $s.commit) 'W1.run.json does not record the Antigravity run with its conversation id, and no commit'
+            Check ($s.tokens -and $s.tokens.input -eq 10418 -and $s.tokens.output -eq 589 -and $s.tokens.cached -eq 8113 -and $s.tokens.total -eq 11007) 'W1.run.json does not hold the token counts'
+        }
+        $log = Read-Shared (Join-Path $fx.workers 'W1.log')
+        Check ($log.Contains("launcher: $warning")) 'W1.log does not hold the warning about Google''s consumer terms'
+        Check ($log.Contains('The Antigravity worker changed no files, so there was nothing to commit.')) 'W1.log does not say there was nothing to commit'
+        Check ((Read-Shared $led) -match '\| W1 \| implementation \| finished \| 0 \| .*\| antigravity \| 11007 \(in 10418, out 589, cached 8113\) \|') 'runs.md has no Antigravity line with its tokens'
+
+        # A worker that changes a file: the launcher commits it, outside Antigravity CLI.
+        Write-Brief $fx 'W2' 'implementation' 'antigravity'
+        Set-AgyStubMode $fx 'write'
+        $null = Invoke-Spawn $fx @('-Worker', 'W2', '-Tool', 'antigravity', '-Foreground')
+        Set-AgyStubMode $fx 'ok'
+        $s2 = Get-RunJson $fx 'W2'
+        $tip = ''
+        $gitPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $tip = ((& $git.Path -C $fx.wt log -1 --format=%H%n%s 2>$null) | Out-String).Trim()
+        } finally { $ErrorActionPreference = $gitPreference }
+        Check ($s2 -and $s2.state -eq 'finished' -and $s2.commit -and $tip.StartsWith([string]$s2.commit)) "the launcher did not commit the Antigravity worker's change (run.json commit '$($s2.commit)', head '$tip')"
+        Check ($tip -match 'W2: changes from the Antigravity worker run') "the launcher's commit has the wrong message: $tip"
+        Check ((Read-Shared (Join-Path $fx.workers 'W2.log')) -match "Committed the Antigravity worker's changes as") 'W2.log does not say the launcher committed the changes'
+
+        # A reviewer works in the workers folder. -Model and -Effort low are passed on, and antigravity_sandbox adds --sandbox.
+        Set-WorkerSettings $fx @{ worker_tools = @('claude', 'antigravity'); antigravity_exe = $StubAgy; antigravity_sandbox = $true }
+        Write-Brief $fx 'W3' 'review' 'antigravity'
+        $null = Invoke-Spawn $fx @('-Worker', 'W3', '-Tool', 'antigravity', '-Type', 'review', '-Model', 'gemini-stub-flash', '-Effort', 'low', '-Foreground')
+        Set-WorkerSettings $fx @{ worker_tools = @('claude', 'antigravity'); antigravity_exe = $StubAgy }
+        $a = @(Get-AgyCalls $fx 'start')
+        Check ($a.Count -eq 3) "expected 3 Antigravity worker runs, got $($a.Count)"
+        if ($a.Count -ge 3) {
+            $why = Compare-ArgList @($a[2].args) @('--input-format', 'stream-json', '--output-format', 'stream-json', '--mode', 'accept-edits',
+                '--model', 'gemini-stub-flash', '--effort', 'low', '--sandbox')
+            Check (-not $why) "the Antigravity reviewer's command is not the one asked for: $why"
+            Check ([string]$a[2].cwd -like '*\workers') "the Antigravity reviewer ran in '$($a[2].cwd)', not in the workers folder"
+            Check ([string]$a[2].stdin_content -match 'The only file you may write is your report') 'the reviewer prompt does not keep it to its report'
+        }
+        $s3 = Get-RunJson $fx 'W3'
+        Check ($s3 -and $s3.state -eq 'finished' -and $s3.model -eq 'gemini-stub-flash' -and $s3.effort -eq 'low' -and -not $s3.commit) 'W3.run.json does not record the reviewer run with its model and effort'
+        Check ((Read-Shared (Join-Path $fx.workers 'W3.log')) -match 'antigravity_sandbox is on') 'W3.log does not say that the sandbox is on'
+
+        # Exits, ERROR results and the sign-in, recorded truthfully in plain words. Nothing is committed for them.
+        foreach ($x in @(@{ w = 'W4'; mode = 'exit:1'; code = 1; state = 'failed (bad input)'; words = 'said the input was bad \(exit 1\), so it did not do the work\. It said: invalid model selection' },
+                @{ w = 'W5'; mode = 'exit:3'; code = 3; state = 'failed (service error)'; words = "The model or Antigravity's service failed \(exit 3\): The model is overloaded" },
+                @{ w = 'W6'; mode = 'result-error'; code = 0; state = 'failed'; words = 'did not finish the work: it ended with status ERROR\. It said: simulated model error' },
+                @{ w = 'W7'; mode = 'auth'; code = 1; state = 'failed (not signed in)'; words = 'is not signed in \(it said: authentication required\)\. Run agy once in a window and sign in' })) {
+            Set-AgyStubMode $fx $x.mode
+            Write-Brief $fx $x.w 'implementation' 'antigravity'
+            $null = Invoke-Spawn $fx @('-Worker', $x.w, '-Tool', 'antigravity', '-Foreground')
+            $s = Get-RunJson $fx $x.w
+            Check ($s -and $s.state -eq $x.state -and $s.exit_code -eq $x.code -and [string]$s.note -match $x.words -and -not $s.commit) "$($x.w).run.json does not record $($x.mode) truthfully (state '$($s.state)', exit '$($s.exit_code)', note '$($s.note)')"
+            $wlog = Read-Shared (Join-Path $fx.workers "$($x.w).log")
+            Check ($wlog -match ('launcher: .*' + $x.words) -and $wlog.Contains("launcher: $warning")) "$($x.w).log does not say in plain words what happened, or has no warning"
+        }
+        Set-AgyStubMode $fx 'ok'
+
+        # Refused before anything starts: hooks in the worktree, a Claude model and max effort.
+        $before = @(Get-AgyCalls $fx 'start').Count
+        Write-Brief $fx 'W8' 'implementation' 'antigravity'
+        Write-Text (Join-Path $fx.wt '.agents\hooks.json') '{}'
+        $r = Invoke-Spawn $fx @('-Worker', 'W8', '-Tool', 'antigravity', '-Foreground')
+        Remove-Item -LiteralPath (Join-Path $fx.wt '.agents') -Recurse -Force
+        Check ($r.code -ne 0 -and (Test-Said $r.out '\.agents\\hooks\.json is there') -and (Test-Said $r.out 'Nothing was started')) "an .agents\hooks.json in the worktree was not refused: $(Get-Tail $r.out)"
+        foreach ($bad in @(@('-Model', 'opus'), @('-Effort', 'max'))) {
+            $r = Invoke-Spawn $fx (@('-Worker', 'W8', '-Tool', 'antigravity', '-Foreground') + $bad)
+            Check ($r.code -ne 0 -and (Test-Said $r.out 'Refusing') -and (Test-Said $r.out 'Nothing was started')) "-Tool antigravity $($bad -join ' ') was not refused: $(Get-Tail $r.out)"
+        }
+        # The daily limit: 4 unless set. Today had 7 runs (W1 to W7); the refusals above started nothing.
+        Write-Text (Join-Path $fx.mb 'bin\cost-limits.json') '{"worker_runs_per_day":{"codex":12}}'
+        $r = Invoke-Spawn $fx @('-Worker', 'W8', '-Tool', 'antigravity', '-Foreground')
+        Check ($r.code -ne 0 -and (Test-Said $r.out 'today already had 7 Antigravity worker run') -and (Test-Said $r.out 'the limit is 4 a day') -and
+            (Test-Said $r.out 'worker_runs_per_day')) "the daily Antigravity limit did not refuse the eighth run: $(Get-Tail $r.out)"
+        Check (-not (Test-Path -LiteralPath (Join-Path $fx.workers 'W8.run.json')) -and @(Get-AgyCalls $fx 'start').Count -eq $before) 'a refused Antigravity worker started or wrote a run.json'
         foreach ($k in @($DummyGeminiKey, $DummyOpenAiKey)) {
             $leak = Test-NoKeyText $fx $k
             Check (-not $leak) "a dummy key's text was written to: $leak"
