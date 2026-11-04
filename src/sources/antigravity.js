@@ -35,9 +35,16 @@ const META_BYTES = 16 * MiB;
 const LAST_BYTES = MiB;
 const HISTORY_BYTES = 4 * MiB;
 const HEAD_STEPS = 50; // a helper's reminder comes in its first steps
+const MARK_BYTES = 64; // kept from just before where reading stopped, to notice a file written again in place
+// Auto mode's own reviewer can take about 10 seconds to answer a tool call before the person is asked.
+const APPROVAL_GRACE_MS = 15 * SECOND;
 const NEWLINE = 0x0a;
 const ID = /^[0-9a-f-]{8,64}$/;
 const UUIDS = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+// A conversation id where a result labels it: a conversationId or conversation_id field or label.
+const LABELED_IDS = /conversation_?id["']?\s*[:=]\s*["']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
+// The id on a line of a helper's reminder: "id: …" or id="…".
+const LINE_ID = /id["']?\s*[:=]\s*["']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 const WINDOWS_PATH = /^(?:[a-z]:[\\/]|\\\\)/i;
 const CONTROL = /\p{Cc}/u;
 const LOGS = ['.system_generated', 'logs'];
@@ -46,9 +53,13 @@ const TRANSCRIPTS = ['transcript_full.jsonl', 'transcript.jsonl'];
 const INVOKE = 'INVOKE_SUBAGENT';
 const INVOKE_HINT = Buffer.from(INVOKE);
 const INVOKE_TOOL = 'invoke_subagent';
+const INVOKE_TOOL_HINT = Buffer.from(INVOKE_TOOL);
+const REPLY_HINT = Buffer.from('PLANNER_RESPONSE');
 // The note Antigravity CLI puts in a helper's first steps, to tell it that it is a helper.
 const REMINDER = '<subagent_reminder>';
 const RUNNING = new Set(['RUNNING', 'PENDING', 'WAITING', 'ACTIVE']);
+// Pleni's best guess at the status of a tool step that waits for the person to allow it.
+const WAITING = 'WAITING';
 const FAILED = new Set(['ERROR', 'FAILED']);
 const STOPPED = new Set(['CANCELED', 'CANCELLED', 'INTERRUPTED']);
 const ERROR_TYPES = new Set(['ERROR', 'ERROR_MESSAGE']);
@@ -56,7 +67,12 @@ const ERROR_TYPES = new Set(['ERROR', 'ERROR_MESSAGE']);
 // neither start nor end a turn, and do not move lastAt.
 const NOTES = new Set(['CHECKPOINT', 'CONVERSATION_HISTORY', 'SYSTEM_MESSAGE', 'EPHEMERAL_MESSAGE']);
 // Blocks Antigravity CLI adds around what the person typed: the time, the workspace, a reminder.
-const ADDED = /<([A-Z][A-Z0-9_]{2,}|user_information|subagent_reminder)>[\s\S]*?(?:<\/\1>|$)/g;
+// These known ones may run on to the end of a text that was cut short. Any other upper-case block
+// goes only when it is closed and its opening tag is on a line of its own, so a <TODO> or
+// <API_KEY> in the person's own words stays.
+const ADDED = /<(ADDITIONAL_METADATA|USER_INFORMATION|user_information|subagent_reminder)>[\s\S]*?(?:<\/\1>|$)|(?:^|\n)<([A-Z][A-Z0-9_]{2,})>[ \t]*\r?\n[\s\S]*?<\/\2>/g;
+// What a working helper turns into working in each conversation above it.
+const LIFTED = new Set(['ready', 'idle', 'done']);
 // "Created At: …" and "Completed At: …" lines at the top of a tool's result.
 const RESULT_TIMES = /^(?:(?:Created|Completed) At: [^\n]*\n)+/;
 const POLL_KEEP = { text: 1000, results: false };
@@ -108,7 +124,7 @@ export function createAntigravitySource({ root, settings, now = Date.now } = {})
     linkHelpers(out, chosen, snippets);
     rollUpWorking(out);
     for (const x of out.values()) {
-      if (x.status === 'working') x.activity = activityOf(factsOf(chosen.get(x.id)), snippets, t);
+      if (x.status === 'working') x.activity = activityOf(factsOf(chosen.get(x.id)), snippets, t, w);
     }
     return [...out.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   }
@@ -194,10 +210,12 @@ function newEntry(id, file, old) {
     fromStart: false, // the part being read began at the start of the file
     scanned: false, // a transcript read from near its end had its start looked through
     tail: new JsonlTail(file, { maxInitialBytes: TAIL_BYTES }),
+    mark: null, // the bytes just before where reading stopped: { end, bytes }
     log: newLog(),
     // Kept when the file is written again, and when the other transcript name takes over: it is
-    // the same conversation.
-    head: old ? { ...old.head, steps: 0 } : { prompt: null, helper: false, steps: 0 },
+    // the same conversation. `cut` is true when the first request was cleared of its words, and
+    // `caller` is the conversation a helper's reminder names.
+    head: old ? { ...old.head, steps: 0 } : { prompt: null, cut: false, helper: false, caller: null, steps: 0 },
     children: old ? old.children : new Map(), // helper id -> the role it was given, or null
     firstAt: old ? old.firstAt : null, // the oldest step time seen
     version: 0, // goes up whenever something new was read
@@ -345,15 +363,20 @@ function refresh(entry) {
 
 function readTail(entry, size) {
   if (entry.started && size - entry.tail.offset > CATCH_UP_BYTES) restart(entry);
+  // A file written again in place keeps its name, and can grow past where Pleni stopped before
+  // the next look. Only adding lines leaves the bytes before that place as they were.
+  const rewritten = entry.started && !sameMark(entry.file, entry.mark);
+  if (rewritten) entry.tail = new JsonlTail(entry.file, { maxInitialBytes: TAIL_BYTES });
   const out = entry.tail.read();
-  if (out.reset) {
-    // The file got smaller or was replaced: Antigravity CLI wrote it again, as it does when it
+  const reset = out.reset || rewritten;
+  if (reset) {
+    // The file got smaller, was replaced or was written again: Antigravity CLI does that when it
     // squeezes old history into a checkpoint. What it holds now is read as new.
     entry.log = newLog();
     entry.head.steps = 0;
     entry.scanned = false;
   }
-  if (out.reset || !entry.started) {
+  if (reset || !entry.started) {
     entry.started = true;
     entry.fromStart = out.size <= TAIL_BYTES;
     if (!entry.fromStart) {
@@ -362,6 +385,29 @@ function readTail(entry, size) {
     }
   }
   for (const rec of out.records) applyRecord(entry, rec);
+  entry.mark = markAt(entry.file, entry.tail.offset);
+}
+
+// The last MARK_BYTES before `end`: { end, bytes }, or null when the file cannot be read.
+function markAt(file, end) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const from = Math.max(0, end - MARK_BYTES);
+    const bytes = Buffer.alloc(end - from); // not from the shared pool, which a small slice would keep alive
+    return { end, bytes: bytes.subarray(0, fs.readSync(fd, bytes, 0, bytes.length, from)) };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+// A file that cannot be read now is not taken as written again: the next look tries again.
+function sameMark(file, mark) {
+  if (!mark) return true;
+  const now = markAt(file, mark.end);
+  return now === null || now.bytes.equals(mark.bytes);
 }
 
 // Polls stop while nobody has the page open, and a busy transcript can grow a lot meanwhile.
@@ -380,17 +426,27 @@ function applyRecord(entry, rec) {
   const key = put(entry.log, step);
   if (entry.fromStart) noteHead(entry, step);
   noteFirst(entry, step);
-  if (step.children.length) addRoles(entry, step, key);
+  if (step.children.length) {
+    const { calls, n } = callBefore(entry.log, key);
+    addNamed(entry, step, calls, n);
+  }
 }
 
-// The first request, and the reminder that tells a helper it is one, from steps read in order
-// from the start of the file.
+// The first request, and the reminder that tells a helper it is one and who started it, from steps
+// read in order from the start of the file. A squeeze leaves the first request with no words: the
+// next request is not the first one, so `cut` says so.
 function noteHead(entry, step) {
   const head = entry.head;
-  if (head.prompt === null && step.kind === 'prompt' && step.text) head.prompt = flat(step.text, 120);
+  if (head.prompt === null && step.kind === 'prompt') {
+    if (step.text) head.prompt = flat(step.text, 120);
+    else head.cut = true;
+  }
   if (head.steps >= HEAD_STEPS) return;
   head.steps++;
-  if (step.reminder) head.helper = true;
+  if (step.reminder) {
+    head.helper = true;
+    head.caller ??= step.caller;
+  }
 }
 
 function noteFirst(entry, step) {
@@ -411,7 +467,9 @@ function scanBefore(entry, end) {
   scanCalls(entry, end);
 }
 
-// From the CALL_SCAN_BYTES before the part that is read, only the INVOKE_SUBAGENT steps are taken.
+// From the CALL_SCAN_BYTES before the part that is read, only the INVOKE_SUBAGENT steps are taken,
+// with the invoke_subagent calls of the reply before each, for the roles they gave. Only lines that
+// hold one of those words are parsed; a reply that starts no helper just forgets the calls.
 function scanCalls(entry, end) {
   const from = Math.max(0, end - CALL_SCAN_BYTES);
   if (end <= from) return;
@@ -427,12 +485,25 @@ function scanCalls(entry, end) {
       pos = first + 1;
     }
     let nl;
+    let calls = NONE; // the invoke_subagent calls of the newest reply
+    let n = 0; // the INVOKE_SUBAGENT steps since that reply
     while ((nl = data.indexOf(NEWLINE, pos)) !== -1) {
       const line = data.subarray(pos, nl);
       pos = nl + 1;
-      if (!line.includes(INVOKE_HINT)) continue;
+      const invoke = line.includes(INVOKE_HINT);
+      if (!invoke && !line.includes(REPLY_HINT)) continue;
+      if (!invoke && !line.includes(INVOKE_TOOL_HINT)) {
+        calls = NONE;
+        continue;
+      }
       const step = slimStep(parseLine(line), POLL_KEEP);
-      if (step?.children.length) addFound(entry, step.children);
+      if (step?.kind === 'reply') {
+        calls = invokeCalls(step);
+        n = 0;
+      } else if (step?.type === INVOKE) {
+        if (step.children.length) addNamed(entry, step, calls, n);
+        n++;
+      }
     }
   } catch {
     // The helpers are a bonus; the rest of the transcript is read without them.
@@ -487,6 +558,7 @@ function slimStep(rec, keep) {
     calls: NONE,
     thought: false,
     reminder: false,
+    caller: null, // the id a helper's reminder gives for the conversation that started it
     children: NONE,
   };
   step.kind = kindOf(step);
@@ -504,7 +576,21 @@ function slimStep(rec, keep) {
     if (keep.results) step.result = keepText(resultText(content), keep.text);
     if (type === INVOKE) step.children = childrenIn(content);
   }
+  if (step.reminder) step.caller = callerIn(content);
   return step;
+}
+
+// The conversation that started a helper, from its <subagent_reminder>: the id on the line that
+// names the caller agent ("id: …" or id="…"), as another reader of these files reads it, else the
+// first id on any of its lines. Only the id is kept.
+function callerIn(content) {
+  const block = /<subagent_reminder>([\s\S]*?)(?:<\/subagent_reminder>|$)/.exec(content)?.[1] ?? '';
+  const lines = block.split('\n');
+  for (const text of [...lines.filter((l) => /caller/i.test(l)), ...lines]) {
+    const id = idOf(LINE_ID.exec(text)?.[1]);
+    if (id) return id;
+  }
+  return null;
 }
 
 // The person's prompt, the model's reply, an error, a step that keeps the books, or a tool's result.
@@ -601,19 +687,23 @@ function rolesOf(args) {
     : null));
 }
 
-// The helpers an INVOKE_SUBAGENT step started: the conversation ids in its result, with the role
-// each was given when the result says so.
+// The helpers an INVOKE_SUBAGENT step started, with the role each was given when the result says
+// so. The ids come from where the result labels them: its JSON id fields, or the text right after
+// a conversationId or conversation_id label. Only a result with no labeled id is searched for any
+// conversation id, so an id that the helper's task only mentions makes no helper.
 function childrenIn(content) {
   if (typeof content !== 'string' || !content) return NONE;
   const found = new Map();
   const body = resultText(content);
   if (body && /^[[{]/.test(body)) walkIds(parseJson(body), found, 0);
-  for (const match of content.matchAll(UUIDS)) {
-    if (found.size >= MAX_CHILDREN) break;
-    const id = match[0].toLowerCase();
-    if (!found.has(id)) found.set(id, null);
-  }
+  for (const match of content.matchAll(LABELED_IDS)) addId(found, match[1]);
+  if (!found.size) for (const match of content.matchAll(UUIDS)) addId(found, match[0]);
   return [...found].map(([id, role]) => ({ id, role }));
+}
+
+function addId(found, value) {
+  const id = value.toLowerCase();
+  if (found.size < MAX_CHILDREN && !found.has(id)) found.set(id, null);
 }
 
 function walkIds(value, found, depth) {
@@ -630,21 +720,39 @@ function walkIds(value, found, depth) {
 }
 
 // The helpers an INVOKE_SUBAGENT step names. One whose result gives no role takes the role that
-// the invoke_subagent call of the reply before the step gave the helper in the same place.
-function addRoles(entry, step, key) {
+// the call this step answers gave the helper in the same place: the n-th invoke_subagent call of
+// the reply before it, where n counts the INVOKE_SUBAGENT steps in between.
+function addNamed(entry, step, calls, n) {
   const kids = step.children.filter((child) => child.id !== entry.id);
-  const roles = rolesBefore(entry.log, key);
-  const byPlace = roles.length === kids.length;
-  addFound(entry, kids.map((child, i) => ({ id: child.id, role: child.role ?? (byPlace ? roles[i] : null) })));
+  const roles = rolesFor(kids, calls, n);
+  addFound(entry, kids.map((child, i) => ({ id: child.id, role: child.role ?? roles[i] ?? null })));
 }
 
-function rolesBefore(log, key) {
+// The invoke_subagent calls of the reply before a step, and how many INVOKE_SUBAGENT steps came
+// between them.
+function callBefore(log, key) {
   const at = log.order.lastIndexOf(key);
+  let n = 0;
   for (let i = at - 1; i >= 0 && i >= at - 50; i--) {
     const step = log.byKey.get(log.order[i]);
-    if (step.kind === 'reply') return step.calls.filter((call) => call.name === INVOKE_TOOL).flatMap((call) => call.roles);
+    if (step.kind === 'reply') return { calls: invokeCalls(step), n };
+    if (step.type === INVOKE) n++;
   }
-  return NONE;
+  return { calls: NONE, n: 0 };
+}
+
+function invokeCalls(step) {
+  return step.calls.filter((call) => call.name === INVOKE_TOOL);
+}
+
+// The roles by place: the answered call's own when there is one for each helper, else, for the
+// first step after the reply, those of all its calls together (one result may name the helpers of
+// several calls), else none.
+function rolesFor(kids, calls, n) {
+  const own = calls[n]?.roles ?? NONE;
+  if (own.length === kids.length) return own;
+  const all = n === 0 ? calls.flatMap((call) => call.roles) : NONE;
+  return all.length === kids.length ? all : NONE;
 }
 
 function addFound(entry, children) {
@@ -680,11 +788,13 @@ function factsOf(entry) {
     talked, // a conversation where nothing was said yet is left out
     turn: turnOf(steps),
     running: steps.filter((s) => s.kind !== 'note' && RUNNING.has(s.status)),
+    current: steps.slice(steps.findLastIndex((s) => s.kind === 'prompt') + 1), // since the newest request
     pairs,
     waiting,
     model,
     lastText,
     prompt: entry.head.prompt ?? prompt,
+    cut: entry.head.cut,
     lastAt: entry.log.seenAt,
     firstAt: entry.firstAt ?? entry.log.firstAt,
   };
@@ -773,10 +883,23 @@ function toSession(entry, parents, chosen, places, t, w, snippets) {
     status: statusOf(f, helper, t, w),
     activity: null, // set once the status of every session is known
     lastText: snippets ? f.lastText : null,
-    needs: null,
+    needs: needsOf(f, snippets, t),
     links: [],
     archived: false,
   };
+}
+
+// A tool step of the turn going now that has waited longer than APPROVAL_GRACE_MS for the person to
+// allow it, as an interactive run does. A helper's start waits for the helper, not the person. It
+// stays until the step is answered or the turn ends, however long that takes.
+function needsOf(f, snippets, t) {
+  if (!f.turn.open) return null;
+  const s = f.current.findLast((x) => x.kind === 'tool' && x.type !== INVOKE && x.status === WAITING);
+  if (!s || s.at === null || t - s.at <= APPROVAL_GRACE_MS) return null;
+  const call = f.pairs.get(s) ?? null;
+  const tool = call?.name ?? toolName(s.type);
+  const text = call?.detail ? `Asks to use ${tool}: ${call.detail}` : `Asks to use ${tool}`;
+  return { kind: 'permission', text: snippets ? clip(text, 280) : null, at: s.at };
 }
 
 function keyOf(id) {
@@ -784,15 +907,17 @@ function keyOf(id) {
 }
 
 // A helper is named by the role it was given, else like a conversation: by the title Antigravity
-// CLI gave it, its first request, or the first prompt in history.jsonl. All are session text, so
-// with snippets only.
+// CLI gave it, its first request, or the first prompt in history.jsonl. When a squeeze cleared the
+// first request's words, history.jsonl's first prompt comes before a later request. All are session
+// text, so with snippets only.
 function titleOf(id, role, f, places, snippets) {
   if (!snippets) return { text: null, source: null };
   if (role) return { text: role, source: 'role' };
   const summary = places.meta.get(id)?.title;
   if (summary) return { text: summary, source: 'summary' };
-  if (f.prompt) return { text: f.prompt, source: 'first-prompt' };
   const typed = places.history.get(id)?.prompt;
+  if (typed && f.cut) return { text: typed, source: 'history' };
+  if (f.prompt) return { text: f.prompt, source: 'first-prompt' };
   if (typed) return { text: typed, source: 'history' };
   return { text: null, source: null };
 }
@@ -809,11 +934,18 @@ function cwdOf(id, parents, places) {
   return null;
 }
 
-// Who started whom: the INVOKE_SUBAGENT steps of a conversation name its helpers. A helper named
-// by two conversations stays with the first by id, and a name that would make a loop is left out.
+// Who started whom. A helper whose reminder names the conversation that started it hangs under
+// that one when it is shown: a fork copies its conversation's steps, so it names the same helpers
+// again. Else the INVOKE_SUBAGENT steps of a conversation name its helpers, and a helper named by
+// two conversations stays with the first by id. A link that would make a loop is left out.
 function parentsOf(chosen) {
   const parents = new Map();
-  for (const id of [...chosen.keys()].sort()) {
+  const ids = [...chosen.keys()].sort();
+  for (const id of ids) {
+    const caller = chosen.get(id).head.caller;
+    if (caller && caller !== id && chosen.has(caller) && !above(id, caller, parents)) parents.set(id, caller);
+  }
+  for (const id of ids) {
     for (const child of chosen.get(id).children.keys()) {
       if (child === id || !chosen.has(child) || parents.has(child) || above(child, id, parents)) continue;
       parents.set(child, id);
@@ -836,25 +968,30 @@ function above(a, b, parents) {
 // staleMinutes, is working; a turn that went quiet longer is idle. A turn that ended with an error
 // is an error; a helper whose turn ended is done; a turn that ended within activeMinutes is ready.
 function statusOf(f, helper, t, w) {
-  const fresh = (at) => at !== null && t - at <= w.staleMinutes * MINUTE;
-  if (f.turn.open) return fresh(f.lastAt) ? 'working' : 'idle';
-  if (f.running.some((s) => fresh(s.at ?? f.lastAt))) return 'working';
+  if (f.turn.open) return fresh(f.lastAt, t, w) ? 'working' : 'idle';
+  if (f.running.some((s) => fresh(s.at ?? f.lastAt, t, w))) return 'working';
   if (f.turn.ending === 'failed') return 'error';
   if (helper && f.turn.closedAt !== null) return 'done';
   if (f.turn.closedAt !== null && t - f.turn.closedAt <= w.activeMinutes * MINUTE) return 'ready';
   return 'idle';
 }
 
-// The newest tool still running, else the first call of the newest reply still waiting for its result.
-function activityOf(f, snippets, t) {
-  const run = f.running.findLast((s) => s.kind === 'tool');
-  if (run) {
-    const call = f.pairs.get(run) ?? null;
-    return { tool: call?.name ?? toolName(run.type), detail: snippets ? call?.detail ?? null : null, at: run.at ?? f.lastAt ?? t };
-  }
+function fresh(at, t, w) {
+  return at !== null && t - at <= w.staleMinutes * MINUTE;
+}
+
+// What the conversation does now: the newest tool still running in the turn going now, else the
+// first call of the newest reply still waiting for its result, else a command that an earlier turn
+// left running. A running step older than staleMinutes counts as gone, as in statusOf.
+function activityOf(f, snippets, t, w) {
+  const live = (s) => s.kind === 'tool' && RUNNING.has(s.status) && fresh(s.at ?? f.lastAt, t, w);
+  const run = f.current.findLast(live);
   const next = f.turn.open ? f.waiting[0] : null;
-  if (next) return { tool: next.call.name, detail: snippets ? next.call.detail : null, at: next.at ?? f.lastAt ?? t };
-  return null;
+  if (!run && next) return { tool: next.call.name, detail: snippets ? next.call.detail : null, at: next.at ?? f.lastAt ?? t };
+  const step = run ?? f.running.findLast(live);
+  if (!step) return null;
+  const call = f.pairs.get(step) ?? null;
+  return { tool: call?.name ?? toolName(step.type), detail: snippets ? call?.detail ?? null : null, at: step.at ?? f.lastAt ?? t };
 }
 
 function toolName(type) {
@@ -883,13 +1020,14 @@ function linkHelpers(out, chosen, snippets) {
 }
 
 // A conversation whose helper is working is working too, even when its own turn ended: helpers run
-// on their own while it waits for them. Only "ready" and "idle" are lifted.
+// on their own while it waits for them, and a helper can start helpers of its own. So "ready",
+// "idle" and "done" are lifted, all the way up; an error still shows as it is.
 function rollUpWorking(out) {
   for (const x of out.values()) {
     if (x.status !== 'working') continue;
     const seen = new Set([x.key]);
     let parent = x.parentKey ? out.get(x.parentKey) : null;
-    while (parent && !seen.has(parent.key) && (parent.status === 'ready' || parent.status === 'idle')) {
+    while (parent && !seen.has(parent.key) && LIFTED.has(parent.status)) {
       seen.add(parent.key);
       parent.status = 'working';
       parent = parent.parentKey ? out.get(parent.parentKey) : null;

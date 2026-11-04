@@ -876,6 +876,9 @@ const USAGE_TOOLS = [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Gr
 const USAGE_LIMIT_PAGES = { claude: 'https://claude.ai/settings/usage', codex: 'https://chatgpt.com/codex/settings/usage' };
 // What to type in a tool that saves no plan limits on this computer, to see them there.
 const USAGE_COMMANDS = { grok: '/usage', kimi: '/usage', gemini: '/stats', antigravity: '/usage' };
+// Tools whose files that Pleni reads hold no token counts (src/usage.js, counted: false), so their
+// Usage card has no tokens part. The page knows them before the first Usage answer comes.
+const USAGE_UNCOUNTED = new Set(['antigravity']);
 const USAGE = { open: false, data: null, error: '', busy: false, timer: 0, run: 0, opener: null, leaving: false };
 
 // 900 -> "900", 1200 -> "1.2k", 250000 -> "250k", 1200000 -> "1.2 million".
@@ -950,8 +953,11 @@ function usageLimitsHtml(key, name, t, now, limitsOn = false) {
       `<p><a href="${USAGE_LIMIT_PAGES.codex}" id="usage-codex-site" target="_blank" rel="noopener noreferrer">See them on chatgpt.com</a><span class="sr-only"> (opens in a new tab)</span></p></div>`;
   }
   const type = esc(USAGE_COMMANDS[key] ?? '/usage');
-  // A tool whose files hold no token counts either (Antigravity CLI) says so once, here.
-  if (t.counted === false) return `<div class="u-limits"><p>${esc(name)} keeps no token counts or plan limits on this computer. In ${esc(name)}, type ${type}.</p></div>`;
+  // A tool whose files hold no token counts either (Antigravity CLI) says so once, here. Pleni says
+  // only what it found: the tool itself may keep its limits in files that Pleni never opens.
+  if (t.counted === false) {
+    return `<div class="u-limits"><p>The ${esc(name)} files that Pleni reads hold no token counts or limits, so Pleni cannot show them here. In ${esc(name)}, type ${type} to see how much of each model's limit is left.</p></div>`;
+  }
   return `<div class="u-limits"><p>${esc(name)} does not save plan limits on this computer. In ${esc(name)}, type ${type}.</p></div>`;
 }
 
@@ -4694,11 +4700,15 @@ function hqNowHtml(n) {
 }
 
 // An AI tool's tile: what hangs under it, and where to see its token use or change where Pleni looks.
+// A tool whose tokens Pleni cannot count gets the command that shows its limits instead.
 function toolNowHtml(n) {
   const name = esc(titleOf(n));
+  const usage = USAGE_UNCOUNTED.has(n.platform)
+    ? `Pleni cannot count the tokens of ${name}. In ${name}, type ${esc(USAGE_COMMANDS[n.platform] ?? '/usage')} to see how much of each model's limit is left.`
+    : '<button type="button" class="btn" data-usage>See token use</button>';
   return (
     `<p class="dnow">${name} sessions that don't report to another tile hang under this tile. The AI tools button above the map hides these tiles again.</p>` +
-    `<p class="dnow"><button type="button" class="btn" data-usage>See token use</button> <a href="#/settings/sources">Change where Pleni looks for ${name}</a></p>`
+    `<p class="dnow">${usage} <a href="#/settings/sources">Change where Pleni looks for ${name}</a></p>`
   );
 }
 

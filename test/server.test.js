@@ -1677,7 +1677,7 @@ test('GET /api/usage answers the shape, from made-up files, and any signed-in de
   assert.equal(claude.limits, null);
   assert.match(res.json.tools.codex.error, /Codex/);
   assert.equal(claude.counted, true);
-  assert.equal(res.json.tools.antigravity.counted, false, 'Antigravity CLI keeps no token counts');
+  assert.equal(res.json.tools.antigravity.counted, false, 'Pleni counts no tokens for Antigravity CLI');
   const laptop = await request(port, { path: '/api/usage?fresh=1', headers: FROM_LAPTOP });
   assert.equal(laptop.status, 200);
   assert.equal(laptop.json.tools.claude.today.total, 20);

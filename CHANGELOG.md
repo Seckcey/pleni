@@ -34,9 +34,12 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   `~/.gemini/antigravity-cli/brain` (the uncut `transcript_full.jsonl` when it is there), two small
   lists in its `cache` folder and `history.jsonl`, which say which folder each conversation works
   in. It never opens your login, your settings or the conversation databases, and it never shows
-  what the model was thinking. Antigravity CLI keeps no token counts or plan limits on this
-  computer, so its Usage card says to type `/usage` in Antigravity CLI. Like Grok, Kimi Code and
-  Gemini CLI, Antigravity CLI is watch-only in Pleni: no button sends it anything.
+  what the model was thinking. When Antigravity CLI has waited more than 15 seconds for you to
+  allow a tool, the conversation shows under **Needs you** (how it marks that wait in its files is
+  Pleni's best guess so far). The files Pleni reads hold no token counts or limits, so the Usage
+  card and the Antigravity CLI tile say to type `/usage` in Antigravity CLI, which shows how much
+  of each model's limit is left. Like Grok, Kimi Code and Gemini CLI, Antigravity CLI is
+  watch-only in Pleni: no button sends it anything.
 - **Gemini CLI.** Pleni now shows your Gemini CLI sessions too, and the helpers they start: on the
   map, in the List, in each session's side panel, and on the Usage page, where its tokens are
   counted. With the AI tools button on, Gemini CLI gets a tile of its own. Pleni reads only Gemini
@@ -74,7 +77,7 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 - **Usage.** A **Usage** button in the Map and List headers (and in their pop-out windows) opens a
   window with one card for each AI tool: Claude Code, Codex, Grok, Kimi Code, Gemini CLI and Antigravity CLI. Each card shows
   the tokens used today and in the last 7 days, read from the session files on this computer
-  (Antigravity CLI keeps no token counts there, so its card says so).
+  (the Antigravity CLI files Pleni reads hold no token counts, so its card says so).
   Pleni uses no login key and never asks the AI companies. It keeps the window up to date while
   it is open.
 - **Plan limits in Usage.** Codex saves its 5-hour and weekly limits in its own session files, so
@@ -82,8 +85,9 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   Claude Code** part in **Settings → Buttons** adds a small Pleni status line to Claude Code's
   settings file (a copy of the file goes to Pleni's backups folder first, your own status line
   keeps showing, and Disconnect puts it back). Claude Code then hands Pleni its limits after each
-  reply, for Pro, Max and Ultra plans. Grok, Kimi Code, Gemini CLI and Antigravity CLI save no
-  limits, so their cards say where to look: type `/usage` in the tool (`/stats` in Gemini CLI).
+  reply, for Pro, Max and Ultra plans. Grok, Kimi Code and Gemini CLI save no limits, and Pleni
+  reads none for Antigravity CLI, so their cards say where to look: type `/usage` in the tool
+  (`/stats` in Gemini CLI).
 - **A Cloud page for your Codex cloud tasks.** Off until you tick **Show my Codex cloud tasks** in
   **Settings → Sources**, on the computer that runs Pleni. It lists your tasks, newest first, with
   the title, a status (Working, Ready, Applied or Error), the environment, when it changed, the

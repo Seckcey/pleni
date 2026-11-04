@@ -26,7 +26,7 @@ const GEMINI_ID = /^[0-9a-f-]{8,64}$/i;
 
 export const TOOLS = ['claude', 'codex', 'grok', 'kimi', 'gemini', 'antigravity'];
 const NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', gemini: 'Gemini CLI', antigravity: 'Antigravity CLI' };
-// Antigravity CLI writes no token counts into its files on this computer, so Pleni has none to count.
+// The Antigravity CLI files that Pleni reads hold no token counts, so Pleni has none to count.
 const UNCOUNTED = new Set(['antigravity']);
 
 // ---- days ----

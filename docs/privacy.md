@@ -31,10 +31,15 @@ what it never does.
 Pleni reads only the places below, and only the parts it needs. For session files (the
 transcripts of Claude Code, Codex, Grok, Kimi Code, Gemini CLI and Antigravity CLI sessions and their helpers) it looks only at files that
 changed in the last 24 hours (the `recentHours` setting). The small notes files of the Claude
-desktop app, the mailbox's task files, and the Codex list of session names are read whatever
-their age, because they are small and say which session is which. For big files Pleni reads from
-the end, about the last 4 MB at first, and then only the new lines as they are added. It may also
-read the start of a file once, to find a session's name and where it started.
+desktop app, the mailbox's task files, the Codex list of session names, Gemini CLI's
+`projects.json` and `.project_root` files, and Antigravity CLI's two cache lists and its
+`history.jsonl` are read whatever their age, because they say which session is which and which
+folder it works in. For big files Pleni reads from the end, about the last 4 MB at first, and then
+only the new lines as they are added. It may also read the start of a file once, to find a
+session's name and where it started. For a big Kimi Code or Antigravity CLI log, it also looks
+through up to 16 MB before that last part, only to find the helpers the session started (and, for
+Antigravity CLI, the role each was given). It may look at the start and those 16 MB again when the
+tool writes the log over or after a long gap, so a log under about 20 MB may be read whole.
 
 | Where                                   | What Pleni reads                                                                                         |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -91,8 +96,9 @@ Always:
 Only when the `content` setting is `snippets` (this is the default):
 
 - A short note about the current tool step, at most 140 characters. It is built from the step's
-  description, the first line of a command, a file's name (not its folder), a search pattern, a
-  helper's task description, or a web site's host name.
+  description, the first line of a command, a file's name (not its folder), a search's words or
+  pattern, a helper's task description, the name of the agent a message goes to (never the
+  message), or a web site's host name.
 - The last thing the assistant said, at most 280 characters.
 - In the side panel: up to 200 recent steps, each with at most 2,000 characters of text.
 - Mailbox task titles and the headings of mailbox entries.
@@ -173,8 +179,9 @@ recent pop-ups in its notification list until you clear them.
   status line back and deletes Pleni's three files. If you changed the status line yourself in the
   meantime, Pleni leaves your file alone and says so. Claude Code only runs a status line in a
   folder you trust. Grok, Kimi Code and Gemini CLI save no limits, so Pleni shows where to look in each tool
-  instead. Antigravity CLI saves no limits and no token counts on this computer, so Pleni counts
-  nothing for it and shows where to look there too.
+  instead. The Antigravity CLI files that Pleni reads hold no limits and no token counts, and Pleni
+  never opens its databases, so Pleni counts nothing for it and shows where to look there too
+  (`/usage`).
 - **New agent** (Settings → Buttons, off until you turn it on, Windows only, this computer only)
   opens one PowerShell window in the folder of a session you pick and runs `claude --name <name>`
   or `codex` there. The name you type is held to the same plain marks. Pleni sends the new agent

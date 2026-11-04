@@ -52,13 +52,14 @@ function session(key, extra = {}) {
   };
 }
 
-function snap({ settings = {}, claude = [], codex = [], gemini = null, mailbox = null, now = NOW, dismissed = null } = {}) {
+function snap({ settings = {}, claude = [], codex = [], gemini = null, antigravity = null, mailbox = null, now = NOW, dismissed = null } = {}) {
   return buildSnapshot({
     now,
     settings: cleanSettings({ groupBy: 'project', ...settings }),
     claude: { ok: true, error: null, root: '/home/ada/.claude', sessions: claude },
     codex: { ok: true, error: null, root: '/home/ada/.codex', sessions: codex },
     ...(gemini ? { gemini: { ok: true, error: null, root: '/home/ada/.gemini', sessions: gemini } } : {}),
+    ...(antigravity ? { antigravity: { ok: true, error: null, root: '/home/ada/.gemini/antigravity-cli', sessions: antigravity } } : {}),
     mailbox,
     dismissed,
   });
@@ -1180,6 +1181,28 @@ test('a relay worker in another AI tool shows as that tool\'s session, or with t
   assert.equal(w6 && w6.platform, 'codex', 'a worker whose session was archived keeps its run-note tile');
   assert.equal(w6.parent, CLAUDE_SGT);
   assert.equal(node(s, ARCHIVED), undefined);
+});
+
+test('a relay worker in Antigravity CLI shows as its conversation, or keeps a run-note tile with that tool\'s mark', () => {
+  const OWN = 'antigravity:eeeeeeee-0000-4000-8000-0000000000d1';
+  const box = mailbox({ relay: { running: true, paused: false, halted: false, coordinatorKey: CLAUDE_SGT } });
+  const run = (id, sessionId, extra = {}) => ({ id, state: 'finished', model: null, startedAt: NOW - HOUR, finishedAt: NOW - 10 * MIN, worktree: null, tool: 'antigravity', sessionId, ...extra });
+  box.tasks[0].workers = [
+    run('W1', OWN.slice('antigravity:'.length), { state: 'running', startedAt: NOW - MIN, finishedAt: null }),
+    run('W2', 'eeeeeeee-0000-4000-8000-0000000000d2'),
+  ];
+  const antigravity = [session(OWN, { title: 'You are Antigravity worker W1 (implementation).', model: null, status: 'working' })];
+  const s = snap({ ...army(), antigravity, mailbox: box, settings: { groupBy: 'none', chain: CHAIN, sources: { mailbox: { enabled: true, planner: 'Sergeant Claude' } } } });
+  const own = node(s, OWN);
+  assert.equal(own.parent, CLAUDE_SGT, 'an Antigravity CLI worker that Pleni can see is its own conversation, under the coordinator');
+  assert.equal(own.platform, 'antigravity');
+  assert.equal(own.role, 'worker');
+  assert.equal(own.title, 'W1 · T-1: Split the service');
+  assert.equal(edgeTo(s, OWN).active, 'down');
+  assert.equal(s.nodes.some((n) => n.key === 'mailbox:T-1/W1'), false, 'no second tile for the same worker');
+  const w2 = node(s, 'mailbox:T-1/W2');
+  assert.equal(w2.platform, 'antigravity', 'an Antigravity CLI worker that Pleni cannot see keeps its tool on the run-note tile');
+  assert.equal(w2.parent, CLAUDE_SGT);
 });
 
 test('a report from a session moved under a boss lights that line upward', () => {

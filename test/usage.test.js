@@ -532,7 +532,7 @@ test('the demo answers in the same shape, with limits for Claude Code and Codex 
   assert.equal(demo.tools.grok.limits, null);
   assert.equal(demo.tools.kimi.limits, null);
   assert.equal(demo.tools.gemini.limits, null);
-  // Antigravity CLI keeps no token counts, in the demo too.
+  // Pleni counts no tokens for Antigravity CLI, in the demo too.
   assert.equal(demo.tools.antigravity.limits, null);
   assert.equal(demo.tools.antigravity.counted, false);
   assert.equal(demo.tools.antigravity.week.total, 0);

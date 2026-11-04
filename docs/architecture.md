@@ -537,12 +537,18 @@ others who read the files, so every field is read as optional.
 - **Steps:** one JSON object per line, with no header line: `{ step_index, source, type, status,
   created_at, content, tool_calls?, thinking? }`. `source` is `USER_EXPLICIT`, `MODEL` or `SYSTEM`;
   `status` is `DONE`, `RUNNING`, `CLEARED` (old history cleared to save space) or `ERROR`, and
-  `PENDING`, `WAITING` and `CANCELED` are read too; `created_at` is a UTC time. A line with the same
-  `step_index` again is a newer copy of that step: the newest copy wins, in the place the first one
-  came.
+  `PENDING`, `WAITING` and `CANCELED` are read too; `created_at` is a UTC time. Types, sources and
+  statuses are read in capitals, with an older `CORTEX_STEP_TYPE_`, `CORTEX_STEP_SOURCE_` or
+  `CORTEX_STEP_STATUS_` in front dropped. `ACTIVE` counts as `RUNNING`, `FAILED` as `ERROR`, and
+  `CANCELLED` and `INTERRUPTED` as `CANCELED`; a step of type `ERROR` counts as an `ERROR_MESSAGE`.
+  A line with the same `step_index` again is a newer copy of that step: the newest copy wins, in the
+  place the first one came.
   - `USER_INPUT` is the person's request: the words inside `<USER_REQUEST>…</USER_REQUEST>`, or,
-    without the tags, the content less the blocks Antigravity CLI adds (such as
-    `<ADDITIONAL_METADATA>`).
+    without the tags, the content less the blocks Antigravity CLI adds: `<ADDITIONAL_METADATA>`,
+    `<USER_INFORMATION>` (or `<user_information>`) and `<subagent_reminder>`, which may run on to
+    the end of a text that was cut short, and any other block with an upper-case name that is
+    closed and whose opening tag is on a line of its own. So a `<TODO>` or `<API_KEY>` in the
+    person's own words stays.
   - `PLANNER_RESPONSE` is the model's reply, with `tool_calls: [{ name, args }]`. `args` is an object,
     or JSON text of one, and each value in it may itself be JSON text. `thinking` is the model
     thinking: never kept or shown, only the fact that it thought.
@@ -557,15 +563,23 @@ others who read the files, so every field is read as optional.
     believed.
 - **Reading a transcript:** tailed like Gemini CLI's logs: about the last 4 MB at first, and near the
   end again after 16 MB of backlog. A line that does not parse is skipped, and a half-written last
-  line waits for its newline. When Antigravity CLI squeezes old history it writes the file again:
-  when the file got smaller or was replaced, it is read again from the start, keeping the first
-  request, the start time and the helpers found before. A transcript read from near its end gets its
-  first request, its start time and whether it is a helper from its first 2 MB, and the helpers it
-  started from the 16 MB before the part that is read, once. At most 5000 steps are kept per
-  transcript, each cut short (1000 characters of text, and no tool results).
+  line waits for its newline. When Antigravity CLI squeezes old history it writes the file again.
+  When the file got smaller, was replaced, or was written again in place (the 64 bytes just before
+  where Pleni stopped reading changed, so it is noticed even when the file grew past that place),
+  it is read again as on the first read: all of it when it is 4 MB or less, else its last 4 MB, with
+  its first 2 MB and the 16 MB before that part looked through again. The first request, the start
+  time and the helpers found before are kept. A transcript read from near its end (the first time,
+  and again after it was written again or after 16 MB of backlog) gets its first request, its start
+  time and whether it is a helper from its first 2 MB, and the helpers it started, with the roles
+  their calls gave them, from the 16 MB before the part that is read. At most 5000 steps are kept
+  per transcript, each cut short (1000 characters of text, and no tool results). A conversation
+  shows only once the steps read hold a request, a reply, a tool's result or an error: one whose
+  read part holds only steps that keep the books, or only the end of one line longer than 4 MB, is
+  left out until its next step is written.
 - **The working folder** is not in a transcript. It comes, in this order, from
   `<root>/cache/conversation_metadata.json` (`{ conversations: { "<id>": { summary: { WorkspaceURIs:
-  ["file:///…"] } } } }`; the first one that is a folder wins), from `<root>/history.jsonl` (a line for
+  ["file:///…"] } } } }`; the first `file://` address that gives a full folder path wins, and Pleni
+  does not check that the folder is there), from `<root>/history.jsonl` (a line for
   each prompt the person sent, `{ display, timestamp, workspace, conversationId }`; the newest line
   wins), and from `<root>/cache/last_conversations.json` (`{ "<folder>": "<newest conversation id>" }`,
   read the other way round). The two cache files are read whole (at most 16 MB and 1 MB) when they
@@ -575,13 +589,22 @@ others who read the files, so every field is read as optional.
 - **Keys:** `antigravity:<conversation id>` (a lower-case UUID), for a conversation and a helper
   alike: a helper is a conversation of its own.
 - **Helpers:** the result of an `INVOKE_SUBAGENT` step names the conversations it started: each
-  conversation id in it, with its role when the result is JSON that gives one, else the role that the
-  `invoke_subagent` call of the reply before it gave the helper in the same place
-  (`Subagents[].Role`). A named conversation that Pleni shows hangs under the one that named it
-  (kind `agent`, `spawned`, `parentKey` that conversation's key). One named by two conversations
-  stays with the first by id, and a name that would make a loop is left out. A conversation with
+  conversation id where the result labels it (a `conversationId`, `conversation_id` or
+  `ConversationId` field of JSON, or the text right after a `conversationId` or `conversation_id`
+  label), or, only when it labels none, each conversation id in it. So an id that the helper's task
+  only mentions makes no helper. Each takes its role when the result is JSON that gives one, else
+  the role that the call the step answers gave the helper in the same place (`Subagents[].Role`):
+  the n-th `invoke_subagent` call of the reply before the step, where n counts the `INVOKE_SUBAGENT`
+  steps in between, or, for the first of those steps, all the reply's calls together when it names
+  the helpers of all of them. A named conversation that Pleni shows hangs under the one that named
+  it (kind `agent`, `spawned`, `parentKey` that conversation's key). A conversation with
   `<subagent_reminder>` in its first 50 steps is a helper too, on its own when no conversation
-  names it.
+  names it. When its reminder gives the id of the conversation that started it (after `id:` or
+  `id=`, on the line that names the caller agent, else on any of its lines), it hangs under that
+  conversation whenever Pleni shows it, even when no step names it any more: a fork (`/fork`, a
+  switch of agent, a `/btw` question) copies its conversation's steps, so it names the same
+  helpers. Only that id is kept. Else a helper named by two conversations stays with the first by
+  id, and a link that would make a loop is left out.
 - **Turns,** in step order: a request starts one. A reply that calls tools, or is still `RUNNING`,
   keeps it going, and so does each tool's result, which goes back to the model; a tool that failed
   does too, since the model sees the error and goes on. A reply with no tool calls ends the turn; a
@@ -591,26 +614,41 @@ others who read the files, so every field is read as optional.
   `RUNNING` (or `PENDING` or `WAITING`) step started within `staleMinutes`, since a command can run
   on after its turn ended; a turn that went quiet for longer is **idle**. **error** when the turn
   ended with an error; for a helper, **done** when its turn ended; **ready** when the turn ended
-  within `activeMinutes`; else **idle**. A conversation whose helper is working is working too (only
-  ready and idle are lifted). `needs` is always null: a tool that waits for approval is not shown,
-  since a run with no person there denies it quietly.
+  within `activeMinutes`; else **idle**. A conversation whose helper is working is working too, all
+  the way up, since a helper can start helpers of its own: ready, idle and done are lifted, and an
+  error still shows as it is.
+- **Needs you:** in interactive use, Antigravity CLI stops and waits for the person to allow a tool
+  (only a run with `-p` and no person denies it quietly). A tool step of the turn going now (since
+  the newest request), other than `INVOKE_SUBAGENT`, whose status is `WAITING` and that has waited
+  more than 15 s (Auto mode's own reviewer can take about 10 s to answer first) gives `needs: {
+  kind: 'permission', text, at }`, with `text` "Asks to use <tool>: <detail>" only with snippets and
+  `at` the step's time. It stays until the step changes or the turn ends. That `WAITING` is the word
+  for this wait is Pleni's best guess: no saved transcript shows one. `PENDING` (not started yet)
+  counts as running, not as waiting for the person.
 - **The other fields:** `title`, only with snippets, is a helper's role, else the conversation's
   title in the metadata (`summary.Title` or `summary.title`), else its first request (≤120 chars),
   else its first prompt in `history.jsonl` that is not a command (`titleSource` `role`, `summary`,
-  `first-prompt` or `history`). `model` is null (see above), and `effort`, `branch` and
-  `entrypoint` are null. `startedAt` is the oldest step time seen and `lastAt` the newest, not
-  counting the steps that keep the books. `lastText` is the newest reply's words. `activity`, while
-  working, is the newest tool still running, else the first call of the newest reply that still
-  waits for its result, by its name, with a detail from its `args`: the first line of `CommandLine`,
-  a `Query` or `Pattern`, the base name of `AbsolutePath`, `TargetFile`, `DirectoryPath`,
-  `SearchDirectory` or `SearchPath`, the host of a `Url`, or a helper's role.
+  `first-prompt` or `history`). When a squeeze left the first request with no words, so that the
+  first request with words is a later one, the first prompt in `history.jsonl` comes before it.
+  `model` is null (see above), and `effort`, `branch` and `entrypoint` are null. `startedAt` is the
+  oldest step time seen and `lastAt` the newest, not counting the steps that keep the books.
+  `lastText` is the newest reply's words. `activity`, while working, is the newest tool still
+  running in the turn going now (since the newest request), else the first call of the newest reply
+  that still waits for its result, else a tool that an earlier turn left running; a running step
+  older than `staleMinutes` counts as gone. It shows the tool by its name, with a detail from its
+  `args`: the first line of `CommandLine` (or `command`), a `Query` or `Pattern` (or `query`,
+  `pattern`), the base name of `AbsolutePath`, `TargetFile`, `DirectoryPath`, `SearchDirectory`,
+  `SearchPath` or `ImageName`, the host of a `Url` (or `url`), a helper's role, or the `Recipient`
+  of a `send_message` call (the agent the message goes to; never the message).
 - **Links:** a helper's start is a **down** link on the conversation that started it (label: the
   helper's title), and its end an **up** link (label: its last reply); labels only with snippets.
 - **Detail:** the last 2 MB of the transcript, read the same way, so each step shows once: the
   requests (`user`), replies (`assistant`), one `thinking` mark for a reply that thought, each tool
   call (`tool`, by its name, with its detail), each tool's result (`result`, or `error` with its
-  words, or "Stopped"), and errors. Every answer is the whole recent list, with `reset: true`. When
-  the transcript has not changed size since `since`, the answer is `{ events: [], next: since }`.
+  words, "The tool failed." when it has none, or "Stopped"), and errors: a failed reply, and an
+  error step with no words, say "Antigravity CLI stopped with an error.", and a stopped reply
+  "Stopped". Every answer is the whole recent list, with `reset: true`. When the transcript has not
+  changed size since `since`, the answer is `{ events: [], next: since }`.
 - **Never opened:** Pleni lists `brain`, and opens only `brain/*/.system_generated/logs/transcript_full.jsonl`
   and `transcript.jsonl`, `cache/conversation_metadata.json`, `cache/last_conversations.json` and
   `history.jsonl`. So never the login (it is in the system's credential store or keychain, or a file
@@ -1623,7 +1661,8 @@ Each tool is `{ on, today, week, days, atLeast, limits, error, counted }`:
   `from` is `'files'` (Codex) or `'statusLine'` (Claude Code), `plan` is a string or `null`, and
   `windows` is `[{ minutes, usedPercent, resetsAt }]` (`minutes` and `resetsAt` may be `null`;
   `resetsAt` is in ms; `usedPercent` is 0 to 100). A window the tool did not give is left out, never
-  made up. Grok, Kimi Code, Gemini CLI and Antigravity CLI save no limits, so theirs is always `null`.
+  made up. Grok, Kimi Code and Gemini CLI save no limits, and the Antigravity CLI files that Pleni
+  reads hold none, so theirs is always `null`.
   **Claude Code's hook:** `createUsage({ claudeLimits })` takes an optional function (it may be
   async) that returns an `L` with `from: 'statusLine'`, or `null`. The server gives it
   `statusLineLimits(dir)` while `actions.limits` is on (see Plan limits for Claude Code below).
@@ -1632,7 +1671,7 @@ Each tool is `{ on, today, week, days, atLeast, limits, error, counted }`:
   the rest of the answer is reused. Each window of a `statusLine` `L` also has a `name`
   (`'five_hour' | 'seven_day' | 'spend_limit'`); `spend_limit` has `minutes: null`.
 - `error`: plain words when the tool's folder is not set or not found, else `null`.
-- `counted`: false for a tool whose files on this computer hold no token counts, so its numbers are
+- `counted`: false for a tool whose files that Pleni reads hold no token counts, so its numbers are
   always zero: only Antigravity CLI. Else true.
 
 **Which files and fields are read** (read-only; a file that cannot be read, or a bad line, is skipped):
@@ -1674,8 +1713,10 @@ Each tool is `{ on, today, week, days, atLeast, limits, error, counted }`:
   `timestamp`. As with Codex, `tokens.input` holds the cached part: `input` is `tokens.input -
   tokens.cached` (not below 0) plus `tokens.tool` (tool-use prompts), `output` is `tokens.output`
   plus `tokens.thoughts` (thinking), `cacheRead` is `tokens.cached`, and `cacheWrite` is 0.
-- **Antigravity CLI:** nothing is read. Its transcripts hold no token counts, so Pleni only checks
-  that `<antigravity root>` is a folder (`error` when it is not), and `counted` is false.
+- **Antigravity CLI:** nothing is read. Its transcripts, cache lists and `history.jsonl` hold no
+  token counts or limits (Antigravity CLI checks its own quotas, with `/usage`, in files that Pleni
+  never opens and on its server), so Pleni only checks that `<antigravity root>` is a folder (`error`
+  when it is not), and `counted` is false.
 
 **Limits on work.** Only files changed since the start of the oldest of the 7 days are read. Pleni
 remembers each file's size and where it stopped, and reads only the bytes added to a growing `.jsonl`
@@ -2144,9 +2185,11 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
     `target="_blank" rel="noopener noreferrer"`). Codex: "Codex saves its limits after each reply. None
     in the last 7 days." and a link to `https://chatgpt.com/codex/settings/usage`. Grok, Kimi Code and
     Gemini CLI: "<Tool> does not save plan limits on this computer. In <Tool>, type /usage." (`/stats`
-    for Gemini CLI). A tool with `counted: false` (Antigravity CLI): "<Tool> keeps no token counts or
-    plan limits on this computer. In <Tool>, type /usage.", and no tokens part (its `error` still
-    shows).
+    for Gemini CLI). A tool with `counted: false` (Antigravity CLI): "The <Tool> files that Pleni
+    reads hold no token counts or limits, so Pleni cannot show them here. In <Tool>, type /usage to
+    see how much of each model's limit is left.", and no tokens part (its `error` still shows). Pleni
+    says only what it found: Antigravity CLI's own `/usage` checks its quotas in files that Pleni
+    never opens and on its server.
   - **Tokens.** "Today: 1.2 million tokens" and "Last 7 days: 8.4 million tokens" (`total`; "at
     least" in front when `atLeast`, with a note that Pleni stopped reading early), each with a line
     "Sent 900k · written back 250k · saved to memory 40k · read again from memory 40 million (not
@@ -2178,7 +2221,10 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   map. Any signed-in device may change it, since it only changes the map. While it is pressed,
   Working mode also keeps the relay, and the map shows the tool tiles (not the welcome page) even
   with no sessions. A tool tile's side panel lists what hangs under it, with **See token use**
-  (`data-usage`) and a link to Settings → Sources.
+  (`data-usage`) and a link to Settings → Sources. For a tool whose tokens Pleni does not count
+  (`USAGE_UNCOUNTED` in the page, the tools with `counted: false`: Antigravity CLI), it has no See
+  token use button but "Pleni cannot count the tokens of <Tool>. In <Tool>, type /usage to see how
+  much of each model's limit is left." (the command from `USAGE_COMMANDS`).
   Dragging a session or relay tile more than 6 px onto another tile (or onto the person) posts
   `/api/placement`; valid bosses light up, Esc or a drop elsewhere cancels, and a short notice offers
   Undo. The drawer's **Reports to** menu does the same from the keyboard, with **Automatic** to undo.
@@ -2482,7 +2528,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 ## Demo (`src/demo.js`)
 
 ```js
-export function createDemoSource({ now = Date.now })  // -> { poll(): { claude, codex, mailbox }, detail(key, since) }
+export function createDemoSource({ now = Date.now })
+// -> { poll(): { claude, codex, grok, kimi, gemini, antigravity, mailbox }, mail({ keys, all }), detail(key, since) }
 ```
 
 A deterministic, time-driven cast: a person, two projects, a Codex planner (the HQ orchestrator,

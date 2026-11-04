@@ -142,8 +142,9 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   own status line keeps showing, and **Disconnect** puts it back). This works for Pro, Max and
   Ultra plans, and Claude Code needs a trusted folder. Grok, Kimi Code and Gemini CLI save no
   limits, so their cards say what to type in the tool: `/usage`, or `/stats` in Gemini CLI.
-  Antigravity CLI keeps no token counts or limits on this computer at all, so its card only says
-  to type `/usage` in Antigravity CLI.
+  The Antigravity CLI files that Pleni reads hold no token counts or limits, and Pleni never opens
+  its databases, so its card (and its tile on the map) only says to type `/usage` in Antigravity
+  CLI, which shows how much of each model's limit is left.
 - **Activity** — every hand-off, newest first.
 - **Mail** — shown when your agents use agent mail (see below). It shows every message between you
   and your agents in full, newest first, marks the new ones, and gives the command to answer each.
