@@ -200,7 +200,7 @@ if (-not $MailboxRoot) {
 # --max-budget-usd and the daily USD cap are not applied; costs are still recorded. Wake limits are independent:
 # "relay_max_wakes_per_day": 0 means unlimited coordinator wakes (MaxWakesPerDay = 0).
 $script:CostLimits = $true
-$script:GeminiTurns = 30   # gemini_max_session_turns: the turn limit of each Gemini CLI coordinator turn (0 = no limit)
+$script:GeminiTurns = 30   # gemini_max_session_turns: the turn limit the relay asks of each Gemini CLI coordinator turn (0 = no limit)
 $clFile = Join-Path ([IO.Path]::GetFullPath($MailboxRoot).TrimEnd('\')) 'bin\cost-limits.json'
 if (Test-Path -LiteralPath $clFile -PathType Leaf) {
     try {
@@ -3250,6 +3250,7 @@ function Invoke-Tick([hashtable]$State, [bool]$ReadOnly) {
                 $opts = Get-CoordinatorCodexOptions $coord   # a list, so a variable first
                 Write-Note ("DRY-RUN: would dispatch {0} item(s) to the Codex coordinator thread {1} (folder {2}). Nothing started, nothing written." -f $batch.Count, $coord.session_id, $coord.cwd)
                 Write-Host ('  command: ' + (Get-CodexExePath) + ' ' + (Get-CodexCommandLine @() (Get-CoordinatorCodexTarget $coord) $prompt $opts))
+                foreach ($k in @($script:CodexConfigBad)) { Write-Note "DRY-RUN: Codex's config.toml has a '$k' that the relay cannot pass on, so it would be left out." }
             } elseif ($coordTool -eq 'gemini') {
                 # The command the turn would run; no rules file is written (the command names the path the real turn
                 # writes), and the checks below only look.
@@ -3761,7 +3762,8 @@ function Show-CoordinatorArgs {
         $board = ''
         if ($coord.cwd) { try { $board = Join-Path ([string]$coord.cwd) 'STATUS.md' } catch { $board = '' } }   # 5.1: Join-Path throws for a drive that is not there
         $o = [ordered]@{ tool = 'codex'; codexArgs = $cliArgs.ToArray(); writableFolders = @([string]$coord.cwd, (Join-Path $Root 'tasks'));
-            network = $false; board = $board }
+            network = $false; board = $board; ownSettings = $CodexOptionWords; configKeysLeftOut = @($script:CodexConfigBad);
+            windowsSandbox = $(if ($script:CodexSandbox) { $script:CodexSandbox } else { 'not set up' }) }
         Write-Output (ConvertTo-Json -InputObject $o -Depth 4)
         return
     }
@@ -4563,13 +4565,93 @@ function Get-CoordinatorCodexFolder {
 
 # ---------- a Codex coordinator ----------
 # One coordinator turn in Codex is
-#   codex exec --json --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=false
-#     -c sandbox_workspace_write.writable_roots=[] -c mcp_servers={} --add-dir <mailbox>\tasks [-m <model>]
-#     [-c model_reasoning_effort=<effort>] resume <thread id> <notice>
+#   codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox workspace-write
+#     -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.writable_roots=[] -c web_search=disabled
+#     --add-dir <mailbox>\tasks [-m <model>] [-c model_reasoning_effort=<effort>]
+#     [-c cli_auth_credentials_store=<keyring or auto>] [-c windows.sandbox=<elevated, unelevated or mxc>] resume <thread id> <notice>
 # in the coordinator's own folder, with the ChatGPT sign-in only and never codex_exec_args (the planner's setting): the
-# turn can write only that folder and the mailbox's tasks folder, with no network and no MCP servers, whatever the
-# owner's own Codex settings say. Its status board is STATUS.md in its folder, and the relay copies it into the mailbox
-# after each turn that got the notice.
+# turn can write only that folder and the mailbox's tasks folder, with no network and no web search. --ignore-user-config and
+# --ignore-rules mean that Codex uses none of the extra folders, MCP servers (add-on tools), hooks or command rules from
+# the owner's own settings (their config.toml and their rules folder). The relay itself passes on the model, the effort
+# and the sign-in store (keyring or auto) that the owner's config.toml names, because Codex no longer reads them there.
+# Its status board is STATUS.md in its folder, and the relay copies it into the mailbox after each turn that got the
+# notice. A Codex CLI older than April 2026 does not know the two flags: the relay then halts with a plain message.
+
+$CodexTooOldWords = 'This Codex CLI is too old for the relay. Update it (npm install -g @openai/codex) to a version from April 2026 or newer.'
+$CodexTooOldPattern = "unexpected argument\W+--ignore-(user-config|rules)\b"   # clap's words on standard error, exit code 2
+$CodexOptionWords = ('Codex starts with --ignore-user-config and --ignore-rules, so it uses none of the extra folders, MCP servers (add-on tools), ' +
+    'hooks (commands Codex runs by itself at set moments) or command rules (your list of commands Codex may run without asking) from your own Codex settings. ' +
+    'Its web search is off. It keeps your model, effort, Windows sandbox and sign-in store (where Codex keeps your sign-in: keyring means Windows Credential Manager, auto means keyring when it works).')
+$script:CodexConfigBad = @()      # the config.toml keys that the last Get-CodexOwnerConfig left out (never their values)
+$script:CodexConfigWarned = @{}   # the keys already warned about in this relay process
+$script:CodexSandbox = '-'        # the Windows sandbox that the last Get-CoordinatorCodexOptions passed on ('' = none set up; '-' = not read yet)
+
+function Get-CodexOwnerConfig {
+    # The only settings that the relay still takes from <CODEX_HOME>\config.toml, now that Codex runs with
+    # --ignore-user-config: model, model_reasoning_effort and cli_auth_credentials_store, read from the top-level keys
+    # (above the first [table]), and the Windows sandbox (sandbox in [windows], else the older flags in [features]).
+    # Nothing else in the file is read. Each value is checked; one that fails is left out and its key is named in bad
+    # (a key only, never a value). store is only keyring or auto: file is Codex's default. sandbox is only elevated,
+    # unelevated or mxc, or '' when the owner never set one up.
+    $r = @{ model = ''; effort = ''; store = ''; sandbox = ''; bad = @() }
+    $raw = @{}
+    $win = @{}   # the Windows sandbox settings: [windows] sandbox, and the older [features] flags
+    try {
+        $f = [IO.Path]::Combine($CodexHomeDir, 'config.toml')   # not Join-Path: it throws for a drive that is not there
+        if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $r }
+        $table = ''   # '' above the first [table], else the table's name
+        foreach ($line in @(Get-Content -LiteralPath $f -TotalCount 5000 -ErrorAction Stop)) {
+            if ($line -match '^\s*\[') {   # a table line: only a plain name ([windows], [features]) is kept; any other table is 'other'
+                if ($line -match '^\s*\[\s*([A-Za-z0-9_-]+)\s*\]') { $table = $Matches[1] } else { $table = 'other' }
+                continue
+            }
+            if ($table -eq '') {
+                if ($line -cmatch '^\s*(model|model_reasoning_effort|cli_auth_credentials_store)\s*=\s*["'']([^"'']*)["'']') {
+                    if (-not $raw.ContainsKey($Matches[1])) { $raw[$Matches[1]] = $Matches[2] }
+                }
+            } elseif ($table -ceq 'windows') {
+                if ($line -cmatch '^\s*sandbox\s*=\s*["'']([^"'']*)["'']') { if (-not $win.ContainsKey('sandbox')) { $win['sandbox'] = $Matches[1] } }
+            } elseif ($table -ceq 'features') {
+                if ($line -cmatch '^\s*(elevated_windows_sandbox|experimental_windows_sandbox|enable_experimental_windows_sandbox)\s*=\s*(true|false)\b') {
+                    if (-not $win.ContainsKey($Matches[1])) { $win[$Matches[1]] = ($Matches[2] -ceq 'true') }
+                }
+            }
+        }
+    } catch { return $r }
+    $m = [string]$raw['model']
+    if ($m) {
+        $why = Get-ToolModelError $m 'codex'
+        if ($why) { $r.bad = @($r.bad) + 'model' } else { $r.model = $m }
+    }
+    $e = ([string]$raw['model_reasoning_effort']).ToLowerInvariant()
+    if ($e) {
+        if (@('low', 'medium', 'high', 'xhigh') -contains $e) { $r.effort = $e } else { $r.bad = @($r.bad) + 'model_reasoning_effort' }
+    }
+    $s = [string]$raw['cli_auth_credentials_store']
+    if ($s -ceq 'keyring' -or $s -ceq 'auto') { $r.store = $s }
+    elseif ($s -and $s -cne 'file') { $r.bad = @($r.bad) + 'cli_auth_credentials_store' }
+    # The Windows sandbox: Codex takes it only from config.toml, and --ignore-user-config drops it, so without it every
+    # command that Codex's rules do not allow is refused. [windows] sandbox wins; else the older flags, as Codex reads them.
+    $w = [string]$win['sandbox']
+    if ($w) {
+        if (@('elevated', 'unelevated', 'mxc') -ccontains $w) { $r.sandbox = $w } else { $r.bad = @($r.bad) + 'windows.sandbox' }
+    } elseif ($win['elevated_windows_sandbox'] -eq $true) { $r.sandbox = 'elevated' }
+    elseif ($win['experimental_windows_sandbox'] -eq $true -or $win['enable_experimental_windows_sandbox'] -eq $true) { $r.sandbox = 'unelevated' }
+    return $r
+}
+
+function Write-CodexConfigWarnings {
+    # One plain line in the log for each config.toml key that was left out, once for each key in this relay process.
+    foreach ($k in @($script:CodexConfigBad)) {
+        if ($script:CodexConfigWarned.ContainsKey($k)) { continue }
+        $script:CodexConfigWarned[$k] = $true
+        Write-Log "Codex's config.toml has a '$k' that the relay cannot pass on, so it is left out of the coordinator's turns. Codex uses its own default for it."
+    }
+    if ($script:CodexSandbox -eq '' -and -not $script:CodexConfigWarned.ContainsKey('windows-sandbox-none')) {
+        $script:CodexConfigWarned['windows-sandbox-none'] = $true
+        Write-Log "Codex's Windows sandbox is not set up (no [windows] sandbox in its config.toml). Codex may then refuse the coordinator's commands and file edits. Set it up in Codex first (its setup writes it), then the relay passes it on."
+    }
+}
 
 function Get-CoordinatorCodexTarget([hashtable]$Coord) {
     # The shape that Start-CodexProcess, Get-CodexArguments and Get-CodexRolloutPath read.
@@ -4578,15 +4660,30 @@ function Get-CoordinatorCodexTarget([hashtable]$Coord) {
 
 function Get-CoordinatorCodexOptions([hashtable]$Coord) {
     # The relay's own fixed options for a coordinator turn (design D4). Never codex_exec_args, never HQ's project folders.
-    # Codex lays each -c value over the owner's own config.toml one key at a time, and adds each --add-dir folder to that
-    # file's writable_roots list. So two more options empty what that file could add: its writable_roots (then only the
-    # turn's own folder and tasks can be written) and its MCP servers (they run outside the sandbox; a Claude Code
-    # coordinator's turn has none either).
+    # --ignore-user-config: Codex does not load <CODEX_HOME>\config.toml (the sign-in still uses CODEX_HOME), so none of
+    # its extra writable folders, MCP servers (add-on tools, which run outside the sandbox) or hooks apply.
+    # --ignore-rules: Codex does not load the owner's command rules, which can let a command run outside the sandbox.
+    # web_search=disabled: Codex's own web search is on by default (cached), and it stays off here, as a Claude Code
+    # or Gemini CLI coordinator has no web tools either. Codex's system settings still load, so the -c values below still hold. Codex no longer reads the model, the
+    # effort and the sign-in store from config.toml, so the relay passes them: the coordinator's own model and effort
+    # first, else the config.toml ones (checked by Get-CodexOwnerConfig), and the store only when it is keyring or auto.
+    # The Windows sandbox the owner set up (windows.sandbox) goes on too: without it, Codex has no sandbox on Windows.
+    $cfg = Get-CodexOwnerConfig
+    $script:CodexConfigBad = @($cfg.bad)
     $o = New-Object System.Collections.Generic.List[string]
-    foreach ($x in @('--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]',
-            '-c', 'mcp_servers={}', '--add-dir', (Join-Path $Root 'tasks'))) { $o.Add([string]$x) }
-    if ($Coord.model) { $o.Add('-m'); $o.Add([string]$Coord.model) }
-    if ($Coord.effort) { $o.Add('-c'); $o.Add('model_reasoning_effort=' + ([string]$Coord.effort).ToLowerInvariant()) }
+    foreach ($x in @('--ignore-user-config', '--ignore-rules', '--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=false',
+            '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'web_search=disabled', '--add-dir', (Join-Path $Root 'tasks'))) { $o.Add([string]$x) }
+    $model = [string]$Coord.model
+    if (-not $model) { $model = [string]$cfg.model }
+    if ($model) { $o.Add('-m'); $o.Add($model) }
+    $effort = ([string]$Coord.effort).ToLowerInvariant()
+    if (-not $effort) { $effort = [string]$cfg.effort }
+    if ($effort) { $o.Add('-c'); $o.Add('model_reasoning_effort=' + $effort) }
+    if ($cfg.store) { $o.Add('-c'); $o.Add('cli_auth_credentials_store=' + [string]$cfg.store) }
+    # Codex picks its Windows sandbox only from config.toml, which --ignore-user-config drops: without this, Codex on
+    # Windows refuses every command that no rule allows, and every file edit.
+    $script:CodexSandbox = [string]$cfg.sandbox
+    if ($cfg.sandbox) { $o.Add('-c'); $o.Add('windows.sandbox=' + [string]$cfg.sandbox) }
     return , $o
 }
 
@@ -4830,7 +4927,7 @@ function Invoke-EnrollCodexCoordinator {
         follow_name = [string]$ThreadName; started_ms = (Get-CodexStarted $found.path);
         verified = 'live Codex thread file found; its folder is a folder of its own; the thread has no other job';
         model = [string]$Model; effort = $effortWord; allowed_checks = @(); board = (Join-Path $cwd 'STATUS.md');
-        resume_rule = 'codex exec --json --skip-git-repo-check --sandbox workspace-write -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.writable_roots=[] -c mcp_servers={} --add-dir <mailbox>\tasks [-m <model>] [-c model_reasoning_effort=<effort>] resume <thread id> <notice>; in the coordinator folder; ChatGPT sign-in only; never codex_exec_args' }
+        resume_rule = 'codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules --sandbox workspace-write -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.writable_roots=[] -c web_search=disabled --add-dir <mailbox>\tasks [-m <model>] [-c model_reasoning_effort=<effort>] [-c cli_auth_credentials_store=<keyring or auto>] [-c windows.sandbox=<elevated, unelevated or mxc>] resume <thread id> <notice>; in the coordinator folder; ChatGPT sign-in only; never codex_exec_args; Codex then uses none of the extra folders, MCP servers (add-on tools), hooks (commands Codex runs by itself at set moments) or command rules (your list of commands Codex may run without asking) from your own settings, has no web search, and keeps your model, effort, sign-in store (where Codex keeps your sign-in) and Windows sandbox' }
     $kept = Backup-RelayFile $CoordFile   # a copy of the old record first, whatever changes
     Save-Json $CoordFile $coord
     Initialize-CoordinatorBoard $coord
@@ -4839,6 +4936,7 @@ function Invoke-EnrollCodexCoordinator {
     Update-StartRequests $state $true $coord   # start files that are there now count as known: never run
     Save-State $state
     Write-Log ("Enrolled Codex thread $tid as the coordinator (folder $cwd). Each turn runs in Codex's workspace-write sandbox with no network and can write only $cwd and $Root\tasks. " +
+        "$CodexOptionWords " +
         "After each turn the relay copies $cwd\STATUS.md into the mailbox. Model: $(if ($Model) { $Model } else { 'Codex default' }); effort: $(if ($effortWord) { $effortWord } else { 'Codex default' }).")
     if ($ThreadName) { Write-Log "It follows the name '$ThreadName': when a newer Codex thread takes that name, the relay wakes it instead, between turns." }
     if ($held) { Write-Log 'Another Codex program has this thread open right now (most likely the Codex app). The relay wakes it only after that program lets go of it.' }
@@ -4859,7 +4957,9 @@ function Invoke-EnrollCodexCoordinator {
 # right before the start. It denies every tool that no rule allows: the turn may read, write only <mailbox>\STATUS.md
 # and Markdown files under <mailbox>\tasks, and run only read-only Git commands and the checks the owner enrolled. The
 # turn limit (gemini_max_session_turns) goes in a defaults file that GEMINI_CLI_SYSTEM_DEFAULTS_PATH names, for the
-# Gemini CLI process only. Gemini CLI uses the owner's own Gemini login: GEMINI_API_KEY passes through untouched (the
+# Gemini CLI process only. It is a limit the relay asks for: Gemini CLI 0.66 skips that file when people other than an
+# administrator can change it, as they can in a mailbox, and says so. Then the turn's record, the log and -Status say
+# so too. Gemini CLI uses the owner's own Gemini login: GEMINI_API_KEY passes through untouched (the
 # relay never reads it), and each turn may cost money. Paths that may sit on a drive that is not there (the Gemini
 # home, the coordinator's folder, the projects folder) are joined with [IO.Path]::Combine or plain text, never with a
 # bare Join-Path: in Windows PowerShell 5.1 Join-Path throws for such a drive.
@@ -5301,7 +5401,7 @@ function Get-GeminiExitWords($Code, [string]$Said) {
         '42'  { "Gemini CLI found no session with that id in the coordinator's folder, or the input was not valid (exit 42)" }
         '44'  { 'Gemini CLI could not start its sandbox (exit 44)' }
         '52'  { 'Gemini CLI found a problem in its settings (exit 52)' }
-        '53'  { 'the turn hit its turn limit (gemini_max_session_turns in bin\cost-limits.json), so Gemini CLI stopped it (exit 53)' }
+        '53'  { 'the turn hit its turn limit (gemini_max_session_turns in bin\cost-limits.json, or model.maxSessionTurns in your own Gemini settings), so Gemini CLI stopped it (exit 53)' }
         '54'  { 'a tool failed in the turn (exit 54)' }
         '55'  { 'Gemini CLI does not trust the folder (exit 55)' }
         '130' { 'the turn was stopped (exit 130)' }
@@ -5310,6 +5410,20 @@ function Get-GeminiExitWords($Code, [string]$Said) {
     }
     if ($Said) { $w = $w + ': ' + (Get-Short $Said 200) }
     return $w
+}
+
+function Get-GeminiOwnLimitWords {
+    # Where the owner can set a turn limit that Gemini CLI always reads: model.maxSessionTurns in their own settings.
+    if ($GeminiDataDir) { return "model.maxSessionTurns in your own Gemini settings ($GeminiDataDir\settings.json)" }
+    return 'model.maxSessionTurns in your own Gemini settings'
+}
+
+function Get-GeminiTurnLimitWords {
+    # The turn limit of a Gemini CLI coordinator turn, in plain words with no closing period. It is a limit the relay
+    # asks for: Gemini CLI 0.66 skips the relay's defaults file when people other than an administrator can change it.
+    if ([int]$script:GeminiTurns -eq 0) { return 'none (gemini_max_session_turns is 0 in bin\cost-limits.json, so the relay asks Gemini CLI for no limit)' }
+    return ("$([int]$script:GeminiTurns) turns, asked of Gemini CLI (gemini_max_session_turns in bin\cost-limits.json). Gemini CLI 0.66 skips that limit " +
+        "when people other than an administrator can change the file, as in a mailbox folder. To be sure of a limit, also set $(Get-GeminiOwnLimitWords)")
 }
 
 function Invoke-EnrollGeminiCoordinator {
@@ -5365,13 +5479,12 @@ function Invoke-EnrollGeminiCoordinator {
     $kept = Backup-RelayFile $CoordFile   # a copy of the old record first, whatever changes
     Save-Json $CoordFile $coord
     $state = Get-State
-    foreach ($flag in @('last_block', 'follow_coordinator_miss', 'follow_coordinator_refused')) { [void]$state.flags.Remove($flag) }
+    # gemini-turn-limit-skipped too: after a new enrollment, the alert that Gemini CLI skipped the turn limit comes again.
+    foreach ($flag in @('last_block', 'follow_coordinator_miss', 'follow_coordinator_refused', 'gemini-turn-limit-skipped')) { [void]$state.flags.Remove($flag) }
     Update-StartRequests $state $true $coord   # start files that are there now count as known: never run
     Save-State $state
-    $limitWord = 'none'
-    if ([int]$script:GeminiTurns -ne 0) { $limitWord = [string]$script:GeminiTurns }
     Write-Log ("Enrolled Gemini CLI session $sid as the coordinator (folder $cwd). Each turn runs with the relay's rules file: it may read, write only $Root\STATUS.md and Markdown files under $Root\tasks, and run read-only Git commands and the allowed checks. " +
-        "Turn limit: $limitWord (gemini_max_session_turns in bin\cost-limits.json). Model: $(if ($Model) { $Model } else { 'Gemini CLI default' }). Gemini CLI uses your own Gemini login, and each turn costs money.")
+        "Turn limit: $(Get-GeminiTurnLimitWords). Model: $(if ($Model) { $Model } else { 'Gemini CLI default' }). Gemini CLI uses your own Gemini login, and each turn costs money.")
     Write-Log ('Allowed checks: ' + $(if ($CheckList.Count) { ($CheckList | ForEach-Object { "'" + $_ + "'" }) -join ', ' } else { 'none' }) + '. To change them, enroll again.')
     if ($cwdWarning) { Write-Log $cwdWarning }
     if (-not (Test-Path -LiteralPath ($cwd + '\GEMINI.md') -PathType Leaf)) { Write-Log "WARNING: $cwd\GEMINI.md is not there. Copy relay\COORDINATOR.md there as GEMINI.md, so the coordinator reads its standing orders." }
@@ -5418,6 +5531,7 @@ function Start-ToolDispatch([hashtable]$State, [hashtable]$Coord, [object[]]$Pen
         $target = Get-CoordinatorCodexTarget $Coord
         $options = Get-CoordinatorCodexOptions $Coord   # a list, so a variable first: @(<function>) would keep it as one item
         $optList = $options.ToArray()
+        Write-CodexConfigWarnings
         $billing = 'chatgpt-sign-in'
     }
     $State.seq = [int64]$State.seq + 1
@@ -5474,11 +5588,12 @@ function Start-ToolDispatch([hashtable]$State, [hashtable]$Coord, [object[]]$Pen
     Save-State $State
     $what = (($batch | ForEach-Object { $_.detail }) -join '; ')
     if ($coordTool -eq 'codex') {
-        Write-Log ('Dispatched {0} to the Codex coordinator thread {1} (pid {2}; {3} item(s); workspace-write sandbox, no network): {4}' -f $id, $Coord.session_id, $proc.Id, $batch.Count, $what)
+        Write-Log ('Dispatched {0} to the Codex coordinator thread {1} (pid {2}; {3} item(s); workspace-write sandbox, no network, none of your own Codex settings or command rules): {4}' -f $id, $Coord.session_id, $proc.Id, $batch.Count, $what)
     } else {
-        $limitWord = 'none'
-        if ([int]$d.turn_limit -gt 0) { $limitWord = [string]$d.turn_limit }
-        Write-Log ('Dispatched {0} to the Gemini CLI coordinator session {1} (pid {2}; {3} item(s); the relay''s rules file; turn limit {4}): {5}' -f $id, $Coord.session_id, $proc.Id, $batch.Count, $limitWord, $what)
+        # A limit the relay asks for: Gemini CLI may skip it (Complete-ToolDispatch says so when it did).
+        $limitWord = 'no turn limit asked'
+        if ([int]$d.turn_limit -gt 0) { $limitWord = 'turn limit ' + [string]$d.turn_limit + ' asked, which Gemini CLI may skip' }
+        Write-Log ('Dispatched {0} to the Gemini CLI coordinator session {1} (pid {2}; {3} item(s); the relay''s rules file; {4}): {5}' -f $id, $Coord.session_id, $proc.Id, $batch.Count, $limitWord, $what)
     }
 }
 
@@ -5559,7 +5674,9 @@ function Complete-ToolDispatch([hashtable]$State, [hashtable]$D) {
         $ev = Read-GeminiEvents $D.out
         $D.result_session = [string]$ev.session
         $other = [string]$ev.session
-        # A success result with an error on the way (Gemini CLI's own turn limit, say) is a turn that ended with an error.
+        # A success result counts only when no error event came before it. Gemini CLI's own session-turn cap sends an
+        # error event, then a success result, and exits 0 without asking the model: with the marker in the session that
+        # is a turn that ended with an error, as exit 53 is; without it, the notice did not reach the session.
         $good = ($ev.status -eq 'success' -and -not $ev.error)
         $bad = [bool]($ev.error -or $ev.status -eq 'error' -or ($null -ne $exit -and @(53, 54) -contains [int]$exit))
         $badText = Get-GeminiExitWords $exit ([string]$ev.error)
@@ -5571,15 +5688,23 @@ function Complete-ToolDispatch([hashtable]$State, [hashtable]$D) {
         $mismatchOutcome = "SESSION MISMATCH: Gemini CLI used session $other, enrolled is $enrolled"
         $mismatchHalt = "session mismatch on $($D.id): Gemini CLI reported session $other instead of the enrolled $enrolled"
         $mismatchAlert = "Relay halted: coordinator turn $($D.id) ran in Gemini CLI session $other, not the enrolled $enrolled. Check the enrollment (-Enroll -Tool gemini), then run -ClearHalt."
-        # Gemini CLI skips a defaults file that people other than an administrator can change, so the relay's turn
-        # limit may not count: say so once.
+        # Gemini CLI skips a defaults file that people other than an administrator can change (as they can in a
+        # mailbox), so the relay's turn limit may not count. The turn's record and the log say so each time (-Status
+        # reads the record), and the alert comes once for each enrollment.
         $allText = $errRaw
         try { if ($D.out -and (Test-Path -LiteralPath $D.out)) { $allText += "`n" + (Read-SharedText $D.out) } } catch { }
         if ($allText -match 'Skipping system defaults') {
             $D.turn_limit = 'skipped by Gemini CLI'
+            Write-Log "Gemini CLI skipped the relay's turn limit in coordinator turn $($D.id), so that turn had no limit from the relay."
             Add-Alert $State 'gemini-turn-limit-skipped' ('Gemini CLI did not use the relay''s turn limit for the coordinator: it skips a defaults file that people other than an administrator can change. ' +
-                'To be sure of a turn limit, also set model.maxSessionTurns in your own Gemini settings.')
+                "To be sure of a turn limit, also set $(Get-GeminiOwnLimitWords).")
         }
+    }
+    if ($dispatchTool -eq 'codex' -and -not $marker -and $errRaw -match $CodexTooOldPattern) {
+        # An older Codex CLI does not know --ignore-user-config or --ignore-rules and stops at once (exit code 2). Trying
+        # again cannot help, so the relay halts, and the notices stay pending.
+        Set-DispatchHalted $State $D $CodexTooOldWords.TrimEnd('.')
+        return
     }
     $summaryText = [string]$ev.message
     if ($summaryText) { $D.summary = Get-Short $summaryText 300 }
@@ -5649,15 +5774,20 @@ function Show-ToolCoordinatorStatus([hashtable]$State, [hashtable]$Coord) {
             Write-Host "Coordinator follows the Codex thread name '$($Coord.follow_name)': the newest live thread with that name is woken$sw"
         }
         Write-Host ("Coordinator turns: Codex's workspace-write sandbox, with no network; a turn can write only $($Coord.cwd) and $Root\tasks. " +
+            "$CodexOptionWords " +
             "The relay copies $($Coord.cwd)\STATUS.md into the mailbox after each turn. Each turn counts toward the daily wake limit; Codex reports no cost.")
     } elseif ($coordTool -eq 'gemini') {
         $files = Get-GeminiSessionFiles $Coord   # a variable first
         Write-Host "Coordinator: ENROLLED Gemini CLI session $($Coord.session_id) (folder $($Coord.cwd); enrolled $($Coord.enrolled); session file found: $([bool]($files.Count -gt 0)))"
-        $limitWord = 'none'
-        if ([int]$script:GeminiTurns -ne 0) { $limitWord = [string]$script:GeminiTurns }
         Write-Host ("Coordinator turns: the relay's rules file, written before each turn: a turn may read, write only $Root\STATUS.md and Markdown files under $Root\tasks, " +
-            "and run read-only Git commands and the allowed checks. Turn limit $limitWord (gemini_max_session_turns in bin\cost-limits.json). " +
-            'Your own Gemini login, and each turn costs money. Each turn counts toward the daily wake limit.')
+            'and run read-only Git commands and the allowed checks. Your own Gemini login, and each turn costs money. Each turn counts toward the daily wake limit.')
+        Write-Host ('Coordinator turn limit: ' + (Get-GeminiTurnLimitWords) + '.')
+        # The last Gemini CLI turn that started says whether Gemini CLI skipped the limit (Complete-ToolDispatch).
+        $lastRun = @($State.dispatches.Values | Where-Object { ($_ -is [hashtable]) -and ((Get-DispatchTool $_) -eq 'gemini') -and ([int]$_.pid -gt 0) -and
+                ($_.state -ne 'running') -and ($_.state -ne 'launching') } | Sort-Object { [int64]$_.seq } -Descending | Select-Object -First 1)
+        if ([int]$script:GeminiTurns -ne 0 -and $lastRun.Count -and [string]$lastRun[0].turn_limit -eq 'skipped by Gemini CLI') {
+            Write-Host "Coordinator turn limit SKIPPED: Gemini CLI skipped it in the last turn ($($lastRun[0].id)), so that turn had no limit from the relay."
+        }
         $checksNow = @(Get-GeminiAllowedChecks $Coord)
         Write-Host ('Coordinator allowed checks: ' + $(if ($checksNow.Count) { ($checksNow | ForEach-Object { "'" + $_ + "'" }) -join ', ' } else { 'none' }))
         $exe = Get-GeminiExePath

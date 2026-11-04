@@ -19,6 +19,12 @@
 //   exit:53|54          the notice goes into the session file, then init, an error event and that exit code
 //   die-after-session   the notice goes into the session file, then the process dies with no events (exit 3)
 //   wrong-session       like ok, but init reports another session id
+//   skip-defaults       like ok, after Gemini CLI's warning (on stderr) that it skipped the defaults file, as Gemini CLI
+//                       0.66 does when people other than an administrator can change that file
+//   cap                 Gemini CLI's own session-turn cap: the notice goes into the session file, then init, an error
+//                       event, a success result, and exit 0
+//   cap-first           the same cap before Gemini CLI asked the model: init, the error event, a success result, and
+//                       exit 0, and the notice never reaches the session file
 // It records each call in <RELAY_STUB_DIR>\gemini-calls.jsonl: the arguments, the stdin text, the working folder,
 // whether GEMINI_API_KEY is set (true or false only, never the value), the text of the --admin-policy file and the text
 // of the file that GEMINI_CLI_SYSTEM_DEFAULTS_PATH names.
@@ -131,14 +137,23 @@ function runResume() {
     defaults_path: defaultsPath, defaults: readOrNull(defaultsPath), gemini_cli_home: process.env.GEMINI_CLI_HOME || ''
   });
   if (running) fs.writeFileSync(running, String(start));
+  if (mode === 'skip-defaults') {
+    process.stderr.write(`[WARNING] Security Warning: Skipping system defaults file '${defaultsPath}': Parent directory '${path.dirname(defaultsPath)}' is insecure: people other than an administrator can change it.\n`);
+  }
   const before = { 41: early[41], 42: early[42], 52: 'Error in settings.json: a setting is not valid', 55: early[55] };
   if (exitMatch && before[exitMatch[1]]) return finish(Number(exitMatch[1]), 'exit-' + exitMatch[1], before[exitMatch[1]]);
   if (!found) return finish(42, 'no-session', `Error resuming session: Invalid session identifier "${resumeId}".`);
   const text = input ? `${input}\n\n${words}` : words;
+  if (mode === 'cap-first') {
+    event({ type: 'init', session_id: resumeId, model: 'gemini-stub' });
+    event({ type: 'message', role: 'user', content: text });
+    return cap();
+  }
   fs.appendFileSync(found, JSON.stringify({ id: randomUUID(), timestamp: new Date().toISOString(), type: 'user', content: [{ text }] }) + '\n');
   if (mode === 'die-after-session') return finish(3, 'died', 'simulated crash after the notice reached the session');
   event({ type: 'init', session_id: mode === 'wrong-session' ? '99999999-9999-4999-8999-999999999999' : resumeId, model: 'gemini-stub' });
   event({ type: 'message', role: 'user', content: text });
+  if (mode === 'cap') return cap();
   if (exitMatch) {
     event({ type: 'error', severity: 'error', message: exitMatch[1] === '53' ? 'Maximum session turns exceeded' : 'A tool failed' });
     return finish(Number(exitMatch[1]), 'exit-' + exitMatch[1], 'simulated error after the notice reached the session');
@@ -150,4 +165,11 @@ function runResume() {
   event({ type: 'message', role: 'assistant', content: reply, delta: true });
   event({ type: 'result', status: 'success', stats: { total_tokens: 3, input_tokens: 2, output_tokens: 1, cached: 0 } });
   return finish(0, 'ok', null);
+}
+
+// Gemini CLI's own session-turn cap (its core client): an error event, then a success result, and exit 0.
+function cap() {
+  event({ type: 'error', severity: 'error', message: 'Maximum session turns exceeded' });
+  event({ type: 'result', status: 'success', stats: { total_tokens: 0, input_tokens: 0, output_tokens: 0, cached: 0 } });
+  return finish(0, 'cap', null);
 }

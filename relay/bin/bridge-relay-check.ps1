@@ -27,8 +27,9 @@
   as the mailbox): a Claude worker through claude_exe gets the same arguments, session id and budget as before -Tool,
   and a tool that worker_tools does not list is refused; Codex and Gemini workers with tests\stub-codex.js and
   tests\stub-gemini.js (their commands, prompts on stdin and ids, OPENAI_API_KEY removed, GEMINI_API_KEY passed
-  through and never written down, the Gemini policy, exits 41 and 55, and refusals for the daily limit, a
-  .gemini\settings.json in the worktree, Gemini system policies and a changed policy file). 25 Antigravity CLI
+  through and never written down, a Codex worker that starts without the owner's config.toml and command rules and
+  gets their model, effort and sign-in store from the launcher, a Codex CLI that is too old, the Gemini policy, exits
+  41 and 55, and refusals for the daily limit, a .gemini\settings.json in the worktree, Gemini system policies and a changed policy file). 25 Antigravity CLI
   workers with tests\stub-agy.js: off until worker_tools lists them; the command, the prompt as one stream-json line
   on stdin, and the conversation id saved while the run goes; the tokens; the warning in the log; the launcher's
   commit of a change with no Git hooks, none without one and none after a changed .git; a reviewer in the workers
@@ -47,7 +48,8 @@
   tests\stub-codex.js): refusals in plain words (another tool's word, the planner's thread, the mailbox folder, max
   effort, -AllowCheck, a session's options), enrolled by name with a copy of the old coordinator.json, its thread
   refused as the planner and as an agent, a dry run, a turn with only the relay's own sandbox options in its own folder
-  (never codex_exec_args), its STATUS.md copied into the mailbox, waits while another program holds the thread or a
+  (never codex_exec_args; without the owner's config.toml and command rules, and the relay halts for a Codex CLI that is
+  too old), its STATUS.md copied into the mailbox, waits while another program holds the thread or a
   window has it open, a planted bin file halts the relay after the turn, a turn in another thread halts it, a .codex
   folder or an AGENTS.override.md halts it before the turn, a rollover to a newer thread with the name (the new folder's
   old board kept in .relay\backups), none to one that is already an agent, a tool the relay does not know, -Status and
@@ -58,10 +60,12 @@
   with a copy of the old coordinator.json, its rules file (-ShowCoordinatorArgs), the quiet window, a dry run that
   writes nothing, a turn with the notice only on stdin, in the session's own folder, with the turn limit and
   GEMINI_API_KEY passed through, -Status, a window that has the session open, the turn limit reached (delivered with an
-  error), halts before the turn for a .gemini folder, a system policy, a changed rules file and a .env file, and no key
-  written anywhere. 30 a Gemini CLI coordinator's failures: not signed in backs off and halts after three in a row, no
-  session with that id, a turn in another session halts, a crash after the notice (outcome unknown), and a turn that
-  outlives its relay (settled from its events, never two at once).
+  error), Gemini CLI's warning that it skipped the turn limit file (in the turn's record, one alert and -Status), halts
+  before the turn for a .gemini folder, a system policy, a changed rules file and a .env file, and no key written
+  anywhere. 30 a Gemini CLI coordinator's failures: not signed in backs off and halts after three in a row, no session
+  with that id, Gemini CLI's own turn cap (an error event, then a success result) before the notice reached the
+  session (not delivered) and after it (delivered with an error), a turn in another session halts, a crash after the
+  notice (outcome unknown), and a turn that outlives its relay (settled from its events, never two at once).
   It runs only the bridge-relay.ps1, agent-mail.ps1 and spawn-worker.ps1 beside it, ..\tests\stub-claude.js,
   ..\tests\stub-codex.js, ..\tests\stub-gemini.js and ..\tests\stub-agy.js; other -RelayScript/-StubCli values are
   refused.
@@ -1742,9 +1746,9 @@ try {
             $s = Get-RunJson $fx 'W1'
             if ($w.Count -ge 1 -and $s) {
                 $c = $w[0]
-                $why = Compare-ArgList @($c.args) @('exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write',
-                    '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'mcp_servers={}',
-                    '--add-dir', $fx.workers, '-c', 'model_reasoning_effort=xhigh', '-')
+                $why = Compare-ArgList @($c.args) @('exec', '--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--sandbox', 'workspace-write',
+                    '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'web_search=disabled',
+                    '--add-dir', $fx.workers, '-m', 'gpt-stub-default', '-c', 'model_reasoning_effort=xhigh', '-')
                 Check (-not $why) "the Codex command is not the one asked for: $why"
                 Check ([string]$c.stdin -match [regex]::Escape((Join-Path $fx.workers 'W1-brief.md')) -and [string]$c.stdin -match 'W1-report\.md') 'the prompt on stdin does not name the brief and the report'
                 Check ([string]$c.stdin -match 'Do not run git add or git commit') 'the Codex worker prompt does not say the launcher commits'
@@ -1774,8 +1778,8 @@ try {
             $w = @(Get-CodexWorkerCalls $fx)
             Check ($w.Count -eq 2) "expected 2 Codex worker runs, got $($w.Count)"
             if ($w.Count -ge 2) {
-                $why = Compare-ArgList @($w[1].args) @('exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write',
-                    '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'mcp_servers={}',
+                $why = Compare-ArgList @($w[1].args) @('exec', '--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--sandbox', 'workspace-write',
+                    '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'web_search=disabled',
                     '-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort=high', '-')
                 Check (-not $why) "the Codex reviewer's command is not the one asked for: $why"
                 Check ([string]$w[1].cwd -like '*\workers') "the Codex reviewer ran in '$($w[1].cwd)', not in the workers folder"
@@ -1807,6 +1811,77 @@ try {
             Check ($s9 -and $s9.state -eq 'finished' -and $s9.commit -and $tip.StartsWith([string]$s9.commit)) "the launcher did not commit the Codex worker's change (run.json commit '$($s9.commit)', head '$tip')"
             Check ($tip -match 'W9: changes from the Codex worker run') "the launcher's commit has the wrong message: $tip"
             Check ((Read-Shared (Join-Path $fx.workers 'W9.log')) -match "Committed the Codex worker's changes as") 'W9.log does not say the launcher committed the changes'
+
+            # The launcher starts Codex without config.toml and the command rules, so it passes on the three settings it
+            # keeps: model, effort and sign-in store. Room for five more runs here (the limit was 3).
+            Write-Text (Join-Path $fx.mb 'bin\cost-limits.json') '{"worker_runs_per_day":{"codex":8,"gemini":0}}'
+            $cfgFile = Join-Path $fx.codex 'config.toml'
+            $cfgOriginal = Read-Shared $cfgFile
+            $cfgStart = @('exec', '--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--sandbox', 'workspace-write',
+                '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'web_search=disabled', '--add-dir', $fx.workers)
+            # A config.toml with an effort, a sign-in store and an MCP server table (synthetic): no -Effort, so the effort
+            # and the store come through; the MCP server table is not in any argument.
+            Write-Text $cfgFile ("model = `"gpt-stub-default`"`r`nmodel_reasoning_effort = `"medium`"`r`ncli_auth_credentials_store = `"keyring`"`r`n`r`n" +
+                "[mcp_servers.x]`r`ncommand = `"stub-mcp-server`"`r`nargs = [`"--flag`"]`r`n`r`n[windows]`r`nsandbox = `"elevated`"`r`n")
+            Write-Brief $fx 'W12' 'implementation' 'codex'
+            $r = Invoke-Spawn $fx @('-Worker', 'W12', '-Tool', 'codex', '-Foreground')
+            Check ($r.code -eq 0 -and (Read-Shared (Join-Path $fx.workers 'W12.log')) -match "launcher: effort medium \(Codex's default, from its config.toml\)") "W12.log does not say that the effort came from config.toml: $(Get-Tail $r.out)"
+            $w = @(Get-CodexWorkerCalls $fx)
+            Check ($w.Count -eq 4) "expected 4 Codex worker runs, got $($w.Count)"
+            if ($w.Count -ge 4) {
+                $why = Compare-ArgList @($w[3].args) ($cfgStart + @('-m', 'gpt-stub-default', '-c', 'model_reasoning_effort=medium', '-c', 'cli_auth_credentials_store=keyring', '-c', 'windows.sandbox=elevated', '-'))
+                Check (-not $why) "the Codex command does not carry the effort, the sign-in store and the Windows sandbox from config.toml: $why"
+                Check (-not ((@($w[3].args) -join ' ') -match 'mcp_servers|stub-mcp-server|--flag')) 'an MCP server from config.toml reached the Codex command'
+            }
+            Check ((Get-RunJson $fx 'W12').effort -eq 'medium') 'W12.run.json does not hold the effort that Codex ran with'
+            Check ((Read-Shared (Join-Path $fx.workers 'W12.log')) -notmatch 'Windows sandbox is not set up') 'W12.log says the Windows sandbox is not set up, but config.toml has one'
+            # -Effort and -Model win over config.toml; the store still comes through.
+            Write-Brief $fx 'W13' 'implementation' 'codex'
+            $null = Invoke-Spawn $fx @('-Worker', 'W13', '-Tool', 'codex', '-Model', 'gpt-given', '-Effort', 'low', '-Foreground')
+            $w = @(Get-CodexWorkerCalls $fx)
+            Check ($w.Count -eq 5) "expected 5 Codex worker runs, got $($w.Count)"
+            if ($w.Count -ge 5) {
+                $why = Compare-ArgList @($w[4].args) ($cfgStart + @('-m', 'gpt-given', '-c', 'model_reasoning_effort=low', '-c', 'cli_auth_credentials_store=keyring', '-c', 'windows.sandbox=elevated', '-'))
+                Check (-not $why) "-Model and -Effort did not win over config.toml: $why"
+            }
+            # Values that fail their checks are left out, with a plain line in the log that names the key and never the
+            # value; the sign-in store "file" (Codex's default) is not passed.
+            Write-Text $cfgFile ("model = `"claude-secret-model`"`r`nmodel_reasoning_effort = `"max-secret-effort`"`r`ncli_auth_credentials_store = `"secret-store`"`r`n`r`n[windows]`r`nsandbox = `"secret-sandbox`"`r`n")
+            Write-Brief $fx 'W14' 'implementation' 'codex'
+            $null = Invoke-Spawn $fx @('-Worker', 'W14', '-Tool', 'codex', '-Foreground')
+            $w = @(Get-CodexWorkerCalls $fx)
+            Check ($w.Count -eq 6) "expected 6 Codex worker runs, got $($w.Count)"
+            if ($w.Count -ge 6) {
+                $why = Compare-ArgList @($w[5].args) ($cfgStart + @('-c', 'model_reasoning_effort=xhigh', '-'))
+                Check (-not $why) "a value of config.toml that fails its check reached the Codex command: $why"
+            }
+            $l14 = Read-Shared (Join-Path $fx.workers 'W14.log')
+            Check (($l14 -match "config\.toml has a 'model' that the relay cannot pass on") -and ($l14 -match "config\.toml has a 'model_reasoning_effort' that the relay cannot pass on") -and
+                ($l14 -match "config\.toml has a 'cli_auth_credentials_store' that the relay cannot pass on") -and ($l14 -match "config\.toml has a 'windows\.sandbox' that the relay cannot pass on")) 'W14.log does not name the four keys that were left out'
+            Check ($l14 -notmatch 'claude-secret-model|max-secret-effort|secret-store|secret-sandbox') 'W14.log shows a value from config.toml'
+            Check ($l14 -match "Windows sandbox is not set up \(no \[windows\] sandbox in its config\.toml\)") 'W14.log does not say that the Windows sandbox is not set up'
+            Check ($l14 -match 'launcher: Codex starts with --ignore-user-config and --ignore-rules, so it uses none of the extra folders, MCP servers \(add-on tools\), hooks \(commands Codex runs by itself at set moments\) or command rules \(your list of commands Codex may run without asking\)') 'W14.log does not say what the two flags do'
+            # A sandbox key in another table does not count; the older [features] flag gives the unelevated sandbox.
+            Write-Text $cfgFile ("model = `"gpt-stub-default`"`r`ncli_auth_credentials_store = `"file`"`r`n`r`n[projects.`"C:\Users\ada\x`"]`r`nsandbox = `"mxc`"`r`n`r`n" +
+                "[features]`r`nexperimental_windows_sandbox = true`r`n")
+            Write-Brief $fx 'W15' 'implementation' 'codex'
+            $null = Invoke-Spawn $fx @('-Worker', 'W15', '-Tool', 'codex', '-Foreground')
+            $w = @(Get-CodexWorkerCalls $fx)
+            Check ($w.Count -eq 7) "expected 7 Codex worker runs, got $($w.Count)"
+            if ($w.Count -ge 7) {
+                $why = Compare-ArgList @($w[6].args) ($cfgStart + @('-m', 'gpt-stub-default', '-c', 'model_reasoning_effort=xhigh', '-c', 'windows.sandbox=unelevated', '-'))
+                Check (-not $why) "the sign-in store file was passed on, the sandbox of another table counted, the older Windows sandbox flag was not passed on, or the command changed: $why"
+            }
+            # A Codex CLI that is too old stops at once on --ignore-user-config (exit 2): a plain note, nothing committed.
+            Write-Text $cfgFile $cfgOriginal
+            Write-Brief $fx 'W16' 'implementation' 'codex'
+            Set-CodexStubMode $fx 'old-cli'
+            $null = Invoke-Spawn $fx @('-Worker', 'W16', '-Tool', 'codex', '-Foreground')
+            Set-CodexStubMode $fx 'ok'
+            $s16 = Get-RunJson $fx 'W16'
+            Check ($s16 -and $s16.state -eq 'failed' -and $s16.exit_code -eq 2 -and [string]$s16.note -eq 'This Codex CLI is too old for the relay. Update it (npm install -g @openai/codex) to a version from April 2026 or newer.') "an old Codex CLI did not give the plain note (state '$($s16.state)', exit '$($s16.exit_code)', note '$($s16.note)')"
+            Check ((Read-Shared (Join-Path $fx.workers 'W16.log')) -match 'launcher: This Codex CLI is too old for the relay') 'W16.log does not hold the note about the old Codex CLI'
+            Check (@(Get-CodexCalls $fx 'old-cli').Count -eq 1 -and @(Get-CodexWorkerCalls $fx).Count -eq 7) 'the old Codex CLI was not started exactly once'
 
             # Gemini, the usual worker.
             Set-GeminiStubMode $fx 'ok'
@@ -2417,8 +2492,8 @@ try {
         Check ($calls.Count -eq 1) "expected 1 Codex coordinator turn, got $($calls.Count)"
         if ($calls.Count -ge 1) {
             $c = $calls[0]
-            $want = @('--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]',
-                '-c', 'mcp_servers={}', '--add-dir', (Join-Path $fx.mb 'tasks'), '-c', 'model_reasoning_effort=high')
+            $want = @('--ignore-user-config', '--ignore-rules', '--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=false',
+                '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'web_search=disabled', '--add-dir', (Join-Path $fx.mb 'tasks'), '-c', 'model_reasoning_effort=high')
             $why = Compare-ArgList @($c.extra) $want
             Check (-not $why) "the Codex coordinator turn's options are not the relay's own: $why"
             Check ([string]$c.cwd -like '*\cc1\coord') "the Codex coordinator turn ran in '$($c.cwd)', not in its own folder"
@@ -2507,6 +2582,24 @@ try {
         $null = Invoke-Relay $fx 'ClearHalt' $null
         $null = Invoke-Relay $fx 'Once' $null
         Check (@(Get-CodexResumeCalls $fx).Count -eq $before + 1) 'the held notice was not delivered after the .codex folder and AGENTS.override.md were gone and the halt was cleared'
+        # A Codex CLI that is too old stops at once on --ignore-user-config (exit 2): retrying cannot help, so the relay
+        # halts with plain words, starts nothing more, and keeps the notice pending until the CLI is updated.
+        Set-CodexStubMode $fx 'old-cli'
+        Write-Text (Join-Path $fx.mb 'tasks\T-C12\assignment.md') $NewAssignment
+        $before = @(Get-CodexResumeCalls $fx).Count
+        $null = Invoke-Relay $fx 'Once' $null
+        $halt = [string](Get-RelayState $fx).halt
+        Check ($halt -match 'This Codex CLI is too old for the relay' -and $halt -match 'npm install -g @openai/codex' -and $halt -match 'April 2026 or newer') "an old Codex CLI did not halt the relay with the update words (halt '$halt')"
+        Check (@(Get-CodexCalls $fx 'old-cli').Count -eq 1 -and @(Get-CodexResumeCalls $fx).Count -eq $before) 'the old Codex CLI was not started exactly once'
+        Check (Test-Pending $fx 'tasks/T-C12/assignment.md') 'the notice that an old Codex CLI could not take is not kept pending'
+        $af = Join-Path $fx.mb '.relay\alerts.md'
+        Check ((Test-Path -LiteralPath $af) -and (Read-Shared $af) -match 'too old for the relay') 'alerts.md does not say that the Codex CLI is too old'
+        $null = Invoke-Relay $fx 'Once' $null   # halted: nothing more starts
+        Check (@(Get-CodexCalls $fx 'old-cli').Count -eq 1 -and @(Get-CodexResumeCalls $fx).Count -eq $before) 'a coordinator turn started again while the relay was halted for an old Codex CLI'
+        Set-CodexStubMode $fx 'ok'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexResumeCalls $fx).Count -eq $before + 1 -and -not (Test-Pending $fx 'tasks/T-C12/assignment.md')) 'the kept notice was not delivered after the Codex CLI was updated and the halt was cleared'
         # Rollover: a newer thread named Coordinator, in a folder of its own, takes over between turns. That folder has
         # an old board of its own: it is kept in .relay\backups, and a copy of the mailbox's board takes its place.
         $coord2 = Join-Path $fx.dir 'coord2'
@@ -2554,6 +2647,34 @@ try {
         try { $j = ConvertFrom-Json -InputObject $r.out } catch { $j = $null }
         Check ($j -and $j.tool -eq 'codex' -and @($j.codexArgs) -contains 'workspace-write' -and $j.network -eq $false -and @($j.writableFolders).Count -eq 2) "-ShowCoordinatorArgs does not show the Codex coordinator's turn: $(Get-Tail $r.out)"
         Check ($j -and @($j.codexArgs) -notcontains 'model_verbosity=low') '-ShowCoordinatorArgs shows codex_exec_args (the planner''s setting) in the coordinator''s turn'
+        Check ($j -and @($j.codexArgs) -contains '--ignore-user-config' -and @($j.codexArgs) -contains '--ignore-rules' -and @($j.codexArgs) -notcontains 'mcp_servers={}' -and [string]$j.ownSettings -match 'none of the extra folders, MCP servers \(add-on tools\), hooks \(commands Codex runs by itself at set moments\) or command rules \(your list of commands Codex may run without asking\)' -and [string]$j.windowsSandbox -eq 'not set up') '-ShowCoordinatorArgs does not show the two flags and what they do'
+        # The model and the sign-in store of the owner's config.toml come through (the coordinator's own effort wins); an MCP
+        # server table does not. A model that fails its check is left out, and only its key is named.
+        $cfgFile = Join-Path $fx.codex 'config.toml'
+        Write-Text $cfgFile ("model = `"gpt-stub-coord`"`r`nmodel_reasoning_effort = `"low`"`r`ncli_auth_credentials_store = `"auto`"`r`n`r`n[mcp_servers.x]`r`ncommand = `"stub-mcp-server`"`r`n`r`n[windows]`r`nsandbox = `"elevated`"`r`n")
+        $r = Invoke-Relay $fx 'ShowCoordinatorArgs' $null
+        $j = $null
+        try { $j = ConvertFrom-Json -InputObject $r.out } catch { $j = $null }
+        $ja = @($j.codexArgs)
+        Check ($j -and $ja -contains 'gpt-stub-coord' -and $ja -contains 'cli_auth_credentials_store=auto' -and $ja -contains 'model_reasoning_effort=high' -and $ja -notcontains 'model_reasoning_effort=low' -and $ja -contains 'windows.sandbox=elevated' -and [string]$j.windowsSandbox -eq 'elevated' -and -not (($ja -join ' ') -match 'mcp_servers|stub-mcp-server')) "-ShowCoordinatorArgs does not carry the model, the sign-in store and the Windows sandbox from config.toml, and only those: $(Get-Tail $r.out)"
+        Write-Text $cfgFile ("model = `"claude-secret-model`"`r`ncli_auth_credentials_store = `"file`"`r`n`r`n[projects.`"C:\Users\ada\x`"]`r`nsandbox = `"mxc`"`r`n")
+        $r = Invoke-Relay $fx 'ShowCoordinatorArgs' $null
+        $j = $null
+        try { $j = ConvertFrom-Json -InputObject $r.out } catch { $j = $null }
+        $ja = @($j.codexArgs)
+        Check ($j -and @($j.configKeysLeftOut) -contains 'model' -and @($j.configKeysLeftOut).Count -eq 1 -and $ja -notcontains '-m' -and -not (($j | ConvertTo-Json -Depth 4) -match 'claude-secret-model') -and -not (($ja -join ' ') -match 'cli_auth_credentials_store|windows\.sandbox') -and [string]$j.windowsSandbox -eq 'not set up') "-ShowCoordinatorArgs did not leave out a model that fails its check, naming only the key, or counted the sandbox of another table: $(Get-Tail $r.out)"
+        # The older [features] flags give the Windows sandbox when [windows] has none; a [windows] sandbox that fails its check is left out.
+        Write-Text $cfgFile "[features]`r`nelevated_windows_sandbox = true`r`nexperimental_windows_sandbox = true`r`n"
+        $r = Invoke-Relay $fx 'ShowCoordinatorArgs' $null
+        $j = $null
+        try { $j = ConvertFrom-Json -InputObject $r.out } catch { $j = $null }
+        Check ($j -and @($j.codexArgs) -contains 'windows.sandbox=elevated' -and [string]$j.windowsSandbox -eq 'elevated') "-ShowCoordinatorArgs did not pass on the older Windows sandbox flag: $(Get-Tail $r.out)"
+        Write-Text $cfgFile "[windows]`r`nsandbox = `"secret-sandbox`"`r`n"
+        $r = Invoke-Relay $fx 'ShowCoordinatorArgs' $null
+        $j = $null
+        try { $j = ConvertFrom-Json -InputObject $r.out } catch { $j = $null }
+        Check ($j -and @($j.configKeysLeftOut) -contains 'windows.sandbox' -and -not (($j | ConvertTo-Json -Depth 4) -match 'secret-sandbox') -and -not ((@($j.codexArgs) -join ' ') -match 'windows\.sandbox')) "-ShowCoordinatorArgs passed on a Windows sandbox that fails its check, or showed its value: $(Get-Tail $r.out)"
+        Remove-Item -LiteralPath $cfgFile -Force
         # A mailbox whose path has an &: refused, as each turn names the mailbox's tasks folder on Codex's command line,
         # which codex.cmd hands to cmd.exe.
         $amp = New-Fixture 'cc3&x'
@@ -2708,11 +2829,21 @@ try {
         $af = Join-Path $fx.mb '.relay\alerts.md'
         Check ((Test-Path -LiteralPath $af) -and (Read-Shared $af) -match 'turn limit') 'alerts.md does not say that the turn hit its turn limit'
         Check ([int](Get-RelayState $fx).failures -eq 1) "the turn that hit its turn limit did not count as one failure (failures $((Get-RelayState $fx).failures))"
+        # The next turn also prints Gemini CLI's warning that it skipped the turn limit file, as Gemini CLI 0.66 does when
+        # people other than an administrator can change it: the turn's record says so, one alert, and -Status says so.
         Start-Sleep -Seconds 2   # past the backoff of 1 s
+        Set-GeminiStubMode $fx 'skip-defaults'
         Write-Text (Join-Path $fx.mb 'tasks\T-G08B\assignment.md') $NewAssignment
         $null = Invoke-Relay $fx 'Once' $null
+        Set-GeminiStubMode $fx 'ok'
         $last = @(Get-Dispatches $fx | Where-Object { $_.tool -eq 'gemini' }) | Select-Object -Last 1
         Check ($last -and $last.outcome -eq 'success' -and [int](Get-RelayState $fx).failures -eq 0) "the next turn did not succeed and clear the failures (outcome '$($last.outcome)')"
+        Check ($last -and [string]$last.turn_limit -eq 'skipped by Gemini CLI') "the turn's record does not say that Gemini CLI skipped the turn limit (turn_limit '$($last.turn_limit)')"
+        $skipAlerts = @()
+        if (Test-Path -LiteralPath $af) { $skipAlerts = @(((Read-Shared $af) -split "`n") | Where-Object { $_.Contains('did not use the relay''s turn limit') }) }
+        Check ($skipAlerts.Count -eq 1) "expected 1 alert that Gemini CLI skipped the turn limit, got $($skipAlerts.Count)"
+        $r = Invoke-Relay $fx 'Status' $null
+        Check ($r.code -eq 0 -and (Test-SaidText $r.out 'Gemini CLI skipped it in the last turn')) "-Status does not say that Gemini CLI skipped the turn limit in the last turn: $(Get-Tail $r.out)"
         # Halts before Gemini CLI starts: each one keeps its notice, and starts nothing until -ClearHalt.
         $sysDir = Join-Path $fx.dir 'gemini-system-policies'
         Write-Text (Join-Path $sysDir 'a.toml') "# a policy of this computer's administrator`n"
@@ -2756,7 +2887,7 @@ try {
         Check (-not $leak) "the dummy Gemini key's text was written to: $leak"
     }
 
-    Invoke-Scenario '30 a Gemini coordinator: not signed in backs off and halts, a missing session, a wrong session, a crash after the notice, and a turn that outlives the relay' {
+    Invoke-Scenario '30 a Gemini coordinator: not signed in backs off and halts, a missing session, its own turn cap, a wrong session, a crash after the notice, and a turn that outlives the relay' {
         $fx = New-Fixture 'gc2'
         Initialize-Fixture $fx
         $gc = Join-Path $fx.dir 'gcoord'
@@ -2788,6 +2919,14 @@ try {
         Check ((Test-Path -LiteralPath $ledger) -and (Test-SaidText (Read-Shared $ledger) "no session with that id in the coordinator's folder")) 'dispatches.md does not say that Gemini CLI found no session with that id'
         Check (Test-Pending $fx 'tasks/T-S02/assignment.md') 'the notice of a turn that found no session is not kept pending'
         $null = Invoke-Relay $fx 'ClearHalt' $null
+        # Gemini CLI's own session-turn cap before it asked the model: an error event, then a success result and exit 0,
+        # and no notice in the session. A success result after an error event is not a success: not delivered, kept.
+        Set-GeminiStubMode $fx 'cap-first'
+        $null = Invoke-Relay $fx 'Once' $null
+        $last = @(Get-Dispatches $fx | Where-Object { $_.tool -eq 'gemini' }) | Select-Object -Last 1
+        Check ($last -and $last.outcome -eq 'not delivered') "a turn that Gemini CLI's own turn cap stopped before the notice reached the session is not recorded as not delivered (outcome '$($last.outcome)')"
+        Check (Test-Pending $fx 'tasks/T-S02/assignment.md') 'the notice of a turn that Gemini CLI''s own turn cap stopped before it reached the session is not kept pending'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
         # A turn in another session: delivered (not replayed), and the relay halts.
         Set-GeminiStubMode $fx 'wrong-session'
         $null = Invoke-Relay $fx 'Once' $null
@@ -2804,6 +2943,17 @@ try {
         $nt = @(Get-Note $fx 'tasks/T-S05/assignment.md')
         Check ($nt.Count -eq 1 -and $nt[0].state -eq 'completed') 'the notice of the turn that died is not recorded as delivered (not replayed)'
         Check ((Read-Shared (Join-Path $fx.mb '.relay\alerts.md')) -match 'ended without a result') 'alerts.md does not say that the turn ended without a result'
+        # The same cap after the notice reached the session: delivered with an error, as exit 53 is, with an alert and
+        # one failure; not replayed.
+        Set-GeminiStubMode $fx 'cap'
+        Write-Text (Join-Path $fx.mb 'tasks\T-S05B\assignment.md') $NewAssignment
+        $null = Invoke-Relay $fx 'Once' $null
+        $last = @(Get-Dispatches $fx | Where-Object { $_.tool -eq 'gemini' }) | Select-Object -Last 1
+        Check ($last -and $last.outcome -eq 'turn ended with an error; delivered, not replayed' -and [int](Get-RelayState $fx).failures -eq 1) "a turn that Gemini CLI's own turn cap stopped after the notice reached the session is not recorded as delivered with an error and one failure (outcome '$($last.outcome)', failures $((Get-RelayState $fx).failures))"
+        $nt = @(Get-Note $fx 'tasks/T-S05B/assignment.md')
+        Check ($nt.Count -eq 1 -and $nt[0].state -eq 'completed') 'the notice of a turn that Gemini CLI''s own turn cap stopped after it reached the session is not recorded as delivered (not replayed)'
+        Check ((Read-Shared (Join-Path $fx.mb '.relay\alerts.md')) -match 'Maximum session turns exceeded') 'alerts.md does not say that Gemini CLI stopped the turn at its own turn cap'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
         # A turn that outlives the relay: the next relay waits for it, then settles it from its events (it has no exit
         # code there), then delivers the notice that waited, in a turn of its own.
         Set-GeminiStubMode $fx 'sleep:12'
@@ -2830,7 +2980,7 @@ try {
         if ($na.Count) { $da = @(Get-Dispatches $fx | Where-Object { $_.id -eq $na[0].dispatch_id }) }
         Check ($da.Count -eq 1 -and $da[0].outcome -eq 'success' -and $null -eq $da[0].exit_code) "the turn that outlived its relay is not settled as a success with no exit code ($($da.Count) record(s))"
         Check ($nb.Count -eq 1 -and $nb[0].state -eq 'completed' -and $na.Count -eq 1 -and $nb[0].dispatch_id -ne $na[0].dispatch_id) 'the notice that waited was not delivered in a turn of its own'
-        Check (@(Get-GeminiResumeCalls $fx).Count -eq 8) "expected 8 Gemini CLI turns in this scenario (3, 1, 1, 1, 1, 1), got $(@(Get-GeminiResumeCalls $fx).Count)"
+        Check (@(Get-GeminiResumeCalls $fx).Count -eq 10) "expected 10 Gemini CLI turns in this scenario (3, 1, 1, 1, 1, 1, 1, 1), got $(@(Get-GeminiResumeCalls $fx).Count)"
         Check (Test-NoOverlap $fx -Gemini) 'two Gemini CLI processes were alive at the same time'
     }
 } catch {
