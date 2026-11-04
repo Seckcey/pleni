@@ -201,7 +201,7 @@ function stopOnSignal(app) {
 async function helpText(options, env) {
   const { settingsFile } = await import('../src/config.js');
   const file = options.config ?? settingsFile(env);
-  return `Pleni shows your Claude Code, Codex, Grok, Kimi Code and Gemini CLI sessions live in your web browser.
+  return `Pleni shows your Claude Code, Codex, Grok, Kimi Code, Gemini CLI and Antigravity CLI sessions live in your web browser.
 It only reads them. Nothing leaves your computer.
 
 Usage: ${commandName()} [options]

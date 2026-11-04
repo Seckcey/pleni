@@ -21,9 +21,9 @@ const FILTERS = [['all', 'All'], ['needs', 'Needs you'], ['working', 'Working'],
 const FEED_FILTERS = [['all', 'Everything'], ['down', 'Work handed out'], ['up', 'Reports back'], ['error', 'Errors']];
 // Kimi Code models that can only turn thinking on or off record "on" or "off" as their effort.
 const EFFORT_WORDS = { minimal: 'minimal effort', low: 'low effort', medium: 'medium effort', high: 'high effort', xhigh: 'extra high effort', max: 'max effort', on: 'thinking on', off: 'thinking off' };
-const PLATFORM_WORDS = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', gemini: 'Gemini CLI', relay: 'Mailbox' };
+const PLATFORM_WORDS = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', gemini: 'Gemini CLI', antigravity: 'Antigravity CLI', relay: 'Mailbox' };
 // The tools whose sessions Pleni reads. Each one has a word above and a mark in ICONS.
-const TOOLS = ['claude', 'codex', 'grok', 'kimi', 'gemini'];
+const TOOLS = ['claude', 'codex', 'grok', 'kimi', 'gemini', 'antigravity'];
 const KIND_WORDS = { person: 'Person', project: 'Project', tool: 'AI tool', session: 'Session', agent: 'Helper agent', reviewer: 'Automatic reviewer', relay: 'Relay' };
 const ENTRY_WORDS = { 'claude-desktop': 'Claude desktop app', 'claude-vscode': 'VS Code', cli: 'Terminal', 'sdk-cli': 'Agent SDK', 'relay worker': 'The mailbox relay' };
 const PLACEMENT_WORDS = { manual: 'You chose this.', rule: 'Set by a chain rule.', auto: 'Chosen automatically.' };
@@ -63,6 +63,7 @@ const DEFAULTS = {
     grok: { enabled: true, root: null },
     kimi: { enabled: true, root: null },
     gemini: { enabled: true, root: null },
+    antigravity: { enabled: true, root: null },
     mailbox: { enabled: false, root: null, planner: null, coordinator: null },
   },
   people: {},
@@ -83,10 +84,12 @@ const DEFAULTS = {
 const ICONS = {
   claude: '<path d="M12 3.5v17M4.6 7.75l14.8 8.5M4.6 16.25l14.8-8.5"/>',
   codex: '<rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="m7.5 10 3 2.5-3 2.5M13 15.5h3.5"/>',
-  // Grok and Kimi Code get plain letters, G and K, and Gemini CLI a plain diamond, not their makers' logos.
+  // Grok, Kimi Code and Antigravity CLI get plain letters, G, K and A, and Gemini CLI a plain
+  // diamond, not their makers' logos.
   grok: '<path d="M17.75 7.2A7.5 7.5 0 1 0 19.5 12H13"/>',
   kimi: '<path d="M7 4.5v15M17 4.5 7 12.5l10 7"/>',
   gemini: '<path d="M12 3.5 20.5 12 12 20.5 3.5 12z"/>',
+  antigravity: '<path d="M5 20 12 4l7 16M7.6 14h8.8"/>',
   human: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
   group: '<path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h4l2 2h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/>',
   relay: '<path d="M4 8h13.5M14 4.5 17.5 8 14 11.5M20 16H6.5M10 12.5 6.5 16l3.5 3.5"/>',
@@ -483,7 +486,7 @@ function keyName(key) {
   if (n) return titleOf(n);
   const k = String(key || '');
   if (k === 'you') return personName();
-  const m = /^(claude|codex|grok|kimi|gemini):([0-9a-f]{8})/i.exec(k);
+  const m = /^(claude|codex|grok|kimi|gemini|antigravity):([0-9a-f]{8})/i.exec(k);
   if (m) return `${PLATFORM_WORDS[m[1].toLowerCase()]} session ${m[2]}`;
   if (k.startsWith('path:')) return `agent ${k.slice(5).split('/').filter(Boolean).pop() || ''}`.trim();
   if (k.startsWith('project:')) return k.slice(8);
@@ -869,10 +872,10 @@ function popOut(kind) {
 // the words changed, and keeps the scroll place, so reading is never interrupted.
 
 const USAGE_REFRESH_MS = 60000;
-const USAGE_TOOLS = [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code'], ['gemini', 'Gemini CLI']];
+const USAGE_TOOLS = [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code'], ['gemini', 'Gemini CLI'], ['antigravity', 'Antigravity CLI']];
 const USAGE_LIMIT_PAGES = { claude: 'https://claude.ai/settings/usage', codex: 'https://chatgpt.com/codex/settings/usage' };
 // What to type in a tool that saves no plan limits on this computer, to see them there.
-const USAGE_COMMANDS = { grok: '/usage', kimi: '/usage', gemini: '/stats' };
+const USAGE_COMMANDS = { grok: '/usage', kimi: '/usage', gemini: '/stats', antigravity: '/usage' };
 const USAGE = { open: false, data: null, error: '', busy: false, timer: 0, run: 0, opener: null, leaving: false };
 
 // 900 -> "900", 1200 -> "1.2k", 250000 -> "250k", 1200000 -> "1.2 million".
@@ -946,11 +949,15 @@ function usageLimitsHtml(key, name, t, now, limitsOn = false) {
     return `<div class="u-limits"><p>Codex saves its limits after each reply. None in the last 7 days.</p>` +
       `<p><a href="${USAGE_LIMIT_PAGES.codex}" id="usage-codex-site" target="_blank" rel="noopener noreferrer">See them on chatgpt.com</a><span class="sr-only"> (opens in a new tab)</span></p></div>`;
   }
-  return `<div class="u-limits"><p>${esc(name)} does not save plan limits on this computer. In ${esc(name)}, type ${esc(USAGE_COMMANDS[key] ?? '/usage')}.</p></div>`;
+  const type = esc(USAGE_COMMANDS[key] ?? '/usage');
+  // A tool whose files hold no token counts either (Antigravity CLI) says so once, here.
+  if (t.counted === false) return `<div class="u-limits"><p>${esc(name)} keeps no token counts or plan limits on this computer. In ${esc(name)}, type ${type}.</p></div>`;
+  return `<div class="u-limits"><p>${esc(name)} does not save plan limits on this computer. In ${esc(name)}, type ${type}.</p></div>`;
 }
 
 function usageTokensHtml(t) {
   if (t.error) return `<p class="note bad">${esc(t.error)}</p>`;
+  if (t.counted === false) return '';
   const part = (label, v) => {
     const x = v && typeof v === 'object' ? v : {};
     const line = `<p class="u-line"><b>${label}:</b> ${esc(tokenCount(x.total, t.atLeast === true))}</p>`;
@@ -1211,7 +1218,7 @@ function renderNotices() {
   if (newer) out.push(notice(false, 'Pleni was updated.', `It now runs version ${versionText(newer, true)}. Reload this page to use it.`));
   if (S.conn === 'error') out.push(notice(true, 'Cannot reach Pleni.', `${S.connError} The page keeps trying every few seconds.`));
   const src = (S.snap && S.snap.sources) || {};
-  for (const [name, label] of [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code'], ['gemini', 'Gemini CLI'], ['mailbox', 'The mailbox']]) {
+  for (const [name, label] of [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi Code'], ['gemini', 'Gemini CLI'], ['antigravity', 'Antigravity CLI'], ['mailbox', 'The mailbox']]) {
     const s = src[name];
     if (s && s.enabled && s.ok === false) out.push(notice(false, `${label} could not be read.`, s.error || 'Pleni will try again.'));
   }
@@ -1392,7 +1399,7 @@ function welcomeHtml() {
     <img src="/brand/pip-welcome.webp" alt="" width="168" height="168">
     <div>
       <h2>No sessions to show yet</h2>
-      <p>Pleni shows the Claude Code, Codex, Grok, Kimi Code and Gemini CLI sessions on this computer that were active in the last ${esc(plural(hours, 'hour', 'hours'))}, the helpers they start, and the work they hand to each other. It only reads their files. It never changes them, and nothing leaves this computer.</p>
+      <p>Pleni shows the Claude Code, Codex, Grok, Kimi Code, Gemini CLI and Antigravity CLI sessions on this computer that were active in the last ${esc(plural(hours, 'hour', 'hours'))}, the helpers they start, and the work they hand to each other. It only reads their files. It never changes them, and nothing leaves this computer.</p>
       <h3>Where Pleni looks</h3>
       <ul>
         <li><b>Claude Code:</b> ${where(join(roots.claude, 'projects'), '~/.claude/projects')}, or the folder in <code>CLAUDE_CONFIG_DIR</code>.${state(src.claude)}</li>
@@ -1401,9 +1408,10 @@ function welcomeHtml() {
         <li><b>Grok:</b> ${where(join(roots.grok, 'sessions'), '~/.grok/sessions')}, or the folder in <code>GROK_HOME</code>.${state(src.grok)}</li>
         <li><b>Kimi Code:</b> ${where(join(roots.kimi, 'sessions'), '~/.kimi-code/sessions')}, or the folder in <code>KIMI_CODE_HOME</code>.${state(src.kimi)}</li>
         <li><b>Gemini CLI:</b> ${where(join(roots.gemini, 'tmp'), '~/.gemini/tmp')}, or the <code>.gemini</code> folder in <code>GEMINI_CLI_HOME</code>.${state(src.gemini)}</li>
+        <li><b>Antigravity CLI:</b> ${where(join(roots.antigravity, 'brain'), '~/.gemini/antigravity-cli/brain')}.${state(src.antigravity)}</li>
         ${mailbox}
       </ul>
-      <p>Start a Claude Code, Codex, Grok, Kimi Code or Gemini CLI session and it shows up here within a few seconds.</p>
+      <p>Start a Claude Code, Codex, Grok, Kimi Code, Gemini CLI or Antigravity CLI session and it shows up here within a few seconds.</p>
       <h3>Just want to look around?</h3>
       <p>In the Pleni folder, run <code>node bin/pleni.js --demo</code> in a terminal and open the address it prints. The demo uses made-up sessions, so it needs nothing from you.</p>
       <p><a href="#/settings/sources">Change where Pleni looks</a></p>
@@ -4609,7 +4617,7 @@ function squeezedHtml(m) {
 
 // ---- Hide from the map ----
 
-const HIDE_KEY = /^(claude|codex|grok|kimi|gemini):/;
+const HIDE_KEY = /^(claude|codex|grok|kimi|gemini|antigravity):/;
 const hiding = new Set(); // tiles whose Hide is on its way to Pleni
 
 function hideHtml(n) {
@@ -6619,13 +6627,14 @@ function renderSettingsForm() {
       <div id="models-claude" data-models="claude">${appModelsHtml('claude')}</div>
     </section>`)}
     ${group('sources', 'Which tools Pleni reads, and where their files are.', `
-    <section class="panel" aria-labelledby="s-h-where" data-find="folders paths sources read claude codex grok kimi gemini google desktop"><h2 id="s-h-where">Where Pleni looks</h2>
+    <section class="panel" aria-labelledby="s-h-where" data-find="folders paths sources read claude codex grok kimi gemini antigravity agy google desktop"><h2 id="s-h-where">Where Pleni looks</h2>
       ${sourceRow('claude', 'Claude Code', 'Read Claude Code sessions', 'Leave the folder empty to use CLAUDE_CONFIG_DIR, or the .claude folder in your home folder.')}
       ${sourceRow('claudeDesktop', 'Claude desktop app', 'Read session names from the Claude desktop app', 'Gives desktop sessions the names you see in the app.')}
       ${sourceRow('codex', 'Codex', 'Read Codex threads', 'Leave the folder empty to use CODEX_HOME, or the .codex folder in your home folder.')}
       ${sourceRow('grok', 'Grok', 'Read Grok sessions', "Pleni reads Grok's session logs in this folder.")}
       ${sourceRow('kimi', 'Kimi Code', 'Read Kimi Code sessions', "Pleni reads Kimi Code's session logs in this folder.")}
       ${sourceRow('gemini', 'Gemini CLI', 'Read Gemini CLI sessions', "Leave the folder empty to use the .gemini folder in GEMINI_CLI_HOME, or in your home folder. Pleni reads the chat logs in its tmp folder and its list of your project folders, never your login.")}
+      ${sourceRow('antigravity', 'Antigravity CLI', 'Read Antigravity CLI sessions', 'Leave the folder empty to use .gemini/antigravity-cli in your home folder. Pleni reads the chat logs in its brain folder, two small lists in its cache folder and its prompt history, never your login or settings.')}
     </section>
     <section class="panel" aria-labelledby="s-h-cloud" data-find="codex cloud tasks chatgpt openai internet network login web"><h2 id="s-h-cloud">Codex cloud tasks</h2>
       ${cloudRow()}
@@ -6908,7 +6917,7 @@ const MAX_REMOTE = 20;
 // final check for its own system.
 const FULL_PATH = /^(?:[A-Za-z]:[\\/]|[\\/])/;
 // A session key, as isNodeKey in src/config.js checks it.
-const NODE_KEY = /^(claude|codex|grok|kimi|gemini):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
+const NODE_KEY = /^(claude|codex|grok|kimi|gemini|antigravity):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
 
 function listWords(el) {
   return el.value.split(/[\s,]+/).map((w) => w.trim()).filter(Boolean);

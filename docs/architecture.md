@@ -1,7 +1,7 @@
 # Pleni architecture
 
 Pleni ("Plenipo Browser") is a small local web app. It reads the session files that Claude Code,
-Codex, Grok, Kimi Code and Gemini CLI already write on your computer, works out who is working on what, and shows it live in your
+Codex, Grok, Kimi Code, Gemini CLI and Antigravity CLI already write on your computer, works out who is working on what, and shows it live in your
 browser as an organization map with the hand-offs between agents drawn as moving lines.
 
 Version 0.1 mostly **watches**. It never stops or changes a session, and it never writes into
@@ -77,6 +77,7 @@ src/sources/codex.js    Codex threads and sub-agents
 src/sources/grok.js     Grok sessions
 src/sources/kimi.js     Kimi Code sessions and sub-agents
 src/sources/gemini.js   Gemini CLI sessions and sub-agents
+src/sources/antigravity.js  Antigravity CLI sessions and sub-agents
 src/sources/mailbox.js  optional coordination mailbox (task folders of Markdown files), or an HQ and its project mailboxes
 src/model.js            builds the snapshot the page draws (nodes, edges, events)
 src/repos.js            the GitHub repository of a session's folder, from its git settings (remote address only)
@@ -132,6 +133,7 @@ export const DEFAULTS = {
     grok: { enabled: true, root: null },              // null = $GROK_HOME or ~/.grok
     kimi: { enabled: true, root: null },              // null = $KIMI_CODE_HOME or ~/.kimi-code
     gemini: { enabled: true, root: null },            // null = $GEMINI_CLI_HOME/.gemini or ~/.gemini
+    antigravity: { enabled: true, root: null },       // null = ~/.gemini/antigravity-cli (no environment variable moves it)
     mailbox: { enabled: false, root: null, planner: null, coordinator: null }, // root: a mailbox or an HQ; planner/coordinator: node key or session name
   },
   people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role, reportsTo?: nodeKey | 'you', watch?: true, answer?: true } }  max 500
@@ -177,13 +179,14 @@ Exports:
 - `renameWithRetry(from, to)` renames, trying again up to 5 times when Windows answers `EPERM`,
   `EACCES` or `EBUSY` (a virus scanner or sync tool holding the file). The key file uses it too.
 - `resolveRoots(settings, env, platform, home)` returns `{ claude, claudeDesktop, codex, grok, kimi,
-  gemini, mailbox }` absolute paths or `null`. Defaults: `claude` = `$CLAUDE_CONFIG_DIR` or
+  gemini, antigravity, mailbox }` absolute paths or `null`. Defaults: `claude` = `$CLAUDE_CONFIG_DIR` or
   `~/.claude`; `codex` = `$CODEX_HOME` or `~/.codex`; `grok` = `$GROK_HOME` or `~/.grok`; `kimi` =
   `$KIMI_CODE_HOME` or `~/.kimi-code`; `gemini` = `.gemini` inside `$GEMINI_CLI_HOME` (which names
-  the home folder that holds `.gemini`, not `.gemini` itself) or `~/.gemini`; `claudeDesktop` =
+  the home folder that holds `.gemini`, not `.gemini` itself) or `~/.gemini`; `antigravity` =
+  `~/.gemini/antigravity-cli` (no environment variable moves it); `claudeDesktop` =
   `%APPDATA%\Claude` on Windows, `~/Library/Application Support/Claude` on macOS,
   `~/.config/Claude` elsewhere; `mailbox` only when set.
-- `isNodeKey(s)`: `/^(claude|codex|grok|kimi|gemini):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/`, `you`,
+- `isNodeKey(s)`: `/^(claude|codex|grok|kimi|gemini|antigravity):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/`, `you`,
   `relay`, `mailbox:<task id>/W<n>`, or `project:<name>` (name 1–120 chars, no control characters). In
   an HQ (see Mailbox), a project mailbox's relay is `relay:<box>` and its worker runs
   `mailbox:<box>:<task id>/W<n>`, where `<box>` is the project's id (`/^[a-z0-9][a-z0-9-]{0,39}$/`,
@@ -229,9 +232,10 @@ All sources return sessions in this common shape:
 
 ```js
 Session = {
-  platform: 'claude' | 'codex' | 'grok' | 'kimi' | 'gemini',
+  platform: 'claude' | 'codex' | 'grok' | 'kimi' | 'gemini' | 'antigravity',
   key: string,              // 'claude:<sessionId>' | 'claude:<sessionId>/<agentId>' | 'codex:<threadId>' | …
                             // | 'gemini:<sessionId>' | 'gemini:<sessionId>/<agentId>'
+                            // | 'antigravity:<conversationId>' (a helper too)
   id: string,               // session or thread id
   parentKey: string | null, // who started it, if anyone
   kind: 'session' | 'agent' | 'reviewer',
@@ -278,7 +282,8 @@ text: string | null }` (`text` ≤2000 chars and only with snippets; thinking te
 only the fact that the model was thinking) and a `next` cursor (a byte offset) for the following
 poll. A source may also answer `reset: true`: its `events` are then the whole recent list, and the
 page shows them in place of what it had (the Gemini CLI reader does this, because Gemini CLI writes a
-message again whenever it changes).
+message again whenever it changes, and so does the Antigravity CLI reader, because Antigravity CLI
+writes a step again when it changes and the whole transcript again when it squeezes old history).
 
 ### Claude Code (`src/sources/claude.js`)
 
@@ -510,6 +515,108 @@ them.
   so never `oauth_creds.json`, `google_accounts.json`, `gemini-credentials.json`, `settings.json`,
   `trustedFolders.json` or any `.env` file.
 
+### Antigravity CLI (`src/sources/antigravity.js`)
+
+```js
+export function createAntigravitySource({ root, settings, now = Date.now })
+// -> { poll(): { ok, error, root, sessions: Session[] }, detail(key, since) }
+```
+
+Read-only, like Grok, Kimi Code and Gemini CLI: no button in Pleni opens, sends to, rolls over,
+answers or changes an Antigravity CLI session. Antigravity CLI (`agy`, version 1.4.12) is not open
+source. Its documentation gives where its files are, the transcript's path, and its tools and their
+arguments; the fields of a transcript's lines and of the cache and history files come from notes by
+others who read the files, so every field is read as optional.
+
+- **Where:** `<root>` is `~/.gemini/antigravity-cli` (on Windows, `%USERPROFILE%\.gemini\antigravity-cli`).
+  No environment variable moves it, so only Settings can. Each conversation has a folder
+  `<root>/brain/<conversation id>/` with `.system_generated/logs/transcript.jsonl`, and often the
+  uncut `transcript_full.jsonl` beside it (`transcript.jsonl` cuts long tool results short), which
+  Pleni reads when it is there. The listing of `brain` is refreshed every 30 s, and at once for a
+  helper that a conversation names. It keeps the newest 600 transcripts changed within `recentHours`.
+- **Steps:** one JSON object per line, with no header line: `{ step_index, source, type, status,
+  created_at, content, tool_calls?, thinking? }`. `source` is `USER_EXPLICIT`, `MODEL` or `SYSTEM`;
+  `status` is `DONE`, `RUNNING`, `CLEARED` (old history cleared to save space) or `ERROR`, and
+  `PENDING`, `WAITING` and `CANCELED` are read too; `created_at` is a UTC time. A line with the same
+  `step_index` again is a newer copy of that step: the newest copy wins, in the place the first one
+  came.
+  - `USER_INPUT` is the person's request: the words inside `<USER_REQUEST>…</USER_REQUEST>`, or,
+    without the tags, the content less the blocks Antigravity CLI adds (such as
+    `<ADDITIONAL_METADATA>`).
+  - `PLANNER_RESPONSE` is the model's reply, with `tool_calls: [{ name, args }]`. `args` is an object,
+    or JSON text of one, and each value in it may itself be JSON text. `thinking` is the model
+    thinking: never kept or shown, only the fact that it thought.
+  - A tool's result is a step with a type of its own (`RUN_COMMAND`, `VIEW_FILE`, `SEARCH_WEB`,
+    `INVOKE_SUBAGENT`, …). It answers the first call of the reply before it that still waits with the
+    same name (`RUN_COMMAND` answers `run_command`), else the first one that still waits. The
+    "Created At:" and "Completed At:" lines at its top are left out.
+  - `CHECKPOINT` (old history squeezed down), `CONVERSATION_HISTORY`, `SYSTEM_MESSAGE`,
+    `EPHEMERAL_MESSAGE` and any other step from `SYSTEM` keep the books: they change no turn and do
+    not move `lastAt`. An `ERROR_MESSAGE` step is an error.
+  - A transcript names no model and holds no token counts. A line that does name a `model` is
+    believed.
+- **Reading a transcript:** tailed like Gemini CLI's logs: about the last 4 MB at first, and near the
+  end again after 16 MB of backlog. A line that does not parse is skipped, and a half-written last
+  line waits for its newline. When Antigravity CLI squeezes old history it writes the file again:
+  when the file got smaller or was replaced, it is read again from the start, keeping the first
+  request, the start time and the helpers found before. A transcript read from near its end gets its
+  first request, its start time and whether it is a helper from its first 2 MB, and the helpers it
+  started from the 16 MB before the part that is read, once. At most 5000 steps are kept per
+  transcript, each cut short (1000 characters of text, and no tool results).
+- **The working folder** is not in a transcript. It comes, in this order, from
+  `<root>/cache/conversation_metadata.json` (`{ conversations: { "<id>": { summary: { WorkspaceURIs:
+  ["file:///…"] } } } }`; the first one that is a folder wins), from `<root>/history.jsonl` (a line for
+  each prompt the person sent, `{ display, timestamp, workspace, conversationId }`; the newest line
+  wins), and from `<root>/cache/last_conversations.json` (`{ "<folder>": "<newest conversation id>" }`,
+  read the other way round). The two cache files are read whole (at most 16 MB and 1 MB) when they
+  changed, and `history.jsonl` is tailed (its last 4 MB at first), each when the listing is
+  refreshed. A helper with none takes the folder of the conversation above it; with none at all,
+  `cwd` is null.
+- **Keys:** `antigravity:<conversation id>` (a lower-case UUID), for a conversation and a helper
+  alike: a helper is a conversation of its own.
+- **Helpers:** the result of an `INVOKE_SUBAGENT` step names the conversations it started: each
+  conversation id in it, with its role when the result is JSON that gives one, else the role that the
+  `invoke_subagent` call of the reply before it gave the helper in the same place
+  (`Subagents[].Role`). A named conversation that Pleni shows hangs under the one that named it
+  (kind `agent`, `spawned`, `parentKey` that conversation's key). One named by two conversations
+  stays with the first by id, and a name that would make a loop is left out. A conversation with
+  `<subagent_reminder>` in its first 50 steps is a helper too, on its own when no conversation
+  names it.
+- **Turns,** in step order: a request starts one. A reply that calls tools, or is still `RUNNING`,
+  keeps it going, and so does each tool's result, which goes back to the model; a tool that failed
+  does too, since the model sees the error and goes on. A reply with no tool calls ends the turn; a
+  reply whose status is `ERROR`, or an `ERROR_MESSAGE` step, ends it with an error; a step that was
+  stopped (`CANCELED`) ends it.
+- **Status:** **working** while a turn is going and `lastAt` is within `staleMinutes`, or while a
+  `RUNNING` (or `PENDING` or `WAITING`) step started within `staleMinutes`, since a command can run
+  on after its turn ended; a turn that went quiet for longer is **idle**. **error** when the turn
+  ended with an error; for a helper, **done** when its turn ended; **ready** when the turn ended
+  within `activeMinutes`; else **idle**. A conversation whose helper is working is working too (only
+  ready and idle are lifted). `needs` is always null: a tool that waits for approval is not shown,
+  since a run with no person there denies it quietly.
+- **The other fields:** `title`, only with snippets, is a helper's role, else the conversation's
+  title in the metadata (`summary.Title` or `summary.title`), else its first request (≤120 chars),
+  else its first prompt in `history.jsonl` that is not a command (`titleSource` `role`, `summary`,
+  `first-prompt` or `history`). `model` is null (see above), and `effort`, `branch` and
+  `entrypoint` are null. `startedAt` is the oldest step time seen and `lastAt` the newest, not
+  counting the steps that keep the books. `lastText` is the newest reply's words. `activity`, while
+  working, is the newest tool still running, else the first call of the newest reply that still
+  waits for its result, by its name, with a detail from its `args`: the first line of `CommandLine`,
+  a `Query` or `Pattern`, the base name of `AbsolutePath`, `TargetFile`, `DirectoryPath`,
+  `SearchDirectory` or `SearchPath`, the host of a `Url`, or a helper's role.
+- **Links:** a helper's start is a **down** link on the conversation that started it (label: the
+  helper's title), and its end an **up** link (label: its last reply); labels only with snippets.
+- **Detail:** the last 2 MB of the transcript, read the same way, so each step shows once: the
+  requests (`user`), replies (`assistant`), one `thinking` mark for a reply that thought, each tool
+  call (`tool`, by its name, with its detail), each tool's result (`result`, or `error` with its
+  words, or "Stopped"), and errors. Every answer is the whole recent list, with `reset: true`. When
+  the transcript has not changed size since `since`, the answer is `{ events: [], next: since }`.
+- **Never opened:** Pleni lists `brain`, and opens only `brain/*/.system_generated/logs/transcript_full.jsonl`
+  and `transcript.jsonl`, `cache/conversation_metadata.json`, `cache/last_conversations.json` and
+  `history.jsonl`. So never the login (it is in the system's credential store or keychain, or a file
+  such as `antigravity-oauth-token`), `settings.json`, the conversation databases (`.db` and `-wal`
+  files, which are SQLite) or a conversation's plans and notes.
+
 ### Mailbox (`src/sources/mailbox.js`)
 
 An optional folder that two agents use to coordinate through Markdown files: a **planner** assigns
@@ -657,11 +764,11 @@ export function readHqProjects(root, { platform = process.platform, relaySetting
 ## Snapshot (`src/model.js`)
 
 ```js
-export function buildSnapshot({ now, settings, claude, codex, grok, kimi, gemini, mailbox, dismissed, actions, asks, demo })  // any source may be null
+export function buildSnapshot({ now, settings, claude, codex, grok, kimi, gemini, antigravity, mailbox, dismissed, actions, asks, demo })  // any source may be null
 Snapshot = {
   version: 1, now,
   demo: boolean,   // true only in the demo, where the Projects page offers no New, Edit or Delete
-  sources: { claude: SourceInfo, codex: SourceInfo, grok: SourceInfo, kimi: SourceInfo, gemini: SourceInfo, mailbox: SourceInfo | null },
+  sources: { claude: SourceInfo, codex: SourceInfo, grok: SourceInfo, kimi: SourceInfo, gemini: SourceInfo, antigravity: SourceInfo, mailbox: SourceInfo | null },
   nodes: Node[], edges: Edge[], events: Event[], counts: { working, ready, idle, done, error, total },
   attention: [{ id: '<key>|<kind>', key, kind, text, at }],  // at is 0 when unknown
   tasks: null | [MailboxState['tasks'][number] & { box, boxName }],  // every mailbox's; box and boxName: 'hq' and 'HQ' or a project's id and name in an HQ, else null
@@ -676,7 +783,7 @@ Snapshot = {
 }
 SourceInfo = { enabled, ok, error, count }
 Node = {
-  key, parent, platform: 'human' | 'group' | 'claude' | 'codex' | 'grok' | 'kimi' | 'gemini' | 'relay',
+  key, parent, platform: 'human' | 'group' | 'claude' | 'codex' | 'grok' | 'kimi' | 'gemini' | 'antigravity' | 'relay',
   kind: 'person' | 'project' | 'tool' | 'relay' | 'session' | 'agent' | 'reviewer',
   title, subtitle, rank, role, tier: 'senior' | 'junior' | null,
   model, modelLabel, effort, status, startedAt, lastAt, activity, lastText,
@@ -706,7 +813,7 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
   sessions → sub-agents, recursively. A sub-agent whose parent is not listed hangs under its project.
 - AI tool tiles: while `toolTiles` is true, each top-level session hangs under its AI tool's tile,
   `tool:<platform>` (kind `tool`, platform the tool, parent `you`, title "Claude Code", "Codex",
-  "Grok", "Kimi Code" or "Gemini CLI", rank "AI tool", subtitle "N sessions" or "No sessions now"), instead of
+  "Grok", "Kimi Code", "Gemini CLI" or "Antigravity CLI", rank "AI tool", subtitle "N sessions" or "No sessions now"), instead of
   under `you` or its project, so grouping by project waits. A tool has a tile when its source is on
   and found its folder (`SourceInfo.ok`) or has sessions, even when none is listed, and also when
   anything on the map hangs under it. Who reports to whom (below) still wins, so the mailbox chain
@@ -1491,11 +1598,11 @@ text from a session.
 
 ```js
 export function createUsage({ getRoots, getSettings, now, claudeLimits, maxBytes, maxFiles })  // -> { read }
-// read({ fresh }) -> Promise<{ at, tools: { claude, codex, grok, kimi, gemini } }>, never rejects
+// read({ fresh }) -> Promise<{ at, tools: { claude, codex, grok, kimi, gemini, antigravity } }>, never rejects
 export function lastDays(now)  // -> { keys: ['YYYY-MM-DD' x 7], starts: [8 local midnights], start, end }
 ```
 
-Each tool is `{ on, today, week, days, atLeast, limits, error }`:
+Each tool is `{ on, today, week, days, atLeast, limits, error, counted }`:
 
 - `on`: the tool's source is enabled in Settings (`sources.<tool>.enabled`). A tool that is off is
   not read; its numbers are zero.
@@ -1510,7 +1617,7 @@ Each tool is `{ on, today, week, days, atLeast, limits, error }`:
   `from` is `'files'` (Codex) or `'statusLine'` (Claude Code), `plan` is a string or `null`, and
   `windows` is `[{ minutes, usedPercent, resetsAt }]` (`minutes` and `resetsAt` may be `null`;
   `resetsAt` is in ms; `usedPercent` is 0 to 100). A window the tool did not give is left out, never
-  made up. Grok, Kimi Code and Gemini CLI save no limits, so theirs is always `null`.
+  made up. Grok, Kimi Code, Gemini CLI and Antigravity CLI save no limits, so theirs is always `null`.
   **Claude Code's hook:** `createUsage({ claudeLimits })` takes an optional function (it may be
   async) that returns an `L` with `from: 'statusLine'`, or `null`. The server gives it
   `statusLineLimits(dir)` while `actions.limits` is on (see Plan limits for Claude Code below).
@@ -1519,6 +1626,8 @@ Each tool is `{ on, today, week, days, atLeast, limits, error }`:
   the rest of the answer is reused. Each window of a `statusLine` `L` also has a `name`
   (`'five_hour' | 'seven_day' | 'spend_limit'`); `spend_limit` has `minutes: null`.
 - `error`: plain words when the tool's folder is not set or not found, else `null`.
+- `counted`: false for a tool whose files on this computer hold no token counts, so its numbers are
+  always zero: only Antigravity CLI. Else true.
 
 **Which files and fields are read** (read-only; a file that cannot be read, or a bad line, is skipped):
 
@@ -1559,6 +1668,8 @@ Each tool is `{ on, today, week, days, atLeast, limits, error }`:
   `timestamp`. As with Codex, `tokens.input` holds the cached part: `input` is `tokens.input -
   tokens.cached` (not below 0) plus `tokens.tool` (tool-use prompts), `output` is `tokens.output`
   plus `tokens.thoughts` (thinking), `cacheRead` is `tokens.cached`, and `cacheWrite` is 0.
+- **Antigravity CLI:** nothing is read. Its transcripts hold no token counts, so Pleni only checks
+  that `<antigravity root>` is a folder (`error` when it is not), and `counted` is false.
 
 **Limits on work.** Only files changed since the start of the oldest of the 7 days are read. Pleni
 remembers each file's size and where it stopped, and reads only the bytes added to a growing `.jsonl`
@@ -1842,7 +1953,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   project's relay like any relay; it refuses project tiles, so an HQ project tile stays where its
   mailbox puts it.
 - **POST /api/hide** `{ key, hide: true }` passes the same checks and saves `people[key].role =
-  'hidden'` for a Claude Code, Codex, Grok, Kimi Code or Gemini CLI session or helper on the map (kind session,
+  'hidden'` for a Claude Code, Codex, Grok, Kimi Code, Gemini CLI or Antigravity CLI session or helper on the map (kind session,
   agent or reviewer; other keys `400`, a tile not on the map `404`). It answers
   `{ ok: true, role }` with the role it had before (null for none). `{ key, hide: false, role }` puts
   that role back (one of `superintendent`, `coordinator`, `lead`, `worker`, or null to remove it),
@@ -1928,7 +2039,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   like the snapshot). It answers `{ demo, limitsOn, at, tools }`, the shape `createUsage().read()` gives (see
   Usage) plus `limitsOn` (`settings.actions.limits`, false in the demo), with `?fresh=1` to skip the 30-second reuse. In the demo it answers `demoUsage(now)`:
   made-up numbers, limits for Claude Code (`from: 'statusLine'`) and Codex (`from: 'files'`) and
-  none for Grok, Kimi Code and Gemini CLI; it reads no folder. `createServer({ usage })` lets tests replace it.
+  none for Grok, Kimi Code, Gemini CLI and Antigravity CLI (which also has `counted: false`); it reads no folder. `createServer({ usage })` lets tests replace it.
 - **GET /api/statusline** needs the key cookie and a request from this computer. It answers `{ on,
   demo, ok, error, file, found, connected, stale, previous, lines }`: `on` is `settings.actions.limits`
   and the rest is `readStatusSetup`. In the demo it answers a fixed made-up state (`on: false`,
@@ -2010,7 +2121,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   ignored. A new answer goes through `setHtml`, so nothing is repainted when the words did not
   change, and the scroll place and a focused link are kept. Times in it are clock times, never "5 min ago", so
   a quiet minute changes nothing. One card for each tool whose `on` is true (a plain line when all
-  five are off), with the tool's mark and name (and a Codex plan name when it has one):
+  six are off), with the tool's mark and name (and a Codex plan name when it has one):
   - **Plan limits.** One bar for each window: `role="meter"` (0 to 100, `aria-label` and
     `aria-valuetext`) with the words in front, such as "5-hour limit: 63% used, resets at 4:30 PM"
     or "Weekly limit: 22% used, resets Mon 9:00 AM" (a name from `window.name`, else 300 minutes is
@@ -2027,7 +2138,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
     `target="_blank" rel="noopener noreferrer"`). Codex: "Codex saves its limits after each reply. None
     in the last 7 days." and a link to `https://chatgpt.com/codex/settings/usage`. Grok, Kimi Code and
     Gemini CLI: "<Tool> does not save plan limits on this computer. In <Tool>, type /usage." (`/stats`
-    for Gemini CLI)
+    for Gemini CLI). A tool with `counted: false` (Antigravity CLI): "<Tool> keeps no token counts or
+    plan limits on this computer. In <Tool>, type /usage.", and no tokens part (its `error` still
+    shows).
   - **Tokens.** "Today: 1.2 million tokens" and "Last 7 days: 8.4 million tokens" (`total`; "at
     least" in front when `atLeast`, with a note that Pleni stopped reading early), each with a line
     "Sent 900k · written back 250k · saved to memory 40k · read again from memory 40 million (not
@@ -2063,7 +2176,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   Dragging a session or relay tile more than 6 px onto another tile (or onto the person) posts
   `/api/placement`; valid bosses light up, Esc or a drop elsewhere cancels, and a short notice offers
   Undo. The drawer's **Reports to** menu does the same from the keyboard, with **Automatic** to undo.
-- **Tile:** platform mark (Claude Code, Codex, Grok, Kimi Code or Gemini CLI; Grok and Kimi Code are plain letters and Gemini CLI a plain diamond, not their makers' logos), title, rank, model label, status dot and words
+- **Tile:** platform mark (Claude Code, Codex, Grok, Kimi Code, Gemini CLI or Antigravity CLI; Grok, Kimi Code and Antigravity CLI are plain letters, G, K and A, and Gemini CLI a plain diamond, not their makers' logos), title, rank, model label, status dot and words
   ("Needs you", "Working", "Finished", "Idle", "Done", "Error"), the current activity or last text, and how
   long ago.
 - **List:** a table of sessions grouped by project with status filters; it is also the accessible
@@ -2323,7 +2436,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   in its List row, and a line at the top of its side panel's Now tab: "Roll over soon: Memory 87%
   full, squeezed 3 times." Its Details tab shows Memory ("680k of 780k tokens (87% full)", or
   "40k tokens in use" while the size is unknown) and Squeezed ("3 times, last 2 hours ago").
-- **Hide from the map:** the Now tab of a Claude Code, Codex, Grok, Kimi Code or Gemini CLI session or helper
+- **Hide from the map:** the Now tab of a Claude Code, Codex, Grok, Kimi Code, Gemini CLI or Antigravity CLI session or helper
   has **Hide from the map**, which posts `/api/hide`. The side panel closes, since the tile is
   gone, and the notice at the bottom of the page offers Undo, which puts back the role it had.
   Settings' own copy gets the role too. Roll over's Check step offers **Hide the old session** once
@@ -2376,7 +2489,9 @@ relay, with hand-offs that light up every few seconds. HQ's relay wakes the orch
 items, and HQ has one finished task of its own. The project mailboxes link to the two made-up
 projects by name. A Grok session and a Kimi
 Code session work in the same projects, and a Gemini CLI session updates the field app's help pages,
-with a helper that is done. In its agent mail, the
+with a helper that is done. An Antigravity CLI session speeds up the billing service's checkout
+page, with a helper (a conversation of its own) that found the slow queries; like Antigravity CLI's
+own files, it names no model. In its agent mail, the
 planner (which the relay wakes) and "Sales tax research" write to each other every loop, the
 person writes to "Sales tax research", and "Sales tax research" has sent the person ("Ada") a
 question that waits. It is used by `node bin/pleni.js --demo`, the screenshots and the

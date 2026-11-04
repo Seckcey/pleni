@@ -37,12 +37,15 @@ const RATES = 'grok:01a13b20-5c6d-7e8f-9a0b-1c2d3e4f5a6b';
 const ROUNDING = 'kimi:7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
 const HELP_PAGES = 'gemini:4b5c6d7e-8f90-4a1b-9c2d-3e4f5a6b7c8d';
 const SCREENSHOTS = `${HELP_PAGES}/codebase_investigator-5e6f`;
+// An Antigravity CLI helper is a conversation of its own, with an id of its own.
+const CHECKOUT = 'antigravity:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f';
+const SLOW_QUERIES = 'antigravity:6d7e8f9a-0b1c-4d2e-9f3a-4b5c6d7e8f90';
 const FIELD_LEAD = 'claude:6e1f2a3b-4c5d-4e6f-8a7b-9c0d1e2f3a4b';
 const DOWNLOADS = 'claude:7f2a3b4c-5d6e-4f70-8a9b-0c1d2e3f4a5c';
 // Made-up GitHub repositories for the Pull requests view.
 const GITHUB = { billing: 'example/billing-service', field: 'example/field-app' };
-const TOOLS = ['claude', 'codex', 'grok', 'kimi', 'gemini'];
-const ROOTS = { claude: '.claude', codex: '.codex', grok: '.grok', kimi: '.kimi-code', gemini: '.gemini' };
+const TOOLS = ['claude', 'codex', 'grok', 'kimi', 'gemini', 'antigravity'];
+const ROOTS = { claude: '.claude', codex: '.codex', grok: '.grok', kimi: '.kimi-code', gemini: '.gemini', antigravity: '.gemini/antigravity-cli' };
 
 // The planner is HQ's orchestrator; the coordinator runs the Billing service project mailbox.
 export const DEMO_KEYS = Object.freeze({ planner: PLANNER, coordinator: COORDINATOR, fieldCoordinator: FIELD_LEAD });
@@ -185,6 +188,24 @@ const CAST = [
     prompt: 'Find every help page that shows the old login screen.',
     last: 'Three help pages show the old login screen: login-help.md, first-run.md and faq.md.',
   },
+  // Antigravity CLI names no model and no branch in its files.
+  {
+    key: CHECKOUT, kind: 'session', title: 'Faster checkout page', cwd: BILLING, branch: null, entrypoint: null,
+    model: null, effort: null, status: 'working', start: 32,
+    prompt: 'Make the checkout page load faster.',
+    tools: [
+      ['run_command', 'npm run bench', 'The checkout page loads in 1.9 seconds.'],
+      ['view_file', 'checkout.ts', 'Read 180 lines.'],
+      ['replace_file_content', 'checkout.ts', 'Changed 1 block.'],
+    ],
+    texts: ['Most of the wait is three slow database queries.', 'The checkout page now loads in under a second.'],
+  },
+  {
+    key: SLOW_QUERIES, parent: CHECKOUT, kind: 'agent', title: 'Slow query finder', cwd: BILLING, branch: null,
+    entrypoint: null, model: null, effort: null, status: 'done', start: 30, end: 21,
+    prompt: 'Find the database queries that slow down the checkout page.',
+    last: 'Three queries read every order without an index: by customer, by date and by status.',
+  },
   {
     key: TILES, kind: 'session', title: 'Map tile cache', cwd: FIELD, branch: 'main', entrypoint: 'cli',
     model: 'claude-opus-5-5', effort: 'low', status: 'idle', start: 140, end: 95,
@@ -226,6 +247,7 @@ const SPAWNS = {
   [LAYOUT]: 'Lay out the new invoice PDF',
   [LEDGER]: 'Check the ledger migration',
   [SCREENSHOTS]: 'Find the help pages with old screenshots',
+  [SLOW_QUERIES]: 'Find the slow checkout queries',
 };
 
 // One loop of hand-offs; the number is the beat inside the loop.
@@ -449,7 +471,8 @@ export function demoClaudeModels() {
 
 // What GET /api/usage gives in the demo, in the same shape as createUsage().read() in src/usage.js:
 // made-up token counts for the last 7 days, limits for Claude Code (from its status line) and Codex
-// (from its files), and none for Grok, Kimi Code and Gemini CLI. The same time always gives the same numbers.
+// (from its files), and none for Grok, Kimi Code, Gemini CLI and Antigravity CLI, which counts no
+// tokens either. The same time always gives the same numbers.
 export function demoUsage(now = Date.now()) {
   const win = lastDays(now);
   // [input, output, cacheRead, cacheWrite] per day, oldest first, in thousands of tokens.
@@ -459,8 +482,9 @@ export function demoUsage(now = Date.now()) {
     grok: [[80, 30, 200, 20], [0, 0, 0, 0], [95, 38, 260, 24], [60, 22, 150, 12], [0, 0, 0, 0], [110, 44, 310, 30], [45, 18, 120, 9]],
     kimi: [[0, 0, 0, 0], [120, 50, 640, 70], [140, 56, 700, 80], [0, 0, 0, 0], [90, 36, 480, 52], [0, 0, 0, 0], [75, 30, 400, 44]],
     gemini: [[60, 22, 310, 0], [0, 0, 0, 0], [0, 0, 0, 0], [130, 48, 880, 0], [85, 31, 540, 0], [0, 0, 0, 0], [105, 40, 690, 0]],
+    antigravity: Array.from({ length: 7 }, () => [0, 0, 0, 0]),
   };
-  const tool = (name, limits) => {
+  const tool = (name, limits, counted = true) => {
     const days = win.keys.map((date, i) => {
       const [input, output, cacheRead, cacheWrite] = SHAPES[name][i].map((k) => k * 1000);
       return { date, input, output, cacheRead, cacheWrite, total: input + output + cacheWrite };
@@ -468,7 +492,7 @@ export function demoUsage(now = Date.now()) {
     const sum = (field) => days.reduce((n, d) => n + d[field], 0);
     const week = { input: sum('input'), output: sum('output'), cacheRead: sum('cacheRead'), cacheWrite: sum('cacheWrite'), total: sum('total') };
     const { date, ...today } = days[days.length - 1];
-    return { on: true, today, week, days, atLeast: false, limits, error: null };
+    return { on: true, today, week, days, atLeast: false, limits, error: null, counted };
   };
   const DAY = 24 * 60 * MIN;
   return {
@@ -495,6 +519,7 @@ export function demoUsage(now = Date.now()) {
       grok: tool('grok', null),
       kimi: tool('kimi', null),
       gemini: tool('gemini', null),
+      antigravity: tool('antigravity', null, false),
     },
   };
 }

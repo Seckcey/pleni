@@ -18,6 +18,8 @@ const CHILD = 'codex:bbbbbbbb-0000-4000-8000-000000000002';
 const REVIEWER = 'codex:bbbbbbbb-0000-4000-8000-000000000003';
 const OTHER = 'claude:cccccccc-0000-4000-8000-000000000001';
 const GEMINI = 'gemini:dddddddd-0000-4000-8000-000000000001';
+const AGY = 'antigravity:eeeeeeee-0000-4000-8000-000000000001';
+const AGY_HELPER = 'antigravity:eeeeeeee-0000-4000-8000-000000000002';
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pleni-model-'));
@@ -1692,7 +1694,7 @@ test('inFolder tidies ".." in a typed folder, but never climbs above a drive', (
 
 // ---- AI tool tiles (settings.toolTiles) ----
 
-function toolSnap({ settings = {}, claude = [], codex = [], grok, kimi, gemini, mailbox = null } = {}) {
+function toolSnap({ settings = {}, claude = [], codex = [], grok, kimi, gemini, antigravity, mailbox = null } = {}) {
   const found = (root, sessions) => (sessions === null ? null : { ok: true, error: null, root, sessions });
   return buildSnapshot({
     now: NOW,
@@ -1702,6 +1704,7 @@ function toolSnap({ settings = {}, claude = [], codex = [], grok, kimi, gemini, 
     grok,
     kimi,
     gemini,
+    antigravity,
     mailbox,
   });
 }
@@ -1713,10 +1716,21 @@ test('AI tool tiles: each tool that is on and found has a tile under you, with i
     grok: { ok: true, error: null, root: '/home/ada/.grok', sessions: [] },
     kimi: { ok: false, error: 'Pleni could not find the Kimi Code folder.', root: '/home/ada/.kimi-code', sessions: [] },
     gemini: { ok: true, error: null, root: '/home/ada/.gemini', sessions: [session(GEMINI, { title: 'Docs pass', model: 'gemini-3-pro-preview' })] },
+    // Antigravity CLI names no model, and its helper is a conversation of its own.
+    antigravity: {
+      ok: true,
+      error: null,
+      root: '/home/ada/.gemini/antigravity-cli',
+      sessions: [
+        session(AGY, { title: 'Faster checkout', model: null, entrypoint: null }),
+        session(AGY_HELPER, { parentKey: AGY, kind: 'agent', title: 'Slow query finder', model: null, entrypoint: null, status: 'done' }),
+      ],
+    },
   });
   assert.equal(s.toolTiles, true);
   const tiles = s.nodes.filter((n) => n.kind === 'tool');
   assert.deepEqual(tiles.map((n) => [n.key, n.title, n.platform, n.parent, n.subtitle]), [
+    ['tool:antigravity', 'Antigravity CLI', 'antigravity', 'you', '2 sessions'],
     ['tool:claude', 'Claude Code', 'claude', 'you', '4 sessions'],
     ['tool:codex', 'Codex', 'codex', 'you', '2 sessions'],
     ['tool:gemini', 'Gemini CLI', 'gemini', 'you', '1 session'],
@@ -1725,6 +1739,11 @@ test('AI tool tiles: each tool that is on and found has a tile under you, with i
   assert.equal(node(s, GEMINI).parent, 'tool:gemini');
   assert.equal(node(s, GEMINI).modelLabel, 'Gemini 3 Pro Preview');
   assert.deepEqual(s.sources.gemini, { enabled: true, ok: true, error: null, count: 1 });
+  assert.equal(node(s, AGY).parent, 'tool:antigravity');
+  assert.equal(node(s, AGY).platform, 'antigravity');
+  assert.equal(node(s, AGY).modelLabel, null);
+  assert.equal(node(s, AGY_HELPER).parent, AGY, 'an Antigravity CLI helper stays under the conversation that started it');
+  assert.deepEqual(s.sources.antigravity, { enabled: true, ok: true, error: null, count: 2 });
   assert.equal(node(s, 'tool:grok').rank, 'AI tool');
   assert.deepEqual(node(s, 'tool:grok').projectIds, []);
   assert.equal(node(s, LEAD).parent, 'tool:claude');

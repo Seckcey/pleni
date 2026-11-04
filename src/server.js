@@ -132,7 +132,7 @@ const MESSAGES = {
   loopMove: 'A session cannot report to one of its own helpers.',
   badDismiss: 'Pleni could not read which notice to dismiss.',
   badWatch: 'Pleni could not read that. Only a session or the relay can be watched.',
-  badHide: 'Pleni could not read that. Only a Claude Code, Codex, Grok, Kimi Code or Gemini CLI session can be hidden.',
+  badHide: 'Pleni could not read that. Only a Claude Code, Codex, Grok, Kimi Code, Gemini CLI or Antigravity CLI session can be hidden.',
   goneHide: 'That session is not on the map any more, so there is nothing to hide.',
   goneWatch: 'That tile is not on the map any more.',
   openRemote: 'A session can be opened in a window only on the computer that runs Pleni, not from another device.',
@@ -721,7 +721,7 @@ async function postPlacement(app, req, res, host) {
 // 'hidden', the same as Settings' Role "Hide it", and answers { ok: true, role } with the role it
 // had before (null for none). Undo sends { key, hide: false, role } to put that role back. Hiding
 // only changes Pleni's settings: no session file is touched.
-const HIDE_KEY = /^(claude|codex|grok|kimi|gemini):/;
+const HIDE_KEY = /^(claude|codex|grok|kimi|gemini|antigravity):/;
 const UNHIDE_ROLES = new Set(['superintendent', 'coordinator', 'lead', 'worker']);
 async function postHide(app, req, res, host) {
   const body = await readJsonPost(req, res, host);
@@ -1119,7 +1119,7 @@ function sendModels(app, req, res, host) {
   return sendJson(req, res, 200, { ...base, codex, claude });
 }
 
-// The Usage popup: { demo, at, tools: { claude, codex, grok, kimi, gemini } }, tokens used in the last 7
+// The Usage popup: { demo, at, tools: { claude, codex, grok, kimi, gemini, antigravity } }, tokens used in the last 7
 // days and plan limits (src/usage.js), and `limitsOn`: whether Connect for plan limits is on. Read-only,
 // so any signed-in device may read it. `?fresh=1` skips the 30-second reuse. The demo answers
 // made-up numbers.

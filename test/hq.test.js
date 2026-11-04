@@ -583,7 +583,7 @@ test('the store reads an HQ folder end to end, and a project relay keeps no sess
   ]);
   writeMailbox(path.join(dir, 'notes'), { coordinator: NOTES_LEAD });
   write(hq, '.relay/codex.json', json({ thread_id: THREAD }));
-  const settings = cleanSettings({ sources: { mailbox: { enabled: true, root: hq }, claude: { enabled: false }, codex: { enabled: false }, grok: { enabled: false }, kimi: { enabled: false }, gemini: { enabled: false } } });
+  const settings = cleanSettings({ sources: { mailbox: { enabled: true, root: hq }, claude: { enabled: false }, codex: { enabled: false }, grok: { enabled: false }, kimi: { enabled: false }, gemini: { enabled: false }, antigravity: { enabled: false } } });
   // Just after the worker run started (2026-10-12 16:00 UTC), so it is recent.
   const store = createStore({ settings, roots: { mailbox: hq }, now: () => Date.UTC(2026, 9, 12, 16, 30) });
   t.after(() => store.close());
