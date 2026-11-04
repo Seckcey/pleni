@@ -513,7 +513,7 @@ Snapshot = {
   projects: [{ id, name, repo }],  // the Projects page, in projectList order; never a folder path (the folder stays in settings)
   actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean, teleport: boolean, send: boolean, answers: boolean },  // the page may show each button (setting on, Pleni on Windows; answers on any system)
   asks: Ask[],  // the questions Pleni holds for the person (src/answers.js), oldest first
-  codexCloud: { live: boolean },  // settings.codexCloud.live: the page shows the Cloud link only while it is true
+  codexCloud: { live: boolean },  // settings.codexCloud.live: the Cloud page lists Codex cloud tasks only while it is true
 }
 SourceInfo = { enabled, ok, error, count }
 Node = {
@@ -1683,7 +1683,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   are both on and the request is from this computer (like `/api/open`); `method` is
   `settings.github.mergeMethod`. When `on` is false, `repos` is empty and nothing runs. Otherwise
   `error` and `repos` come from `github.status` for the repositories on the map (`node.github`,
-  reviewers left out), or from `demoGithub` in the demo. Another device gets the same status, with
+  reviewers left out), then those of the person's projects (`settings.projectList[].repo`, each
+  once), or from `demoGithub` in the demo. Another device gets the same status, with
   `merge: false`. `createServer({ github })` lets tests replace `createGithub()`.
 - **GET /api/cloud** (`?fresh=1` for Look again) needs the key cookie and answers any signed-in
   device `{ on, demo, at, tasks, error }`. `on` is `settings.codexCloud.live` (always true in the
@@ -1898,7 +1899,16 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   **Merge now**, **Cancel**) and posts `/api/github/merge` with the commit id the page showed. The
   answer shows in the row, takes the focus, and is read out. One that cannot be merged yet says why.
   Saving Settings drops the last answer, so the view asks again.
-- **Cloud:** the person's Codex cloud tasks, newest first, from `GET /api/cloud`. The page asks when
+- **Cloud:** always in the nav, in two parts. **Claude Code cloud sessions:** Claude Code gives
+  other programs no list of them, and Pleni never reads the person's claude.ai login, so this part
+  has an **Open your Claude cloud sessions** link to `https://claude.ai/code` (a new tab,
+  `rel="noopener noreferrer"`) and, with Live GitHub status on, the pull requests in the `GET
+  /api/github` answer whose branch starts with `claude/` (the branches cloud sessions push), open
+  and draft ones first, then the newest, at most 20: each with its title and number linking to
+  GitHub, its state and checks pills, the repository, the branch and "Updated". The page asks
+  `GET /api/github` as the Pull requests page does, only while it is open. With Live GitHub status
+  off it says to turn it on in Settings, under Sources; a note says a session that has opened no
+  pull request shows only on claude.ai/code. **Codex cloud tasks:** the person's Codex cloud tasks, newest first, from `GET /api/cloud`. The page asks when
   it opens and then once a minute while it stays open and visible, never on another page; **Look
   again** asks with `?fresh=1`. Each task shows its title, a status chip in plain words (`pending`
   "Working", `ready` "Ready", `applied` "Applied", `error` "Error", else "Unknown"), the environment
@@ -1907,8 +1917,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `rel="noopener noreferrer"`, only for an address of the form
   `https://chatgpt.com/codex/tasks/<id>`). A note says that Pleni shows titles and status, never
   messages. Empty: "No Codex cloud tasks." An error shows its plain message and **Look again**.
-  While the setting is off, the link is hidden and the page says so. Saving Settings drops the last
-  answer.
+  While the setting is off, this part says so (the Cloud link stays, for the Claude part). Saving
+  Settings drops the last answer.
 - **Drawer:** clicking a tile opens the session's details and live recent events from
   `/api/session`. Esc closes it; focus is trapped while open and returned afterwards. When
   `snapshot.actions.openTerminal` is true and the page itself was opened on this computer

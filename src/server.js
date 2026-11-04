@@ -1065,7 +1065,7 @@ async function sendGithub(app, req, res, host, params) {
   const { github } = app.readSettings().settings;
   const base = { on: github.live, merge: github.live && github.merge && isLocalRequest(host, req), method: github.mergeMethod };
   if (!github.live) return sendJson(req, res, 200, { ...base, error: null, repos: [] });
-  const repos = reposOnMap(app.store);
+  const repos = reposOnMap(app);
   const answer = app.store.demo ? demoGithub(repos) : await app.github.status({ repos, fresh: params.get('fresh') === '1' });
   return sendJson(req, res, 200, { ...base, ...answer });
 }
@@ -1098,7 +1098,7 @@ async function postMerge(app, req, res, host) {
     number: body.number,
     head: body.head,
     method: github.mergeMethod,
-    known: new Set(reposOnMap(app.store)),
+    known: new Set(reposOnMap(app)),
   });
   if (result.ok) return sendJson(req, res, 200, { ok: true });
   return sendError(req, res, result.status, result.error);
@@ -1159,10 +1159,15 @@ function modelsOnMap(store, platform) {
 }
 
 // The GitHub repositories the sessions on the map work in (node.github), not counting reviewers.
-function reposOnMap(store) {
+// The GitHub repositories of the sessions on the map, then of the person's projects (so pull requests
+// that cloud sessions opened in a project's repository show even when no session here works in it).
+function reposOnMap(app) {
   const repos = new Set();
-  for (const n of store.snapshot()?.nodes ?? []) {
+  for (const n of app.store.snapshot()?.nodes ?? []) {
     if (n && typeof n.github === 'string' && n.kind !== 'reviewer') repos.add(n.github);
+  }
+  for (const project of app.readSettings().settings.projectList ?? []) {
+    if (project && typeof project.repo === 'string' && project.repo) repos.add(project.repo);
   }
   return [...repos];
 }
