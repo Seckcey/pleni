@@ -8,6 +8,13 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **Each relay worker shows its AI tool.** A relay worker can run in another AI tool, such as
+  Codex or Gemini CLI, not only in Claude Code, and its run note says which. Pleni now reads that.
+  A worker whose session Pleni can see shows as that session, in the right tool, with the Worker
+  rank; the other workers show that tool's mark. Older run notes name no tool, so their workers
+  count as Claude Code, as before. A worker in a tool Pleni does not read shows the mailbox's
+  mark. A worker whose session was archived keeps its own tile. In the demo, the Field app has a
+  Codex worker.
 - **HQ and project mailboxes.** When your mailbox folder is an HQ (one planner, the orchestrator,
   for several projects; see "Run several projects (HQ)" in the relay's README), Pleni reads the
   project mailboxes it lists too, at most 20. The map shows you, then the orchestrator, then HQ's
