@@ -49,7 +49,7 @@
   .\bridge-relay.ps1 -Enroll -SessionId <uuid> -AllowCheck 'php -l','powershell -NoProfile -File C:/Users/ada/checks/lint.ps1'
       (operator only: extra check-command prefixes the coordinator may run, granted as Bash(<prefix>*). Stored in
        .relay\coordinator.json. To change them, exit the coordinator session and run -Enroll again; no other mode
-       accepts -AllowCheck. Refused: '*', empty, git/claude/codex/npm/npx/rm/del, pwsh, cmd, powershell without
+       accepts -AllowCheck. Refused: '*', empty, git/claude/codex/gemini/npm/npx/rm/del, pwsh, cmd, powershell without
        -File <script>, node without a script path or with -e/-p.)
   .\bridge-relay.ps1 -ShowCoordinatorArgs   (read-only: prints the coordinator's allowed/denied tools and rules as JSON)
   .\bridge-relay.ps1 -EnrollCodex -ThreadId 01234567-89ab-4def-8123-456789abcdef   (optional: wake that Codex thread)
@@ -222,12 +222,12 @@ function Get-CheckPrefixError([string]$Prefix) {
     if ($p.Contains('*')) { return "it contains '*' (the relay appends the only wildcard)" }
     if ($p -match '[\x00-\x1f;&|<>()`]|\$\(') { return 'it contains a shell operator, parenthesis, backtick or control character' }
     if ($p.Contains(',')) { return "it contains ',' (powershell -File passes a list as one string; for several checks run -Enroll from a PowerShell prompt with -AllowCheck 'a','b')" }
-    if ($p -match '^(git|claude|codex|npm|npx|rm|del)') { return "it starts with '$($Matches[1])', which is never granted to the coordinator" }
+    if ($p -match '^(git|claude|codex|gemini|npm|npx|rm|del)') { return "it starts with '$($Matches[1])', which is never granted to the coordinator" }
     $t = @($p -split '\s+')
     $exe = $t[0]
     if ($p -match '^"([^"]*)"') { $exe = $Matches[1] } elseif ($p -match "^'([^']*)'") { $exe = $Matches[1] }
     $leaf = (($exe -replace '^.*[\\/]', '') -replace '\.(exe|cmd|bat|com|ps1)$', '').ToLowerInvariant()
-    if (@('git', 'claude', 'codex', 'npm', 'npx', 'rm', 'del') -contains $leaf) { return "it runs '$leaf', which is never granted to the coordinator" }
+    if (@('git', 'claude', 'codex', 'gemini', 'npm', 'npx', 'rm', 'del') -contains $leaf) { return "it runs '$leaf', which is never granted to the coordinator" }
     if (@('pwsh', 'cmd') -contains $leaf) { return "'$leaf' is on the coordinator's deny list; enroll powershell -NoProfile -File <script> instead" }
     if ($leaf -eq 'powershell') {
         $i = 1
@@ -897,7 +897,7 @@ function Get-RelayRules($Coord) {
         "The protocol is unchanged: README.md and CLAUDE.md in $Root (read them now if they are not in your context). " +
         'Act only within current authorization. Write only Claude-owned files; never edit Codex-owned files, worker reports or anything under .relay, bin or tests. ' +
         'You can read application repositories but write only Claude-owned files in the mailbox; workers make all code changes. ' +
-        "Start workers only with: powershell -NoProfile -ExecutionPolicy Bypass -File $spawn -TaskId <TASK-ID> -Worker W<n> [-Type review] [-MaxBudgetUsd <n>] . " +
+        "Start workers only with: powershell -NoProfile -ExecutionPolicy Bypass -File $spawn -TaskId <TASK-ID> -Worker W<n> [-Type review] [-Tool claude|codex|gemini] [-MaxBudgetUsd <n>] . " +
         'Workers run detached: do not wait for, poll or interrupt them; the relay notifies you once when a worker ends. ' +
         "Checks you may run yourself: the relay harness, powershell -NoProfile -ExecutionPolicy Bypass -File $r/bin/bridge-relay-check.ps1 (no arguments); node --test <test path>; and these operator-enrolled check prefixes: $enrolled. " +
         "Any other command needs $OwnerName. Never ask for approval mid-turn (nobody can answer; the request is refused) and never work around a refusal (other shells, node -e, a new script, edits under bin, tests or .relay). " +
@@ -963,7 +963,7 @@ function Get-CoordinatorDeny {
         'Bash(git -C * merge*)', 'Bash(git -C * rebase*)', 'Bash(git -C * reset*)', 'Bash(git -C * checkout*)',
         'Bash(git -C * switch*)', 'Bash(git -C * commit*)', 'Bash(git -C * tag*)', 'Bash(git -C * stash*)', 'Bash(git -C * config*)',
         'Bash(git -C * fetch*)', 'Bash(git -C * pull*)', 'Bash(git -C * worktree remove*)', 'Bash(git -C * branch -d*)', 'Bash(git -C * branch -D*)',
-        'Bash(claude*)', 'Bash(codex*)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(rm *)')
+        'Bash(claude*)', 'Bash(codex*)', 'Bash(gemini*)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(rm *)')
     # HQ: a project mailbox inside HQ (such as projects\<id>) falls under the Edit rule above, so its relay files are
     # denied the same way.
     foreach ($p in @($script:HqProjects)) {

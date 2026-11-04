@@ -7,6 +7,8 @@
 //   fail                  fail before the session is contacted (stderr only, exit 1)
 //   wrong-session         like ok, but the result reports a different session id (copy/fork)
 // A missing transcript for --resume <id> behaves like the real CLI: stderr "No conversation found", exit 1.
+// A worker run (bin\spawn-worker.ps1: a new session with --session-id <id> and no --resume) prints a success result
+// with that session id, a cost and token counts, and its start record also holds the exact arguments.
 // It records each call in <RELAY_STUB_DIR>\calls.jsonl. The API key is never written: only booleans about it.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -41,6 +43,8 @@ try { mode = fs.readFileSync(path.join(stubDir, 'mode.txt'), 'utf8').trim() || '
 const pi = argv.indexOf('-p');
 const prompt = (pi >= 0 && pi + 1 < argv.length) ? argv[pi + 1] : '';
 const resume = opt('--resume');
+const sessionIdFlag = opt('--session-id');
+const worker = !resume && !!sessionIdFlag;
 const m = /\[bridge-relay ([^\]]+)\]/.exec(prompt);
 const key = process.env.ANTHROPIC_API_KEY || '';
 const running = stubDir ? path.join(stubDir, 'running-' + process.pid) : null;
@@ -55,7 +59,7 @@ log({
   no_session_persistence: argv.includes('--no-session-persistence'),
   system_append: argv.includes('--append-system-prompt'), allowed_tools: argv.includes('--allowedTools'),
   key_is_dummy: key === 'sk-ant-relay-check-dummy', key_present: key.length > 0,
-  oauth_absent: !process.env.CLAUDE_CODE_OAUTH_TOKEN, cwd: process.cwd()
+  oauth_absent: !process.env.CLAUDE_CODE_OAUTH_TOKEN, cwd: process.cwd(), args: worker ? argv : undefined
 });
 if (running) fs.writeFileSync(running, String(start));
 
@@ -70,6 +74,15 @@ function finish(code, outcome, resultObj, stderrText) {
 const transcript = findTranscript(resume);
 if (mode === 'fail') {
   finish(1, 'fail', null, 'Error: simulated CLI failure before the session was contacted');
+} else if (worker) {
+  const sm = /^sleep:(\d+)$/.exec(mode);
+  if (sm) sleep(Number(sm[1]) * 1000);
+  finish(0, 'ok', {
+    type: 'result', subtype: 'success', is_error: false, duration_ms: Date.now() - start, num_turns: 2,
+    result: 'stub worker run done', session_id: sessionIdFlag, total_cost_usd: 0.05,
+    usage: { input_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, output_tokens: 50 },
+    modelUsage: { 'claude-opus-5-5': { inputTokens: 10, outputTokens: 50, cacheReadInputTokens: 1000, cacheCreationInputTokens: 100 } }
+  }, null);
 } else if (!resume || !transcript) {
   finish(1, 'no-session', null, 'No conversation found with session ID: ' + resume);
 } else {

@@ -67,3 +67,15 @@ You are the **Claude coordinator**. **Codex, the planner, is your boss.** The fu
       once, such as a very large diff.
     - When the owner, the planner or the assignment names a model or effort, use that instead.
     - Write the model and effort you chose, and why, in the worker brief.
+14. **Choose the AI tool for each worker.** Claude Code is the usual one. Use Codex or Gemini only
+    when the owner, the planner or the assignment asks for it, and only a tool that `worker_tools`
+    in `bin\relay-settings.json` lists. The launcher refuses any other.
+    - Pass it with `-Tool codex` or `-Tool gemini`, and write it in the brief's `- **Tool:**` line.
+    - The models in rule 13 are Claude's. For Codex or Gemini, leave `-Model` out to use that tool's
+      default model, or name one of its own models. Codex has no `max` effort, and Gemini has no
+      effort setting.
+    - Gemini costs money for every run, and both tools have a daily limit (`worker_runs_per_day`).
+    - A Codex worker does not commit: the launcher commits its changes when it finishes. Review that
+      commit like any other.
+    - A Gemini worker can read only its worktree and the task's `workers` folder. Put what it needs
+      from the assignment into its brief.

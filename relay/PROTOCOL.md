@@ -1,8 +1,9 @@
 # Mailbox protocol
 
 This folder is how three kinds of AI sessions work together: a **planner** (Codex), a
-**coordinator** (Claude Code) and the coordinator's **workers** (Claude Code worker sessions). It
-is plain Markdown on disk. There is no tracker and no network.
+**coordinator** (Claude Code) and the coordinator's **workers** (worker sessions in Claude Code, or
+in Codex or Gemini CLI if the owner turns them on). It is plain Markdown on disk. There is no
+tracker and no network.
 
 In a mailbox, this file is called `README.md`. The relay tells the coordinator to read it.
 
@@ -12,7 +13,7 @@ In a mailbox, this file is called `README.md`. The relay tells the coordinator t
 | ----------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | Planner     | Codex                  | Assigns tasks, answers questions, reviews handoffs, and accepts or returns work. Owns pushes, merges, release notes and the tracker, except the coordinator's narrow GitHub rule (rule 12 in `CLAUDE.md`).          | Edit files that the coordinator or a worker owns.                                                |
 | Coordinator | A Claude Code session  | Reads assignments, checks the repository, makes an isolated worktree and branch, briefs and supervises workers, answers routine in-scope worker questions, reviews their diffs, runs checks, reports status, asks the planner the questions that matter, writes handoffs. | Write app code, push (except rule 12), merge, mark a pull request ready, deploy, touch the tracker, or edit planner-owned files. |
-| Worker      | A Claude Code session  | Makes the code change inside its worktree and file scope, runs the named checks, commits locally, and writes its report.                                                                                             | Leave its worktree or file scope, push, merge, deploy, or edit any other file here.              |
+| Worker      | An AI tool's session (Claude Code, Codex or Gemini CLI) | Makes the code change inside its worktree and file scope, runs the named checks, commits locally, and writes its report.                                                                                             | Leave its worktree or file scope, push, merge, deploy, or edit any other file here.              |
 
 ## Golden rule: one writer per file
 
@@ -99,7 +100,8 @@ always use the script, so nobody reads half a message.
 4. **The coordinator briefs workers:** writes `workers/W1-brief.md` (one implementation worker per
    file scope that does not overlap; read-only reviewers are allowed) and starts the worker.
 5. **Workers do the work:** only inside their worktree and file scope. They commit locally and
-   write `W1-report.md`.
+   write `W1-report.md`. A Codex worker cannot write Git's own folder, so the launcher commits its
+   changes when it finishes.
 6. **The coordinator reviews:** reads the diff, runs the named checks again, and sends the worker
    back if needed.
 7. **Questions, at any time:**
@@ -131,26 +133,36 @@ always use the script, so nobody reads half a message.
 The coordinator starts each worker with `bin\spawn-worker.ps1`:
 
 ```powershell
-.\bin\spawn-worker.ps1 -TaskId <TASK-ID> -Worker W1 [-Type implementation|review] [-MaxBudgetUsd 3] [-Model <id>] [-Effort <level>]
+.\bin\spawn-worker.ps1 -TaskId <TASK-ID> -Worker W1 [-Type implementation|review] [-Tool claude|codex|gemini] [-MaxBudgetUsd 3] [-Model <id>] [-Effort <level>]
 .\bin\spawn-worker.ps1 -TaskId <TASK-ID> -Status
 ```
 
-- A worker is a Claude Code session started with `claude -p`. It uses the owner's Claude
-  subscription login, never an API key.
+- A worker runs in an AI tool. The usual one is Claude Code, started with `claude -p`, with the
+  owner's Claude subscription login, never an API key.
+- Codex (`-Tool codex`) and Gemini CLI (`-Tool gemini`) run workers only when the owner lists them in
+  `worker_tools` in `bin\relay-settings.json`. The launcher refuses any other tool.
+  - Codex runs `codex exec` with the owner's ChatGPT sign-in, never an API key.
+  - Gemini runs `gemini -p` with the owner's own Gemini login. It costs money for every run.
 - Its working folder is the `Worktree` line of `W<n>-brief.md`. That folder must be inside the
-  worktrees folder.
+  worktrees folder. A Codex reviewer works in the task's `workers` folder instead, and reads the
+  worktree from there.
 - It may use only the tools on its list. Implementation workers: file tools, `git` and `node`.
   Reviewers: reading, writing their report, and read-only `git`. Always refused: push, merge,
   rebase, reset, checkout, branch, worktree, tag, stash, config, npm, npx and web access.
-- The launcher writes `W<n>.log` (the result), `W<n>.run.json` (state, cost and `session_id`) and
-  `runs.md` (one line per run) in the task's `workers` folder.
-- Each run is a saved Claude Code session with its own id (`session_id`). Pleni shows it under the
-  coordinator, and once the run has ended, the owner can open it with `claude --resume <session_id>`
-  in its worktree.
+  - A Codex worker works in Codex's `workspace-write` sandbox instead of a list.
+  - A Gemini worker gets a policy file for its run, which allows only these and denies the rest.
+- The launcher writes `W<n>.log` (the result), `W<n>.run.json` (state, cost, `tool`, `session_id` and
+  `tokens`) and `runs.md` (one line per run, with its Tool and Tokens) in the task's `workers` folder.
+- Each run is a saved session with its own id (`session_id`). Pleni shows it under the coordinator.
+  For a Claude run, once the run has ended, the owner can open it with
+  `claude --resume <session_id>` in its worktree. For Codex, the id is the thread's id. For Gemini, it
+  is the session id that Gemini CLI reports.
 - The usual model is Opus 5.5 with a 1M context, at `xhigh` effort. `-Model` and `-Effort` change
-  them for one run.
-- Each run has a dollar cap (`-MaxBudgetUsd`, usually 3) unless `bin\cost-limits.json` turns the
-  caps off.
+  them for one run. A Codex or Gemini worker with no `-Model` uses that tool's own default model.
+  Codex has no `max` effort, and Gemini CLI has no effort setting.
+- Each Claude run has a dollar cap (`-MaxBudgetUsd`, usually 3) unless `bin\cost-limits.json` turns
+  the caps off. Codex and Gemini report no cost. Instead, `worker_runs_per_day` in
+  `bin\cost-limits.json` limits how many of their workers may start in one day.
 
 ## Signals
 
