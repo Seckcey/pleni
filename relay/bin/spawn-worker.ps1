@@ -9,7 +9,11 @@
   - Codex (-Tool codex), Gemini (-Tool gemini) and Antigravity (-Tool antigravity) stay off until worker_tools in
     bin\relay-settings.json lists them.
     Codex: `codex exec` in a new thread, signed in with ChatGPT (codex login status). OPENAI_API_KEY and the other
-    OpenAI overrides are removed for the child, so it never bills an API account. Gemini: `gemini -p` with the owner's
+    OpenAI overrides are removed for the child, so it never bills an API account. It starts with --ignore-user-config and
+    --ignore-rules, so none of the owner's config.toml (extra folders, MCP servers, hooks) or command rules apply, with
+    -c web_search=disabled and the network off in the sandbox. The launcher passes on only the model and effort (when
+    none was given), the sign-in store (keyring or auto) and the Windows sandbox from config.toml. It needs a Codex CLI
+    from April 2026 or newer: an older one stops at once, and the worker's note says to update Codex. Gemini: `gemini -p` with the owner's
     own Gemini login (GEMINI_API_KEY passes through untouched; Gemini is paid per use), a per-run admin policy
     (--admin-policy, checked by SHA-256 right before the start) and a turn limit (GEMINI_CLI_SYSTEM_DEFAULTS_PATH).
     Antigravity: `agy` in a new headless conversation (--input-format stream-json, the prompt as one line on stdin),
@@ -36,6 +40,8 @@
     the init event) or a new Antigravity conversation (its conversation_id from the init event, saved as soon as agy
     reports it). Pleni can show it, and once a Claude run has ended, the owner can open it with
     claude --resume <session_id> in the worktree.
+  - Start requests: a coordinator in Codex or Gemini CLI cannot run this launcher itself, so it writes W<n>-start.md beside the
+    worker's brief and bin\bridge-relay.ps1 runs the launcher for it, with the checked values of that file.
   - -ResultFile and -NewWorktree: only bin\bridge-relay.ps1 passes them, for a start request (W<n>-start.md).
       -ResultFile   a .relay\dispatch\S<time>-<id>.result.json file of this mailbox (any other path is refused). The
                     launcher writes what happened there: ok (true or false), its own words, and the runner's pid and

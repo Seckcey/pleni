@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-  Bridge relay. Notifies the ONE enrolled, existing Claude coordinator session
-  when Codex writes the Markdown mailbox, and lists (never sends) the items that need Codex.
+  Bridge relay. Notifies the ONE enrolled, existing coordinator session (a Claude Code session, a Codex thread or a
+  Gemini CLI session) when Codex writes the Markdown mailbox, and lists (never sends) the items that need Codex.
 
 .DESCRIPTION
   Inbound (Codex -> Claude):
@@ -19,7 +19,34 @@
     One wake at a time, never while another Codex program holds the thread (the Codex app keeps every thread it
     opened), while a process has the thread id on its command line, or while a coordinator turn runs.
     ChatGPT sign-in only (codex login status); OpenAI/Codex API keys are removed for the child launch.
-  Rollovers: enrolled by name (-Enroll -SessionName, -EnrollCodex -ThreadName), the relay wakes the newest session
+  Coordinator tools: -Enroll -Tool claude|codex|gemini (claude when -Tool is left out; .relay\coordinator.json holds "tool", and a
+    file with no tool means claude). Every tool gets the same notices (notes, batching, debounce, caps, PAUSE, STOP, halts), one
+    coordinator turn at a time, and counts toward MaxWakesPerDay.
+      claude : as above.
+      codex  : -Enroll -Tool codex -ThreadName <name> | -ThreadId <id> [-CodexCwd <folder>] [-Model] [-Effort low..xhigh]. Each turn is
+               codex exec ... resume <thread id> <notice> in the coordinator's own folder, started with --ignore-user-config and
+               --ignore-rules (none of the owner's config.toml or command rules; the relay passes on only the model, the effort,
+               the sign-in store keyring or auto, and the Windows sandbox), --sandbox workspace-write, no network, web_search
+               disabled, and --add-dir <mailbox>\tasks. Never codex_exec_args. A Codex CLI from before April 2026 halts the relay
+               with an "update Codex" message. STATUS.md is the coordinator's own copy in its folder, which the relay copies into
+               the mailbox after each turn that got its notice.
+      gemini : -Enroll -Tool gemini -SessionId <uuid> [-CoordinatorCwd <folder>] [-Model] [-AllowCheck]. Each turn is gemini --resume
+               <id> -p <fixed words> -o stream-json with the notice on standard input, and a rules file the relay writes before
+               each turn (--admin-policy): it may write only <mailbox>\STATUS.md and Markdown files under tasks, and run only
+               read-only Git commands and the allowed checks. Gemini CLI skips the relay's turn limit in a mailbox folder, so
+               the owner's own model.maxSessionTurns is the sure limit. Each turn costs money.
+    A Codex or Gemini CLI coordinator works in a folder of its own with its orders there (AGENTS.md or GEMINI.md). One Codex
+    thread has one job: planner, coordinator, agent or HQ's orchestrator. -Tool antigravity is refused for a coordinator.
+  Start requests (tasks\<TASK-ID>\workers\W<n>-start.md, from templates\worker-start.md): a coordinator that cannot run
+    bin\spawn-worker.ps1 asks the relay to start a worker. On for a Codex or Gemini CLI coordinator, off for Claude Code unless
+    start_requests is true in bin\relay-settings.json. Each version of a request (SHA-256) runs at most once, between
+    coordinator turns, at most 5 a round and -MaxWorkerStartsPerDay (relay_max_worker_starts_per_day, 12) a day. A refusal
+    comes back to the coordinator as a note.
+  The guard on the relay's own files: while a Codex or Gemini CLI coordinator is enrolled, or start requests are on, the relay
+    stamps bin\*.ps1, tests\*.js, both settings files, the coordinator's orders file and .relay\coordinator.json, codex.json and
+    agents.json, and halts with a plain alert when one changes that the relay did not change itself (-ClearHalt after you look).
+    Every -Enroll keeps a copy of the old coordinator.json in .relay\backups.
+  Rollovers: enrolled by name (-Enroll -SessionName, -Enroll -Tool codex -ThreadName, -EnrollCodex -ThreadName), the relay wakes the newest session
     with that name and switches on its own when a newer one takes the name over: forward in time only, between turns.
   Agent mail (off until -EnrollAgent): agents send each other messages by name with bin\agent-mail.ps1, one file per
     message in mail\<name key>\new. For each enrolled agent (a Codex thread followed by its name), new mail wakes the
@@ -51,6 +78,8 @@
        .relay\coordinator.json. To change them, exit the coordinator session and run -Enroll again; no other mode
        accepts -AllowCheck. Refused: '*', empty, git/claude/codex/gemini/agy/npm/npx/rm/del, pwsh, cmd, powershell without
        -File <script>, node without a script path or with -e/-p.)
+  .\bridge-relay.ps1 -Enroll -Tool codex -ThreadName 'Coordinator' -Effort high   (a Codex thread, in a folder of its own, is the coordinator)
+  .\bridge-relay.ps1 -Enroll -Tool gemini -SessionId <uuid> -AllowCheck 'php -l'   (a Gemini CLI session is the coordinator)
   .\bridge-relay.ps1 -ShowCoordinatorArgs   (read-only: prints the coordinator's allowed/denied tools and rules as JSON)
   .\bridge-relay.ps1 -EnrollCodex -ThreadId 01234567-89ab-4def-8123-456789abcdef   (optional: wake that Codex thread)
   .\bridge-relay.ps1 -EnrollCodex -ThreadName 'Planner'   (or follow a name: a newer thread named Planner takes over)
