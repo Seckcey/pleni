@@ -1115,7 +1115,7 @@ test('a relay worker with a saved session shows as that session, under the coord
   const OWN = 'claude:dddddddd-0000-4000-8000-0000000000aa';
   const box = mailbox({ relay: { running: true, paused: false, halted: false, coordinatorKey: CLAUDE_SGT } });
   box.tasks[0].workers = [
-    { id: 'W1', state: 'running', model: null, startedAt: NOW - MIN, finishedAt: null, worktree: null, sessionId: OWN.slice('claude:'.length) },
+    { id: 'W1', state: 'running', model: null, startedAt: NOW - MIN, finishedAt: null, worktree: null, tool: null, sessionId: OWN.slice('claude:'.length) },
     { id: 'W2', state: 'finished', model: null, startedAt: NOW - HOUR, finishedAt: NOW - 30 * MIN, worktree: null, sessionId: 'dddddddd-0000-4000-8000-0000000000bb' },
   ];
   const claude = [
@@ -1127,9 +1127,11 @@ test('a relay worker with a saved session shows as that session, under the coord
   assert.equal(own.parent, CLAUDE_SGT);
   assert.equal(own.title, 'W1 · T-1: Split the service');
   assert.equal(own.status, 'working');
+  assert.equal(own.role, 'worker', 'a run note with no tool (null) still finds its Claude Code session, as a worker');
   assert.equal(s.nodes.some((n) => n.key === 'mailbox:T-1/W1'), false, 'no second tile for the same worker');
   assert.equal(edgeTo(s, OWN).active, 'down');
   assert.equal(node(s, 'mailbox:T-1/W2').parent, CLAUDE_SGT, 'a session Pleni cannot see keeps the run-note tile');
+  assert.equal(node(s, 'mailbox:T-1/W2').platform, 'claude', 'a run note with no tool key counts as Claude Code');
 });
 
 test('a relay worker in another AI tool shows as that tool\'s session, or with that tool\'s mark', () => {
@@ -1138,21 +1140,30 @@ test('a relay worker in another AI tool shows as that tool\'s session, or with t
   const GEMINI_OWN = 'gemini:dddddddd-0000-4000-8000-0000000000c3';
   const box = mailbox({ relay: { running: true, paused: false, halted: false, coordinatorKey: CLAUDE_SGT } });
   const run = (id, tool, sessionId, finishedAt = NOW - 10 * MIN) => ({ id, state: 'finished', model: null, startedAt: NOW - HOUR, finishedAt, worktree: null, tool, sessionId });
+  const ARCHIVED = 'codex:dddddddd-0000-4000-8000-0000000000c4';
   box.tasks[0].workers = [
     run('W1', 'codex', ID, null),
     run('W2', 'gemini', 'dddddddd-0000-4000-8000-0000000000c2'),
     run('W3', 'gemini', GEMINI_OWN.slice('gemini:'.length)),
     run('W4', 'claude', ID),
     run('W5', 'robot', ID),
+    run('W6', 'codex', ARCHIVED.slice('codex:'.length)),
   ];
   Object.assign(box.tasks[0].workers[0], { state: 'running', startedAt: NOW - MIN });
-  const codex = [...army().codex, session(CODEX_OWN, { title: 'You are Codex worker W1 (implementation).', entrypoint: 'exec', status: 'working' })];
+  const codex = [
+    ...army().codex,
+    session(CODEX_OWN, { title: 'You are Codex worker W1 (implementation).', entrypoint: 'exec', status: 'working' }),
+    session(ARCHIVED, { title: 'You are Codex worker W6 (implementation).', entrypoint: 'exec', status: 'done', archived: true }),
+  ];
   const gemini = [session(GEMINI_OWN, { title: 'You are Gemini worker W3 (review).', status: 'idle' })];
   const s = snap({ ...army(), codex, gemini, mailbox: box, settings: { groupBy: 'none', chain: CHAIN, sources: { mailbox: { enabled: true, planner: 'Sergeant Claude' } } } });
   const own = node(s, CODEX_OWN);
   assert.equal(own.parent, CLAUDE_SGT);
   assert.equal(own.platform, 'codex');
   assert.equal(own.title, 'W1 · T-1: Split the service');
+  assert.equal(own.role, 'worker', 'a worker shown as its own session keeps the worker rank');
+  assert.equal(own.rank, 'Agent');
+  assert.equal(node(s, GEMINI_OWN).role, 'worker');
   assert.equal(edgeTo(s, CODEX_OWN).active, 'down');
   assert.equal(s.nodes.some((n) => n.key === 'mailbox:T-1/W1'), false, 'no second tile for the same worker');
   assert.equal(node(s, GEMINI_OWN).parent, CLAUDE_SGT, 'a Gemini worker that Pleni can see is its own session');
@@ -1163,6 +1174,10 @@ test('a relay worker in another AI tool shows as that tool\'s session, or with t
   assert.equal(node(s, 'mailbox:T-1/W4').platform, 'claude', 'a Claude worker never takes the Codex thread with the same id');
   assert.equal(node(s, 'mailbox:T-1/W5').platform, 'relay', 'a tool that Pleni does not read gets the mailbox mark');
   assert.equal(node(s, 'mailbox:T-1/W5').parent, CLAUDE_SGT);
+  const w6 = node(s, 'mailbox:T-1/W6');
+  assert.equal(w6 && w6.platform, 'codex', 'a worker whose session was archived keeps its run-note tile');
+  assert.equal(w6.parent, CLAUDE_SGT);
+  assert.equal(node(s, ARCHIVED), undefined);
 });
 
 test('a report from a session moved under a boss lights that line upward', () => {

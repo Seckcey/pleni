@@ -71,6 +71,8 @@ function buildMailbox(root) {
   }));
   write(root, 'tasks/T-1/workers/W1-report.md', '## 2026-10-12 10:30 — Worker report\n');
   write(root, 'tasks/T-1/workers/W2.run.json', '﻿{"status":"running","model":"haiku","startedAt":1791900000,"tool":"../codex","sessionId":"not a session id"}');
+  write(root, 'tasks/T-1/workers/W3.run.json', JSON.stringify({ state: 'done', tool: 5 }));
+  write(root, 'tasks/T-1/workers/W4.run.json', JSON.stringify({ state: 'done', tool: '  ' }));
   write(root, 'tasks/T-1/workers/W10.run.json', '{ not json');
   write(root, 'tasks/T-1/workers/notes.txt', 'ignored');
 
@@ -140,6 +142,8 @@ test('reads tasks, states, titles, attention and workers', (t) => {
   assert.deepEqual(one.workers, [
     { id: 'W1', state: 'done', model: 'sonnet', startedAt: Date.UTC(2026, 9, 12, 16, 0), finishedAt: Date.UTC(2026, 9, 12, 16, 20), worktree: null, tool: 'codex', sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' },
     { id: 'W2', state: 'running', model: 'haiku', startedAt: 1791900000 * 1000, finishedAt: null, worktree: null, tool: 'unknown', sessionId: null },
+    { id: 'W3', state: 'done', model: null, startedAt: null, finishedAt: null, worktree: null, tool: 'unknown', sessionId: null },
+    { id: 'W4', state: 'done', model: null, startedAt: null, finishedAt: null, worktree: null, tool: null, sessionId: null },
     { id: 'W10', state: null, model: null, startedAt: null, finishedAt: null, worktree: null, tool: null, sessionId: null },
   ]);
 

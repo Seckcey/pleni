@@ -648,9 +648,9 @@ function readRun(file, st) {
   };
 }
 
-// The AI tool a worker ran in: the relay writes claude, codex, gemini or antigravity. Older run
-// notes name none (null). Any other value that is not a plain word is 'unknown', so the map never
-// guesses a tool for it.
+// The AI tool a worker ran in: the relay writes the tool's name, such as claude, codex or gemini.
+// Older run notes name none (null). Any other value that is not a plain word is 'unknown', so the
+// map never guesses a tool for it.
 function toolOf(value) {
   if (value === undefined || value === null) return null;
   const tool = typeof value === 'string' ? value.trim().toLowerCase() : 'unknown';

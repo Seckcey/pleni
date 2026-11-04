@@ -1022,8 +1022,8 @@ function mailboxWorkers(box, ctx, all) {
       const runInfo = { startedAt, finishedAt, label: about ? `${task.id}: ${about}` : task.id };
       const tool = workerTool(run.tool);
       const own = tool && typeof run.sessionId === 'string' ? all.get(`${tool}:${run.sessionId}`) : null;
-      if (own && !own.parentKey) {
-        out.push({ ...own, title: text(name, MAX_TITLE), role: null, run: runInfo });
+      if (own && !own.parentKey && !own.archived) {
+        out.push({ ...own, title: text(name, MAX_TITLE), role: 'worker', run: runInfo });
         continue;
       }
       out.push({
