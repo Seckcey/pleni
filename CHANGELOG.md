@@ -13,6 +13,14 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   even when none of its sessions is running, and the relay's tile stays on the map too. Click the
   button again to hide them. The same switch is in **Settings → You and the map**. It works from
   any signed-in device, since it only changes the map.
+- **Claude Code cloud sessions on the Cloud page.** The Cloud page now has a button that opens your
+  Claude cloud sessions on claude.ai/code, and, with Live GitHub status on, the pull requests they
+  opened (branches named `claude/...`). Claude Code has no official way for other programs to list
+  cloud sessions, and Pleni never reads your Claude login. The Cloud link now always shows. Live
+  GitHub status also looks at the GitHub repositories of your projects.
+- **Clearer "only on this computer" notes.** When a button is missing because the page was opened
+  by another address (such as the Tailscale name) Pleni now says to open the `localhost` address
+  on the computer that runs it.
 - **Full screen for the map.** A new button under the zoom buttons (or the `F` key) shows only the
   map, with its legend and buttons. Esc or the button leaves it. On a phone without full screen, the
   map fills the browser window.
