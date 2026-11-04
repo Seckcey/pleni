@@ -150,8 +150,12 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   lists the branches your agents work on, who is on each, and links to its pull request on GitHub,
   or to open one. With [Live GitHub status](#live-github-status) on, it also shows each pull
   request's checks and reviews, and a **Merge** button.
-- **Cloud** — shown only when you turn on [Codex cloud tasks](#codex-cloud-tasks). It lists your
-  Codex cloud tasks, newest first, with their title, status and the files they changed.
+- **Cloud** — your work in the cloud. **Claude Code cloud sessions:** a button that opens
+  claude.ai/code, and, with [Live GitHub status](#live-github-status) on, the pull requests your
+  Claude cloud sessions opened (branches named `claude/...`). Claude Code has no official way for
+  other programs to list cloud sessions, so a session that has not opened a pull request shows only
+  on claude.ai/code. **Codex cloud tasks:** when you turn on [Codex cloud tasks](#codex-cloud-tasks),
+  your Codex cloud tasks, newest first, with their title, status and the files they changed.
 - **Settings** — seven short groups: **Basics** (your name, the look, which sessions show),
   **Team** (names, roles, who reports to whom), **Models** (the models and effort your Codex and
   Claude Code agents use, see [Models](#models)), **Sources** (which folders to read, and the
