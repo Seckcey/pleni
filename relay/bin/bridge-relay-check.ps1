@@ -1605,7 +1605,7 @@ try {
         try {
             # Codex, the usual worker, launched as the coordinator does it. The thread id is saved while the run still goes.
             Write-Brief $fx 'W1' 'implementation' 'codex'
-            Set-CodexStubMode $fx 'sleep:6'
+            Set-CodexStubMode $fx 'sleep:10'   # long enough for a slow runner to see the id while the run goes
             $r = Invoke-Spawn $fx @('-Worker', 'W1', '-Tool', 'codex')
             Check ($r.code -eq 0 -and (Test-Said $r.out 'Launched W1 \(implementation, Codex\)') -and (Test-Said $r.out "model gpt-stub-default \(Codex's default, from its config.toml\)")) "the Codex launch line does not say which model: $(Get-Tail $r.out)"
             $early = Wait-Until { $s = Get-RunJson $fx 'W1'; [bool]($s -and $s.session_id -and $s.state -eq 'running') } 30
@@ -1634,6 +1634,15 @@ try {
             Check (@(Get-CodexCalls $fx 'login').Count -ge 1) 'the launcher did not check the Codex sign-in'
             Check ((Read-Shared (Join-Path $fx.workers 'W1.log')) -match "launcher: model gpt-stub-default \(Codex's default, from its config.toml\)") 'W1.log does not say which model Codex used'
             Check ((Read-Shared $led) -match '\| W1 \| implementation \| finished \| 0 \| .*\| codex \| 1500 \(in 1200, out 300, cached 800\) \|') 'runs.md has no Codex line with its tokens'
+            # Signed in with an API key: refused before any turn. It runs before W2, while only W1 counts toward
+            # the daily limit (2 here), so the sign-in check, not the limit, is what refuses it.
+            Set-CodexStubMode $fx 'api-key'
+            Write-Brief $fx 'W3' 'implementation' 'codex'
+            $null = Invoke-Spawn $fx @('-Worker', 'W3', '-Tool', 'codex', '-Foreground')
+            Set-CodexStubMode $fx 'ok'
+            $s = Get-RunJson $fx 'W3'
+            Check ($s -and $s.state -eq 'failed' -and $s.exit_code -eq -1 -and [string]$s.note -match 'not signed in with ChatGPT') 'a Codex worker signed in with an API key was not refused with a ChatGPT message'
+            Check (@(Get-CodexWorkerCalls $fx).Count -eq 1) 'a Codex worker started although Codex is signed in with an API key'
             # A Codex reviewer works in the workers folder, with the model and effort it was given.
             Write-Brief $fx 'W2' 'review' 'codex'
             $null = Invoke-Spawn $fx @('-Worker', 'W2', '-Tool', 'codex', '-Type', 'review', '-Model', 'gpt-6.1-sol', '-Effort', 'high', '-Foreground')
@@ -1646,14 +1655,6 @@ try {
                 Check ([string]$w[1].cwd -like '*\workers') "the Codex reviewer ran in '$($w[1].cwd)', not in the workers folder"
                 Check ([string]$w[1].stdin -match 'The only file you may write is your report') 'the reviewer prompt does not keep it to its report'
             }
-            # Signed in with an API key: refused before any turn.
-            Set-CodexStubMode $fx 'api-key'
-            Write-Brief $fx 'W3' 'implementation' 'codex'
-            $null = Invoke-Spawn $fx @('-Worker', 'W3', '-Tool', 'codex', '-Foreground')
-            Set-CodexStubMode $fx 'ok'
-            $s = Get-RunJson $fx 'W3'
-            Check ($s -and $s.state -eq 'failed' -and $s.exit_code -eq -1 -and [string]$s.note -match 'not signed in with ChatGPT') 'a Codex worker signed in with an API key was not refused with a ChatGPT message'
-            Check (@(Get-CodexWorkerCalls $fx).Count -eq 2) 'a Codex worker started although Codex is signed in with an API key'
             # A Claude model, or an effort Codex does not have: refused, nothing starts.
             Write-Brief $fx 'W4' 'implementation' 'codex'
             foreach ($bad in @(@('-Model', 'opus'), @('-Effort', 'max'))) {

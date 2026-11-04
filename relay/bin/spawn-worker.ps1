@@ -87,7 +87,17 @@ $GeminiSystemPolicies = 'C:\ProgramData\gemini-cli\policies'
 $Notes = New-Object System.Collections.Generic.List[string]   # Codex and Gemini: the launcher's notes for <W>.log
 
 function Write-RunState([string]$Path, [hashtable]$State) {
-    ($State | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $Path -Encoding UTF8
+    # Another program (Pleni, the relay, a test) may be reading run.json just then, so a failed write is tried again.
+    $text = ConvertTo-Json -InputObject $State -Depth 4
+    for ($i = 1; $i -le 5; $i++) {
+        try {
+            Set-Content -LiteralPath $Path -Value $text -Encoding UTF8 -ErrorAction Stop
+            return
+        } catch {
+            if ($i -eq 5) { throw }
+            Start-Sleep -Milliseconds 200
+        }
+    }
 }
 
 function Add-Note([string]$Text) { $Notes.Add($Text) }
@@ -666,15 +676,18 @@ if ($Tool -eq 'claude') {
             Remove-Item -LiteralPath $stdin -ErrorAction SilentlyContinue
             return -1
         }
-        # Poll the output while the run goes, so the session id is saved as soon as the CLI reports it.
-        $seen = $false
+        # Poll the output while the run goes, so the session id is saved as soon as the CLI reports it. It counts as
+        # saved only once run.json was written: a write that fails (someone is reading the file just then) is tried
+        # again on the next round.
+        $saved = $false
         while (-not $proc.WaitForExit(1000)) {
-            if ($seen) { continue }
+            if ($saved) { continue }
             try {
                 $ev = Read-ToolEvents $LogFile 65536
                 if ($ev.session) {
-                    $seen = $true
-                    if ($ev.session -ne [string]$state.session_id) { $state.session_id = $ev.session; Write-RunState $RunFile $state }
+                    $state.session_id = $ev.session
+                    Write-RunState $RunFile $state
+                    $saved = $true
                 }
             } catch { }
         }
