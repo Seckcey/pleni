@@ -217,9 +217,9 @@ function newEntry(id, file, old) {
     log: newLog(),
     // Kept when the file is written again, and when the other transcript name takes over: it is
     // the same conversation. `cut` is true when the first request was cleared of its words,
-    // `caller` is the conversation a helper's reminder names, and `callerAt` the time of the step
-    // that holds that reminder.
-    head: old ? { ...old.head, steps: 0 } : { prompt: null, cut: false, helper: false, caller: null, callerAt: null, steps: 0 },
+    // `caller` is the conversation a helper's reminder names, and `callerAt` and `callerStep` the
+    // time and step_index of the step that holds that reminder.
+    head: old ? { ...old.head, steps: 0 } : { prompt: null, cut: false, helper: false, caller: null, callerAt: null, callerStep: null, steps: 0 },
     children: old ? old.children : new Map(), // helper id -> the role it was given, or null
     firstAt: old ? old.firstAt : null, // the oldest step time seen
     version: 0, // goes up whenever something new was read
@@ -438,7 +438,7 @@ function applyRecord(entry, rec) {
 // read in order from the start of the file. A squeeze clears the first request of its words: the
 // next request is not the first one, so `cut` says so. A forked helper's transcript starts with a
 // copy of its parent's steps, reminder and all, so the last reminder that names a caller counts.
-// A copied step keeps its time, so the time of the reminder's step tells a copy from the original.
+// A copied step keeps its time and its step_index, so those tell a copy from the original.
 function noteHead(entry, step) {
   const head = entry.head;
   if (head.prompt === null && step.kind === 'prompt') {
@@ -452,6 +452,7 @@ function noteHead(entry, step) {
     if (step.caller) {
       head.caller = step.caller;
       head.callerAt = step.at;
+      head.callerStep = step.index;
     }
   }
 }
@@ -1013,20 +1014,29 @@ function parentsOf(chosen) {
   return parents;
 }
 
-// The shown conversation a helper's reminder names. A forked helper whose own reminder came after
-// its first 50 steps has only the copy of its parent's, and a copy keeps the time of its step: when
-// a conversation whose own reminder is that same one (the same caller and time) names the helper,
-// the copy came from that one, so the steps decide. A helper's own reminder is believed, even when
-// a sibling forked later names it in its copy of their caller's steps.
+// The shown conversation a helper hangs under by its reminder. A forked helper whose own reminder
+// came after its first 50 steps has only the copy of its parent's, and a copy keeps the time and the
+// step_index of its step (times are often whole seconds, so the time alone is not enough). So when
+// the conversation the id names does not name the helper, but conversations whose reminder is that
+// same one (the same caller, time and step) do, the reminder is a copy: the helper hangs under the
+// one of them that the named conversation started, which holds the original, else the steps decide.
+// A helper's own reminder is believed, even when a sibling forked later names it in its copy of
+// their caller's steps.
 function callerOf(id, chosen) {
-  const { caller, callerAt } = chosen.get(id).head;
+  const { caller, callerAt, callerStep } = chosen.get(id).head;
   if (!caller || caller === id || !chosen.has(caller)) return null;
-  if (chosen.get(caller).children.has(id)) return caller;
-  for (const entry of chosen.values()) {
-    const copied = callerAt !== null && entry.head.caller === caller && entry.head.callerAt === callerAt;
-    if (copied && entry.children.has(id)) return null;
+  const top = chosen.get(caller);
+  if (top.children.has(id)) return caller;
+  if (callerAt === null && callerStep === null) return caller;
+  let copied = false;
+  for (const [other, entry] of chosen) {
+    const { head } = entry;
+    if (other === id || head.caller !== caller || head.callerAt !== callerAt || head.callerStep !== callerStep) continue;
+    if (!entry.children.has(id)) continue;
+    if (top.children.has(other)) return other;
+    copied = true;
   }
-  return caller;
+  return copied ? null : caller;
 }
 
 // True when `a` is `b` or a conversation above it.

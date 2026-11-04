@@ -239,6 +239,7 @@ test('a request without tags keeps the person\'s own words, even an upper-case <
     'Why does <TITLE>Home</TITLE> not show?',
     '<TITLE>Home</TITLE> does not show on the page',
     'Fix this:\n<NOTE>keep it short</NOTE> and add a test',
+    'Wrap the output in <CODE>\nconsole.log(1)\n</CODE> and send it back',
     // A closed block on lines of its own is one Antigravity CLI added, whatever its name.
     'Sum up the thread\n<PREVIOUS_CONVERSATION_THREAD>\nEarlier words.\n</PREVIOUS_CONVERSATION_THREAD>',
     // A known block may run on to the end of a text that was cut short.
@@ -247,10 +248,13 @@ test('a request without tags keeps the person\'s own words, even an upper-case <
   said.forEach((content, i) => writeTranscript(root, idAt(i + 1), [{ ...ask(at, ''), content }, reply(at + 1000, 'Done.')]));
   // A pasted log with a tag on each of many lines, never closed after it (a closing tag before it
   // does not close it): the words stay, and they are read in one go, so even a long log is quick.
-  const pasted = Array.from({ length: 20000 }, (_, i) => `<WARN>\nDisk is ${i % 100}% full.`).join('\n');
+  // A clock checks that: the old pattern took many seconds here (a test's timeout cannot stop it).
+  const pasted = Array.from({ length: 40000 }, (_, i) => `<WARN>\nDisk is ${i % 100}% full.`).join('\n');
   writeTranscript(root, idAt(20), [{ ...ask(at, ''), content: `What does </WARN> mean in this log?\n${pasted}` }, reply(at + 1000, 'The disk fills up.')]);
   const { source, get, poll } = open(root);
+  let started = performance.now();
   const titles = poll().sessions.filter((s) => s.id !== idAt(20)).map((s) => s.title);
+  assert.ok(performance.now() - started < 3000, 'a long pasted log is read quickly');
   const words = [
     'Fill in the <TODO> parts of main.js',
     'Replace <YOUR_PROJECT_ID> in deploy.sh with my project and run it',
@@ -259,6 +263,7 @@ test('a request without tags keeps the person\'s own words, even an upper-case <
     'Why does <TITLE>Home</TITLE> not show?',
     '<TITLE>Home</TITLE> does not show on the page',
     'Fix this: <NOTE>keep it short</NOTE> and add a test',
+    'Wrap the output in <CODE> console.log(1) </CODE> and send it back',
     'Sum up the thread',
     'Short ask',
   ];
@@ -266,7 +271,9 @@ test('a request without tags keeps the person\'s own words, even an upper-case <
   const shown = (id) => source.detail(keyOf(id), null).events[0].text;
   assert.deepEqual(said.map((_, i) => shown(idAt(i + 1)).replace(/\s+/g, ' ')), words, 'the side panel shows the same words');
   assert.match(get(keyOf(idAt(20))).title, /^What does <\/WARN> mean in this log\? <WARN> Disk is 0% full\. <WARN> Disk is 1% full\./);
+  started = performance.now();
   assert.match(shown(idAt(20)), /^What does <\/WARN> mean in this log\?\n<WARN>\nDisk is 0% full\.\n<WARN>\nDisk is 1% full\./);
+  assert.ok(performance.now() - started < 3000, 'the side panel reads a long pasted log quickly');
 });
 
 test('thinking is never kept or shown: only the fact that the model thought', (t) => {
@@ -784,6 +791,58 @@ test('a helper forked from a helper hangs under the one that started it, though 
   byId = new Map(open(root).poll().sessions.map((s) => [s.id, s]));
   assert.deepEqual([tester, worker].map((id) => byId.get(id).parentKey), [keyOf(coordinator), keyOf(coordinator)]);
   assert.deepEqual(byId.get(worker).links, [], 'the worker did not start the tester');
+});
+
+test('a helper\'s own reminder is told from a sibling\'s copy by its step too, when the times are whole seconds', (t) => {
+  const root = agyHome(t);
+  const at = T0 - 20 * MINUTE; // whole seconds, as real transcripts write them
+  const [main, worker, tester, coordinator] = [idAt(1), idAt(2), idAt(3), idAt(4)];
+  const reminded = (ms, caller, text) => ({
+    ...ask(ms, text),
+    content: `<subagent_reminder>\nThe caller agent that started you has id: ${caller}\n</subagent_reminder>\n<USER_REQUEST>\n${text}\n</USER_REQUEST>`,
+  });
+  const starts = (ms, role) => uses(ms, [call('invoke_subagent', { Subagents: [{ Role: role }] })]);
+  const works = (command) => uses(T0 - MINUTE, [call('run_command', { CommandLine: command })]);
+  writeTranscript(root, main, [ask(at, 'Speed up the build'), starts(at, 'Build coordinator'), invoked(at, [coordinator]), reply(at + SECOND, 'A coordinator is on it.')]);
+  // The coordinator starts a tester, then a worker, each forked: its transcript starts with a copy
+  // of the coordinator's steps so far. The two helpers' own reminders are written in one second.
+  const steps = [reminded(at, main, 'Make the build faster'), starts(at, 'Test worker'), invoked(at, [tester]), starts(at, 'Cache worker'), invoked(at, [worker])];
+  writeTranscript(root, tester, [...steps.slice(0, 2), reminded(at + SECOND, coordinator, 'Run the tests'), works('npm test')]);
+  writeTranscript(root, worker, [...steps.slice(0, 4), reminded(at + SECOND, coordinator, 'Add a build cache'), works('npm run build')]);
+  // The coordinator's starts are squeezed away, so only the reminders say who started whom. The
+  // worker's copy still names the tester, but the tester's own reminder is at another step.
+  writeTranscript(root, coordinator, [...steps.map((step, i) => cleared(step, i)), reply(at + 2 * SECOND, 'Two workers are on it.')]);
+  const byId = new Map(open(root).poll().sessions.map((s) => [s.id, s]));
+  assert.deepEqual([tester, worker].map((id) => byId.get(id).parentKey), [keyOf(coordinator), keyOf(coordinator)]);
+  assert.deepEqual(byId.get(worker).links, [], 'the worker did not start the tester');
+});
+
+test('two helpers forked late from one conversation both hang under it, whatever their ids', (t) => {
+  const root = agyHome(t);
+  const at = T0 - 20 * MINUTE;
+  // The second helper's id sorts before the coordinator's, so a wrong link would show.
+  const [main, second, coordinator, first] = [idAt(1), idAt(2), idAt(3), idAt(4)];
+  const reminded = (ms, caller, text) => ({
+    ...ask(ms, text),
+    content: `<subagent_reminder>\nThe caller agent that started you has id: ${caller}\n</subagent_reminder>\n<USER_REQUEST>\n${text}\n</USER_REQUEST>`,
+  });
+  const starts = (ms, role) => uses(ms, [call('invoke_subagent', { Subagents: [{ Role: role }] })]);
+  const works = (command) => uses(T0 - MINUTE, [call('run_command', { CommandLine: command })]);
+  writeTranscript(root, main, [ask(at, 'Tidy the code'), starts(at + 1000, 'Tidy coordinator'), invoked(at + 1500, [coordinator]), reply(at + 2000, 'A coordinator is on it.')]);
+  // The coordinator reads 30 files, then starts two forked helpers. Each one's transcript starts
+  // with a copy of the coordinator's steps, so its own reminder comes after its first 50 steps
+  // and only the copy of the coordinator's reminder is read. The second one's copy names the first.
+  const steps = [reminded(at + 1600, main, 'Tidy the code')];
+  for (let i = 0; i < 30; i++) steps.push(uses(at + 1700 + i, [call('view_file', { AbsolutePath: `/home/ada/project/src/part${i}.js` })]), ran(at + 1700 + i, 'VIEW_FILE', 'A part.'));
+  const startFirst = [starts(at + 1800, 'Lint worker'), invoked(at + 1810, [first])];
+  const startSecond = [starts(at + 1820, 'Docs worker'), invoked(at + 1830, [second])];
+  writeTranscript(root, coordinator, [...steps, ...startFirst, ...startSecond, reply(at + 2000, 'Two workers are on it.')]);
+  writeTranscript(root, first, [...steps, startFirst[0], reminded(at + 1815, coordinator, 'Lint the code'), works('npm run lint')]);
+  writeTranscript(root, second, [...steps, ...startFirst, startSecond[0], reminded(at + 1835, coordinator, 'Write the docs'), works('npm run docs')]);
+  const byId = new Map(open(root).poll().sessions.map((s) => [s.id, s]));
+  assert.deepEqual([first, second].map((id) => byId.get(id).parentKey), [keyOf(coordinator), keyOf(coordinator)]);
+  assert.deepEqual(byId.get(second).links, [], 'the second helper did not start the first');
+  assert.deepEqual([first, second].map((id) => byId.get(id).title), ['Lint worker', 'Docs worker']);
 });
 
 test('a helper of a helper that works keeps every conversation above it working', (t) => {

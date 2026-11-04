@@ -609,9 +609,11 @@ others who read the files, so every field is read as optional.
   conversation's steps, so it names the same helpers. The last reminder there that gives an id
   counts, because a helper forked from a helper starts with a copy of that helper's steps, reminder
   and all. When its own reminder comes after the first 50 steps, only the copy is read, and a copied
-  step keeps its time: so when the conversation the id names does not name the helper, but a
-  conversation whose own reminder is that same one (the same id and time) does, the steps decide
-  instead. But a helper's own reminder is believed: when the step that started it was cleared in
+  step keeps its time and its step_index (times are often whole seconds): so when the conversation
+  the id names does not name the helper, but conversations whose reminder is that same one (the
+  same id, time and step) do, the helper hangs under the one of them that the named conversation
+  started, which holds the original, and else the steps decide. But a helper's own reminder is
+  believed: when the step that started it was cleared in
   the conversation its reminder names, a helper forked from that conversation later, whose copy of
   its steps still holds that step, does not take it. A fork made in a helper's conversation (a
   `/btw` question or a switch of agent there) has only the helper's reminder, so it hangs under the
