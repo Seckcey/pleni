@@ -184,6 +184,9 @@ const isWorkerKey = (key) => String(key || '').startsWith('mailbox:');
 // Open in PowerShell opens a window on the computer that runs Pleni, so it is offered only on a page
 // opened there, not through a proxy from another device.
 const LOCAL_PAGE = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+// A page opened by any other address (Tailscale, Wi-Fi) counts as another device, even in a browser
+// on the computer that runs Pleni, so the notes about buttons that act say how to get there.
+const HERE_HOW = 'On that computer, open the address that starts with http://localhost (Pleni prints it when it starts; pleni --url shows it again).';
 const svgIcon = (paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
 
 function serverNow() {
@@ -889,7 +892,7 @@ function usageLimitsHtml(key, name, t, now, limitsOn = false) {
   if (key === 'claude') {
     const connect = LOCAL_PAGE
       ? `Connect Claude Code to see your plan limits here. <a href="#/settings/buttons" id="usage-connect">Go to Connect in Settings</a>.`
-      : 'Connect Claude Code to see your plan limits here. Connect it on the computer that runs Pleni.';
+      : `Connect Claude Code to see your plan limits here. Connect it on the computer that runs Pleni. ${HERE_HOW}`;
     return `<div class="u-limits"><p>${connect}</p><p class="u-src">Limits show up after your next reply in Claude Code. They are there for Pro, Max and Ultra plans.</p>` +
       `<p><a href="${USAGE_LIMIT_PAGES.claude}" id="usage-claude-site" target="_blank" rel="noopener noreferrer">See them on claude.ai</a><span class="sr-only"> (opens in a new tab)</span></p></div>`;
   }
@@ -2108,7 +2111,7 @@ function renderList() {
 const PROJECT_ID = /^[a-z0-9]{8,32}$/;
 const MAX_PROJECT_FOLDER = 500;
 const MAX_PROJECT_LIST = 50;
-const PROJECT_ONLY_HERE = 'Projects can be added and changed only on the computer that runs Pleni.';
+const PROJECT_ONLY_HERE = `Projects can be added and changed only on the computer that runs Pleni. ${HERE_HOW}`;
 const PROJECT_DEMO = 'In the demo, the projects are made up, so they cannot be changed.';
 
 // New, Edit and Delete: only on this computer, and never in the demo.
@@ -4077,7 +4080,7 @@ function paintHooks() {
 
 function hooksHtml() {
   const st = S.set;
-  if (!LOCAL_PAGE) return '<p class="note">Pleni can be connected to Claude Code only on the computer that runs it.</p>';
+  if (!LOCAL_PAGE) return `<p class="note">Pleni can be connected to Claude Code only on the computer that runs it. ${esc(HERE_HOW)}</p>`;
   if (st.hooksError) return `<p class="note bad">Pleni could not check Claude Code's settings. ${esc(st.hooksError)}</p>`;
   const h = st.hooks;
   if (!h) return '<p class="note">Checking Claude Code\'s settings…</p>';
@@ -4149,7 +4152,7 @@ function paintLimits() {
 
 function limitsHtml() {
   const st = S.set;
-  if (!LOCAL_PAGE) return '<p class="note">Only on the computer that runs Pleni.</p>';
+  if (!LOCAL_PAGE) return `<p class="note">Only on the computer that runs Pleni. ${esc(HERE_HOW)}</p>`;
   if (st.limitsError) return `<p class="note bad">Pleni could not check Claude Code's settings. ${esc(st.limitsError)}</p>`;
   const l = st.limits;
   if (!l) return '<p class="note">Checking Claude Code\'s settings…</p>';
@@ -5615,7 +5618,7 @@ function appModelsHtml(app) {
   const why = !m.data.edit
     ? 'To change these here, tick the box above, then choose Save settings at the bottom of the page.'
     : !m.data.here
-      ? 'Models can be changed only on the computer that runs Pleni.'
+      ? `Models can be changed only on the computer that runs Pleni. ${HERE_HOW}`
       : '';
   const kept = c.found
     ? `${a.name} keeps these in <code>${esc(c.file)}</code>.`
@@ -6076,7 +6079,7 @@ function cloudRow() {
   if (LOCAL_PAGE) return checkRow('s-cloud-live', 'Codex cloud tasks', 'codexCloud.live', 'Show my Codex cloud tasks', help);
   const on = getPath(S.set.draft, 'codexCloud.live', false) === true;
   return (
-    `<div class="srow"><span class="lbl" id="s-cloud-live-lbl">Codex cloud tasks</span><div><p>Show my Codex cloud tasks: <strong>${on ? 'On' : 'Off'}</strong>. Only the computer that runs Pleni can change this.</p></div>` +
+    `<div class="srow"><span class="lbl" id="s-cloud-live-lbl">Codex cloud tasks</span><div><p>Show my Codex cloud tasks: <strong>${on ? 'On' : 'Off'}</strong>. Only the computer that runs Pleni can change this. ${esc(HERE_HOW)}</p></div>` +
     `${helpHtml('s-cloud-live', help)}</div>`
   );
 }
