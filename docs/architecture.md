@@ -77,7 +77,7 @@ src/sources/codex.js    Codex threads and sub-agents
 src/sources/grok.js     Grok sessions
 src/sources/kimi.js     Kimi Code sessions and sub-agents
 src/sources/gemini.js   Gemini CLI sessions and sub-agents
-src/sources/mailbox.js  optional coordination mailbox (task folders of Markdown files)
+src/sources/mailbox.js  optional coordination mailbox (task folders of Markdown files), or an HQ and its project mailboxes
 src/model.js            builds the snapshot the page draws (nodes, edges, events)
 src/repos.js            the GitHub repository of a session's folder, from its git settings (remote address only)
 src/store.js            owns the sources, polls them, caches the snapshot
@@ -132,7 +132,7 @@ export const DEFAULTS = {
     grok: { enabled: true, root: null },              // null = $GROK_HOME or ~/.grok
     kimi: { enabled: true, root: null },              // null = $KIMI_CODE_HOME or ~/.kimi-code
     gemini: { enabled: true, root: null },            // null = $GEMINI_CLI_HOME/.gemini or ~/.gemini
-    mailbox: { enabled: false, root: null, planner: null, coordinator: null }, // planner/coordinator: node key or session name
+    mailbox: { enabled: false, root: null, planner: null, coordinator: null }, // root: a mailbox or an HQ; planner/coordinator: node key or session name
   },
   people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role, reportsTo?: nodeKey | 'you', watch?: true, answer?: true } }  max 500
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200 (renames and hides a folder name on the map; not the Projects page)
@@ -184,7 +184,10 @@ Exports:
   `%APPDATA%\Claude` on Windows, `~/Library/Application Support/Claude` on macOS,
   `~/.config/Claude` elsewhere; `mailbox` only when set.
 - `isNodeKey(s)`: `/^(claude|codex|grok|kimi|gemini):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/`, `you`,
-  `relay`, `mailbox:<task id>/W<n>`, or `project:<name>` (name 1–120 chars, no control characters).
+  `relay`, `mailbox:<task id>/W<n>`, or `project:<name>` (name 1–120 chars, no control characters). In
+  an HQ (see Mailbox), a project mailbox's relay is `relay:<box>` and its worker runs
+  `mailbox:<box>:<task id>/W<n>`, where `<box>` is the project's id (`/^[a-z0-9][a-z0-9-]{0,39}$/`,
+  never `hq`). A task id never holds `:`. `isRelayKey(s)` is true for `relay` and `relay:<box>`.
 - Environment overrides applied by the CLI: `PLENI_PORT`, `PLENI_HOME`.
 
 ## Reading JSONL (`src/jsonl.js`)
@@ -524,21 +527,21 @@ work and a **coordinator** reports back.
 <root>/tasks/<taskId>/workers/W<n>.run.json, W<n>-report.md   optional worker runs; session_id names the run's Claude session
 <root>/NEEDS-<NAME>.md                optional notes for the person, such as NEEDS-ADA.md
 <root>/.relay/coordinator.json        optional: { session_id, follow_name?, ... } of the coordinator's Claude session
-<root>/.relay/codex.json              optional: { thread_id, follow_name?, ... } of the planner's Codex thread, if the relay wakes it (Pleni does not read it)
+<root>/.relay/codex.json              optional: { thread_id, follow_name?, ... } of the planner's Codex thread, if the relay wakes it (Pleni reads it only in an HQ)
 <root>/.relay/state.json, relay.lock, PAUSE, STOP   optional relay state
 <root>/.relay/alerts.md               optional: the relay's alerts for the person
 <root>/.relay/agents.json             optional: the agents the relay wakes for their mail, by name key: { name, thread_id, ... }
 <root>/mail/<name key>/name.txt       optional agent mail (relay/bin/agent-mail.ps1): the agent's name
 <root>/mail/<name key>/new/*.md       its unread messages; read/*.md the ones it has read
-<root>/bin/relay-settings.json        the relay's settings; Pleni reads only owner_name, the person's mail name
+<root>/bin/relay-settings.json        the relay's settings; Pleni reads only owner_name, the person's mail name, and role and projects (an HQ)
 ```
 
 The relay that writes `.relay/` and starts the worker runs is the separate program in `relay/`
 (`relay/README.md`; the mailbox rules are in `relay/PROTOCOL.md`). Pleni only reads what it writes.
 
 ```js
-export function createMailboxSource({ root, settings, now = Date.now })
-// -> { poll(): MailboxState }
+export function createMailboxSource({ root, settings, now = Date.now, hq = false })
+// -> { poll(): MailboxState, mail({ keys, all }) }
 MailboxState = {
   ok, error, root, name,
   tasks: [{ id, title, state, updatedAt, attention: ('question' | 'review')[], workers: [{ id, state, model, startedAt, finishedAt, worktree, sessionId }] }],
@@ -549,6 +552,7 @@ MailboxState = {
     lastAt, pausedAt, haltReason,                                // times are null when unknown
     alerts: null | { count, at, text },                          // from .relay/alerts.md
     wakes: [{ key, name, at, endAt, running, count }],           // its mail wakes, newest first, at most 30
+    plannerKey,                                                  // only with hq: 'codex:<thread_id>' from .relay/codex.json, or null
   },
   mail: null | {                                                 // null without a mail folder
     owner,                                                       // owner_name from bin/relay-settings.json, else null
@@ -584,6 +588,13 @@ MailboxState = {
   (`**` marks before it are fine) is one note; nested items and code blocks are skipped. `count` is
   the number of notes, `at` the newest note's time, and `text` that note without the stamp and `**`
   marks (≤300 chars, only with snippets, else `null`).
+- With `hq` (an HQ, below), the relay also names the orchestrator: `plannerKey` is `codex:<thread_id>`
+  from `.relay/codex.json` (the relay keeps `thread_id` current when it follows a newer thread with
+  the same name), and `wakes` also holds the turns that woke the orchestrator for new items in HQ or
+  a project, from `state.json` `codex_dispatches` (`state`, `items`, `started_utc`, `finished_utc`,
+  `thread_id`): `{ key: null, name: null, at, endAt, running, count, planner: true, threadId }`. A
+  turn that never reached the thread (`failed` or `abandoned`) is left out. A lone mailbox has
+  neither.
 - Agent mail: agents send each other messages by name with the relay's `agent-mail.ps1`
   (`relay/README.md`). A name's **key** is its folder name: the name in small letters, each run of
   other marks one `-` (`Sergeant Ada` → `sergeant-ada`); keys match `/^[a-z0-9][a-z0-9-]{0,99}$/`.
@@ -602,6 +613,47 @@ MailboxState = {
   line (≤80 chars), `at` the time in the file name, `text` the message after the head (≤1000
   chars, line breaks kept, only with snippets, else `null`). A file without a head is all text.
 
+### HQ: one folder that lists project mailboxes
+
+The relay can run several projects with one planner, the **orchestrator** (`relay/README.md`, "Run
+several projects (HQ)"). **HQ** is a mailbox whose `bin/relay-settings.json` has `"role": "hq"` and
+`"projects": [{ "id", "name", "mailbox" }]`. Each **project mailbox** is a normal mailbox with its own
+relay and coordinator (its settings may hold `hq_dir`, which Pleni does not need). HQ's relay alone
+wakes the orchestrator, HQ's enrolled Codex thread (`.relay/codex.json`), for new items in HQ or any
+project. `sources.mailbox.root` stays one folder: a lone mailbox, as always, or an HQ.
+
+```js
+export function createMailboxesSource({ root, settings, now = Date.now, platform = process.platform })
+// -> { poll(): MailboxState & { hq }, mail({ keys, all }) }
+hq = null | {                                 // null for a lone mailbox
+  projects: [{ id, name, mailbox: MailboxState }],   // in HQ's order; each mailbox read on its own
+  skipped: [{ entry, id, why }],              // entries Pleni does not read, with a plain reason
+}
+export function readHqProjects(root, { platform = process.platform, relaySettings } = {})
+// -> null | { projects: [{ id, name, root }], skipped: [{ entry, id, why }] }
+```
+
+- The store's `mailbox` source is `createMailboxesSource`. It reads the folder with one
+  `createMailboxSource` (with `hq: true` when the folder is an HQ), and, in an HQ, each project
+  mailbox with one more, kept while the project stays listed. A project mailbox that is missing or
+  cannot be read gives that project's `ok: false` and `error` ("Pleni could not find the mailbox
+  folder."); HQ and the other projects go on. `relay-settings.json` is read again only when its size
+  or times move, so a changed list shows on the next poll.
+- `readHqProjects` gives `null` unless `role` is `hq` (any case, as the relay reads it). It checks
+  each entry the way the relay does, in order: an object; an `id` of 1–40 small letters, digits or
+  `-`, starting with a letter or digit, not `hq` and not taken; a `mailbox` that is a full path (on
+  Windows `C:\...` or `\\server\share\...`, elsewhere one that starts with `/`), at most 4096
+  characters, with no control character, quote, backtick or one of `% ! ^ & | < > * ?`, that is not
+  HQ itself, does not hold HQ, is not inside HQ's own `tasks`, `mail`, `bin`, `tests`, `templates`
+  or `.relay` folders, and is not taken. Paths are compared without case on Windows and macOS. HQ's
+  `projects` folder is fine: the relay's `-NewProject` makes projects there. A folder that is not
+  there is kept (it is that project's error). Pleni reads at most 20 projects. `name` has control
+  characters turned into spaces, is trimmed and clipped to 80 characters, and is the id when empty.
+  A skipped entry gets a plain `why` and no folder path.
+- `mail()` gives the Mail page HQ's mail and every project's, newest first, at most 100, each message
+  with `box` (`'hq'` or the project's id) and `boxName`; a project's message ids start with
+  `<id>:`. A lone mailbox's messages keep their shape.
+
 ## Snapshot (`src/model.js`)
 
 ```js
@@ -612,7 +664,8 @@ Snapshot = {
   sources: { claude: SourceInfo, codex: SourceInfo, grok: SourceInfo, kimi: SourceInfo, gemini: SourceInfo, mailbox: SourceInfo | null },
   nodes: Node[], edges: Edge[], events: Event[], counts: { working, ready, idle, done, error, total },
   attention: [{ id: '<key>|<kind>', key, kind, text, at }],  // at is 0 when unknown
-  tasks: MailboxState['tasks'] | null,
+  tasks: null | [MailboxState['tasks'][number] & { box, boxName }],  // every mailbox's; box and boxName: 'hq' and 'HQ' or a project's id and name in an HQ, else null
+  boxes?: [{ id, name, root: null, error, project }],  // only for an HQ: HQ first ({ id: 'hq', name: 'HQ' }), then each project mailbox; error: why Pleni cannot read it, else null; project: the name of its tile (null for HQ); never a folder path
   mail: null | { name, unread, lastAt },  // agent mail: the person's mail name, their new mail, the newest message's time
   hiddenSessions: [{ key, title, platform, kind }],  // recent sessions with Role "Hide it": off the map, named in Settings
   projects: [{ id, name, repo }],  // the Projects page, in projectList order; never a folder path (the folder stays in settings)
@@ -634,7 +687,7 @@ Node = {
   rollSoon, // plain reasons it is due for a roll over ('Memory 87% full', 'Squeezed 3 times', '9 days old'), else null
   github,   // 'owner/name' of the GitHub repository the session works in (src/repos.js), else null
   mail,     // agent mail: { name, unread, since, wakes, toYou } for a tile with a mail name, else null
-  watched,  // true for a session or the relay whose people[key].watch is true
+  watched,  // true for a session or a relay whose people[key].watch is true
   answering, // true for a main Claude Code session whose people[key].answer is true
 }
 Ask = { id, key, on /* the tile it shows on: key, or 'you' when the session is not on the map */, at, until,
@@ -660,14 +713,36 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
   stays planner → relay → coordinator → workers. A `tool:` key is not a node key (`isNodeKey`): a
   tool tile cannot be moved, watched, hidden, named in People, or opened for events.
 - Relay and its workers: when the mailbox has relay files, a `relay` node (kind and platform
-  `relay`, title "Relay" or the person's label, status working/idle/error from running, paused and
-  halted) sits between the planner and the coordinator. The relay's worker runs
+  `relay`, title "Relay" or the person's label, subtitle the mailbox folder's name, status
+  working/idle/error from running, paused and halted) sits between the planner and the coordinator. The relay's worker runs
   (`tasks/<id>/workers/W<n>.run.json`) go under the coordinator; each line lights down when the run
   starts and up when it finishes. A run whose `session_id` names a top-level Claude Code session that
   Pleni lists is shown as that session (`claude:<id>`, titled `W<n> · <task>`), so it can be watched
   and opened like any session. Other runs (older ones kept no session file) become a session-like
   node `mailbox:<task id>/W<n>` (platform `claude`, kind `agent`, status from the run, project from
   its worktree).
+- HQ and its project mailboxes ("boxes"): when the mailbox is an HQ, the tree is you → the
+  **orchestrator** → HQ's relay (`relay`, titled "HQ relay") and one tile per project → that project's
+  relay (`relay:<box>`, titled "<name> relay") → its coordinator → that coordinator's worker runs.
+  The orchestrator is the session `relay.plannerKey` names (HQ's `.relay/codex.json`) when it is
+  listed, else the planner in Settings, as for a lone mailbox; it is the planner of every project
+  mailbox, and is placed the normal way (under you, its AI tool's tile or its project's tile). HQ's
+  own coordinator, if any, keeps its place under HQ's relay; HQ keeps the old keys (`relay`,
+  `task:<id>`, `mailbox:<task>/W<n>`), and a project's hold its id (`relay:<box>`,
+  `task:<box>:<id>`, `mailbox:<box>:<task>/W<n>`). A project's coordinator is the one its relay names
+  (`coordinatorKey`), whatever Settings say; Settings' coordinator is HQ's own; a session coordinates
+  one mailbox at most. A project's worker runs hang under its coordinator, else its relay, else its
+  tile. Each project tile is a kind `project` tile, made whatever `groupBy` says and also with
+  `toolTiles`; it hangs under the orchestrator (under you when the orchestrator is not listed), and
+  its relay under it, and the person cannot move it. Its name, the first match winning: the
+  `projectList` entry whose `name` equals the project's name (ignoring case), then the one whose name
+  as a slug (small letters and digits, every other character `-`) equals the project's id, else the
+  project's own name; the tile is `project:<that name>`, titled with `projects[name].label` or the
+  name. With `groupBy` `project` it is the same tile a folder of that name would get, and a session
+  in a linked `projectList` project (its `projectIds`) hangs under it too. A project mailbox that
+  cannot be read keeps its tile, with its `boxes[].error`. A loop the person makes (the orchestrator
+  under its own project, say) is broken as usual: the first tile of the loop goes to its home, and
+  under you when its home is in the loop too.
 - Roll over soon: `memory.percent` is `round(used / size × 100)` (at most 100), null while `size` is
   unknown. `rollSoon` lists, in this order, `Memory N% full` when `percent ≥ rollSoon.memoryPercent`,
   `Squeezed once`, `twice` or `N times` (`… or more` when `squeezesAtLeast`) when
@@ -735,7 +810,10 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
 - Edges: `contains` (person → project → session), `spawn` (parent → sub-agent, from links),
   `mailbox` (planner → coordinator, from mailbox events, when both nodes are listed; the coordinator
   defaults to `relay.coordinatorKey`), and `message` (between tiles that no tree line joins, only
-  while active). `active` is set when `lastDown`/`lastUp` is within `PULSE_MS = 120000`.
+  while active). `active` is set when `lastDown`/`lastUp` is within `PULSE_MS = 120000`. Each
+  mailbox lights its own `mailbox` lines with its own events: planner → relay → coordinator, where
+  the planner → relay part follows the tree lines when the planner is above the relay (a project
+  mailbox's runs orchestrator → project tile → `relay:<box>`), else is one line of its own.
 - Agent mail: each mail name (an agent's key) is matched to a tile: the person (`you`) for the
   key of `mail.owner`, `owner`, or the key of `displayName`; else the Codex thread the relay wakes
   for it (`codex:<threadId>`), when listed; else the newest listed session (by `lastAt`) whose
@@ -749,14 +827,19 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
   tiles (from the one whose key sorts first, `down` when that one sent it). Mail between the
   person and a session tile lights a line from `you` to that tile, `down` when the person sent it
   (the tree line itself, a `contains` edge, when the session hangs right under the person). A
-  message never dims a line something newer lit.
+  message never dims a line something newer lit. In an HQ, each mailbox's mail names are its own
+  (the same name in two mailboxes can be two tiles), and the person's mail from all of them adds up
+  in `you.mail`, `snapshot.mail` and the `mail` notices.
 - Relay wakes: `relay.wakes` comes from the relay's `state.json` (`mail_dispatches`: `agent`,
   `name`, `state`, `items`, `started_utc` and `finished_utc` in seconds). Each wake of an agent on
   the map lights the line from the relay to it, labelled "Woke it to read N new messages": along
   the tree when one is above the other, else a `message` line from the relay. Each wake is a
   `wake` event ("To read N new messages."); an agent not on the map has `to: null` and its
-  `toName`. The label is the message as a snippet (≤120 chars, only with
-  snippets). Each message with a side on the map is a `mail` event (`text` ≤280 chars, only with
+  `toName`. In an HQ, each relay lights its own wakes, and HQ's relay also its wakes of the
+  orchestrator (`planner: true`): the line between HQ's relay and the Codex thread it woke
+  (`codex:<threadId>`, else the orchestrator), labelled "Woke it to check N new items", and a `wake`
+  event ("To check N new items.", `toName` "the orchestrator"), even without agent mail. The label is
+  the message as a snippet (≤120 chars, only with snippets). Each message with a side on the map is a `mail` event (`text` ≤280 chars, only with
   snippets); a side not on the map is `null`, and `fromName` and `toName` still name it.
 - Ranks: `plain` — the person shows only `displayName`, session "Lead", sub-agent "Agent",
   reviewer "Reviewer", and a session with the role superintendent or coordinator "Superintendent"
@@ -775,16 +858,22 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
   to use <tool>.". It cannot be dismissed; it goes away when the person answers or gives it back,
   or when the time runs out.
 - Attention ("Needs you"), by `kind`: `needs` (a session asks something), `error` (a session
-  stopped with an error), `question` and `review` (mailbox tasks, keyed `task:<id>`); from the
-  mailbox, `note` (the newest `NEEDS-<NAME>.md` note, on the coordinator's tile, or the person's
-  when the coordinator is not listed), and on the relay tile `alert` (the newest relay alert),
-  `halted` (instead of `alert`, with the reason and what to run) and `paused` (`at` is when it
-  paused). `note` and `alert` count only within `recentHours`. `mail` is unread agent mail for the
+  stopped with an error), `question` and `review` (mailbox tasks, keyed `task:<id>`, or
+  `task:<box>:<id>` in a project mailbox); from each mailbox, `note` (the newest `NEEDS-<NAME>.md`
+  note, on the coordinator's tile, else, in an HQ, on its relay's, else the person's), and on its
+  relay tile `alert` (the newest relay alert), `halted` (instead of `alert`, with the reason and what
+  to run) and `paused` (`at` is when it paused). In an HQ each of these names its mailbox: "The Notes
+  relay is paused…", "…run bridge-relay.ps1 -ClearHalt in its mailbox folder.", "New note for you
+  in NEEDS-ADA.md (Notes): …", "Split the service (Notes) has a question…"; a lone mailbox's say
+  what they always said. Two notices with one id (two mailboxes' notes on `you`, say) show once, the
+  newest. `note` and `alert` count only within `recentHours`. `mail` is unread agent mail for the
   person, one notice for each sender tile ("Sergeant Ada sent you 2 messages. The newest: …", the
   newest message only with snippets); senders not on the map share one notice on `you`. It stays,
   however old, until the person reads the mail (it moves to `read/`) or dismisses it. `stopped` is for a watched tile: a
   session that is not working, not asking and not in error, whose own `lastAt` is at least
-  `alerts.stoppedMinutes` old, or a relay whose `state.json` is that old. A tile's `lastAt` also
+  `alerts.stoppedMinutes` old, or a relay whose `state.json` is that old ("…so nothing wakes the
+  coordinator", in an HQ "the orchestrator" for HQ's relay and "its coordinator" for a project's;
+  any relay tile can be watched). A tile's `lastAt` also
   counts the work of the tiles below it, so the session's own time is used. Mailbox worker runs
   (`mailbox:` keys) cannot be watched. The snapshot is rebuilt on each poll with the current time,
   so a `stopped` notice appears without any file changing.
@@ -798,7 +887,9 @@ export function createStore({ settings, roots, demo = false, now = Date.now, sta
 ```
 
 Creates the enabled sources (or the demo source), polls at most every 2 s on demand, caches the
-snapshot with its JSON and its ETag, and rebuilds when settings change. `snapshot().actions.openTerminal`
+snapshot with its JSON and its ETag, and rebuilds when settings change. Its `mailbox` source is
+`createMailboxesSource` (a lone mailbox or an HQ). `detail` answers `{ events: [], next: null }` for
+a relay (`relay`, `relay:<box>`) and a worker run (`mailbox:` keys): they keep no session file. `snapshot().actions.openTerminal`
 is `settings.actions.openTerminal` and `platform === 'win32'`, and `actions.rollover`,
 `actions.newAgent`, `actions.teleport` and `actions.send` the same for their settings, and
 `actions.answers` is `settings.actions.answers` on any system. `setAsks(list)` takes the questions the
@@ -1745,8 +1836,11 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   saves `people[key].reportsTo` (null removes it). It refuses the person, projects, sessions that
   are not on the map, and a boss below the session itself (a loop), and answers `{ ok: true }`.
 - **POST /api/watch** `{ key, watch: boolean }` passes the same checks and saves
-  `people[key].watch` (`false` removes it). Only a session on the map or the relay can be watched:
-  other keys get `400`, a tile that is not on the map `404`. It answers `{ ok: true }`.
+  `people[key].watch` (`false` removes it). Only a session on the map or a relay (`relay`, or a
+  project mailbox's `relay:<box>`, on a tile of kind `relay`) can be watched: other keys get `400`, a
+  tile that is not on the map `404`. It answers `{ ok: true }`. `POST /api/placement` moves a
+  project's relay like any relay; it refuses project tiles, so an HQ project tile stays where its
+  mailbox puts it.
 - **POST /api/hide** `{ key, hide: true }` passes the same checks and saves `people[key].role =
   'hidden'` for a Claude Code, Codex, Grok, Kimi Code or Gemini CLI session or helper on the map (kind session,
   agent or reviewer; other keys `400`, a tile not on the map `404`). It answers
@@ -2007,7 +2101,14 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   -Text 'your answer'` (`.\bin\agent-mail.ps1` when Pleni does not know the mailbox folder).
   **Mark all as read** posts `you|mailread` with the newest new message's time; the files stay
   where they are. A "Mail for you" notice opens this page, and so does its pop-up.
-- **Tasks:** mailbox tasks with state and attention.
+- **Tasks:** mailbox tasks with state and attention. In an HQ (`snapshot.boxes`), one group for each
+  mailbox: HQ first, as "HQ", then each project by name, each with its open tasks, its closed ones
+  folded, and the error when Pleni cannot read that mailbox. The Mail page then says which mailbox
+  each message is in ("in Notes"); a project's answer command is `.\bin\agent-mail.ps1`, to run in
+  that project's mailbox folder, which the page is never told. A relay's side panel names its
+  project (HQ's says it wakes the orchestrator), an HQ project's tile and side panel show when its
+  mailbox cannot be read, the notices at the top say so too, and Settings, under Sources, lists the
+  HQ's projects. A session's rank line names its folder unless a project tile is above it.
 - **Pull requests:** one card per GitHub repository (`node.github`) of the sessions on the map, with
   links to its Pull requests, Branches and Checks (Actions) pages on github.com. Under it, each
   branch (the session's `subtitle`), main branches (`main`, `master`, `trunk`, `develop`) first,
@@ -2255,10 +2356,15 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 export function createDemoSource({ now = Date.now })  // -> { poll(): { claude, codex, mailbox }, detail(key, since) }
 ```
 
-A deterministic, time-driven cast: a person, two projects, a Codex planner with two sub-agents, a
-Claude coordinator with three sub-agents (one working, one waiting, one done; the coordinator has a
-long session's numbers, so it shows "Roll over soon"), and a small mailbox
-with a note for the person, with hand-offs that light up every few seconds. A Grok session and a Kimi
+A deterministic, time-driven cast: a person, two projects, a Codex planner (the HQ orchestrator,
+"Orchestrator") with two sub-agents, a Claude coordinator with three sub-agents (one working, one
+waiting, one done; the coordinator has a long session's numbers, so it shows "Roll over soon"), and
+an HQ mailbox (`~/hq`) with two project mailboxes, Billing service (`billing`, run by that
+coordinator, with its tasks and a note for the person) and Field app (`field-app`, run by "Field app
+coordinator", whose task has two worker runs, W2 a Claude Code session of its own), each with its
+relay, with hand-offs that light up every few seconds. HQ's relay wakes the orchestrator for new
+items, and HQ has one finished task of its own. The project mailboxes link to the two made-up
+projects by name. A Grok session and a Kimi
 Code session work in the same projects, and a Gemini CLI session updates the field app's help pages,
 with a helper that is done. In its agent mail, the
 planner (which the relay wakes) and "Sales tax research" write to each other every loop, the

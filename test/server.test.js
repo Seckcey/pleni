@@ -887,6 +887,27 @@ test('watch refuses groups, worker runs, unknown tiles, bad bodies and cross-sit
   assert.deepEqual(memory.saved, []);
 });
 
+test('a project mailbox\'s relay in an HQ can be watched and moved like HQ\'s relay', async (t) => {
+  const store = treeStore();
+  store.current.nodes.push({ key: 'project:Notes', title: 'Notes', kind: 'project', parent: BOSS_KEY });
+  store.current.nodes.push({ key: 'relay:notes', title: 'Notes relay', kind: 'relay', parent: 'project:Notes' });
+  store.current.nodes.push({ key: 'mailbox:notes:T-1/W1', title: 'W1', kind: 'agent', parent: SESSION_KEY });
+  // A relay key on a tile that is not a relay is refused.
+  store.current.nodes.push({ key: 'relay:odd', title: 'Odd', kind: 'session', parent: 'you' });
+  const { port, memory } = await startServer(t, { store });
+  assert.equal((await watch(port, { key: 'relay:notes', watch: true })).status, 200);
+  assert.deepEqual(memory.state.settings.people['relay:notes'], { watch: true });
+  assert.equal((await watch(port, { key: 'relay:shop', watch: true })).status, 404, 'not on the map');
+  for (const key of ['relay:odd', 'relay:hq', 'mailbox:notes:T-1/W1', 'project:Notes']) {
+    assert.equal((await watch(port, { key, watch: true })).status, 400, key);
+  }
+  assert.equal((await move(port, { key: 'relay:notes', reportsTo: BOSS_KEY })).status, 200);
+  assert.deepEqual(memory.state.settings.people['relay:notes'], { watch: true, reportsTo: BOSS_KEY });
+  assert.equal((await move(port, { key: AGENT_KEY, reportsTo: 'relay:notes' })).status, 200, 'a session can be put under it');
+  assert.equal((await watch(port, { key: 'relay:notes', watch: false })).status, 200);
+  assert.deepEqual(memory.state.settings.people['relay:notes'], { reportsTo: BOSS_KEY });
+});
+
 // ---- dismiss ----
 
 test('dismiss passes a valid notice to the store and refuses bad ones', async (t) => {

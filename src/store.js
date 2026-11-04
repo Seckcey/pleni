@@ -2,7 +2,7 @@
 // and caches the snapshot with its ETag.
 import fs from 'node:fs';
 import path from 'node:path';
-import { cleanSettings, isNodeKey } from './config.js';
+import { cleanSettings, isNodeKey, isRelayKey } from './config.js';
 import { stripBom } from './jsonl.js';
 import { createDemoSource, demoSettings } from './demo.js';
 import { MAIL_READ_ID, buildSnapshot, personMailKeys, snapshotTag } from './model.js';
@@ -11,7 +11,7 @@ import { createCodexSource } from './sources/codex.js';
 import { createGeminiSource } from './sources/gemini.js';
 import { createGrokSource } from './sources/grok.js';
 import { createKimiSource } from './sources/kimi.js';
-import { createMailboxSource } from './sources/mailbox.js';
+import { createMailboxesSource } from './sources/mailbox.js';
 
 export const POLL_MS = 2000;
 
@@ -21,7 +21,8 @@ const FACTORIES = {
   grok: createGrokSource,
   kimi: createKimiSource,
   gemini: createGeminiSource,
-  mailbox: createMailboxSource,
+  // One folder: a lone mailbox, or an HQ and the project mailboxes it lists.
+  mailbox: createMailboxesSource,
   demo: createDemoSource,
 };
 const NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', gemini: 'Gemini CLI', mailbox: 'the mailbox', demo: 'the demo' };
@@ -130,8 +131,8 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
 
   function detail(key, since) {
     if (!isNodeKey(key) || key === 'you' || key.startsWith('project:')) return null;
-    // The relay and its worker runs keep no session file: there are no events to show.
-    if (key === 'relay' || key.startsWith('mailbox:')) return { events: [], next: null };
+    // A relay and its worker runs keep no session file: there are no events to show.
+    if (isRelayKey(key) || key.startsWith('mailbox:')) return { events: [], next: null };
     const entry = demo ? sources.demo : sources[key.slice(0, key.indexOf(':'))];
     if (typeof entry?.source?.detail !== 'function') return null;
     let result;
@@ -185,7 +186,7 @@ export function createStore({ settings, roots, demo = false, now = Date.now, fac
     if (!snap.mail) return null;
     const entry = demo ? sources.demo : sources.mailbox;
     if (typeof entry?.source?.mail !== 'function') return null;
-    const keys = personMailKeys(demo ? demoSettings(current) : current, polled?.mailbox?.mail?.owner ?? null);
+    const keys = personMailKeys(demo ? demoSettings(current) : current, mailOwner(polled?.mailbox));
     let messages;
     try {
       messages = entry.source.mail({ keys, all: all === true });
@@ -260,6 +261,18 @@ function saveDismissed(dir, dismissed) {
       // Nothing more to do.
     }
   }
+}
+
+// The person's mail name from the relay's settings: the mailbox's own, else (in an HQ) the first
+// project mailbox that has one.
+function mailOwner(mailbox) {
+  if (!isObject(mailbox)) return null;
+  const projects = isObject(mailbox.hq) && Array.isArray(mailbox.hq.projects) ? mailbox.hq.projects : [];
+  for (const box of [mailbox, ...projects.map((p) => p?.mailbox)]) {
+    const owner = isObject(box) && isObject(box.mail) ? box.mail.owner : null;
+    if (typeof owner === 'string' && owner) return owner;
+  }
+  return null;
 }
 
 function poll(entry) {

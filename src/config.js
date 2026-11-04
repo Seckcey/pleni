@@ -84,8 +84,12 @@ const MAX_LAN_ADDRESSES = 10;
 const MAX_TIER_WORDS = 50;
 const MAX_PATH = 4096;
 const NODE_KEY = /^(claude|codex|grok|kimi|gemini):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
-// A mailbox worker run: mailbox:<task id>/W<n>. It keeps no session file of its own.
-const MAILBOX_KEY = /^mailbox:[A-Za-z0-9][A-Za-z0-9._-]{0,120}\/W\d{1,4}$/;
+// A mailbox worker run: mailbox:<task id>/W<n>, or mailbox:<box>:<task id>/W<n> in a project
+// mailbox of an HQ, where <box> is the project's id (never "hq", which is HQ itself). It keeps no
+// session file of its own. A task id never holds ':'.
+const MAILBOX_KEY = /^mailbox:(?:(?!hq:)[a-z0-9][a-z0-9-]{0,39}:)?[A-Za-z0-9][A-Za-z0-9._-]{0,120}\/W\d{1,4}$/;
+// The relay of a project mailbox: relay:<box>. HQ's own relay, or a lone mailbox's, is 'relay'.
+const RELAY_KEY = /^relay:(?!hq$)[a-z0-9][a-z0-9-]{0,39}$/;
 const CONTROL = /\p{Cc}/u;
 const RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 
@@ -120,8 +124,13 @@ export function resolveRoots(settings, env = process.env, platform = process.pla
 
 export function isNodeKey(s) {
   if (typeof s !== 'string') return false;
-  if (s === 'you' || s === 'relay' || NODE_KEY.test(s) || MAILBOX_KEY.test(s)) return true;
+  if (s === 'you' || s === 'relay' || NODE_KEY.test(s) || MAILBOX_KEY.test(s) || RELAY_KEY.test(s)) return true;
   return s.startsWith('project:') && isProjectName(s.slice('project:'.length));
+}
+
+// A relay's tile: 'relay' (HQ's own, or a lone mailbox's) or 'relay:<box>' (a project mailbox's).
+export function isRelayKey(s) {
+  return s === 'relay' || (typeof s === 'string' && RELAY_KEY.test(s));
 }
 
 export function cleanSettings(raw) {

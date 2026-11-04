@@ -144,7 +144,7 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   and your agents in full, newest first, marks the new ones, and gives the command to answer each.
   **All mail** shows the mail between your agents too.
 - **Tasks** — shown only when you turn on a mailbox (see below). It lists each task, its state,
-  and which ones need you.
+  and which ones need you. With an HQ, it groups them by project.
 - **Pull requests** — shown when your sessions work in GitHub repositories. For each repository it
   lists the branches your agents work on, who is on each, and links to its pull request on GitHub,
   or to open one. With [Live GitHub status](#live-github-status) on, it also shows each pull
@@ -547,6 +547,24 @@ lights up between two tiles when mail goes from one to the other, a tile says ho
 messages wait for it, and mail for you shows under **Needs you**. Read your mail in full on the
 **Mail** page, where each message has the PowerShell command that answers it. Click a tile to see
 whether the relay wakes it for its mail. Pleni never sends mail itself.
+
+### HQ and project mailboxes
+
+One planner can run several projects. The relay calls this **HQ** (see "Run several projects (HQ)"
+in the [relay README](relay/README.md)). HQ is a mailbox that lists your project mailboxes. Each
+project has its own mailbox, relay and coordinator, and one Codex session, the **orchestrator**,
+plans for all of them.
+
+Point Pleni's mailbox folder at HQ, and Pleni reads the project mailboxes that HQ lists too. The map
+shows you, then the orchestrator, then HQ's relay and one tile for each project. Under each project
+tile are that project's relay, its coordinator, and the coordinator's workers. The Tasks page groups
+the tasks by project, HQ first. A notice for a relay, a task or a note says which project it is
+about. If Pleni cannot find a project's mailbox folder, that project's tile and the Tasks page say
+so, and the other projects still show.
+
+A project tile takes the name of the project on Pleni's Projects page with the same name, or whose
+name matches the project's id. So when you group sessions by project, that project's other sessions
+show under the same tile. Pleni only reads HQ and its project mailboxes. It never writes to them.
 
 ## Privacy and safety
 

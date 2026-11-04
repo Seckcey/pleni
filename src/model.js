@@ -46,21 +46,22 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
     projectFolders: projectFolders(s.projectList),
     projectIdsByCwd: new Map(),
   };
-  const box = isObject(mailbox) ? mailbox : null;
   const all = collectSessions([claude, codex, grok, kimi, gemini]);
   // A tile for each AI tool that is on and was found, even with no sessions (settings.toolTiles).
   ctx.tools = s.toolTiles ? availableTools({ claude, codex, grok, kimi, gemini }) : [];
-  const workers = mailboxWorkers(box, ctx, all);
+  // The mailbox in Settings and, when it is an HQ, the project mailboxes it lists.
+  ctx.boxes = mailboxBoxes(mailbox, s);
+  ctx.linkedTiles = linkedTiles(ctx.boxes);
+  const workers = boxWorkers(ctx.boxes, ctx, all);
   for (const worker of workers) all.set(worker.key, worker);
-  ctx.relayWorkers = new Set(workers.map((worker) => worker.key));
-  const tree = buildTree(all, ctx, box);
+  const tree = buildTree(all, ctx);
   const links = linkParts(tree, all, ctx);
   const runs = workerRuns(workers, tree, links.pairs, ctx);
-  const mail = mailboxParts(box, tree, ctx);
+  const mail = mailboxParts(ctx.boxes, tree, ctx);
   const hidden = dismissedAt(dismissed);
   // The newest mail the person marked as read on the Mail page; Pleni never moves mail files.
   ctx.mailReadAt = hidden(MAIL_READ_ID);
-  const agentMail = agentMailParts(box, tree, all, links.pairs, ctx);
+  const agentMail = agentMailParts(ctx.boxes, tree, all, links.pairs, ctx);
   const nodes = tree.order.map((key) => tree.nodes.get(key));
   shareProjectIds(tree.nodes, all);
   markWatched(nodes, ctx);
@@ -69,7 +70,7 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
   for (const node of sessionNodes) {
     if (node.needs && hidden(`${node.key}|needs`) >= (node.needs.at ?? 0)) node.needs = null;
   }
-  const tasks = isObject(mailbox) ? cleanTasks(mailbox, ctx) : null;
+  const tasks = ctx.boxes.length ? cleanTasks(ctx.boxes, ctx) : null;
   const held = heldAsks(asks, tree, ctx);
   return {
     version: 1,
@@ -88,10 +89,12 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
     edges: mergeEdges([...treeEdges(tree, links.pairs, ctx), ...messageEdges(tree, links.pairs, ctx)], mail.edges, ctx),
     events: sortEvents([...links.events, ...runs, ...mail.events, ...agentMail.events, ...errorEvents(sessionNodes, ctx)]),
     counts: countStatuses(sessionNodes),
-    attention: attentionList(sessionNodes, tasks ?? [], [...held.attention, ...mailboxAttention(box, tree, ctx), ...agentMail.attention, ...watchAttention(nodes, all, box, ctx)])
+    attention: attentionList(sessionNodes, tasks ?? [], [...held.attention, ...mailboxAttention(ctx.boxes, tree, ctx), ...agentMail.attention, ...watchAttention(nodes, all, ctx)])
       .filter((item) => !(hidden(item.id) >= item.at)),
     asks: held.asks,
     tasks,
+    // Only for an HQ: HQ and its project mailboxes, HQ first. Never a folder path.
+    ...boxList(ctx.boxes),
     mail: agentMail.summary,
     hiddenSessions: hiddenSessions(all, ctx),
     // The Projects page: no folder here, only the name and the repository.
@@ -516,7 +519,7 @@ function projectFor(session, all, memo, depth = 0) {
 
 // ---- tree ----
 
-function buildTree(all, ctx, mailbox) {
+function buildTree(all, ctx) {
   const { settings } = ctx;
   const memo = new Map();
   const nodes = new Map();
@@ -531,15 +534,23 @@ function buildTree(all, ctx, mailbox) {
     // Rules sort out sessions; a helper that a session started itself stays under that session.
     const rule = session.spawned ? null : chainRule(settings.chain, session, settings);
     if (rule) rules.set(session.key, rule);
-    nodes.set(session.key, sessionNode(session, name, ctx, rule));
-    homes.set(session.key, homeOf(session, name, settings));
+    const node = sessionNode(session, name, ctx, rule);
+    nodes.set(session.key, node);
+    homes.set(session.key, homeOf(session, name, settings, node.projectIds, ctx.linkedTiles));
   }
-  if (mailbox && isObject(mailbox.relay)) {
-    const relay = relayNode(mailbox, settings);
-    nodes.set(RELAY, relay);
-    homes.set(RELAY, 'you');
-    const rule = chainRule(settings.chain, { key: RELAY, title: relay.title }, settings);
-    if (rule) rules.set(RELAY, rule);
+  // Each project mailbox of an HQ has a tile, whatever groupBy says, and each mailbox with relay
+  // files has a relay tile: HQ's (or a lone mailbox's) is 'relay', a project's 'relay:<box>'.
+  for (const box of ctx.boxes) {
+    if (box.tile && !nodes.has(box.tile)) {
+      nodes.set(box.tile, projectNode(box.tile, entry(settings.projects, box.tileName)?.label || box.tileName, box.tileName));
+      homes.set(box.tile, 'you');
+    }
+    if (!isObject(box.state.relay)) continue;
+    const relay = relayNode(box, settings);
+    nodes.set(box.relayKey, relay);
+    homes.set(box.relayKey, box.tile ?? 'you');
+    const rule = chainRule(settings.chain, { key: box.relayKey, title: relay.title }, settings);
+    if (rule) rules.set(box.relayKey, rule);
   }
 
   const parentOf = new Map();
@@ -548,8 +559,8 @@ function buildTree(all, ctx, mailbox) {
     parentOf.set(key, parentKey && nodes.has(parentKey) ? parentKey : homes.get(key));
     node.parent = parentOf.get(key);
   }
-  ctx.mailboxKeys = { ...mailboxKeys(mailbox, nodes, settings), workers: ctx.relayWorkers ?? new Set() };
-  applyChain(nodes, parentOf, homes, rules, ctx.mailboxKeys, settings);
+  boxKeys(ctx.boxes, nodes, settings);
+  applyChain(nodes, parentOf, homes, rules, ctx.boxes, settings);
   breakCycles(nodes, parentOf, homes);
 
   nodes.set('you', personNode(settings.displayName, settings.titles));
@@ -569,9 +580,14 @@ function buildTree(all, ctx, mailbox) {
 }
 
 // Where a session hangs when nothing else places it: its AI tool's tile, its project's tile, or you.
-function homeOf(session, project, settings) {
+// A session in a Projects page project that a project mailbox of an HQ is linked to (`linked`: the
+// project's id -> that mailbox's tile) hangs under that tile, so it holds the project's other
+// sessions too.
+function homeOf(session, project, settings, ids = [], linked = null) {
   if (settings.toolTiles && TOOLS.includes(session.platform)) return toolKey(session.platform);
-  return settings.groupBy === 'project' ? projectKey(project) : 'you';
+  if (settings.groupBy !== 'project') return 'you';
+  const tile = linked ? ids.map((id) => linked.get(id)).find(Boolean) : null;
+  return tile || projectKey(project);
 }
 
 // A tile under you for each available AI tool, and for any other tool a session hangs under.
@@ -634,72 +650,108 @@ function bareName(text) {
   return text.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
 }
 
-function mailboxKeys(mailbox, nodes, settings) {
-  if (!mailbox) return { planner: null, coordinator: null };
+// Each box's planner, coordinator and worker runs (box.keys). The mailbox in Settings has the
+// planner and coordinator Settings name, else the coordinator its relay names. In an HQ, the
+// planner is the orchestrator: the Codex thread HQ's relay wakes (.relay/codex.json), else the
+// planner Settings name, and it is every project mailbox's planner too. A project mailbox's
+// coordinator is the one its relay names, whatever Settings say. A session coordinates one mailbox
+// at most.
+function boxKeys(boxes, nodes, settings) {
   const config = settings.sources.mailbox;
-  const relayKey = isObject(mailbox.relay) && typeof mailbox.relay.coordinatorKey === 'string' ? mailbox.relay.coordinatorKey : null;
-  const found = findSession(config.coordinator || relayKey, nodes);
-  const coordinator = found === 'you' ? null : found;
-  // The planner is never the coordinator itself, even when one name contains the other.
-  const planner = findSession(config.planner, nodes, coordinator);
-  return { planner: planner === 'you' ? null : planner, coordinator };
+  const sessions = new Map([...nodes].filter(([, node]) => KINDS.includes(node.kind)));
+  const named = (box) => (typeof box.state.relay?.coordinatorKey === 'string' ? box.state.relay.coordinatorKey : null);
+  const theirs = new Set(boxes.filter((box) => box.tile).map(named).filter(Boolean));
+  const free = theirs.size ? new Map([...sessions].filter(([key]) => !theirs.has(key))) : sessions;
+  const taken = new Set();
+  let planner = null;
+  for (const box of boxes) {
+    let coordinator = null;
+    if (!box.tile) {
+      const found = findSession(config.coordinator || named(box), free);
+      coordinator = found === 'you' ? null : found;
+      // The planner is never the coordinator itself, even when one name contains the other.
+      const own = box.plannerKey && sessions.has(box.plannerKey) && box.plannerKey !== coordinator ? box.plannerKey : null;
+      const chosen = own ?? findSession(config.planner, free, coordinator);
+      planner = chosen === 'you' ? null : chosen;
+    } else if (named(box) && sessions.has(named(box)) && !taken.has(named(box)) && named(box) !== planner) {
+      coordinator = named(box);
+    }
+    if (coordinator) taken.add(coordinator);
+    box.keys = { planner, coordinator, workers: new Set(box.workers.map((worker) => worker.key)) };
+  }
 }
 
 // Who reports to whom, strongest first: the person's own choice (People, the Reports to menu or a
 // drag on the map), the mailbox (planner -> relay -> coordinator -> its workers, which are fixed
 // links like a helper under the session that started it), a chain rule, and last what the session
-// files say. A choice or rule whose boss is not on the map changes nothing.
-function applyChain(nodes, parentOf, homes, rules, keys, settings) {
+// files say. A choice or rule whose boss is not on the map changes nothing. A project mailbox's
+// tile goes only where its mailbox puts it.
+function applyChain(nodes, parentOf, homes, rules, boxes, settings) {
   for (const [key, node] of nodes) {
+    const tile = node.kind === 'project';
     let boss = null;
     let placement = 'auto';
-    const chosen = entry(settings.people, key)?.reportsTo;
+    const chosen = tile ? null : entry(settings.people, key)?.reportsTo;
     if (chosen) {
       boss = findSession(chosen, nodes, key);
       if (boss) placement = 'manual';
     }
-    if (!boss) boss = mailboxBoss(key, nodes, keys);
-    if (!boss && rules.has(key)) {
+    if (!boss) boss = mailboxBoss(key, nodes, boxes);
+    if (!boss && !tile && rules.has(key)) {
       boss = findSession(rules.get(key).reportsTo, nodes, key);
       if (boss) placement = 'rule';
     }
     if (boss === 'you') parentOf.set(key, homes.get(key));
     else if (boss) parentOf.set(key, boss);
-    node.placement = placement;
+    if (!tile) node.placement = placement;
   }
-  throughRelay(nodes, parentOf, homes, keys);
+  throughRelay(nodes, parentOf, homes, boxes);
 }
 
-// The relay carries the coordinator's work to and from the boss the relay reports to. So when the
+// A relay carries the coordinator's work to and from the boss the relay reports to. So when the
 // coordinator is put right under that same boss (a choice made before the relay had a tile, say),
 // it goes under the relay instead, which sits between them the way the work really runs.
-function throughRelay(nodes, parentOf, homes, keys) {
-  const { coordinator } = keys;
-  const boss = parentOf.get(RELAY);
-  if (!coordinator || !nodes.has(RELAY) || !nodes.has(coordinator) || !boss || boss === coordinator) return;
-  if (boss !== homes.get(RELAY) && parentOf.get(coordinator) === boss) parentOf.set(coordinator, RELAY);
+function throughRelay(nodes, parentOf, homes, boxes) {
+  for (const box of boxes) {
+    const { coordinator } = box.keys;
+    const boss = parentOf.get(box.relayKey);
+    if (!coordinator || !nodes.has(box.relayKey) || !nodes.has(coordinator) || !boss || boss === coordinator) continue;
+    if (boss !== homes.get(box.relayKey) && parentOf.get(coordinator) === boss) parentOf.set(coordinator, box.relayKey);
+  }
 }
 
-function mailboxBoss(key, nodes, keys) {
-  const relay = nodes.has(RELAY) ? RELAY : null;
-  if (key === RELAY) return keys.planner;
-  if (key === keys.coordinator) return relay ?? (keys.planner !== key ? keys.planner : null);
-  if (keys.workers?.has(key)) return keys.coordinator ?? relay;
+// Where a mailbox puts a tile: a relay under its planner (a project's relay under its project's
+// tile, and that tile under the orchestrator), the coordinator under its relay, and its worker runs
+// under the coordinator.
+function mailboxBoss(key, nodes, boxes) {
+  for (const box of boxes) {
+    const { planner, coordinator, workers } = box.keys;
+    const relay = nodes.has(box.relayKey) ? box.relayKey : null;
+    if (key === box.tile) return planner;
+    if (key === box.relayKey) return box.tile ?? planner;
+    if (key === coordinator) return relay ?? box.tile ?? (planner !== key ? planner : null);
+    if (workers.has(key)) return coordinator ?? relay ?? box.tile;
+  }
   return null;
 }
 
-// Malformed parent links could form a loop; the first member of a loop moves to its project.
+// Malformed parent links could form a loop; the first member of a loop moves to its home (you, its
+// AI tool or its project). A home can be in the loop too (a project mailbox's tile hangs under the
+// orchestrator), and then it moves under you.
 function breakCycles(nodes, parentOf, homes) {
-  for (const key of [...nodes.keys()].sort()) {
+  const looped = (key) => {
     const seen = new Set();
     for (let p = parentOf.get(key); nodes.has(p); p = parentOf.get(p)) {
-      if (p === key) {
-        parentOf.set(key, homes.get(key));
-        break;
-      }
-      if (seen.has(p)) break;
+      if (p === key) return true;
+      if (seen.has(p)) return false;
       seen.add(p);
     }
+    return false;
+  };
+  for (const key of [...nodes.keys()].sort()) {
+    if (!looped(key)) continue;
+    parentOf.set(key, homes.get(key));
+    if (looped(key)) parentOf.set(key, 'you');
   }
 }
 
@@ -856,35 +908,112 @@ function groupNode({ key, parent, platform, kind, title, rank, project = null })
 
 const RELAY = 'relay';
 const WORKER_ID = /^W\d{1,4}$/;
+const BOX_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const MAX_BOX_NAME = 80;
 // Kept with the dismissed notices: the time of the newest mail the person marked as read.
 export const MAIL_READ_ID = 'you|mailread';
 
+// The mailboxes on the map, each a "box": the folder in Settings (a lone mailbox, or an HQ), then,
+// in an HQ, each project mailbox it lists, with its id and name. HQ and a lone mailbox keep the old
+// keys (relay, task:<id>, mailbox:<task>/W<n>); a project mailbox's hold its id (relay:<box>,
+// task:<box>:<id>, mailbox:<box>:<task>/W<n>), and it hangs under a project tile of its own.
+function mailboxBoxes(mailbox, settings) {
+  if (!isObject(mailbox)) return [];
+  const hq = isObject(mailbox.hq) ? mailbox.hq : null;
+  const plannerKey = hq && typeof mailbox.relay?.plannerKey === 'string' ? mailbox.relay.plannerKey : null;
+  const boxes = [{ id: hq ? 'hq' : null, name: hq ? 'HQ' : null, state: mailbox, relayKey: RELAY, prefix: '', tile: null, tileName: null, linked: null, plannerKey }];
+  if (!hq) return boxes;
+  const seen = new Set();
+  for (const project of Array.isArray(hq.projects) ? hq.projects : []) {
+    if (!isObject(project) || typeof project.id !== 'string' || !BOX_ID.test(project.id) || project.id === 'hq' || seen.has(project.id)) continue;
+    seen.add(project.id);
+    const name = text(project.name, MAX_BOX_NAME) || project.id;
+    const state = isObject(project.mailbox) ? project.mailbox : { ok: false, error: 'Pleni could not read this mailbox just now.', tasks: [], events: [], notes: [], relay: null, mail: null };
+    const tile = boxTile(project.id, name, settings.projectList);
+    boxes.push({ id: project.id, name, state, relayKey: `${RELAY}:${project.id}`, prefix: `${project.id}:`, tile: projectKey(tile.name), tileName: tile.name, linked: tile.linked, plannerKey: null });
+  }
+  return boxes;
+}
+
+// The tile a project mailbox hangs under, by its name in HQ. The first match wins: the Projects page
+// project with the same name (ignoring case), then the one whose name as a slug is the project's id,
+// else a tile of the mailbox's own name. { name, linked: that Projects page id, or null }.
+function boxTile(id, name, list) {
+  const lower = name.toLowerCase();
+  const found = list.find((p) => p.name.toLowerCase() === lower) ?? list.find((p) => slug(p.name) === id);
+  return found ? { name: found.name, linked: found.id } : { name, linked: null };
+}
+
+// "Field App" -> "field-app": small letters and digits, and a '-' for every other character.
+function slug(name) {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '-');
+}
+
+// Projects page id -> the tile of the project mailbox linked to it.
+function linkedTiles(boxes) {
+  const out = new Map();
+  for (const box of boxes) if (box.linked && !out.has(box.linked)) out.set(box.linked, box.tile);
+  return out;
+}
+
+// What the page learns about the mailboxes of an HQ, as { boxes }: HQ first ({ id: 'hq', name:
+// 'HQ' }), then each project mailbox, with its error and the name of its tile. A lone mailbox adds
+// nothing, so its snapshot keeps the shape it always had.
+function boxList(boxes) {
+  if (boxes[0]?.id !== 'hq') return {};
+  return {
+    boxes: boxes.map((box) => ({
+      id: box.id,
+      name: box.name,
+      root: null,
+      error: box.state.ok === false ? text(box.state.error, MAX_TEXT) || 'Pleni could not read this mailbox.' : null,
+      project: box.tileName,
+    })),
+  };
+}
+
+// 'The relay' for a lone mailbox; in an HQ, 'The HQ relay' or 'The Notes relay'.
+function relayWords(box) {
+  return box?.id ? `The ${box.name} relay` : 'The relay';
+}
+
 // The relay between a mailbox's planner and coordinator, as a tile of its own.
-function relayNode(mailbox, settings) {
-  const relay = mailbox.relay;
+function relayNode(box, settings) {
+  const relay = box.state.relay;
   const node = groupNode({
-    key: RELAY, parent: null, platform: 'relay', kind: 'relay',
-    title: entry(settings.people, RELAY)?.label || 'Relay', rank: 'Relay',
+    key: box.relayKey, parent: null, platform: 'relay', kind: 'relay',
+    title: entry(settings.people, box.relayKey)?.label || (box.id ? `${box.name} relay` : 'Relay'), rank: 'Relay',
   });
-  node.subtitle = text(mailbox.name, 80);
+  node.subtitle = text(box.state.name, 80);
   node.status = relay.halted ? 'error' : relay.running && !relay.paused ? 'working' : 'idle';
   node.named = true;
   node.placement = 'auto';
   return node;
 }
 
+// Every box's worker runs (box.workers). A session is one box's worker at most.
+function boxWorkers(boxes, ctx, all) {
+  const taken = new Set();
+  for (const box of boxes) {
+    box.workers = mailboxWorkers(box, ctx, all).filter((worker) => !taken.has(worker.key));
+    for (const worker of box.workers) taken.add(worker.key);
+  }
+  return boxes.flatMap((box) => box.workers);
+}
+
 // Each relay worker run goes under the coordinator. When its run note names a Claude Code session
 // that Pleni can see, that session is the worker's tile, so it can be watched and opened. Older
 // runs kept no session file, so their run note becomes a session-like node instead.
-function mailboxWorkers(mailbox, ctx, all) {
+function mailboxWorkers(box, ctx, all) {
   const out = [];
-  if (!mailbox || !Array.isArray(mailbox.tasks)) return out;
-  for (const task of mailbox.tasks) {
+  const tasks = box.state.tasks;
+  if (!Array.isArray(tasks)) return out;
+  for (const task of tasks) {
     if (!isObject(task) || typeof task.id !== 'string' || !Array.isArray(task.workers)) continue;
     const about = ctx.snippets ? snippet(task.title, MAX_TITLE) : null;
     for (const run of task.workers) {
       if (!isObject(run) || typeof run.id !== 'string' || !WORKER_ID.test(run.id)) continue;
-      const key = `mailbox:${task.id}/${run.id}`;
+      const key = `mailbox:${box.prefix}${task.id}/${run.id}`;
       if (!isNodeKey(key)) continue;
       const startedAt = time(run.startedAt);
       const finishedAt = time(run.finishedAt);
@@ -1128,26 +1257,42 @@ function activeFor(lastDown, lastUp, now) {
   return down ? 'down' : up ? 'up' : null;
 }
 
-function mailboxParts(mailbox, tree, ctx) {
-  if (!mailbox) return { edges: [], events: [] };
-  const { planner, coordinator } = ctx.mailboxKeys ?? { planner: null, coordinator: null };
-  const relay = tree.nodes.has(RELAY) ? RELAY : null;
-  const stats = { lastDown: null, lastUp: null, downLabel: null, upLabel: null };
-  const events = [];
-  const raw = Array.isArray(mailbox.events) ? mailbox.events : [];
-  for (const item of [...raw].filter(isObject).sort((a, b) => (time(a.at) ?? 0) - (time(b.at) ?? 0))) {
-    const at = time(item.at);
-    if (at === null || (item.dir !== 'down' && item.dir !== 'up')) continue;
-    const label = taskText(item, ctx);
-    const down = item.dir === 'down';
-    if (down && (stats.lastDown === null || at >= stats.lastDown)) Object.assign(stats, { lastDown: at, downLabel: label });
-    if (!down && (stats.lastUp === null || at >= stats.lastUp)) Object.assign(stats, { lastUp: at, upLabel: label });
-    events.push({ at, kind: 'mailbox', from: down ? planner : coordinator, to: down ? coordinator : planner, text: label });
+function mailboxParts(boxes, tree, ctx) {
+  const out = { edges: [], events: [] };
+  for (const box of boxes) {
+    const { planner, coordinator } = box.keys;
+    const relay = tree.nodes.has(box.relayKey) ? box.relayKey : null;
+    const stats = { lastDown: null, lastUp: null, downLabel: null, upLabel: null };
+    const raw = Array.isArray(box.state.events) ? box.state.events : [];
+    for (const item of [...raw].filter(isObject).sort((a, b) => (time(a.at) ?? 0) - (time(b.at) ?? 0))) {
+      const at = time(item.at);
+      if (at === null || (item.dir !== 'down' && item.dir !== 'up')) continue;
+      const label = taskText(item, ctx);
+      const down = item.dir === 'down';
+      if (down && (stats.lastDown === null || at >= stats.lastDown)) Object.assign(stats, { lastDown: at, downLabel: label });
+      if (!down && (stats.lastUp === null || at >= stats.lastUp)) Object.assign(stats, { lastUp: at, upLabel: label });
+      out.events.push({ at, kind: 'mailbox', from: down ? planner : coordinator, to: down ? coordinator : planner, text: label });
+    }
+    // With a relay the work runs planner -> relay -> coordinator, and both legs light together. A
+    // project mailbox's runs from the orchestrator through the project's tile to its relay.
+    const legs = relay ? [...treeLegs(tree, planner, relay), [relay, coordinator]] : treeLegs(tree, planner, coordinator);
+    out.edges.push(...legs.filter(([a, b]) => a && b && a !== b).map(([a, b]) => edge(a, b, 'mailbox', stats, ctx)));
   }
-  // With a relay the work runs planner -> relay -> coordinator, and both legs light together.
-  const legs = relay ? [[planner, relay], [relay, coordinator]] : [[planner, coordinator]];
-  const edges = legs.filter(([a, b]) => a && b && a !== b).map(([a, b]) => edge(a, b, 'mailbox', stats, ctx));
-  return { edges, events };
+  return out;
+}
+
+// The tree lines from `upper` down to `lower` when `upper` is above it on the map, else the two
+// as one leg of their own.
+function treeLegs(tree, upper, lower) {
+  const legs = [];
+  for (let key = lower; upper && key && legs.length < 32;) {
+    const parent = tree.parentOf.get(key);
+    if (!parent || !tree.nodes.has(parent)) break;
+    legs.unshift([parent, key]);
+    if (parent === upper) return legs;
+    key = parent;
+  }
+  return [[upper, lower]];
 }
 
 function taskText(item, ctx) {
@@ -1163,56 +1308,69 @@ function taskText(item, ctx) {
 // name (its key: see mailKey). Each name is matched to a tile. Every message lights the line
 // between sender and receiver and goes in the feed; a tile shows how much mail waits for it; mail
 // that waits for the person goes under Needs you, one notice for each tile that sent some.
-function agentMailParts(mailbox, tree, all, pairs, ctx) {
+// Mail names belong to their own mailbox: each box's are matched to tiles on their own. The person's
+// mail from every box is counted together, one notice for each tile that sent some.
+function agentMailParts(boxes, tree, all, pairs, ctx) {
   const out = { events: [], attention: [], summary: null };
-  const mail = isObject(mailbox?.mail) ? mailbox.mail : null;
-  if (!mail) return out;
   const readAt = ctx.mailReadAt ?? -Infinity;
   const yours = { unread: 0, since: null, lastAt: null };
-  const agents = (Array.isArray(mail.agents) ? mail.agents : []).filter((a) => isObject(a) && a.key && mailKey(a.key) === a.key);
-  const messages = (Array.isArray(mail.messages) ? mail.messages : [])
-    .filter((m) => isObject(m) && time(m.at) !== null && typeof m.to === 'string' && typeof m.from === 'string')
-    .sort((a, b) => a.at - b.at || cmp(a.to, b.to) || cmp(a.from, b.from));
-  const tileOf = mailTiles(mail, agents, tree, all, ctx);
-  const nameOf = new Map(agents.map((a) => [a.key, text(a.name, MAX_LABEL * 2)]));
-  for (const agent of agents) {
-    const tile = tileOf(agent.key);
-    if (tile) addMailBox(tree.nodes.get(tile), agent, nameOf.get(agent.key) || agent.key);
-  }
   const lineage = ancestry(tree.parentOf);
   const forYou = new Map();
-  for (const m of messages) {
-    const from = tileOf(m.from);
-    const to = tileOf(m.to);
-    const fromName = text(m.fromName, MAX_LABEL * 2) || nameOf.get(m.from) || m.from;
-    const toName = nameOf.get(m.to) || m.to;
-    const words = ctx.snippets ? snippet(m.text, MAX_TEXT) : null;
-    const label = ctx.snippets ? snippet(m.text, MAX_TITLE) : null;
-    if (from && to && from !== to) {
-      // Mail with the person runs on a line from the person's tile: down when they sent it.
-      if (from === 'you') lightNewer(pairs, 'you', to, { dir: 'down', at: m.at, label });
-      else if (to === 'you') lightNewer(pairs, 'you', from, { dir: 'up', at: m.at, label });
-      else lightMail(pairs, lineage, from, to, m.at, label);
+  let owner = null;
+  let any = false;
+  for (const box of boxes) {
+    const mail = isObject(box.state.mail) ? box.state.mail : null;
+    if (!mail) {
+      // HQ's wakes of the orchestrator light its line even without agent mail.
+      out.events.push(...relayWakeParts(box, tree, pairs, () => null, lineage, true));
+      continue;
     }
-    if (from || to) out.events.push({ at: m.at, kind: 'mail', from, to, text: words, fromName, toName });
-    yours.lastAt = m.at; // messages come oldest first
-    if (to === 'you' && m.unread === true && m.at > readAt) {
-      yours.unread++;
-      if (yours.since === null) yours.since = m.at;
-      const key = from && from !== 'you' ? from : 'you';
-      if (key !== 'you') addMailBox(tree.nodes.get(key), { toYou: 1 }, fromName);
-      const group = forYou.get(key) ?? { count: 0, at: 0, text: null, names: [] };
-      group.count++;
-      if (m.at >= group.at) Object.assign(group, { at: m.at, text: words });
-      group.names = [fromName, ...group.names.filter((n) => n !== fromName)]; // the newest sender first
-      forYou.set(key, group);
+    any = true;
+    owner ??= text(mail.owner, MAX_LABEL * 2);
+    const agents = (Array.isArray(mail.agents) ? mail.agents : []).filter((a) => isObject(a) && a.key && mailKey(a.key) === a.key);
+    const messages = (Array.isArray(mail.messages) ? mail.messages : [])
+      .filter((m) => isObject(m) && time(m.at) !== null && typeof m.to === 'string' && typeof m.from === 'string')
+      .sort((a, b) => a.at - b.at || cmp(a.to, b.to) || cmp(a.from, b.from));
+    const tileOf = mailTiles(mail, agents, tree, all, ctx);
+    const nameOf = new Map(agents.map((a) => [a.key, text(a.name, MAX_LABEL * 2)]));
+    for (const agent of agents) {
+      const tile = tileOf(agent.key);
+      if (tile) addMailBox(tree.nodes.get(tile), agent, nameOf.get(agent.key) || agent.key);
     }
+    for (const m of messages) {
+      const from = tileOf(m.from);
+      const to = tileOf(m.to);
+      const fromName = text(m.fromName, MAX_LABEL * 2) || nameOf.get(m.from) || m.from;
+      const toName = nameOf.get(m.to) || m.to;
+      const words = ctx.snippets ? snippet(m.text, MAX_TEXT) : null;
+      const label = ctx.snippets ? snippet(m.text, MAX_TITLE) : null;
+      if (from && to && from !== to) {
+        // Mail with the person runs on a line from the person's tile: down when they sent it.
+        if (from === 'you') lightNewer(pairs, 'you', to, { dir: 'down', at: m.at, label });
+        else if (to === 'you') lightNewer(pairs, 'you', from, { dir: 'up', at: m.at, label });
+        else lightMail(pairs, lineage, from, to, m.at, label);
+      }
+      if (from || to) out.events.push({ at: m.at, kind: 'mail', from, to, text: words, fromName, toName });
+      if (yours.lastAt === null || m.at > yours.lastAt) yours.lastAt = m.at;
+      if (to === 'you' && m.unread === true && m.at > readAt) {
+        yours.unread++;
+        if (yours.since === null || m.at < yours.since) yours.since = m.at;
+        const key = from && from !== 'you' ? from : 'you';
+        if (key !== 'you') addMailBox(tree.nodes.get(key), { toYou: 1 }, fromName);
+        const group = forYou.get(key) ?? { count: 0, at: 0, text: null, names: [] };
+        group.count++;
+        if (m.at >= group.at) Object.assign(group, { at: m.at, text: words });
+        group.names = [fromName, ...group.names.filter((n) => n !== fromName)]; // the newest sender first
+        forYou.set(key, group);
+      }
+    }
+    out.events.push(...relayWakeParts(box, tree, pairs, tileOf, lineage));
   }
-  out.events.push(...relayWakeParts(mailbox, tree, pairs, tileOf, lineage));
+  if (!any) return out;
   // Mail the person marked as read in Pleni stops counting as new, though its file stays in new/.
   const you = tree.nodes.get('you');
   if (you.mail && readAt > -Infinity) Object.assign(you.mail, { unread: yours.unread, since: yours.since });
-  out.summary = { name: text(mail.owner, MAX_LABEL * 2) || you.mail?.name || null, unread: you.mail?.unread ?? 0, lastAt: yours.lastAt };
+  out.summary = { name: owner || you.mail?.name || null, unread: you.mail?.unread ?? 0, lastAt: yours.lastAt };
   for (const [key, group] of forYou) {
     const who = key === 'you' ? nameList(group.names) : snippet(tree.nodes.get(key).title, MAX_TITLE) || group.names[0];
     const what = group.count === 1 ? 'sent you mail' : `sent you ${group.count} messages`;
@@ -1222,25 +1380,43 @@ function agentMailParts(mailbox, tree, all, pairs, ctx) {
   return out;
 }
 
-// Each turn the relay started to wake an agent for its mail lights the line from the relay to that
-// agent, and goes in the feed: "Relay woke Sergeant Ada".
-function relayWakeParts(mailbox, tree, pairs, tileOf, lineage) {
+// Each turn a relay started to wake an agent for its mail lights the line from the relay to that
+// agent, and goes in the feed: "Relay woke Sergeant Ada". In an HQ, so does each turn its relay
+// started to wake the orchestrator for new items ("planner" wakes; `plannerOnly` when the box has
+// no agent mail).
+function relayWakeParts(box, tree, pairs, tileOf, lineage, plannerOnly = false) {
   const events = [];
-  const wakes = Array.isArray(mailbox.relay?.wakes) ? mailbox.relay.wakes : [];
-  if (!tree.nodes.has(RELAY)) return events;
-  for (const wake of [...wakes].filter((w) => isObject(w) && time(w.at) !== null && typeof w.key === 'string').sort((a, b) => a.at - b.at)) {
-    const tile = tileOf(wake.key);
+  const from = box.relayKey;
+  const wakes = Array.isArray(box.state.relay?.wakes) ? box.state.relay.wakes : [];
+  if (!tree.nodes.has(from)) return events;
+  const valid = (w) => isObject(w) && time(w.at) !== null && (w.planner === true || (!plannerOnly && typeof w.key === 'string'));
+  for (const wake of [...wakes].filter(valid).sort((a, b) => a.at - b.at)) {
+    const planner = wake.planner === true;
+    const tile = planner ? plannerTile(box, wake, tree) : tileOf(wake.key);
     const count = Number.isSafeInteger(wake.count) && wake.count > 0 ? wake.count : 0;
-    const what = count ? `to read ${count === 1 ? '1 new message' : `${count} new messages`}` : 'to read its mail';
+    const what = planner ? checkWords(count) : count ? `to read ${count === 1 ? '1 new message' : `${count} new messages`}` : 'to read its mail';
     if (tile && tile !== 'you') {
       // Along the tree when the agent is above or below the relay, else a line of its own.
       const label = `Woke it ${what}`;
-      if (lineage(tile).includes(RELAY) || lineage(RELAY).includes(tile)) lightMail(pairs, lineage, RELAY, tile, wake.at, label);
-      else lightNewer(pairs, RELAY, tile, { dir: 'down', at: wake.at, label });
+      if (lineage(tile).includes(from) || lineage(from).includes(tile)) lightMail(pairs, lineage, from, tile, wake.at, label);
+      else lightNewer(pairs, from, tile, { dir: 'down', at: wake.at, label });
     }
-    events.push({ at: wake.at, kind: 'wake', from: RELAY, to: tile === 'you' ? null : tile, text: `${what[0].toUpperCase()}${what.slice(1)}.`, toName: text(wake.name, MAX_LABEL * 2) || wake.key });
+    const toName = planner ? 'the orchestrator' : text(wake.name, MAX_LABEL * 2) || wake.key;
+    events.push({ at: wake.at, kind: 'wake', from, to: tile === 'you' ? null : tile, text: `${what[0].toUpperCase()}${what.slice(1)}.`, toName });
   }
   return events;
+}
+
+// The tile of the Codex thread a planner wake woke, else the box's planner, when it is on the map.
+function plannerTile(box, wake, tree) {
+  const thread = typeof wake.threadId === 'string' ? `codex:${wake.threadId}` : null;
+  if (thread && KINDS.includes(tree.nodes.get(thread)?.kind)) return thread;
+  const planner = box.keys?.planner;
+  return planner && tree.nodes.has(planner) ? planner : null;
+}
+
+function checkWords(count) {
+  return count ? `to check ${count === 1 ? '1 new item' : `${count} new items`}` : 'to check what waits for it';
 }
 
 // Which tile a mail name is: the person for the relay's owner_name, "Owner" or the name in
@@ -1370,13 +1546,15 @@ function attentionList(sessionNodes, tasks, extra) {
   }
   for (const task of tasks) {
     if (!isObject(task) || typeof task.id !== 'string' || !Array.isArray(task.attention)) continue;
-    const name = snippet(task.title, MAX_TITLE) || task.id;
+    // In an HQ, a notice names the mailbox the task is in: "Split the service (Notes) ...".
+    const name = (snippet(task.title, MAX_TITLE) || task.id) + (typeof task.boxName === 'string' ? ` (${task.boxName})` : '');
+    const key = typeof task.box === 'string' && task.box !== 'hq' ? `task:${task.box}:${task.id}` : `task:${task.id}`;
     const at = time(task.updatedAt);
     if (task.attention.includes('question')) {
-      list.push({ key: `task:${task.id}`, kind: 'question', text: `${name} has a question that is holding up work.`, at });
+      list.push({ key, kind: 'question', text: `${name} has a question that is holding up work.`, at });
     }
     if (task.attention.includes('review')) {
-      list.push({ key: `task:${task.id}`, kind: 'review', text: `${name} is ready for review.`, at });
+      list.push({ key, kind: 'review', text: `${name} is ready for review.`, at });
     }
   }
   // Every item has an id to dismiss it by, and a time (0 when unknown) to tell a newer one apart.
@@ -1384,39 +1562,51 @@ function attentionList(sessionNodes, tasks, extra) {
     item.id = `${item.key}|${item.kind}`;
     item.at = item.at ?? 0;
   }
-  return list.sort((a, b) => b.at - a.at || cmp(a.key, b.key) || cmp(a.kind, b.kind));
+  // Two mailboxes can leave the same kind of notice on one tile (two notes for you, say); the
+  // newest one stays.
+  const seen = new Set();
+  return list
+    .sort((a, b) => b.at - a.at || cmp(a.key, b.key) || cmp(a.kind, b.kind))
+    .filter((item) => !seen.has(item.id) && seen.add(item.id));
 }
 
-// What the mailbox left for the person: the relay's alerts, a paused or halted relay, and the
-// newest note in a NEEDS-<NAME>.md file. Alerts and notes older than the window do not count.
-function mailboxAttention(mailbox, tree, ctx) {
+// What each mailbox left for the person: its relay's alerts, a paused or halted relay, and the
+// newest note in a NEEDS-<NAME>.md file. Alerts and notes older than the window do not count. In an
+// HQ, each notice names its mailbox.
+function mailboxAttention(boxes, tree, ctx) {
   const out = [];
-  if (!mailbox) return out;
   const since = ctx.now - ctx.settings.window.recentHours * HOUR_MS;
-  const relay = isObject(mailbox.relay) && tree.nodes.has(RELAY) ? mailbox.relay : null;
-  if (relay) {
-    const alertAt = time(relay.alerts?.at);
-    if (relay.halted) {
-      const why = ctx.snippets ? snippet(relay.haltReason, MAX_TEXT) : null;
-      const said = why ? `The relay stopped sending (${why}).` : 'The relay stopped sending. Its alerts.md file says why.';
-      out.push({ key: RELAY, kind: 'halted', text: `${said} Fix the cause, then run bridge-relay.ps1 -ClearHalt.`, at: alertAt });
-    } else if (alertAt !== null && alertAt >= since) {
-      // A halted relay's newest alert is the halt itself, so it is not said twice.
-      const what = ctx.snippets ? snippet(relay.alerts.text, MAX_TEXT) : null;
-      out.push({ key: RELAY, kind: 'alert', text: what ? `The relay wrote an alert: ${what}` : 'The relay wrote an alert for you.', at: alertAt });
+  for (const box of boxes) {
+    const state = box.state;
+    const relay = isObject(state.relay) && tree.nodes.has(box.relayKey) ? state.relay : null;
+    const words = relayWords(box);
+    if (relay) {
+      const alertAt = time(relay.alerts?.at);
+      if (relay.halted) {
+        const why = ctx.snippets ? snippet(relay.haltReason, MAX_TEXT) : null;
+        const said = why ? `${words} stopped sending (${why}).` : `${words} stopped sending. Its alerts.md file says why.`;
+        const where = box.id ? ' in its mailbox folder' : '';
+        out.push({ key: box.relayKey, kind: 'halted', text: `${said} Fix the cause, then run bridge-relay.ps1 -ClearHalt${where}.`, at: alertAt });
+      } else if (alertAt !== null && alertAt >= since) {
+        // A halted relay's newest alert is the halt itself, so it is not said twice.
+        const what = ctx.snippets ? snippet(relay.alerts.text, MAX_TEXT) : null;
+        out.push({ key: box.relayKey, kind: 'alert', text: what ? `${words} wrote an alert: ${what}` : `${words} wrote an alert for you.`, at: alertAt });
+      }
+      if (relay.paused) {
+        out.push({ key: box.relayKey, kind: 'paused', text: `${words} is paused, so it sends nothing. To go on, delete the PAUSE file in its .relay folder.`, at: time(relay.pausedAt) });
+      }
     }
-    if (relay.paused) {
-      out.push({ key: RELAY, kind: 'paused', text: 'The relay is paused, so it sends nothing. To go on, delete the PAUSE file in its .relay folder.', at: time(relay.pausedAt) });
+    const notes = Array.isArray(state.notes) ? state.notes.filter((note) => isObject(note) && time(note.at) !== null) : [];
+    const newest = notes.sort((a, b) => b.at - a.at)[0];
+    if (newest && newest.at >= since) {
+      // On the coordinator's tile; in an HQ, else on its relay's; else on yours.
+      const coordinator = box.keys?.coordinator;
+      const key = coordinator && tree.nodes.has(coordinator) ? coordinator : box.id && tree.nodes.has(box.relayKey) ? box.relayKey : 'you';
+      const file = text(newest.file, 80) || 'the mailbox';
+      const place = box.name ? `${file} (${box.name})` : file;
+      const what = ctx.snippets ? snippet(newest.text, MAX_TEXT) : null;
+      out.push({ key, kind: 'note', text: what ? `New note for you in ${place}: ${what}` : `There is a new note for you in ${place}.`, at: newest.at });
     }
-  }
-  const notes = Array.isArray(mailbox.notes) ? mailbox.notes.filter((note) => isObject(note) && time(note.at) !== null) : [];
-  const newest = notes.sort((a, b) => b.at - a.at)[0];
-  if (newest && newest.at >= since) {
-    const coordinator = ctx.mailboxKeys?.coordinator;
-    const key = coordinator && tree.nodes.has(coordinator) ? coordinator : 'you';
-    const file = text(newest.file, 80) || 'the mailbox';
-    const what = ctx.snippets ? snippet(newest.text, MAX_TEXT) : null;
-    out.push({ key, kind: 'note', text: what ? `New note for you in ${file}: ${what}` : `There is a new note for you in ${file}.`, at: newest.at });
   }
   return out;
 }
@@ -1427,17 +1617,20 @@ function mailboxAttention(mailbox, tree, ctx) {
 // on the map, so the session's own time is used: a boss whose team still works has still stopped.
 // The relay rewrites state.json every few seconds, even while paused, so an old file means it stopped
 // or is stuck, even if its program is still there.
-function watchAttention(nodes, all, mailbox, ctx) {
+function watchAttention(nodes, all, ctx) {
   const out = [];
   const minutes = ctx.settings.alerts.stoppedMinutes;
   const limit = minutes * MINUTE_MS;
   const span = minutes === 1 ? '1 minute' : `${minutes} minutes`;
   for (const node of nodes) {
     if (!node.watched) continue;
-    if (node.key === RELAY) {
-      const lastAt = time(mailbox?.relay?.lastAt);
+    if (node.kind === 'relay') {
+      const box = ctx.boxes.find((b) => b.relayKey === node.key);
+      const lastAt = time(box?.state.relay?.lastAt);
       if (lastAt === null || ctx.now - lastAt < limit) continue;
-      out.push({ key: RELAY, kind: 'stopped', text: `The relay has not run for ${span} or more, so nothing wakes the coordinator.`, at: lastAt });
+      // HQ's relay wakes the orchestrator; any other relay its own coordinator.
+      const whom = box.id === 'hq' ? 'the orchestrator' : box.id ? 'its coordinator' : 'the coordinator';
+      out.push({ key: node.key, kind: 'stopped', text: `${relayWords(box)} has not run for ${span} or more, so nothing wakes ${whom}.`, at: lastAt });
       continue;
     }
     const lastAt = time(all.get(node.key)?.lastAt);
@@ -1448,10 +1641,10 @@ function watchAttention(nodes, all, mailbox, ctx) {
   return out;
 }
 
-// Sessions and the relay can be watched; mailbox worker runs and groups cannot.
+// Sessions and relays can be watched; mailbox worker runs and groups cannot.
 function markWatched(nodes, ctx) {
   for (const node of nodes) {
-    const can = node.key === RELAY || (KINDS.includes(node.kind) && !node.key.startsWith('mailbox:'));
+    const can = node.kind === 'relay' || (KINDS.includes(node.kind) && !node.key.startsWith('mailbox:'));
     node.watched = can && entry(ctx.settings.people, node.key)?.watch === true;
     // "Answer its questions in Pleni", for a main Claude Code session.
     node.answering = node.kind === 'session' && node.platform === 'claude' && entry(ctx.settings.people, node.key)?.answer === true;
@@ -1518,12 +1711,13 @@ function sessionsOf(result) {
   return isObject(result) && Array.isArray(result.sessions) ? result.sessions : [];
 }
 
-// Task titles come from assignment text, so with content 'none' a task shows only its id.
-function cleanTasks(mailbox, ctx) {
-  const tasks = Array.isArray(mailbox.tasks) ? mailbox.tasks : [];
-  return tasks
+// Task titles come from assignment text, so with content 'none' a task shows only its id. Each task
+// says which mailbox it is in: `box` and `boxName` are 'hq' and 'HQ' or a project's id and name in
+// an HQ, and null for a lone mailbox.
+function cleanTasks(boxes, ctx) {
+  return boxes.flatMap((box) => (Array.isArray(box.state.tasks) ? box.state.tasks : [])
     .filter((task) => isObject(task) && typeof task.id === 'string' && task.id)
-    .map((task) => (ctx.snippets ? task : { ...task, title: task.id }));
+    .map((task) => ({ ...(ctx.snippets ? task : { ...task, title: task.id }), box: box.id, boxName: box.name })));
 }
 
 function leftOut(tree, all, key) {

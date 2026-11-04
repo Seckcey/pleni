@@ -644,7 +644,10 @@ main:focus { outline: none; }
 .welcome ul { margin: var(--ui-space-3) 0; padding-left: var(--ui-space-7); max-width: 80ch; }
 .welcome li { margin: var(--ui-space-2) 0; color: var(--ui-text-secondary); }
 .welcome li b { color: var(--ui-text-primary); }
-.welcome .src-bad { color: var(--ui-error-text); }
+.src-bad { color: var(--ui-error-text); }
+/* Settings, Sources: the project mailboxes of an HQ. */
+.hq-note { margin: var(--ui-space-4) 0 0; }
+.hq-list { margin: var(--ui-space-2) 0 0; padding-left: var(--ui-space-7); }
 .welcome .src-ok { color: var(--ui-ok-text); }
 
 /* ---------- list ---------- */
@@ -700,6 +703,11 @@ button.name:hover { color: var(--ui-accent-strong); }
 /* ---------- tasks ---------- */
 
 ul.tasks { list-style: none; margin: var(--ui-space-5) 0 0; padding: 0; display: grid; gap: var(--ui-space-4); }
+/* In an HQ, one group of tasks for each mailbox: HQ first, then each project. */
+.task-group { margin-top: var(--ui-space-6); }
+.task-group + .task-group { margin-top: var(--ui-space-8); }
+.task-group h2 { margin: 0; font-size: var(--ui-font-xl); overflow-wrap: anywhere; }
+.task-group h2 .quiet { font-size: var(--ui-font-sm); font-weight: var(--ui-weight-regular); margin-left: var(--ui-space-3); }
 .task { padding: var(--ui-space-5) var(--ui-space-6); background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); }
 /* Pull requests: one card per GitHub repository, its branches, and who works on each. */
 #pulls { display: grid; gap: var(--ui-space-6); max-width: 980px; }

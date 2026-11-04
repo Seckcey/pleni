@@ -9,6 +9,7 @@ import {
   cleanSettings,
   configDir,
   isNodeKey,
+  isRelayKey,
   loadSettings,
   resolveRoots,
   saveSettings,
@@ -638,4 +639,16 @@ test('a saved project list survives cleaning and is part of cleanSettings', () =
   assert.deepEqual(cleanSettings(clean), clean);
   // The older "projects" map (labels and hiding, by folder name) is a different thing.
   assert.deepEqual(cleanSettings({ projects: { app: { label: 'App' } } }).projects, { app: { label: 'App' } });
+});
+
+test('node keys include the relay and worker runs of a project mailbox in an HQ, by its id', () => {
+  const good = ['relay:notes', 'relay:field-app', 'relay:a', `relay:${'a'.repeat(40)}`, 'mailbox:notes:T-1/W1', 'mailbox:field-app:T-20261013-02-business/W12', 'mailbox:hq/W1'];
+  for (const key of good) assert.equal(isNodeKey(key), true, key);
+  const bad = ['relay:', 'relay:hq', 'relay:Notes', 'relay:-notes', `relay:${'a'.repeat(41)}`, 'relay:notes/W1', 'mailbox:hq:T-1/W1', 'mailbox:Notes:T-1/W1', 'mailbox:notes:T:1/W1', 'mailbox:notes:/W1', 'mailbox:a:b:c/W1'];
+  for (const key of bad) assert.equal(isNodeKey(key), false, key);
+  assert.deepEqual(['relay', 'relay:notes', 'relay:hq', 'relay2', 'mailbox:notes:T-1/W1', null].map(isRelayKey), [true, true, false, false, false, false]);
+  // A project relay's choices are kept like the relay's: a label, watching it, and who it reports to.
+  const people = cleanSettings({ people: { 'relay:notes': { label: 'Notes runner', watch: true, reportsTo: `claude:${UUID}` }, 'relay:hq': { watch: true } } }).people;
+  assert.deepEqual(people, { 'relay:notes': { label: 'Notes runner', reportsTo: `claude:${UUID}`, watch: true } });
+  assert.equal(cleanSettings({ people: { [`claude:${UUID}`]: { reportsTo: 'relay:notes' } } }).people[`claude:${UUID}`].reportsTo, 'relay:notes');
 });
