@@ -1576,7 +1576,7 @@ try {
         try {
             # Codex, the usual worker, launched as the coordinator does it. The thread id is saved while the run still goes.
             Write-Brief $fx 'W1' 'implementation' 'codex'
-            Set-CodexStubMode $fx 'sleep:6'
+            Set-CodexStubMode $fx 'sleep:10'   # long enough for a slow runner to see the id while the run goes
             $r = Invoke-Spawn $fx @('-Worker', 'W1', '-Tool', 'codex')
             Check ($r.code -eq 0 -and (Test-Said $r.out 'Launched W1 \(implementation, Codex\)') -and (Test-Said $r.out "model gpt-stub-default \(Codex's default, from its config.toml\)")) "the Codex launch line does not say which model: $(Get-Tail $r.out)"
             $early = Wait-Until { $s = Get-RunJson $fx 'W1'; [bool]($s -and $s.session_id -and $s.state -eq 'running') } 30
