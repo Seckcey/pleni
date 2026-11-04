@@ -1002,9 +1002,10 @@ function boxWorkers(boxes, ctx, all) {
   return boxes.flatMap((box) => box.workers);
 }
 
-// Each relay worker run goes under the coordinator. When its run note names a Claude Code session
-// that Pleni can see, that session is the worker's tile, so it can be watched and opened. Older
-// runs kept no session file, so their run note becomes a session-like node instead.
+// Each relay worker run goes under the coordinator. When its run note names a session that Pleni
+// can see, in the AI tool the worker ran in, that session is the worker's tile, so it can be
+// watched and opened. Older runs kept no session file, so their run note becomes a session-like
+// node instead, with the tool's mark.
 function mailboxWorkers(box, ctx, all) {
   const out = [];
   const tasks = box.state.tasks;
@@ -1020,13 +1021,14 @@ function mailboxWorkers(box, ctx, all) {
       const finishedAt = time(run.finishedAt);
       const name = about && about !== task.id ? `${run.id} · ${task.id}: ${about}` : `${run.id} · ${task.id}`;
       const runInfo = { startedAt, finishedAt, label: about ? `${task.id}: ${about}` : task.id };
-      const own = typeof run.sessionId === 'string' ? all.get(`claude:${run.sessionId}`) : null;
-      if (own && !own.parentKey) {
-        out.push({ ...own, title: text(name, MAX_TITLE), role: null, run: runInfo });
+      const tool = workerTool(run.tool);
+      const own = tool && typeof run.sessionId === 'string' ? all.get(`${tool}:${run.sessionId}`) : null;
+      if (own && !own.parentKey && !own.archived) {
+        out.push({ ...own, title: text(name, MAX_TITLE), role: 'worker', run: runInfo });
         continue;
       }
       out.push({
-        key, platform: 'claude', parentKey: null, kind: 'agent', role: null,
+        key, platform: tool ?? 'relay', parentKey: null, kind: 'agent', role: null,
         title: text(name, MAX_TITLE),
         cwd: typeof run.worktree === 'string' && run.worktree.trim() ? run.worktree.trim() : null,
         branch: null, entrypoint: 'relay worker', model: text(run.model, 120), effort: null,
@@ -1037,6 +1039,14 @@ function mailboxWorkers(box, ctx, all) {
     }
   }
   return out;
+}
+
+// The AI tool a relay worker ran in. A run note with no tool comes from an older relay, which
+// started only Claude Code workers. A tool this Pleni does not read has no sessions to look up, so
+// its run-note tile shows the mailbox's mark instead of another tool's.
+function workerTool(tool) {
+  if (tool === null || tool === undefined) return 'claude';
+  return TOOLS.includes(tool) ? tool : null;
 }
 
 function runStatus(state, finishedAt) {
