@@ -22,12 +22,20 @@
   that share one fake Codex home): one orchestrator wake for the items of both projects, with an --add-dir for each,
   nothing for what waited when a project was added, and a dry run that changes nothing; a project's item waits while
   that project's coordinator turn runs, the other project's goes, and never two Codex processes; a project that wakes
-  the orchestrator's thread too stops HQ's wakes with an alert; -NewProject and -UpdateProjects.
-  It runs only the bridge-relay.ps1 and agent-mail.ps1 beside it, ..\tests\stub-claude.js and
-  ..\tests\stub-codex.js; other -RelayScript/-StubCli values are refused.
+  the orchestrator's thread too stops HQ's wakes with an alert; -NewProject and -UpdateProjects. 23-24 workers
+  (bin\spawn-worker.ps1, run from a copy in a fixture mailbox's bin folder, as the launcher treats the folder above bin
+  as the mailbox): a Claude worker through claude_exe gets the same arguments, session id and budget as before -Tool,
+  and a tool that worker_tools does not list is refused; Codex and Gemini workers with tests\stub-codex.js and
+  tests\stub-gemini.js (their commands, prompts on stdin and ids, OPENAI_API_KEY removed, GEMINI_API_KEY passed
+  through and never written down, the Gemini policy, exits 41 and 55, and refusals for the daily limit, a
+  .gemini\settings.json in the worktree, Gemini system policies and a changed policy file).
+  It runs only the bridge-relay.ps1, agent-mail.ps1 and spawn-worker.ps1 beside it, ..\tests\stub-claude.js,
+  ..\tests\stub-codex.js and ..\tests\stub-gemini.js; other -RelayScript/-StubCli values are refused.
+  Scenario 24 needs git.exe, for a Git folder in its fixture. It sets two test-only variables that spawn-worker.ps1
+  reads (RELAY_TEST_GEMINI_POLICY_DIR and RELAY_TEST_CHANGE_POLICY); each one can only make the launcher refuse.
   Prints one PASS/FAIL line per check, then a summary. Exit 0 only when every check passes (2 = could not set up).
   No network, no API key, no real claude.exe. It removes its temp folder and stops any process it started
-  (only processes whose command line names this run's temp folder). Takes about 5-9 minutes.
+  (only processes whose command line names this run's temp folder). Takes about 6-10 minutes.
   Windows PowerShell 5.1. ASCII only.
 
 .EXAMPLE
@@ -53,15 +61,19 @@ if (-not $HereDir) { $HereDir = Split-Path -Parent $MyInvocation.MyCommand.Path 
 $OwnRelay = Join-Path $HereDir 'bridge-relay.ps1'
 $OwnStub = Join-Path (Split-Path -Parent $HereDir) 'tests\stub-claude.js'
 $StubCodex = Join-Path (Split-Path -Parent $HereDir) 'tests\stub-codex.js'
+$StubGemini = Join-Path (Split-Path -Parent $HereDir) 'tests\stub-gemini.js'
 $AgentMail = Join-Path $HereDir 'agent-mail.ps1'
+$SpawnWorker = Join-Path $HereDir 'spawn-worker.ps1'
 if (-not $RelayScript) { $RelayScript = $OwnRelay }
 if (-not $StubCli) { $StubCli = $OwnStub }
-foreach ($f in @($RelayScript, $StubCli, $StubCodex, $AgentMail, $PsExe)) { if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Stop-Setup "not found: $f" } }
+foreach ($f in @($RelayScript, $StubCli, $StubCodex, $StubGemini, $AgentMail, $SpawnWorker, $PsExe)) { if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Stop-Setup "not found: $f" } }
 if (-not (Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue)) { Stop-Setup 'node.exe not found (the stub CLI needs it)' }
 $RelayScript = (Resolve-Path -LiteralPath $RelayScript).Path
 $StubCli = (Resolve-Path -LiteralPath $StubCli).Path
 $StubCodex = (Resolve-Path -LiteralPath $StubCodex).Path
+$StubGemini = (Resolve-Path -LiteralPath $StubGemini).Path
 $DummyOpenAiKey = 'sk-relay-check-dummy-openai'   # set for every relay run; the Codex stub reports whether it saw it
+$DummyGeminiKey = 'relay-check-dummy-gemini-key'  # set for every run; it must pass through to Gemini and be written nowhere
 # The unattended coordinator may run this harness (bridge-relay.ps1 allows it), so it only ever executes the relay and
 # stub that sit beside it (under bin and tests, which the coordinator cannot edit), never a script named on the command line.
 if ([IO.Path]::GetFullPath($RelayScript) -ne [IO.Path]::GetFullPath($OwnRelay)) { Stop-Setup "-RelayScript must be $OwnRelay (got $RelayScript)" }
@@ -399,6 +411,135 @@ function New-HqFixture([string]$Name) {
     return $fx
 }
 
+function New-WorkerFixture([string]$Name) {
+    # A mailbox with its own copy of bin\spawn-worker.ps1 (the launcher treats the folder above bin as the mailbox), a
+    # task with a workers folder, and a worktrees folder with one worktree folder in it.
+    $fx = New-Fixture $Name
+    $fx.task = 'T-20261104-01-workers'
+    $fx.workers = Join-Path $fx.mb "tasks\$($fx.task)\workers"
+    $fx.wtroot = Join-Path $fx.dir 'worktrees'
+    $fx.wt = Join-Path $fx.wtroot "$($fx.task)\repo"
+    $fx.spawn = Join-Path $fx.mb 'bin\spawn-worker.ps1'
+    foreach ($d in @($fx.workers, $fx.wt, (Join-Path $fx.mb 'bin'))) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    Copy-Item -LiteralPath $SpawnWorker -Destination $fx.spawn
+    if ($fx.wt -match '\s') { throw "the temp folder path has a space ($($fx.wt)); a brief's Worktree line cannot hold one. Re-run with a TEMP folder without spaces." }
+    return $fx
+}
+
+function Set-WorkerSettings([hashtable]$Fx, [hashtable]$Extra) {
+    # bin\relay-settings.json of a worker fixture: its worktrees folder, and any other settings.
+    $s = @{ worktrees_dir = $Fx.wtroot }
+    if ($Extra) { foreach ($k in @($Extra.Keys)) { $s[$k] = $Extra[$k] } }
+    Write-Text (Join-Path $Fx.mb 'bin\relay-settings.json') (ConvertTo-Json -InputObject $s -Depth 4)
+}
+
+function Write-Brief([hashtable]$Fx, [string]$W, [string]$Type, [string]$Tool) {
+    $t = "# Worker brief - $($Fx.task) / $W   (owner: Claude coordinator)`r`n`r`n- **Type:** $Type`r`n- **Tool:** $Tool`r`n" +
+        "- **Worktree (your only working directory):** $($Fx.wt)`r`n- **Branch:** claude/$($Fx.task)`r`n`r`n" +
+        "## Do`r`n1. Nothing: this is a synthetic brief (BRIEF-MARKER-$W).`r`n"
+    Write-Text (Join-Path $Fx.workers "$W-brief.md") $t
+}
+
+function Start-Spawn([hashtable]$Fx, [string[]]$SpawnArgs) {
+    # The fixture's own copy of bin\spawn-worker.ps1, for the fixture's task, as the coordinator runs it.
+    if (-not ([string]$Fx.spawn).StartsWith($Base + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "refusing: launcher outside $Base" }
+    $env:RELAY_STUB_DIR = $Fx.stub          # inherited by the launcher, its hidden runner and the stub it starts
+    $env:RELAY_STUB_CONFIG_DIR = $Fx.cfg
+    $script:RunNo++
+    $o = Join-Path $Fx.dir ('spawn-{0:d2}.out.txt' -f $script:RunNo)
+    $e = Join-Path $Fx.dir ('spawn-{0:d2}.err.txt' -f $script:RunNo)
+    $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Fx.spawn, '-TaskId', $Fx.task) + @($SpawnArgs)
+    $p = Start-Process -FilePath $PsExe -ArgumentList (($a | ForEach-Object { ConvertTo-Token $_ }) -join ' ') -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput $o -RedirectStandardError $e
+    $null = $p.Handle
+    [void]$script:Spawned.Add($p)
+    return @{ proc = $p; out = $o; err = $e }
+}
+
+function Invoke-Spawn([hashtable]$Fx, [string[]]$SpawnArgs) {
+    $r = Start-Spawn $Fx $SpawnArgs
+    if (-not $r.proc.WaitForExit(120000)) {
+        try { Stop-Process -Id $r.proc.Id -Force } catch { }
+        throw 'spawn-worker.ps1 did not exit within 120 s'
+    }
+    $out = Read-RelayOutput $r
+    $script:LastOut = "[spawn-worker exit $($r.proc.ExitCode)] $out"
+    return @{ code = $r.proc.ExitCode; out = $out }
+}
+
+function Get-RunJson([hashtable]$Fx, [string]$W) {
+    $f = Join-Path $Fx.workers "$W.run.json"
+    for ($i = 0; $i -lt 10; $i++) {
+        if (-not (Test-Path -LiteralPath $f)) { return $null }
+        try { return (ConvertFrom-Json -InputObject (Read-Shared $f)) } catch { Start-Sleep -Milliseconds 200 }
+    }
+    throw "$W.run.json stayed unreadable"
+}
+
+function Set-GeminiStubMode([hashtable]$Fx, [string]$Mode) { [IO.File]::WriteAllText((Join-Path $Fx.stub 'gemini-mode.txt'), $Mode, $Utf8) }
+
+function Get-GeminiCalls([hashtable]$Fx, [string]$Phase) {
+    $f = Join-Path $Fx.stub 'gemini-calls.jsonl'
+    if (-not (Test-Path -LiteralPath $f)) { return }
+    foreach ($l in ((Read-Shared $f) -split "`n")) {
+        $l = $l.Trim()
+        if (-not $l) { continue }
+        try { $c = ConvertFrom-Json -InputObject $l } catch { continue }
+        if (-not $Phase -or $c.phase -eq $Phase) { $c }
+    }
+}
+
+function Get-CodexWorkerCalls([hashtable]$Fx) { return @(Get-CodexCalls $Fx 'start' | Where-Object { $_.kind -eq 'worker' }) }
+
+function ConvertTo-BaseText([string]$Text) {
+    # Paths in this run's temp folder read as <base>, whether Windows shows it in its short (8.3) or long form.
+    $t = ([string]$Text).Replace($Base, '<base>')
+    return [regex]::Replace($t, '[A-Za-z]:\\[^\s"]*?\\' + [regex]::Escape($Token), '<base>')
+}
+
+function Get-ClaudeWorkerArgs([hashtable]$Fx, [string]$W, [string]$Sid) {
+    # The arguments that spawn-worker.ps1 gave a Claude implementation worker before -Tool existed, with the usual
+    # budget, model and effort. Kept here on purpose: a change to them must be a change to this list too.
+    $brief = Join-Path $Fx.workers "$W-brief.md"
+    $report = Join-Path $Fx.workers "$W-report.md"
+    $prompt = "You are Claude worker $W (implementation). Read and follow exactly the brief at $brief. " +
+        "Your working directory is the task worktree $($Fx.wt). Stay inside the brief's file scope. " +
+        "Put throwaway scripts only in $env:TEMP. When finished, write your report to $report and stop."
+    $deny = @('WebFetch', 'WebSearch', 'Bash(git push*)', 'Bash(git merge*)', 'Bash(git rebase*)', 'Bash(git reset*)',
+        'Bash(git checkout*)', 'Bash(git switch*)', 'Bash(git branch*)', 'Bash(git worktree*)', 'Bash(git tag*)',
+        'Bash(git stash*)', 'Bash(git config*)', 'Bash(npm *)', 'Bash(npx *)')
+    $tools = @('Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash(git *)', 'Bash(node *)')
+    return @('-p', $prompt, '--output-format', 'json', '--permission-mode', 'acceptEdits', '--setting-sources', '', '--strict-mcp-config',
+        '--disable-slash-commands', '--tools', 'Read,Edit,Write,Glob,Grep,Bash', '--session-id', $Sid, '--add-dir', $Fx.workers,
+        '--add-dir', $env:TEMP, '--allowedTools') + $tools + @('--disallowedTools') + $deny + @('--max-budget-usd', '3', '--model', 'claude-opus-5-5[1m]', '--effort', 'xhigh')
+}
+
+function Compare-ArgList([object[]]$Got, [object[]]$Want) {
+    # '' when both lists are the same (paths compared from this run's temp folder on); else where they differ first.
+    $g = @(@($Got) | ForEach-Object { ConvertTo-BaseText ([string]$_) })
+    $w = @(@($Want) | ForEach-Object { ConvertTo-BaseText ([string]$_) })
+    $n = [Math]::Max($g.Count, $w.Count)
+    for ($i = 0; $i -lt $n; $i++) {
+        $a = ''; $b = ''
+        if ($i -lt $g.Count) { $a = $g[$i] }
+        if ($i -lt $w.Count) { $b = $w[$i] }
+        if ($i -ge $g.Count -or $i -ge $w.Count -or $a -cne $b) { return "argument $i is '$a', want '$b' ($($g.Count) of $($w.Count) arguments)" }
+    }
+    return ''
+}
+
+function Test-Said([string]$Out, [string]$Pattern) {
+    # Windows PowerShell wraps a long error at the width of its console, even into a file, so this compares without
+    # any white space. The pattern must not need its spaces.
+    return (($Out -replace '\s+', '') -match ($Pattern -replace ' ', ''))
+}
+
+function Test-NoKeyText([hashtable]$Fx, [string]$Key) {
+    # Names the files under the fixture that hold the key's text ('' when none does).
+    $leak = @(Get-ChildItem -LiteralPath $Fx.dir -Recurse -File | Select-String -SimpleMatch $Key -List)
+    return (($leak | ForEach-Object { $_.Path }) -join ', ')
+}
+
 function Initialize-Fixture([hashtable]$Fx) {
     # Enroll the fake session, then let one -Once record the baseline (existing files count as already seen).
     $r = Invoke-Relay $Fx 'Enroll' @{ SessionId = $Fx.sid }
@@ -430,9 +571,14 @@ function Get-Questions([int[]]$Blocking) {
 }
 $cleanupOk = $false
 $PreviousOpenAiKey = $env:OPENAI_API_KEY
+$PreviousGeminiKey = $env:GEMINI_API_KEY
+$PreviousGeminiHome = $env:GEMINI_CLI_HOME
 try {
     New-Item -ItemType Directory -Path $Base -Force | Out-Null
     $env:OPENAI_API_KEY = $DummyOpenAiKey   # inherited by every relay run; the relay must not pass it to Codex
+    $env:GEMINI_API_KEY = $DummyGeminiKey   # inherited by every launcher run; it passes through to Gemini untouched
+    $env:GEMINI_CLI_HOME = Join-Path $Base 'gemini-home'   # a Gemini CLI would keep its settings and sessions here
+    New-Item -ItemType Directory -Path $env:GEMINI_CLI_HOME -Force | Out-Null
     $sec = ConvertTo-SecureString -String $DummyKey -AsPlainText -Force
     [IO.File]::WriteAllText($KeyPath, (ConvertFrom-SecureString -SecureString $sec), $Utf8)
     Write-Host "bridge-relay-check: relay $RelayScript"
@@ -1359,11 +1505,244 @@ try {
         Check (-not (Test-Path -LiteralPath (Join-Path $fx.p1.mb 'bin\relay-settings.json')) -and -not (Test-Path -LiteralPath (Join-Path $fx.p1.mb 'templates'))) '-UpdateProjects copied settings or templates'
         Check (-not (Test-Path -LiteralPath (Join-Path $fx.p2.mb 'bin\bridge-relay.ps1')) -and $r.out -match 'Skipped shop') '-UpdateProjects did not skip the shop project, whose relay runs'
     }
+
+    Invoke-Scenario '23 workers: Claude through claude_exe gets the same arguments, session id and budget as before; a tool not in worker_tools is refused, and nothing starts' {
+        $fx = New-WorkerFixture 'wk1'
+        Set-WorkerSettings $fx @{ claude_exe = $StubCli }   # no worker_tools: Claude only, as before
+        # A ledger from before the Tool and Tokens columns: its rows stay as they are.
+        $ledger = Join-Path $fx.workers 'runs.md'
+        $old = "| Started | Finished | Worker | Type | State | Exit | Cost USD | Turns | Budget | Models |`r`n|---|---|---|---|---|---|---|---|---|---|`r`n" +
+            "| 2026-11-01 10:00:00 | 2026-11-01 10:05:00 | W9 | implementation | finished | 0 | 0.5 | 3 | 3 | claude-opus-5-5 |`r`n"
+        Write-Text $ledger $old
+        Write-Brief $fx 'W1' 'implementation' 'claude'
+        $previousKey = $env:ANTHROPIC_API_KEY
+        $env:ANTHROPIC_API_KEY = $DummyKey   # the launcher must keep it from the worker, as before
+        try { $r = Invoke-Spawn $fx @('-Worker', 'W1') } finally {
+            if ($null -ne $previousKey) { $env:ANTHROPIC_API_KEY = $previousKey } else { Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue }
+        }
+        Check ($r.code -eq 0 -and (Test-Said $r.out ('Launched W1 \(implementation\) for ' + $fx.task + ' - runner pid \d+, model claude-opus-5-5\[1m\], effort xhigh\. Check: -Status'))) "the launch line changed: $(Get-Tail $r.out)"
+        Check (Wait-Until { (Test-Path -LiteralPath $ledger) -and (Read-Shared $ledger) -match '\| W1 \|' } 90) 'the Claude worker run did not end with a line in runs.md'
+        $s = Get-RunJson $fx 'W1'
+        $c = @(Get-Calls $fx 'start')
+        Check ($c.Count -eq 1) "expected 1 Claude worker run, got $($c.Count)"
+        if ($c.Count -ge 1 -and $s) {
+            $why = Compare-ArgList @($c[0].args) (Get-ClaudeWorkerArgs $fx 'W1' ([string]$s.session_id))
+            Check (-not $why) "the Claude worker's arguments changed: $why"
+            Check ($c[0].session_id_flag -eq $s.session_id -and [string]$s.session_id -match '^[0-9a-f]{8}-[0-9a-f]{4}-') 'the session id in run.json is not the one the worker got'
+            Check ($c[0].max_budget_usd -eq '3') "the budget was '$($c[0].max_budget_usd)', want 3"
+            Check (-not $c[0].key_present -and $c[0].oauth_absent) 'the Claude worker inherited an API key or an overriding OAuth token'
+            Check ([string]$c[0].cwd -like '*\wk1\worktrees\*\repo') "the Claude worker ran in '$($c[0].cwd)', not in the worktree"
+        }
+        Check ($s -and $s.tool -eq 'claude' -and $s.state -eq 'finished' -and $s.exit_code -eq 0 -and $s.budget_usd -eq 3 -and
+            $s.billing -eq 'claude-code-subscription' -and $s.cost_usd -eq 0.05) 'W1.run.json does not record the Claude run as before, with tool claude'
+        Check ($s -and $s.tokens -and $s.tokens.total -eq 1160 -and $s.tokens.cached -eq 1000) 'W1.run.json does not hold the token counts'
+        $led = Read-Shared $ledger
+        Check ($led.StartsWith($old)) 'the old rows of runs.md changed'
+        Check ($led -match [regex]::Escape('| Started | Finished | Worker | Type | State | Exit | Cost USD | Turns | Budget | Models | Tool | Tokens |') -and
+            $led -match '\| W1 \| implementation \| finished \| 0 \| 0\.05 \| 2 \| 3 \| claude-opus-5-5 \| claude \| 1160 \(in 1110, out 50, cached 1000\) \|') 'runs.md has no new table with the Tool and Tokens of the run'
+        # Codex and Gemini are off until worker_tools lists them: refused, and nothing starts.
+        foreach ($t in @('codex', 'gemini')) {
+            Write-Brief $fx 'W2' 'implementation' $t
+            $r = Invoke-Spawn $fx @('-Worker', 'W2', '-Tool', $t)
+            Check ($r.code -ne 0 -and (Test-Said $r.out 'workers are off') -and (Test-Said $r.out 'worker_tools')) "-Tool $t was not refused in words that name worker_tools: $(Get-Tail $r.out)"
+        }
+        Check (-not (Test-Path -LiteralPath (Join-Path $fx.workers 'W2.run.json'))) 'a refused worker wrote a run.json'
+        Check (@(Get-Calls $fx 'start').Count -eq 1 -and @(Get-CodexCalls $fx '').Count -eq 0 -and @(Get-GeminiCalls $fx '').Count -eq 0) 'a refused worker started a program'
+        $leak = Test-NoKeyText $fx $DummyKey
+        Check (-not $leak) "the Anthropic key's text was written to: $leak"
+    }
+
+    Invoke-Scenario '24 workers in Codex and Gemini: commands, prompts on stdin and ids; OPENAI_API_KEY removed; the Gemini policy; exits 41 and 55; refusals' {
+        $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $git) { throw 'git.exe not found: a Codex worker needs a Git folder' }
+        $fx = New-WorkerFixture 'wk2'
+        $gitExit = 1
+        $gitPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $null = & $git.Path -C $fx.wt init -q 2>$null
+            $gitExit = $LASTEXITCODE
+            if ($gitExit -eq 0) {
+                $null = & $git.Path -C $fx.wt config user.email 'ada@example.com' 2>$null
+                $null = & $git.Path -C $fx.wt config user.name 'Ada' 2>$null
+            }
+        } finally { $ErrorActionPreference = $gitPreference }
+        if ($gitExit -ne 0) { throw "git init failed in $($fx.wt)" }
+        Set-WorkerSettings $fx @{ worker_tools = @('claude', 'codex', 'gemini'); codex_exe = $StubCodex; gemini_exe = $StubGemini }
+        Write-Text (Join-Path $fx.mb 'bin\cost-limits.json') '{"worker_runs_per_day":{"codex":2,"gemini":0}}'
+        Write-Text (Join-Path $fx.codex 'config.toml') "model = `"gpt-stub-default`"`r`n`r`n[profiles.other]`r`nmodel = `"not-this-one`"`r`n"
+        $previousCodexHome = $env:CODEX_HOME
+        $env:CODEX_HOME = $fx.codex   # where the launcher finds Codex's config.toml
+        try {
+            # Codex, the usual worker, launched as the coordinator does it. The thread id is saved while the run still goes.
+            Write-Brief $fx 'W1' 'implementation' 'codex'
+            Set-CodexStubMode $fx 'sleep:10'   # long enough for a slow runner to see the id while the run goes
+            $r = Invoke-Spawn $fx @('-Worker', 'W1', '-Tool', 'codex')
+            Check ($r.code -eq 0 -and (Test-Said $r.out 'Launched W1 \(implementation, Codex\)') -and (Test-Said $r.out "model gpt-stub-default \(Codex's default, from its config.toml\)")) "the Codex launch line does not say which model: $(Get-Tail $r.out)"
+            $early = Wait-Until { $s = Get-RunJson $fx 'W1'; [bool]($s -and $s.session_id -and $s.state -eq 'running') } 30
+            Check ($early -and (Get-RunningCodexStubs $fx) -eq 1) 'the Codex thread id was not saved in run.json while the run still went'
+            $led = Join-Path $fx.workers 'runs.md'
+            Check (Wait-Until { (Test-Path -LiteralPath $led) -and (Read-Shared $led) -match '\| W1 \|' } 60) 'the Codex worker run did not end with a line in runs.md'
+            Set-CodexStubMode $fx 'ok'
+            $w = @(Get-CodexWorkerCalls $fx)
+            Check ($w.Count -eq 1) "expected 1 Codex worker run, got $($w.Count)"
+            $s = Get-RunJson $fx 'W1'
+            if ($w.Count -ge 1 -and $s) {
+                $c = $w[0]
+                $why = Compare-ArgList @($c.args) @('exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write',
+                    '-c', 'sandbox_workspace_write.network_access=false', '--add-dir', $fx.workers, '-c', 'model_reasoning_effort=xhigh', '-')
+                Check (-not $why) "the Codex command is not the one asked for: $why"
+                Check ([string]$c.stdin -match [regex]::Escape((Join-Path $fx.workers 'W1-brief.md')) -and [string]$c.stdin -match 'W1-report\.md') 'the prompt on stdin does not name the brief and the report'
+                Check ([string]$c.stdin -match 'Do not run git add or git commit') 'the Codex worker prompt does not say the launcher commits'
+                Check (-not (@($c.args) -contains (Join-Path $fx.wt '.git'))) 'the Codex worker may write in Git''s own folder'
+                Check ([bool]$c.key_absent) 'the Codex worker inherited OPENAI_API_KEY'
+                Check ([string]$c.cwd -like '*\wk2\worktrees\*\repo') "the Codex worker ran in '$($c.cwd)', not in the worktree"
+                Check ($s.tool -eq 'codex' -and $s.state -eq 'finished' -and $s.exit_code -eq 0 -and $s.session_id -eq $c.thread -and
+                    $s.billing -eq 'chatgpt-sign-in' -and $s.model -eq 'gpt-stub-default') 'W1.run.json does not record the Codex run with its thread id'
+                Check ($s.tokens -and $s.tokens.total -eq 1500 -and $s.tokens.cached -eq 800) 'W1.run.json does not hold the token counts'
+            }
+            Check ((Read-Shared (Join-Path $fx.workers 'W1.log')) -match 'changed no files, so there was nothing to commit') 'W1.log does not say there was nothing to commit'
+            Check (@(Get-CodexCalls $fx 'login').Count -ge 1) 'the launcher did not check the Codex sign-in'
+            Check ((Read-Shared (Join-Path $fx.workers 'W1.log')) -match "launcher: model gpt-stub-default \(Codex's default, from its config.toml\)") 'W1.log does not say which model Codex used'
+            Check ((Read-Shared $led) -match '\| W1 \| implementation \| finished \| 0 \| .*\| codex \| 1500 \(in 1200, out 300, cached 800\) \|') 'runs.md has no Codex line with its tokens'
+            # Signed in with an API key: refused before any turn. It runs before W2, while only W1 counts toward
+            # the daily limit (2 here), so the sign-in check, not the limit, is what refuses it.
+            Set-CodexStubMode $fx 'api-key'
+            Write-Brief $fx 'W3' 'implementation' 'codex'
+            $null = Invoke-Spawn $fx @('-Worker', 'W3', '-Tool', 'codex', '-Foreground')
+            Set-CodexStubMode $fx 'ok'
+            $s = Get-RunJson $fx 'W3'
+            Check ($s -and $s.state -eq 'failed' -and $s.exit_code -eq -1 -and [string]$s.note -match 'not signed in with ChatGPT') 'a Codex worker signed in with an API key was not refused with a ChatGPT message'
+            Check (@(Get-CodexWorkerCalls $fx).Count -eq 1) 'a Codex worker started although Codex is signed in with an API key'
+            # A Codex reviewer works in the workers folder, with the model and effort it was given.
+            Write-Brief $fx 'W2' 'review' 'codex'
+            $null = Invoke-Spawn $fx @('-Worker', 'W2', '-Tool', 'codex', '-Type', 'review', '-Model', 'gpt-6.1-sol', '-Effort', 'high', '-Foreground')
+            $w = @(Get-CodexWorkerCalls $fx)
+            Check ($w.Count -eq 2) "expected 2 Codex worker runs, got $($w.Count)"
+            if ($w.Count -ge 2) {
+                $why = Compare-ArgList @($w[1].args) @('exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write',
+                    '-c', 'sandbox_workspace_write.network_access=false', '-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort=high', '-')
+                Check (-not $why) "the Codex reviewer's command is not the one asked for: $why"
+                Check ([string]$w[1].cwd -like '*\workers') "the Codex reviewer ran in '$($w[1].cwd)', not in the workers folder"
+                Check ([string]$w[1].stdin -match 'The only file you may write is your report') 'the reviewer prompt does not keep it to its report'
+            }
+            # A Claude model, or an effort Codex does not have: refused, nothing starts.
+            Write-Brief $fx 'W4' 'implementation' 'codex'
+            foreach ($bad in @(@('-Model', 'opus'), @('-Effort', 'max'))) {
+                $r = Invoke-Spawn $fx (@('-Worker', 'W4', '-Tool', 'codex', '-Foreground') + $bad)
+                Check ($r.code -ne 0 -and (Test-Said $r.out 'Refusing') -and (Test-Said $r.out 'Nothing was started')) "-Tool codex $($bad -join ' ') was not refused: $(Get-Tail $r.out)"
+            }
+            # The daily limit (2 here): W1 and W2 count; W3 started nothing, so it does not.
+            $r = Invoke-Spawn $fx @('-Worker', 'W4', '-Tool', 'codex', '-Foreground')
+            Check ($r.code -ne 0 -and (Test-Said $r.out 'today already had 2 Codex worker run') -and (Test-Said $r.out 'worker_runs_per_day')) "the daily Codex limit did not refuse the third run: $(Get-Tail $r.out)"
+            Check (-not (Test-Path -LiteralPath (Join-Path $fx.workers 'W4.run.json')) -and @(Get-CodexWorkerCalls $fx).Count -eq 2) 'a refused Codex worker started or wrote a run.json'
+            # A Codex worker that changes a file: the launcher commits it, outside the sandbox. One more run is allowed for it.
+            Write-Text (Join-Path $fx.mb 'bin\cost-limits.json') '{"worker_runs_per_day":{"codex":3,"gemini":0}}'
+            Write-Brief $fx 'W9' 'implementation' 'codex'
+            Set-CodexStubMode $fx 'write'
+            $null = Invoke-Spawn $fx @('-Worker', 'W9', '-Tool', 'codex', '-Foreground')
+            Set-CodexStubMode $fx 'ok'
+            $s9 = Get-RunJson $fx 'W9'
+            $tip = ''
+            $gitPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $tip = ((& $git.Path -C $fx.wt log -1 --format=%H%n%s 2>$null) | Out-String).Trim()
+            } finally { $ErrorActionPreference = $gitPreference }
+            Check ($s9 -and $s9.state -eq 'finished' -and $s9.commit -and $tip.StartsWith([string]$s9.commit)) "the launcher did not commit the Codex worker's change (run.json commit '$($s9.commit)', head '$tip')"
+            Check ($tip -match 'W9: changes from the Codex worker run') "the launcher's commit has the wrong message: $tip"
+            Check ((Read-Shared (Join-Path $fx.workers 'W9.log')) -match "Committed the Codex worker's changes as") 'W9.log does not say the launcher committed the changes'
+
+            # Gemini, the usual worker.
+            Set-GeminiStubMode $fx 'ok'
+            Write-Brief $fx 'W5' 'implementation' 'gemini'
+            $null = Invoke-Spawn $fx @('-Worker', 'W5', '-Tool', 'gemini', '-Foreground')
+            $g = @(Get-GeminiCalls $fx 'start')
+            $s = Get-RunJson $fx 'W5'
+            $pf = Join-Path $fx.workers 'W5.gemini-policy.toml'
+            Check ($g.Count -eq 1) "expected 1 Gemini worker run, got $($g.Count)"
+            if ($g.Count -ge 1 -and $s) {
+                $c = $g[0]
+                $why = Compare-ArgList @($c.args) @('--session-id', [string]$s.session_id, '-p', 'Do the work in the brief above.', '-o', 'stream-json',
+                    '--approval-mode', 'auto_edit', '--skip-trust', '--admin-policy', $pf, '--include-directories', $fx.workers)
+                Check (-not $why) "the Gemini command is not the one asked for: $why"
+                Check ($c.session_id_flag -eq $s.session_id -and [string]$s.session_id -match '^[0-9a-f]{8}-[0-9a-f]{4}-') 'run.json does not hold the session id that Gemini got and reported'
+                Check ([string]$c.stdin -match 'Read and follow exactly the brief' -and [string]$c.stdin -match 'BRIEF-MARKER-W5') 'the prompt on stdin does not hold the launcher''s words and the brief itself'
+                Check ([string]$c.cwd -like '*\wk2\worktrees\*\repo') "the Gemini worker ran in '$($c.cwd)', not in the worktree"
+                Check ([bool]$c.gemini_key_present) 'GEMINI_API_KEY did not pass through to Gemini'
+                $p = [string]$c.policy
+                Check ($p -match '(?m)^toolName = "\*"\r?\ndecision = "deny"\r?\npriority = 0\r?$') 'the policy has no deny-all rule at priority 0'
+                Check ($p.Contains('commandPrefix = ["git status", "git diff", "git log", "git show", "git add", "git commit", "git rev-parse", "node"]')) 'the policy does not allow exactly the git and node prefixes'
+                Check ($p.Contains('"git push"') -and $p.Contains('commandRegex = "node (?:-e|')) 'the policy does not deny git push and node -e'
+                Check ($p.Contains('toolName = ["web_fetch", "google_web_search"]') -and $p -match '(?m)^mcpName = "\*"\r?\ndecision = "deny"') 'the policy does not deny the web and MCP tools'
+                Check ([string]$c.defaults -eq '{"model":{"maxSessionTurns":30}}') "the defaults file holds '$($c.defaults)', want the turn limit 30"
+                Check ($s.policy_sha256 -eq (Get-FileHash -LiteralPath $pf -Algorithm SHA256).Hash.ToLowerInvariant()) 'run.json does not hold the SHA-256 of the policy file'
+                Check ($s.tool -eq 'gemini' -and $s.state -eq 'finished' -and $s.exit_code -eq 0 -and $s.model -eq 'gemini-stub' -and $s.tokens.total -eq 1500 -and $s.tokens.cached -eq 800) 'W5.run.json does not record the Gemini run with its tokens'
+            }
+            Check ((Read-Shared (Join-Path $fx.workers 'runs.md')) -match '\| W5 \| implementation \| finished \| 0 \| .*\| gemini \| 1500 \(in 1200, out 300, cached 800\) \|') 'runs.md has no Gemini line with its tokens'
+            # A Gemini reviewer: approval mode default, writes only its report, no git add or commit.
+            Write-Brief $fx 'W6' 'review' 'gemini'
+            $null = Invoke-Spawn $fx @('-Worker', 'W6', '-Tool', 'gemini', '-Type', 'review', '-Foreground')
+            $g = @(Get-GeminiCalls $fx 'start')
+            Check ($g.Count -eq 2) "expected 2 Gemini worker runs, got $($g.Count)"
+            if ($g.Count -ge 2) {
+                $a = @($g[1].args)
+                Check ($a -contains 'default' -and $a -notcontains 'auto_edit') 'a Gemini reviewer did not use --approval-mode default'
+                $p = [string]$g[1].policy
+                Check ($p -match 'argsPattern = .*W6-report' -and $p.Contains('commandPrefix = ["git status", "git diff", "git log", "git show", "git rev-parse", "node"]')) 'the reviewer policy does not keep writes to its report, and git to reading'
+                Check ($p -notmatch 'toolName = \["write_file", "replace"\]\r?\ndecision = "allow"') 'the reviewer policy lets it edit any file'
+            }
+            # Exit codes, recorded truthfully in plain words.
+            foreach ($x in @(@{ w = 'W7'; mode = 'exit:41'; code = 41; state = 'failed (not signed in)'; words = 'not signed in\. Gemini CLI needs a paid API key, Vertex AI or a work license' },
+                    @{ w = 'W8'; mode = 'exit:55'; code = 55; state = 'failed (untrusted folder)'; words = 'does not trust the worktree folder' })) {
+                Set-GeminiStubMode $fx $x.mode
+                Write-Brief $fx $x.w 'implementation' 'gemini'
+                $null = Invoke-Spawn $fx @('-Worker', $x.w, '-Tool', 'gemini', '-Foreground')
+                $s = Get-RunJson $fx $x.w
+                Check ($s -and $s.state -eq $x.state -and $s.exit_code -eq $x.code -and [string]$s.note -match $x.words) "$($x.w).run.json does not record exit $($x.code) truthfully"
+                Check ((Read-Shared (Join-Path $fx.workers "$($x.w).log")) -match ('launcher: .*' + $x.words)) "$($x.w).log does not say in plain words what exit $($x.code) means"
+            }
+            # Gemini reports a session id of its own: run.json keeps that one, and the log says so.
+            Set-GeminiStubMode $fx 'wrong-session'
+            Write-Brief $fx 'W9' 'implementation' 'gemini'
+            $null = Invoke-Spawn $fx @('-Worker', 'W9', '-Tool', 'gemini', '-Foreground')
+            Set-GeminiStubMode $fx 'ok'
+            $s = Get-RunJson $fx 'W9'
+            Check ($s -and $s.session_id -eq '99999999-9999-4999-8999-999999999999' -and (Read-Shared (Join-Path $fx.workers 'W9.log')) -match 'run.json keeps the one Gemini CLI reported') 'a session id that Gemini reported was not kept, with a note'
+            # Refused before anything starts: a .gemini\settings.json in the worktree, and Gemini system policies.
+            $before = @(Get-GeminiCalls $fx 'start').Count
+            Write-Brief $fx 'W10' 'implementation' 'gemini'
+            Write-Text (Join-Path $fx.wt '.gemini\settings.json') '{}'
+            $r = Invoke-Spawn $fx @('-Worker', 'W10', '-Tool', 'gemini', '-Foreground')
+            Remove-Item -LiteralPath (Join-Path $fx.wt '.gemini') -Recurse -Force
+            Check ($r.code -ne 0 -and (Test-Said $r.out '\.gemini\\settings\.json') -and (Test-Said $r.out 'Nothing was started')) "a .gemini\settings.json in the worktree was not refused: $(Get-Tail $r.out)"
+            $sysDir = Join-Path $fx.dir 'gemini-system-policies'
+            Write-Text (Join-Path $sysDir 'org.toml') "# a policy of this computer's administrator`n"
+            $env:RELAY_TEST_GEMINI_POLICY_DIR = $sysDir   # test only: read like C:\ProgramData\gemini-cli\policies
+            try { $r = Invoke-Spawn $fx @('-Worker', 'W10', '-Tool', 'gemini', '-Foreground') } finally { Remove-Item Env:RELAY_TEST_GEMINI_POLICY_DIR -ErrorAction SilentlyContinue }
+            Check ($r.code -ne 0 -and (Test-Said $r.out 'holds Gemini admin policies') -and (Test-Said $r.out 'Nothing was started')) "Gemini system policies did not stop the start: $(Get-Tail $r.out)"
+            Check (-not (Test-Path -LiteralPath (Join-Path $fx.workers 'W10.run.json'))) 'a refused Gemini worker wrote a run.json'
+            # A policy file that changed after its hash was saved: refused right before the start.
+            $env:RELAY_TEST_CHANGE_POLICY = '1'   # test only
+            try { $null = Invoke-Spawn $fx @('-Worker', 'W10', '-Tool', 'gemini', '-Foreground') } finally { Remove-Item Env:RELAY_TEST_CHANGE_POLICY -ErrorAction SilentlyContinue }
+            $s = Get-RunJson $fx 'W10'
+            Check ($s -and $s.state -eq 'failed' -and $s.exit_code -eq -1 -and [string]$s.note -match 'policy file changed') 'a changed policy file did not stop the start'
+            Check (@(Get-GeminiCalls $fx 'start').Count -eq $before) 'a refused Gemini worker started Gemini'
+        } finally {
+            if ($null -ne $previousCodexHome) { $env:CODEX_HOME = $previousCodexHome } else { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue }
+        }
+        foreach ($k in @($DummyGeminiKey, $DummyOpenAiKey)) {
+            $leak = Test-NoKeyText $fx $k
+            Check (-not $leak) "a dummy key's text was written to: $leak"
+        }
+    }
 } catch {
     $script:Fail++
     Write-Host ('FAIL harness: ' + $_.Exception.Message)
 } finally {
     if ($null -ne $PreviousOpenAiKey) { $env:OPENAI_API_KEY = $PreviousOpenAiKey } else { Remove-Item Env:OPENAI_API_KEY -ErrorAction SilentlyContinue }
+    if ($null -ne $PreviousGeminiKey) { $env:GEMINI_API_KEY = $PreviousGeminiKey } else { Remove-Item Env:GEMINI_API_KEY -ErrorAction SilentlyContinue }
+    if ($null -ne $PreviousGeminiHome) { $env:GEMINI_CLI_HOME = $PreviousGeminiHome } else { Remove-Item Env:GEMINI_CLI_HOME -ErrorAction SilentlyContinue }
     Remove-Item Env:RELAY_STUB_DIR -ErrorAction SilentlyContinue
     Remove-Item Env:RELAY_STUB_CONFIG_DIR -ErrorAction SilentlyContinue
     $left = Stop-Leftovers

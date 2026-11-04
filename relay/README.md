@@ -34,7 +34,9 @@ Made by 8 West Ventures, LLC.
   that login. It never uses an API key, so it never bills an API account.
 - Codex, for the planner. The Codex wake (optional, see below) also needs the Codex command line,
   `codex`, signed in with ChatGPT.
-- Node.js, only to run the relay's test.
+- Only for workers in Codex or Gemini (optional, see [Workers in Codex or Gemini](#workers-in-codex-or-gemini-optional)):
+  the `codex` command line signed in with ChatGPT, or Gemini CLI with a paid plan, and Git.
+- Node.js and Git, only to run the relay's test.
 
 ## What is in this folder
 
@@ -49,6 +51,7 @@ Made by 8 West Ventures, LLC.
 | `bin\cost-limits.example.json`      | An example of the cost settings file.                                          |
 | `tests\stub-claude.js`              | The fake Claude that the test uses.                                            |
 | `tests\stub-codex.js`               | The fake Codex that the test uses.                                             |
+| `tests\stub-gemini.js`              | The fake Gemini CLI that the test uses.                                        |
 | `templates\`                        | Blank task files: assignment, status, questions, answers, handoff, review, and a worker's brief and report. |
 | `PROTOCOL.md`                       | The rules everyone follows. In a mailbox it is called `README.md`.             |
 | `COORDINATOR.md`                    | Standing orders for the coordinator. In a mailbox it is called `CLAUDE.md`.     |
@@ -88,7 +91,10 @@ has just the examples. The relay reads them when it starts.
 | `projects_dir`  | The folder that holds your code repositories. The coordinator may read it.                                      |
 | `worktrees_dir` | The folder where workers work. A worker starts only inside it. Leave it out to use `<projects_dir>\_worktrees\claude`. |
 | `owner_name`    | Your name, for the relay's notes: "Any other command needs Ada", and the tag `NEEDS-ADA`. Leave it out and they say "the owner" and `NEEDS-OWNER`. |
-| `codex_exe`     | Only for the Codex wake: the full path of the Codex command. Leave it out to use `codex` from your PATH. |
+| `codex_exe`     | For the Codex wake and Codex workers: the full path of the Codex command. Leave it out to use `codex` from your PATH. |
+| `worker_tools`  | The AI tools that may run workers: a list from `"claude"`, `"codex"` and `"gemini"`. Leave it out for `["claude"]`. See [Workers in Codex or Gemini](#workers-in-codex-or-gemini-optional). |
+| `claude_exe`    | The full path of Claude Code for workers. Leave it out to use `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`. |
+| `gemini_exe`    | Only for Gemini workers: the full path of Gemini CLI. Leave it out to use `gemini` from your PATH. |
 | `codex_exec_args` | Only for the Codex wake: extra options for `codex exec`, one per entry, such as `["--sandbox", "workspace-write"]`. Options that turn the sandbox off are refused. |
 | `role`          | Only in HQ: `"hq"`. Then the relay also wakes the orchestrator for the projects in `projects`. Leave it out in every other mailbox. |
 | `projects`      | Only in HQ: the project mailboxes, each one `{ "id": "notes", "name": "Notes", "mailbox": "C:\\Users\\ada\\mailboxes\\notes" }`. The id is 1 to 40 small letters, digits or hyphens, and never `hq`. The mailbox is the full path of a folder that is there, and not HQ itself. The relay skips a bad entry and says why in `-Status` and `relay.log`. |
@@ -103,6 +109,8 @@ has just the examples. The relay reads them when it starts.
 | `relay_max_codex_wakes_per_day` | How many times a day the relay may wake the planner's Codex thread. The usual number is 12. `0` means no limit. |
 | `relay_max_agent_wakes_per_day` | How many times a day the relay may wake each agent for its mail. The usual number is 12. `0` means no limit. |
 | `relay_max_agent_turns_at_once` | How many agents the relay may wake for mail at the same time, 1 to 10. The usual number is 3. |
+| `worker_runs_per_day`     | How many Codex and Gemini workers may start in one day, such as `{"codex": 12, "gemini": 4}`. Those are the usual numbers. `0` means no limit. |
+| `gemini_max_session_turns` | How many turns a Gemini worker may take. The usual number is 30. `0` means no limit. |
 
 A "worktree" is a second working folder of a Git repository, on its own branch. Each task gets
 one, so workers never touch your main folder.
@@ -212,6 +220,70 @@ It runs in the thread's own folder, and it uses your ChatGPT sign-in, never an A
 - **Errors:** after 3 failed Codex turns in a row, the relay stops waking Codex and writes an alert.
   Claude wakes go on. Fix the cause, then run `-ClearHalt`.
 - **To turn it off:** `.\bin\bridge-relay.ps1 -UnenrollCodex`.
+
+## Workers in Codex or Gemini (optional)
+
+Workers run in Claude Code. If you turn them on, the coordinator can also start a worker in Codex
+or in Gemini CLI, with `-Tool codex` or `-Tool gemini`. Through the coordinator, the planner can ask
+for them too. Both stay off until you turn them on.
+
+1. **Sign in.**
+   - Codex: install the `codex` command line and run `codex login`. Choose ChatGPT. The relay never
+     uses an API key for Codex, so a Codex worker uses your ChatGPT plan.
+   - Gemini: install Gemini CLI and sign it in. **Gemini costs money for every run.** Gemini CLI
+     needs a paid API key, Vertex AI or a work license. The relay hands your `GEMINI_API_KEY` to
+     Gemini as it is, and never writes it down.
+2. **Turn them on.** In `bin\relay-settings.json`, list the tools that may run workers:
+   `"worker_tools": ["claude", "codex", "gemini"]`. Leave a tool out to keep it off. Without this
+   setting, only Claude runs workers, and the launcher refuses the others.
+3. **Show the relay the programs,** if they are not on your PATH: set `codex_exe` and `gemini_exe`
+   to their full paths. (A path that ends in `.js` runs through `node`. The test uses that.)
+4. **Check the daily limits** in `bin\cost-limits.json`. Unless you change them, 12 Codex workers and
+   4 Gemini workers may start in one day (`worker_runs_per_day`), and a Gemini worker may take 30
+   turns (`gemini_max_session_turns`). The relay counts today's lines in each task's `runs.md`,
+   and the runs that are running now.
+5. **Tell the coordinator.** Add the order "Choose the AI tool for each worker" to the end of your
+   mailbox's `CLAUDE.md`, and the `- **Tool:**` line to your `templates\worker-brief.md`. See
+   [Update the relay in a mailbox](#update-the-relay-in-a-mailbox).
+
+What each tool may do:
+
+| Tool   | How the relay starts it | What it may change | What it may run |
+| ------ | ----------------------- | ------------------ | --------------- |
+| Claude | `claude -p`, with your Claude plan. | The worktree and its report. A reviewer: only its report. | `git` and `node`, but never push, merge, rebase, reset, checkout, switch, branch, worktree, tag, stash or config; never `npm`, `npx` or the web. |
+| Codex  | `codex exec`, with your ChatGPT plan, in Codex's `workspace-write` sandbox. | The worktree and the task's `workers` folder. It cannot write in the folder where Git keeps the repository, so it cannot add a Git hook or change Git's settings. It does not commit: when it finishes, the launcher commits its changes. A reviewer works in the `workers` folder, so it can change only that folder. It can still read the worktree. | What the sandbox lets it run. The relay turns the sandbox's network off, whatever your own Codex settings say. |
+| Gemini | `gemini -p`, with your Gemini login, and a policy that the relay writes for each run (`W<n>.gemini-policy.toml`). | The worktree and the `workers` folder. A reviewer: only its report. | Only `git status`, `diff`, `log`, `show` and `rev-parse`, `git add` and `commit` (not a reviewer), and `node <a script>`, without `>` or `>>`. Never push and the other git commands above, `npm`, `npx`, `node -e`, the web or MCP tools. |
+
+A Gemini worker gets the whole brief in its prompt. It can read only its worktree and the task's
+`workers` folder, so the coordinator puts what it needs from the assignment into the brief.
+
+The relay does not start a Gemini worker, and says why, when:
+
+- the worktree has `.gemini\settings.json`. Gemini CLI reads that file when it starts, and it can run
+  commands from it.
+- `C:\ProgramData\gemini-cli\policies` holds a `.toml` file. Then Gemini CLI ignores the relay's
+  policy for the worker.
+- the policy file changed after the relay wrote it. The relay checks it (its SHA-256) right before
+  the start.
+
+What the relay writes down:
+
+- `W<n>.run.json` gets `tool`, `session_id` and `tokens`. For Codex, `session_id` is the Codex
+  thread's id. The relay saves it as soon as Codex reports it. For Gemini, it is the session id that
+  Gemini CLI reports. Neither tool reports a cost in dollars, so the daily limits keep the costs in
+  check.
+- `runs.md` gets two more columns, Tool and Tokens. An old `runs.md` keeps its rows as they are, and
+  a new table starts under them.
+- When Gemini CLI stops with an error, run.json and `W<n>.log` say what it means: 41 is "not signed
+  in", 42 is bad input, 53 is the turn limit, and 55 is a folder it does not trust.
+- `W<n>.log` also says which model the worker used. With no `-Model`, Codex and Gemini use their own
+  default model.
+
+**About the turn limit:** the relay gives Gemini CLI the limit in a small file
+(`W<n>.gemini-defaults.json`). Gemini CLI 0.66 skips such a file when people other than an
+administrator can change it, as in a mailbox folder. When Gemini CLI says so in its output, run.json
+says `"turn_limit": "skipped by Gemini CLI"`. To be sure of a limit, also set
+`model.maxSessionTurns` in your own Gemini settings (`%USERPROFILE%\.gemini\settings.json`).
 
 ## Agent mail (optional)
 
@@ -458,6 +530,12 @@ base commit lines:
 - **Model and effort:** <model>, <effort>   (why: <one line>)
 ```
 
+For the AI tool order, put this under the model and effort line:
+
+```markdown
+- **Tool:** claude | codex | gemini   (only a tool that worker_tools in bin\relay-settings.json lists)
+```
+
 Then tell the coordinator to read `CLAUDE.md` again, or roll it over: a new session always reads it.
 
 ## Test it
@@ -466,9 +544,14 @@ Then tell the coordinator to read `CLAUDE.md` again, or roll it over: a new sess
 powershell -NoProfile -ExecutionPolicy Bypass -File bin\bridge-relay-check.ps1
 ```
 
-It takes 5 to 9 minutes. It builds fake mailboxes in your temp folder, runs the relay and agent
-mail against them with a fake Claude and a fake Codex, and removes them at the end. It never touches a real mailbox or a real session,
-and it costs nothing. Each pull request to this repository runs it on Windows too.
+It takes 6 to 10 minutes. It builds fake mailboxes in your temp folder, runs the relay, agent mail
+and the worker launcher against them with a fake Claude, a fake Codex and a fake Gemini CLI, and
+removes them at the end. It never touches a real mailbox or a real session, and it costs nothing.
+It needs Git, for a fake worktree. Each pull request to this repository runs it on Windows too.
+
+The test sets two variables for the worker launcher that only the test uses:
+`RELAY_TEST_GEMINI_POLICY_DIR` and `RELAY_TEST_CHANGE_POLICY`. Each one can only make the launcher
+refuse to start a Gemini worker. Never set them yourself.
 
 ## Safety
 
@@ -486,7 +569,9 @@ The relay:
 - installs nothing: no service, no scheduled task, and no registry entry;
 - gives each coordinator turn a fixed list of commands it may run, and a list it may not. The
   coordinator may not change the relay's own files, and a worker may not push or merge. These
-  lists are a guard, not a sealed box, so keep an eye on what the sessions do.
+  lists are a guard, not a sealed box, so keep an eye on what the sessions do;
+- starts a worker in Codex or Gemini only when `worker_tools` lists that tool, never more of them
+  in a day than `worker_runs_per_day` allows, and a Gemini worker only with the relay's own policy.
 
 ## Costs
 
@@ -496,3 +581,6 @@ numbers are estimates from Claude Code, not bills.
 
 Each planner turn and each agent turn the relay starts uses your ChatGPT plan. It gets a line in
 `.relay\dispatches.md` too, without a cost, because Codex does not report one.
+
+A Codex worker uses your ChatGPT plan too. A Gemini worker costs money for every run. Their lines in
+`runs.md` show the tokens they used, without a cost, because neither tool reports one.

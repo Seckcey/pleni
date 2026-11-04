@@ -1,8 +1,11 @@
 // Stub standing in for the Codex CLI in bin\bridge-relay-check.ps1. Costs $0: no network, no model, no real thread.
-// bridge-relay.ps1 runs it as: node stub-codex.js <the exact codex arguments>  (relay -CodexExe <path>.js).
+// bridge-relay.ps1 runs it as: node stub-codex.js <the exact codex arguments>  (relay -CodexExe <path>.js), and
+// bin\spawn-worker.ps1 runs it the same way for a Codex worker (codex_exe <path>.js in bin\relay-settings.json): a new
+// thread, codex exec ... -, with the prompt on stdin.
 // Behaviour per invocation comes from <RELAY_STUB_DIR>\codex-mode.txt:
-//   ok                 append the notice to the fake thread file, print JSON events ending in turn.completed
-//   sleep:<seconds>    like ok, but the turn takes <seconds>
+//   ok                 resume: append the notice to the fake thread file, print JSON events ending in turn.completed.
+//                      A worker: print thread.started (a new thread id) first, then the same events, with token counts.
+//   sleep:<seconds>    like ok, but the turn takes <seconds> (a worker's thread.started comes before the wait)
 //   fail               fail before the thread is contacted (stderr only, exit 1)
 //   die-after-thread   the notice reaches the thread file, then the process dies without events
 //   turn-failed        the notice reaches the thread file, then the turn fails (turn.failed event, exit 1)
@@ -13,6 +16,7 @@
 // It records each call in <RELAY_STUB_DIR>\codex-calls.jsonl. Keys are never written: only booleans about them.
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 const argv = process.argv.slice(2);
 const stubDir = process.env.RELAY_STUB_DIR || '';
@@ -22,6 +26,9 @@ try { mode = fs.readFileSync(path.join(stubDir, 'codex-mode.txt'), 'utf8').trim(
 
 function log(rec) { if (stubDir) fs.appendFileSync(path.join(stubDir, 'codex-calls.jsonl'), JSON.stringify(rec) + '\n'); }
 function sleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+function event(obj) { process.stdout.write(JSON.stringify(obj) + '\n'); }
+function opt(name) { const i = argv.indexOf(name); return (i >= 0 && i + 1 < argv.length) ? argv[i + 1] : null; }
+function all(name) { return argv.flatMap((a, i) => (a === name && i + 1 < argv.length ? [argv[i + 1]] : [])); }
 
 if (argv[0] === 'login' && argv[1] === 'status') {
   // Local sign-in probe only: no turn, no thread file.
@@ -34,43 +41,10 @@ if (argv[0] === 'login' && argv[1] === 'status') {
   process.exit(0);
 }
 
-// rollout-<time>-<thread id>.jsonl anywhere under <CODEX_HOME>\sessions, as Codex keeps them.
-function findThread(id) {
-  const stack = [path.join(home, 'sessions')];
-  while (stack.length) {
-    const dir = stack.pop();
-    let entries = [];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { continue; }
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) stack.push(full);
-      else if (entry.name.startsWith('rollout-') && entry.name.endsWith(`${id}.jsonl`)) return full;
-    }
-  }
-  return null;
-}
-
-const ri = argv.indexOf('resume');
-const before = ri >= 0 ? argv.slice(0, ri) : argv;
-// The notice after the thread id is free text (a mail notice says "-ExecutionPolicy Bypass"), so only the
-// options are checked for --last and a sandbox bypass.
-const options = ri >= 0 ? [...argv.slice(0, ri + 2), ...argv.slice(ri + 3)] : argv;
-const thread = ri >= 0 ? (argv[ri + 1] || '') : '';
-const prompt = ri >= 0 ? (argv[ri + 2] || '') : '';
-const m = /\[bridge-relay ([^\]]+)\]/.exec(prompt);
-const running = stubDir ? path.join(stubDir, 'codex-running-' + process.pid) : null;
 const start = Date.now();
+const worker = argv[0] === 'exec' && !argv.includes('resume') && argv[argv.length - 1] === '-';
+const running = stubDir ? path.join(stubDir, 'codex-running-' + process.pid) : null;
 
-log({
-  phase: 'start', t: start, pid: process.pid, mode, exec: argv[0] === 'exec', thread, prompt, dispatch: m ? m[1] : '',
-  json: before.includes('--json'), skip_git: before.includes('--skip-git-repo-check'),
-  extra: before.slice(1).filter((a) => a !== '--json' && a !== '--skip-git-repo-check'),
-  last: options.includes('--last'), bypass: options.some((a) => /danger|bypass|yolo/i.test(a)),
-  key_absent: !process.env.OPENAI_API_KEY && !process.env.CODEX_API_KEY, codex_home: home, cwd: process.cwd()
-});
-if (running) fs.writeFileSync(running, String(start));
-
-function event(obj) { process.stdout.write(JSON.stringify(obj) + '\n'); }
 function finish(code, outcome, stderrText) {
   if (stderrText) process.stderr.write(stderrText + '\n');
   log({ phase: 'end', t: Date.now(), pid: process.pid, outcome, code });
@@ -78,31 +52,105 @@ function finish(code, outcome, stderrText) {
   process.exitCode = code;
 }
 
-const file = thread ? findThread(thread) : null;
-if (mode === 'fail') {
-  finish(1, 'fail', 'Error: simulated Codex failure before the thread was contacted');
-} else if (argv[0] !== 'exec' || ri < 0 || !file) {
-  finish(1, 'no-thread', 'Error: no saved thread found with id ' + thread);
+if (worker) {
+  runWorker();
 } else {
-  const user = { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] } };
-  fs.appendFileSync(file, JSON.stringify(user) + '\n');
-  if (mode === 'die-after-thread') {
-    finish(3, 'died', 'simulated crash after the notice reached the thread');
+  runResume();
+}
+
+// bin\spawn-worker.ps1: a new thread, the prompt on stdin.
+function runWorker() {
+  let input = '';
+  try { input = fs.readFileSync(0, 'utf8'); } catch (e) { /* no stdin */ }
+  const thread = randomUUID();
+  log({
+    phase: 'start', kind: 'worker', t: start, pid: process.pid, mode, args: argv, stdin: input, thread,
+    sandbox: opt('--sandbox'), add_dirs: all('--add-dir'), model: opt('-m'), config: all('-c'),
+    key_absent: !process.env.OPENAI_API_KEY && !process.env.CODEX_API_KEY, codex_home: home, cwd: process.cwd()
+  });
+  if (running) fs.writeFileSync(running, String(start));
+  if (mode === 'fail') {
+    finish(1, 'fail', 'Error: simulated Codex failure before the thread started');
+    return;
+  }
+  event({ type: 'thread.started', thread_id: thread });
+  const sm = /^sleep:(\d+)$/.exec(mode);
+  if (sm) sleep(Number(sm[1]) * 1000);
+  event({ type: 'turn.started' });
+  if (mode === 'turn-failed') {
+    event({ type: 'turn.failed', error: { message: 'simulated model error' } });
+    finish(1, 'turn-failed', null);
+    return;
+  }
+  // Mode 'write': change a file in the worktree, the way a real worker does, so the launcher has work to commit.
+  if (mode === 'write') fs.writeFileSync(path.join(process.cwd(), 'codex-stub-change.txt'), 'changed by the stub Codex worker\n');
+  event({ type: 'item.completed', item: { id: 'item_0', type: 'agent_message', text: 'stub Codex worker run done' } });
+  event({ type: 'turn.completed', usage: { input_tokens: 1200, cached_input_tokens: 800, output_tokens: 300 } });
+  finish(0, 'ok', null);
+}
+
+// bridge-relay.ps1: codex exec ... resume <thread id> <notice>.
+function runResume() {
+  // rollout-<time>-<thread id>.jsonl anywhere under <CODEX_HOME>\sessions, as Codex keeps them.
+  function findThread(id) {
+    const stack = [path.join(home, 'sessions')];
+    while (stack.length) {
+      const dir = stack.pop();
+      let entries = [];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { continue; }
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) stack.push(full);
+        else if (entry.name.startsWith('rollout-') && entry.name.endsWith(`${id}.jsonl`)) return full;
+      }
+    }
+    return null;
+  }
+
+  const ri = argv.indexOf('resume');
+  const before = ri >= 0 ? argv.slice(0, ri) : argv;
+  // The notice after the thread id is free text (a mail notice says "-ExecutionPolicy Bypass"), so only the
+  // options are checked for --last and a sandbox bypass.
+  const options = ri >= 0 ? [...argv.slice(0, ri + 2), ...argv.slice(ri + 3)] : argv;
+  const thread = ri >= 0 ? (argv[ri + 1] || '') : '';
+  const prompt = ri >= 0 ? (argv[ri + 2] || '') : '';
+  const m = /\[bridge-relay ([^\]]+)\]/.exec(prompt);
+
+  log({
+    phase: 'start', t: start, pid: process.pid, mode, exec: argv[0] === 'exec', thread, prompt, dispatch: m ? m[1] : '',
+    json: before.includes('--json'), skip_git: before.includes('--skip-git-repo-check'),
+    extra: before.slice(1).filter((a) => a !== '--json' && a !== '--skip-git-repo-check'),
+    last: options.includes('--last'), bypass: options.some((a) => /danger|bypass|yolo/i.test(a)),
+    key_absent: !process.env.OPENAI_API_KEY && !process.env.CODEX_API_KEY, codex_home: home, cwd: process.cwd()
+  });
+  if (running) fs.writeFileSync(running, String(start));
+
+  const file = thread ? findThread(thread) : null;
+  if (mode === 'fail') {
+    finish(1, 'fail', 'Error: simulated Codex failure before the thread was contacted');
+  } else if (argv[0] !== 'exec' || ri < 0 || !file) {
+    finish(1, 'no-thread', 'Error: no saved thread found with id ' + thread);
   } else {
-    const sm = /^sleep:(\d+)$/.exec(mode);
-    if (sm) sleep(Number(sm[1]) * 1000);
-    event({ type: 'thread.started', thread_id: mode === 'wrong-thread' ? '99999999-9999-4999-8999-999999999999' : thread });
-    event({ type: 'turn.started' });
-    if (mode === 'turn-failed') {
-      event({ type: 'turn.failed', error: { message: 'simulated model error' } });
-      finish(1, 'turn-failed', null);
+    const user = { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] } };
+    fs.appendFileSync(file, JSON.stringify(user) + '\n');
+    if (mode === 'die-after-thread') {
+      finish(3, 'died', 'simulated crash after the notice reached the thread');
     } else {
-      const text = 'stub planner turn handled ' + (m ? m[1] : '');
-      const reply = { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } };
-      fs.appendFileSync(file, JSON.stringify(reply) + '\n');
-      event({ type: 'item.completed', item: { id: 'item_0', type: 'agent_message', text } });
-      event({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } });
-      finish(0, 'ok', null);
+      const sm = /^sleep:(\d+)$/.exec(mode);
+      if (sm) sleep(Number(sm[1]) * 1000);
+      event({ type: 'thread.started', thread_id: mode === 'wrong-thread' ? '99999999-9999-4999-8999-999999999999' : thread });
+      event({ type: 'turn.started' });
+      if (mode === 'turn-failed') {
+        event({ type: 'turn.failed', error: { message: 'simulated model error' } });
+        finish(1, 'turn-failed', null);
+      } else {
+        const text = 'stub planner turn handled ' + (m ? m[1] : '');
+        const reply = { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } };
+        fs.appendFileSync(file, JSON.stringify(reply) + '\n');
+        event({ type: 'item.completed', item: { id: 'item_0', type: 'agent_message', text } });
+        event({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } });
+        finish(0, 'ok', null);
+      }
     }
   }
 }
