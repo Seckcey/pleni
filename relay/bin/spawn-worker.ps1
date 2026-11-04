@@ -943,8 +943,12 @@ if ($Tool -eq 'claude') {
     if ($Tool -eq 'codex') {
         $cwd = $Worktree
         # The network stays off whatever Codex's own settings say. Git's own folder is not writable, so a worker can
-        # never add a Git hook or change Git's settings; the launcher commits its changes (Save-ToolWork).
-        $cliArgs = @('exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=false')
+        # never add a Git hook or change Git's settings; the launcher commits its changes (Save-ToolWork). Codex lays
+        # each -c value over the owner's own config.toml, so two more empty what that file could add: its writable_roots
+        # (then the run can write only its own folder and the --add-dir folder) and its MCP servers (they run outside the
+        # sandbox), as for a Codex coordinator's turn.
+        $cliArgs = @('exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=false',
+            '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'mcp_servers={}')
         if ($Type -eq 'implementation') {
             $cliArgs += @('--add-dir', $WorkerDir)
         } else {

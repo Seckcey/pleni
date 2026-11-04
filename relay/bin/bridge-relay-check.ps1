@@ -52,16 +52,25 @@
   folder or an AGENTS.override.md halts it before the turn, a rollover to a newer thread with the name (the new folder's
   old board kept in .relay\backups), none to one that is already an agent, a tool the relay does not know, -Status and
   -ShowCoordinatorArgs, a mailbox path with an & refused, and HQ: a project cannot enroll HQ's orchestrator thread as
-  its coordinator, and a project coordinator.json that names it stops HQ's wakes.
+  its coordinator, and a project coordinator.json that names it stops HQ's wakes. 29 a Gemini CLI coordinator (-Enroll
+  -Tool gemini, with tests\stub-gemini.js): refusals in plain words (an unknown session, -Effort, -SessionName, a folder
+  the session does not belong to, a .gemini folder, a comma in the folder's path, a node check), enrolled by its id
+  with a copy of the old coordinator.json, its rules file (-ShowCoordinatorArgs), the quiet window, a dry run that
+  writes nothing, a turn with the notice only on stdin, in the session's own folder, with the turn limit and
+  GEMINI_API_KEY passed through, -Status, a window that has the session open, the turn limit reached (delivered with an
+  error), halts before the turn for a .gemini folder, a system policy, a changed rules file and a .env file, and no key
+  written anywhere. 30 a Gemini CLI coordinator's failures: not signed in backs off and halts after three in a row, no
+  session with that id, a turn in another session halts, a crash after the notice (outcome unknown), and a turn that
+  outlives its relay (settled from its events, never two at once).
   It runs only the bridge-relay.ps1, agent-mail.ps1 and spawn-worker.ps1 beside it, ..\tests\stub-claude.js,
   ..\tests\stub-codex.js, ..\tests\stub-gemini.js and ..\tests\stub-agy.js; other -RelayScript/-StubCli values are
   refused.
-  Scenarios 24, 25 and 27 need git.exe, for a Git folder in their fixtures. Scenario 24 sets two test-only variables
-  that spawn-worker.ps1 reads (RELAY_TEST_GEMINI_POLICY_DIR and RELAY_TEST_CHANGE_POLICY); each one can only make the
-  launcher refuse.
+  Scenarios 24, 25 and 27 need git.exe, for a Git folder in their fixtures. Scenarios 24 and 29 set two test-only
+  variables that spawn-worker.ps1 and bridge-relay.ps1 read (RELAY_TEST_GEMINI_POLICY_DIR and RELAY_TEST_CHANGE_POLICY);
+  each one can only make the launcher refuse or the relay halt.
   Prints one PASS/FAIL line per check, then a summary. Exit 0 only when every check passes (2 = could not set up).
   No network, no API key, no real claude.exe. It removes its temp folder and stops any process it started
-  (only processes whose command line names this run's temp folder). Takes about 10-16 minutes.
+  (only processes whose command line names this run's temp folder). Takes about 12-18 minutes.
   Windows PowerShell 5.1. ASCII only.
 
 .EXAMPLE
@@ -315,9 +324,9 @@ function Get-Dispatches([hashtable]$Fx) {
     return @(Get-Values $st.dispatches | Sort-Object { [int64]$_.seq })
 }
 
-function Test-NoOverlap([hashtable]$Fx, [switch]$Codex) {
+function Test-NoOverlap([hashtable]$Fx, [switch]$Codex, [switch]$Gemini) {
     # True when no two stub CLI processes were alive at the same time (from their own start/end records).
-    if ($Codex) { $all = @(Get-CodexCalls $Fx '') } else { $all = @(Get-Calls $Fx '') }
+    if ($Codex) { $all = @(Get-CodexCalls $Fx '') } elseif ($Gemini) { $all = @(Get-GeminiCalls $Fx '') } else { $all = @(Get-Calls $Fx '') }
     $runs = @()
     foreach ($s in @($all | Where-Object { $_.phase -eq 'start' })) {
         $e = @($all | Where-Object { $_.phase -eq 'end' -and $_.pid -eq $s.pid -and [int64]$_.t -ge [int64]$s.t } | Select-Object -First 1)
@@ -561,6 +570,23 @@ function Get-GeminiCalls([hashtable]$Fx, [string]$Phase) {
         try { $c = ConvertFrom-Json -InputObject $l } catch { continue }
         if (-not $Phase -or $c.phase -eq $Phase) { $c }
     }
+}
+
+function Get-GeminiResumeCalls([hashtable]$Fx) { return @(Get-GeminiCalls $Fx 'start' | Where-Object { $_.kind -eq 'resume' }) }   # the Gemini stub's coordinator turns (--resume)
+
+function Write-GeminiSession([hashtable]$Fx, [string]$Id, [string]$Cwd) {
+    # A fake Gemini CLI session where the relay (-Enroll -Tool gemini) and the Gemini stub (--resume) look for it:
+    # <fixture>\gemini-home\.gemini\tmp\<folder name>\chats\session-...-<first 8 of the id>.jsonl, and .project_root
+    # naming its folder (made here). Its file was last written 10 minutes ago, so it is quiet. Returns its path.
+    New-Item -ItemType Directory -Path $Cwd -Force | Out-Null
+    $proj = Join-Path $Fx.dir ('gemini-home\.gemini\tmp\' + (Split-Path -Leaf $Cwd))
+    Write-Text (Join-Path $proj '.project_root') $Cwd
+    $file = Join-Path $proj ('chats\session-2026-11-04T05-00-' + $Id.Substring(0, 8) + '.jsonl')
+    $first = [ordered]@{ sessionId = $Id; projectHash = 'synthetic'; startTime = '2026-11-04T05:00:00Z'; kind = 'main' }
+    $user = [ordered]@{ id = [guid]::NewGuid().ToString(); timestamp = '2026-11-04T05:00:01Z'; type = 'user'; content = @(@{ text = 'synthetic coordinator session' }) }
+    Write-Text $file ((ConvertTo-Json -InputObject $first -Compress) + "`n" + (ConvertTo-Json -InputObject $user -Compress -Depth 5) + "`n")
+    (Get-Item -LiteralPath $file).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-10)   # quiet
+    return $file
 }
 
 function Get-CodexWorkerCalls([hashtable]$Fx) { return @(Get-CodexCalls $Fx 'start' | Where-Object { $_.kind -eq 'worker' }) }
@@ -1717,7 +1743,8 @@ try {
             if ($w.Count -ge 1 -and $s) {
                 $c = $w[0]
                 $why = Compare-ArgList @($c.args) @('exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write',
-                    '-c', 'sandbox_workspace_write.network_access=false', '--add-dir', $fx.workers, '-c', 'model_reasoning_effort=xhigh', '-')
+                    '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'mcp_servers={}',
+                    '--add-dir', $fx.workers, '-c', 'model_reasoning_effort=xhigh', '-')
                 Check (-not $why) "the Codex command is not the one asked for: $why"
                 Check ([string]$c.stdin -match [regex]::Escape((Join-Path $fx.workers 'W1-brief.md')) -and [string]$c.stdin -match 'W1-report\.md') 'the prompt on stdin does not name the brief and the report'
                 Check ([string]$c.stdin -match 'Do not run git add or git commit') 'the Codex worker prompt does not say the launcher commits'
@@ -1748,7 +1775,8 @@ try {
             Check ($w.Count -eq 2) "expected 2 Codex worker runs, got $($w.Count)"
             if ($w.Count -ge 2) {
                 $why = Compare-ArgList @($w[1].args) @('exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write',
-                    '-c', 'sandbox_workspace_write.network_access=false', '-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort=high', '-')
+                    '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'mcp_servers={}',
+                    '-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort=high', '-')
                 Check (-not $why) "the Codex reviewer's command is not the one asked for: $why"
                 Check ([string]$w[1].cwd -like '*\workers') "the Codex reviewer ran in '$($w[1].cwd)', not in the workers folder"
                 Check ([string]$w[1].stdin -match 'The only file you may write is your report') 'the reviewer prompt does not keep it to its report'
@@ -2553,6 +2581,257 @@ try {
         Check ([string]$st.codex_halt -match 'project notes' -and [string]$st.codex_halt -match 'coordinator') "HQ did not stop its orchestrator wakes for the coordinator of project notes (codex_halt '$($st.codex_halt)')"
         Check ((Read-Shared (Join-Path $hq.mb '.relay\alerts.md')) -match '-Enroll') 'the alert does not say to enroll another coordinator in the project'
         Check (-not $st.halt) "the shared thread stopped HQ's coordinator direction too"
+    }
+
+    Invoke-Scenario '29 a Gemini CLI coordinator: refusals, its rules file, a turn with the notice on stdin, waits, the turn limit, halts before it starts, no key written' {
+        $fx = New-Fixture 'gc1'
+        Initialize-Fixture $fx   # a Claude Code coordinator first, so there is a coordinator.json to keep a copy of
+        $cf = Join-Path $fx.mb '.relay\coordinator.json'
+        $gc = Join-Path $fx.dir 'gcoord'
+        $gs = [guid]::NewGuid().ToString()
+        $gsFile = Write-GeminiSession $fx $gs $gc
+        $hash0 = (Get-FileHash -LiteralPath $cf -Algorithm SHA256).Hash
+        # Refusals: each one ends with an error and saves nothing. $gs2 belongs to a folder with a comma in its path.
+        $gs2 = [guid]::NewGuid().ToString()
+        $null = Write-GeminiSession $fx $gs2 (Join-Path $fx.dir 'g,coord')
+        $dotGemini = Join-Path $gc '.gemini'
+        foreach ($x in @(
+                @{ opt = @{ Tool = 'gemini'; SessionId = [guid]::NewGuid().ToString() }; words = 'No Gemini CLI session' },
+                @{ opt = @{ Tool = 'gemini'; SessionId = $gs; Effort = 'high' }; words = 'no effort setting' },
+                @{ opt = @{ Tool = 'gemini'; SessionName = 'x' }; words = 'enrolled by its session id' },
+                @{ opt = @{ Tool = 'gemini'; SessionId = $gs; CoordinatorCwd = $fx.planner }; words = 'belongs to the folder' },
+                @{ opt = @{ Tool = 'gemini'; SessionId = $gs }; words = '.gemini is there'; dotGemini = $true },
+                @{ opt = @{ Tool = 'gemini'; SessionId = $gs2 }; words = 'comma' },
+                @{ opt = @{ Tool = 'gemini'; SessionId = $gs; AllowCheck = 'node --test C:\x' }; words = 'node can load code' })) {
+            if ($x.dotGemini) { New-Item -ItemType Directory -Path $dotGemini -Force | Out-Null }
+            try { $r = Invoke-Relay $fx 'Enroll' $x.opt } finally { if (Test-Path -LiteralPath $dotGemini) { Remove-Item -LiteralPath $dotGemini -Recurse -Force } }
+            $optText = (@($x.opt.Keys | Sort-Object) | ForEach-Object { '-' + $_ + ' ' + [string]$x.opt[$_] }) -join ' '
+            Check ($r.code -ne 0 -and (Test-SaidText $r.out $x.words)) "-Enroll $optText was not refused with '$($x.words)' (exit $($r.code)): $(Get-Tail $r.out 200)"
+        }
+        Check ((Get-FileHash -LiteralPath $cf -Algorithm SHA256).Hash -eq $hash0) 'a refused -Enroll -Tool gemini changed coordinator.json'
+        # Enrolled by its id, with one allowed check, in the folder the session belongs to.
+        $r = Invoke-Relay $fx 'Enroll' @{ Tool = 'gemini'; SessionId = $gs; AllowCheck = 'php -l' }
+        Check ($r.code -eq 0) "-Enroll -Tool gemini exit code $($r.code): $(Get-Tail $r.out)"
+        Check ((Test-Said $r.out 'GEMINI\.md is not there') -and (Test-SaidText $r.out 'costs money')) 'the enrollment did not warn that GEMINI.md is not in the session''s folder, or did not say that each turn costs money'
+        $cj = Get-RelayJson $fx 'coordinator.json'
+        Check ($cj -and $cj.tool -eq 'gemini' -and $cj.session_id -eq $gs -and $cj.cwd -eq $gc -and @($cj.allowed_checks).Count -eq 1 -and [string]@($cj.allowed_checks)[0] -eq 'php -l') ("coordinator.json does not hold the Gemini CLI coordinator (tool '{0}', session '{1}', folder '{2}', checks '{3}')" -f $cj.tool, $cj.session_id, $cj.cwd, (@($cj.allowed_checks) -join ', '))
+        $baks = @(Get-ChildItem -LiteralPath (Join-Path $fx.mb '.relay\backups') -File -Filter 'coordinator.json.*.bak' -ErrorAction SilentlyContinue)
+        Check ($baks.Count -eq 1) "expected exactly 1 copy of the old coordinator.json in .relay\backups, got $($baks.Count)"
+        # -ShowCoordinatorArgs shows the rules file the relay would write, and Gemini CLI would keep every rule in it.
+        $r = Invoke-Relay $fx 'ShowCoordinatorArgs' $null
+        Check ($r.code -eq 0) "-ShowCoordinatorArgs exit code $($r.code)"
+        $j = $null
+        try { $j = ConvertFrom-Json -InputObject $r.out } catch { $j = $null }
+        $pol = ''
+        if ($j) { $pol = [string]$j.policy }
+        Check ($j -and $j.tool -eq 'gemini' -and -not [string]$j.policyProblem -and $pol) "-ShowCoordinatorArgs does not show the Gemini CLI coordinator's rules file: $(Get-Tail $r.out)"
+        Check ($pol -match '(?m)^toolName = "\*"\r?\ndecision = "deny"\r?\npriority = 0\r?$') 'the rules file does not deny everything else (toolName "*" at priority 0)'
+        $allowLine = @(($pol -split "`n") | Where-Object { $_.StartsWith('commandPrefix = ') -and $_.Contains('"git status"') })
+        $wantLine = 'commandPrefix = ["git status", "git log", "git diff", "git show", "git rev-parse", "git branch --list", "git ls-tree", "git cat-file", "git worktree list", "php -l"]'
+        Check ($allowLine.Count -eq 1 -and $allowLine[0].TrimEnd() -ceq $wantLine) "the rules file's command allow line is not the nine read-only Git commands and php -l: $($allowLine -join ' | ')"
+        foreach ($piece in @('--output', '"git push"', 'mcpName = "*"', '[tT][aA][sS][kK][sS]')) {
+            Check ($pol.Contains($piece)) "the rules file does not hold $piece"
+        }
+        Check (-not $pol.Contains('"node')) 'the rules file names node'
+        # Writing a file named GEMINI.md, AGENTS.md or CLAUDE.md, in any folder and any letter case, is denied at 900.
+        $lines = @($pol -split "`n")
+        $oi = -1
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i].StartsWith('argsPattern = ') -and $lines[$i].Contains('[gG][eE][mM][iI][nN][iI]') -and $lines[$i].Contains('[aA][gG][eE][nN][tT][sS]') -and $lines[$i].Contains('[cC][lL][aA][uU][dD][eE]')) { $oi = $i }
+        }
+        Check ($oi -gt 0 -and $oi + 3 -lt $lines.Count -and $lines[$oi - 1].StartsWith('toolName = ["write_file", "replace"]') -and $lines[$oi + 1] -eq 'decision = "deny"' -and
+            $lines[$oi + 2] -eq 'priority = 900' -and $lines[$oi + 3].Contains('standing orders')) 'the rules file does not deny writing a GEMINI.md, AGENTS.md or CLAUDE.md file at priority 900'
+        # The quiet window: another program wrote the session file just now, so the turn waits.
+        [IO.File]::AppendAllText($gsFile, '{"id":"synthetic","type":"info","content":"another client"}' + "`n", $Utf8)
+        Write-Text (Join-Path $fx.mb 'tasks\T-G05\assignment.md') $NewAssignment
+        $r = Invoke-Relay $fx 'Once' @{ QuietSeconds = 120 }
+        Check (Test-Said $r.out 'written \d+ s ago by another client') "the relay did not wait for the quiet window: $(Get-Tail $r.out)"
+        Check (@(Get-GeminiCalls $fx 'start').Count -eq 0) 'Gemini CLI was started inside the quiet window'
+        # One turn: the notice only on standard input (an @ becomes ' at '), in the session's own folder. First a dry run,
+        # which shows the command and writes nothing, not even the rules file.
+        Write-Text (Join-Path $fx.mb 'tasks\T-AT@HOME\assignment.md') $NewAssignment
+        $policyFile = Join-Path $fx.mb '.relay\coordinator.gemini-policy.toml'
+        $sf = Join-Path $fx.mb '.relay\state.json'
+        $before = (Get-FileHash -LiteralPath $sf -Algorithm SHA256).Hash
+        $r = Invoke-Relay $fx 'DryRun' $null
+        Check ($r.code -eq 0 -and (Test-Said $r.out 'would dispatch 2 item\(s\) to the Gemini CLI coordinator session') -and (Test-SaidText $r.out "--resume $gs")) "the dry run did not show the Gemini CLI coordinator turn: $(Get-Tail $r.out)"
+        Check ((Get-FileHash -LiteralPath $sf -Algorithm SHA256).Hash -eq $before -and -not (Test-Path -LiteralPath $policyFile)) 'the dry run changed state.json or wrote the rules file'
+        Check (@(Get-GeminiCalls $fx '').Count -eq 0) 'the dry run called the Gemini stub'
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ($r.code -eq 0) "-Once exit code $($r.code)"
+        $calls = @(Get-GeminiResumeCalls $fx)
+        Check ($calls.Count -eq 1) "expected 1 Gemini CLI coordinator turn, got $($calls.Count)"
+        if ($calls.Count -ge 1) {
+            $c = $calls[0]
+            $want = @('--resume', $gs, '-p', 'Do what the relay notice above says.', '-o', 'stream-json', '--approval-mode', 'default', '--skip-trust',
+                '--admin-policy', $policyFile, '--include-directories', $Base)
+            $why = Compare-ArgList @($c.args) $want
+            Check (-not $why) "the Gemini CLI coordinator turn's command is not the relay's own: $why"
+            $notice = [string]$c.stdin
+            Check ($notice -match '\[bridge-relay R' -and $notice.Contains('T-AT at HOME') -and -not $notice.Contains('@')) "the notice on standard input does not carry its marker and the new assignment, or still holds an @: $(Get-Tail $notice 300)"
+            Check ([string]$c.cwd -like '*\gc1\gcoord') "the Gemini CLI coordinator turn ran in '$($c.cwd)', not in the session's own folder"
+            Check ([bool]$c.session_file) 'Gemini CLI (the stub) did not find the session from the folder it ran in'
+            Check ($c.gemini_key_present -eq $true) 'GEMINI_API_KEY did not pass through to Gemini CLI'
+            Check ([string]$c.gemini_cli_home -like '*\gc1\gemini-home') "the turn's GEMINI_CLI_HOME is '$($c.gemini_cli_home)', not the relay's Gemini home"
+            Check ([string]$c.defaults -ceq '{"model":{"maxSessionTurns":30}}') "the turn limit file holds '$($c.defaults)'"
+        }
+        $d = @(Get-Dispatches $fx | Where-Object { $_.tool -eq 'gemini' })
+        $policyHash = ''
+        if (Test-Path -LiteralPath $policyFile) { $policyHash = (Get-FileHash -LiteralPath $policyFile -Algorithm SHA256).Hash.ToLowerInvariant() }
+        Check ($d.Count -eq 1 -and $d[0].outcome -eq 'success' -and $policyHash -and $d[0].policy_sha256 -eq $policyHash) "the Gemini CLI coordinator turn is not recorded once as a success with its rules file's SHA-256 ($($d.Count) record(s))"
+        Check ((Get-NoticeCount $gsFile 'R') -eq 1) 'the session file does not hold exactly one notice'
+        Check (@(Get-Calls $fx 'start').Count -eq 0) 'the Claude Code stub was called for a Gemini CLI coordinator'
+        $r = Invoke-Relay $fx 'Status' $null
+        Check ($r.code -eq 0 -and (Test-SaidText $r.out 'Coordinator: ENROLLED Gemini CLI session') -and (Test-SaidText $r.out 'costs money')) "-Status does not show the Gemini CLI coordinator: $(Get-Tail $r.out)"
+        # A window has the session open (its id on a command line): the turn waits.
+        $before = @(Get-GeminiResumeCalls $fx).Count
+        $win = Start-OpenWindow $fx $gs
+        try {
+            Write-Text (Join-Path $fx.mb 'tasks\T-G07\assignment.md') $NewAssignment
+            $r = Invoke-Relay $fx 'Once' $null
+            Check (Test-SaidText $r.out 'is open in pid') "the relay did not wait while a window had the session open: $(Get-Tail $r.out)"
+            Check (@(Get-GeminiResumeCalls $fx).Count -eq $before) 'the coordinator was woken while a window had its session open'
+        } finally {
+            try { Stop-Process -Id $win.Id -Force -ErrorAction SilentlyContinue } catch { }
+            [void]$win.WaitForExit(10000)
+        }
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-GeminiResumeCalls $fx).Count -eq $before + 1) 'the coordinator was not woken once the window was closed'
+        # The turn limit (exit 53) after the notice reached the session: delivered with an error, not replayed, one
+        # failure. A short backoff, so the next turn may start soon; it succeeds and clears the failures.
+        Set-GeminiStubMode $fx 'exit:53'
+        Write-Text (Join-Path $fx.mb 'tasks\T-G08\assignment.md') $NewAssignment
+        $null = Invoke-Relay $fx 'Once' @{ BackoffSeconds = 1 }
+        Set-GeminiStubMode $fx 'ok'
+        $nt = @(Get-Note $fx 'tasks/T-G08/assignment.md')
+        Check ($nt.Count -eq 1 -and $nt[0].state -eq 'completed') 'the notice of a turn that hit its turn limit is not recorded as delivered (not replayed)'
+        $af = Join-Path $fx.mb '.relay\alerts.md'
+        Check ((Test-Path -LiteralPath $af) -and (Read-Shared $af) -match 'turn limit') 'alerts.md does not say that the turn hit its turn limit'
+        Check ([int](Get-RelayState $fx).failures -eq 1) "the turn that hit its turn limit did not count as one failure (failures $((Get-RelayState $fx).failures))"
+        Start-Sleep -Seconds 2   # past the backoff of 1 s
+        Write-Text (Join-Path $fx.mb 'tasks\T-G08B\assignment.md') $NewAssignment
+        $null = Invoke-Relay $fx 'Once' $null
+        $last = @(Get-Dispatches $fx | Where-Object { $_.tool -eq 'gemini' }) | Select-Object -Last 1
+        Check ($last -and $last.outcome -eq 'success' -and [int](Get-RelayState $fx).failures -eq 0) "the next turn did not succeed and clear the failures (outcome '$($last.outcome)')"
+        # Halts before Gemini CLI starts: each one keeps its notice, and starts nothing until -ClearHalt.
+        $sysDir = Join-Path $fx.dir 'gemini-system-policies'
+        Write-Text (Join-Path $sysDir 'a.toml') "# a policy of this computer's administrator`n"
+        $envFile = Join-Path $fx.dir '.env'
+        $n = 0
+        foreach ($h in @('a .gemini folder', 'a system policy', 'a changed rules file', 'a .env file')) {
+            $n++
+            Write-Text (Join-Path $fx.mb "tasks\T-H0$n\assignment.md") $NewAssignment
+            $before = @(Get-GeminiResumeCalls $fx).Count
+            $words = ''
+            try {
+                # No continue or break in this switch: there they would act on the switch.
+                switch ($h) {
+                    'a .gemini folder' { New-Item -ItemType Directory -Path $dotGemini -Force | Out-Null; $words = '.gemini is there' }
+                    'a system policy' { $env:RELAY_TEST_GEMINI_POLICY_DIR = $sysDir; $words = 'system policy' }   # test only: read like C:\ProgramData\gemini-cli\policies
+                    'a changed rules file' { $env:RELAY_TEST_CHANGE_POLICY = '1'; $words = 'changed after the relay wrote it' }   # test only
+                    'a .env file' { Write-Text $envFile "SYNTHETIC_VALUE=1`n"; $words = '.env is there' }
+                }
+                $null = Invoke-Relay $fx 'Once' $null
+            } finally {
+                Remove-Item Env:RELAY_TEST_GEMINI_POLICY_DIR -ErrorAction SilentlyContinue
+                Remove-Item Env:RELAY_TEST_CHANGE_POLICY -ErrorAction SilentlyContinue
+                if (Test-Path -LiteralPath $dotGemini) { Remove-Item -LiteralPath $dotGemini -Recurse -Force }
+                if (Test-Path -LiteralPath $envFile) { Remove-Item -LiteralPath $envFile -Force }
+            }
+            $st = Get-RelayState $fx
+            Check (Test-SaidText ([string]$st.halt) $words) "$h did not halt the relay before the turn (halt '$($st.halt)')"
+            Check (@(Get-GeminiResumeCalls $fx).Count -eq $before) "Gemini CLI was started although there was $h"
+            Check (Test-Pending $fx "tasks/T-H0$n/assignment.md") "the notice held by $h is not kept pending"
+            $null = Invoke-Relay $fx 'ClearHalt' $null
+        }
+        $before = @(Get-GeminiResumeCalls $fx).Count
+        $null = Invoke-Relay $fx 'Once' $null
+        $calls = @(Get-GeminiResumeCalls $fx)
+        Check ($calls.Count -eq $before + 1) "the four kept notices did not go in one turn after the halts were cleared ($($calls.Count - $before) turn(s))"
+        if ($calls.Count -gt $before) {
+            $notice = [string]$calls[$calls.Count - 1].stdin
+            Check ($notice.Contains('1) ') -and $notice.Contains('4) ') -and $notice.Contains('T-H01') -and $notice.Contains('T-H04')) "the turn after the halts does not carry the four kept notices: $(Get-Tail $notice 300)"
+        }
+        $leak = Test-NoKeyText $fx $DummyGeminiKey
+        Check (-not $leak) "the dummy Gemini key's text was written to: $leak"
+    }
+
+    Invoke-Scenario '30 a Gemini coordinator: not signed in backs off and halts, a missing session, a wrong session, a crash after the notice, and a turn that outlives the relay' {
+        $fx = New-Fixture 'gc2'
+        Initialize-Fixture $fx
+        $gc = Join-Path $fx.dir 'gcoord'
+        $gs = [guid]::NewGuid().ToString()
+        $gsFile = Write-GeminiSession $fx $gs $gc
+        $r = Invoke-Relay $fx 'Enroll' @{ Tool = 'gemini'; SessionId = $gs }
+        if ($r.code -ne 0) { throw "-Enroll -Tool gemini failed (exit $($r.code)): $(Get-Tail $r.out)" }
+        # Not signed in (exit 41): never delivered; backed off (2 s, then 4 s), and halted after the third in a row.
+        Set-GeminiStubMode $fx 'exit:41'
+        Write-Text (Join-Path $fx.mb 'tasks\T-S02\assignment.md') $NewAssignment
+        $loop = Start-Relay $fx 'Start' @{ BackoffSeconds = 2 }
+        $halted = Wait-Until { [string](Get-RelayState $fx).halt -match 'not signed in' } 40
+        $null = Stop-Loop $fx $loop
+        Check $halted "three not-signed-in turns in a row did not halt the relay (halt '$((Get-RelayState $fx).halt)')"
+        $calls = @(Get-GeminiResumeCalls $fx)
+        Check ($calls.Count -eq 3) "expected 3 Gemini CLI turns before the halt, got $($calls.Count)"
+        if ($calls.Count -ge 3) {
+            $gap1 = [int64]$calls[1].t - [int64]$calls[0].t
+            $gap2 = [int64]$calls[2].t - [int64]$calls[1].t
+            Check ($gap1 -ge 900 -and $gap2 -ge 2900) "the turns did not back off (gaps $gap1 ms and $gap2 ms; want at least 900 and 2900)"
+        }
+        Check (Test-Pending $fx 'tasks/T-S02/assignment.md') 'the notice of the turns that never reached the session is not kept pending'
+        Check ((Get-NoticeCount $gsFile 'R') -eq 0) 'a notice reached the session although Gemini CLI was not signed in'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        # No session with that id in the folder (exit 42): not delivered, in plain words.
+        Set-GeminiStubMode $fx 'exit:42'
+        $null = Invoke-Relay $fx 'Once' $null
+        $ledger = Join-Path $fx.mb '.relay\dispatches.md'
+        Check ((Test-Path -LiteralPath $ledger) -and (Test-SaidText (Read-Shared $ledger) "no session with that id in the coordinator's folder")) 'dispatches.md does not say that Gemini CLI found no session with that id'
+        Check (Test-Pending $fx 'tasks/T-S02/assignment.md') 'the notice of a turn that found no session is not kept pending'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        # A turn in another session: delivered (not replayed), and the relay halts.
+        Set-GeminiStubMode $fx 'wrong-session'
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ([string](Get-RelayState $fx).halt -match 'mismatch') 'a coordinator turn in another session did not halt the relay'
+        $nt = @(Get-Note $fx 'tasks/T-S02/assignment.md')
+        Check ($nt.Count -eq 1 -and $nt[0].state -eq 'completed') 'the notice that went to another session is not recorded as completed (not replayed)'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        # A crash after the notice reached the session: delivered, outcome unknown, with an alert.
+        Set-GeminiStubMode $fx 'die-after-session'
+        Write-Text (Join-Path $fx.mb 'tasks\T-S05\assignment.md') $NewAssignment
+        $null = Invoke-Relay $fx 'Once' $null
+        $last = @(Get-Dispatches $fx | Where-Object { $_.tool -eq 'gemini' }) | Select-Object -Last 1
+        Check ($last -and ([string]$last.outcome).StartsWith('unknown')) "the turn that died after its notice is not recorded as outcome unknown (outcome '$($last.outcome)')"
+        $nt = @(Get-Note $fx 'tasks/T-S05/assignment.md')
+        Check ($nt.Count -eq 1 -and $nt[0].state -eq 'completed') 'the notice of the turn that died is not recorded as delivered (not replayed)'
+        Check ((Read-Shared (Join-Path $fx.mb '.relay\alerts.md')) -match 'ended without a result') 'alerts.md does not say that the turn ended without a result'
+        # A turn that outlives the relay: the next relay waits for it, then settles it from its events (it has no exit
+        # code there), then delivers the notice that waited, in a turn of its own.
+        Set-GeminiStubMode $fx 'sleep:12'
+        Write-Text (Join-Path $fx.mb 'tasks\T-S06A\assignment.md') $NewAssignment
+        $null = Invoke-Relay $fx 'Once' @{ NoWait = $true }
+        # The stub writes its start record before its running file, so once the file is there the count below holds A.
+        Check (Wait-Until { @(Get-ChildItem -LiteralPath $fx.stub -Filter 'gemini-running-*' -File -ErrorAction SilentlyContinue).Count -eq 1 } 15) 'the 12 s Gemini CLI turn did not start'
+        Write-Text (Join-Path $fx.mb 'tasks\T-S06B\assignment.md') $NewAssignment
+        $before = @(Get-GeminiResumeCalls $fx).Count
+        $r = Invoke-Relay $fx 'Once' $null
+        if (@(Get-ChildItem -LiteralPath $fx.stub -Filter 'gemini-running-*' -File -ErrorAction SilentlyContinue).Count -ne 1) { throw 'timing: the 12 s Gemini CLI turn ended before the check; re-run on a less loaded machine' }
+        Check (Test-Said $r.out 'relay dispatch R\S+ is still running') "the relay did not wait for the turn that still runs: $(Get-Tail $r.out)"
+        Check (@(Get-GeminiResumeCalls $fx).Count -eq $before) 'a second Gemini CLI turn started while the first one still ran'
+        $null = Wait-Until { @(Get-ChildItem -LiteralPath $fx.stub -Filter 'gemini-running-*' -File -ErrorAction SilentlyContinue).Count -eq 0 } 20
+        $na = @(Get-Note $fx 'tasks/T-S06A/assignment.md')
+        $apid = 0
+        if ($na.Count) { foreach ($d0 in @(Get-Dispatches $fx | Where-Object { $_.id -eq $na[0].dispatch_id })) { $apid = [int]$d0.pid } }
+        if ($apid) { $null = Wait-Until { -not (Get-Process -Id $apid -ErrorAction SilentlyContinue) } 10 }   # its process has ended too, not only its run
+        Set-GeminiStubMode $fx 'ok'
+        $null = Invoke-Relay $fx 'Once' $null
+        $na = @(Get-Note $fx 'tasks/T-S06A/assignment.md')
+        $nb = @(Get-Note $fx 'tasks/T-S06B/assignment.md')
+        $da = @()
+        if ($na.Count) { $da = @(Get-Dispatches $fx | Where-Object { $_.id -eq $na[0].dispatch_id }) }
+        Check ($da.Count -eq 1 -and $da[0].outcome -eq 'success' -and $null -eq $da[0].exit_code) "the turn that outlived its relay is not settled as a success with no exit code ($($da.Count) record(s))"
+        Check ($nb.Count -eq 1 -and $nb[0].state -eq 'completed' -and $na.Count -eq 1 -and $nb[0].dispatch_id -ne $na[0].dispatch_id) 'the notice that waited was not delivered in a turn of its own'
+        Check (@(Get-GeminiResumeCalls $fx).Count -eq 8) "expected 8 Gemini CLI turns in this scenario (3, 1, 1, 1, 1, 1), got $(@(Get-GeminiResumeCalls $fx).Count)"
+        Check (Test-NoOverlap $fx -Gemini) 'two Gemini CLI processes were alive at the same time'
     }
 } catch {
     $script:Fail++

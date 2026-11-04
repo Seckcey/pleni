@@ -370,17 +370,32 @@ $DispatchDir = Join-Path $RelayDir 'dispatch'
 $AgentsFile  = Join-Path $RelayDir 'agents.json'
 $MailDir     = Join-Path $Root 'mail'
 # A Gemini CLI coordinator. $env:USERPROFILE is only read here, never assigned. A home that is not a folder path
-# Windows can use (a quote in GEMINI_CLI_HOME, say) stops no command here, so a mailbox that never uses Gemini CLI
-# works as before: $GeminiHomeDir stays '' and $GeminiHomeError says why, for the Gemini CLI checks.
+# Windows can use (a quote in GEMINI_CLI_HOME, say), or no home at all (USERPROFILE empty), stops no command here, so
+# a mailbox that never uses Gemini CLI works as before: $GeminiHomeDir and $GeminiDataDir stay '' and $GeminiHomeError
+# says why, for the Gemini CLI checks. Never Join-Path here: in Windows PowerShell 5.1 it throws 'Cannot find drive'
+# for a drive that is not there (a network drive this window has not mapped), and this runs for every command.
 $GeminiHomeDir = ''   # where Gemini CLI keeps .gemini: -GeminiCliHome, else GEMINI_CLI_HOME, else the user's home
+$GeminiDataDir = ''   # <that home>\.gemini
 $GeminiHomeError = ''
+$geminiHomeText = ''
+$geminiHomeFrom = ''
+if ($GeminiCliHome) { $geminiHomeText = [string]$GeminiCliHome; $geminiHomeFrom = '-GeminiCliHome' }
+elseif ($env:GEMINI_CLI_HOME) { $geminiHomeText = [string]$env:GEMINI_CLI_HOME; $geminiHomeFrom = 'GEMINI_CLI_HOME' }
 try {
-    if ($GeminiCliHome) { $GeminiHomeDir = [IO.Path]::GetFullPath($GeminiCliHome).TrimEnd('\') }
-    elseif ($env:GEMINI_CLI_HOME) { $GeminiHomeDir = [IO.Path]::GetFullPath($env:GEMINI_CLI_HOME).TrimEnd('\') }
+    if ($geminiHomeText) {
+        $GeminiHomeDir = [IO.Path]::GetFullPath($geminiHomeText).TrimEnd('\')
+        $GeminiDataDir = [IO.Path]::Combine($GeminiHomeDir + '\', '.gemini')   # with its \: a drive alone (D:) would mean that drive's current folder
+    } elseif ($env:USERPROFILE) {
+        $GeminiDataDir = [IO.Path]::Combine([IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') + '\', '.gemini')
+    } else {
+        $GeminiHomeError = 'the relay cannot tell where Gemini CLI keeps its files: -GeminiCliHome and GEMINI_CLI_HOME are not set, and USERPROFILE (your home folder) is empty'
+    }
 } catch {
-    $GeminiHomeError = "the Gemini CLI home '$(if ($GeminiCliHome) { $GeminiCliHome } else { $env:GEMINI_CLI_HOME })' (-GeminiCliHome, else GEMINI_CLI_HOME) is not a folder path Windows can use"
+    $GeminiHomeDir = ''
+    $GeminiDataDir = ''
+    if ($geminiHomeText) { $GeminiHomeError = "the Gemini CLI home '$geminiHomeText' ($geminiHomeFrom) is not a folder path Windows can use" }
+    else { $GeminiHomeError = "your home folder '$env:USERPROFILE' (USERPROFILE), where Gemini CLI keeps its files, is not a folder path Windows can use" }
 }
-$GeminiDataDir = Join-Path $(if ($GeminiHomeDir) { $GeminiHomeDir } else { $env:USERPROFILE }) '.gemini'
 $GeminiPolicyFile   = Join-Path $RelayDir 'coordinator.gemini-policy.toml'
 $GeminiDefaultsFile = Join-Path $RelayDir 'coordinator.gemini-defaults.json'
 # Gemini CLI's own folder for system policies on Windows; while it holds a .toml file, --admin-policy is ignored.
@@ -3235,9 +3250,21 @@ function Invoke-Tick([hashtable]$State, [bool]$ReadOnly) {
                 $opts = Get-CoordinatorCodexOptions $coord   # a list, so a variable first
                 Write-Note ("DRY-RUN: would dispatch {0} item(s) to the Codex coordinator thread {1} (folder {2}). Nothing started, nothing written." -f $batch.Count, $coord.session_id, $coord.cwd)
                 Write-Host ('  command: ' + (Get-CodexExePath) + ' ' + (Get-CodexCommandLine @() (Get-CoordinatorCodexTarget $coord) $prompt $opts))
+            } elseif ($coordTool -eq 'gemini') {
+                # The command the turn would run; no rules file is written (the command names the path the real turn
+                # writes), and the checks below only look.
+                $batch = @($pending | Select-Object -First 20)
+                $cliArgs = Get-GeminiArguments $coord $GeminiPolicyFile   # a list, so a variable first
+                Write-Note ("DRY-RUN: would dispatch {0} item(s) to the Gemini CLI coordinator session {1} (folder {2}), the notice on standard input. Nothing started, nothing written." -f $batch.Count, $coord.session_id, $coord.cwd)
+                Write-Host ('  command: ' + (Get-GeminiExePath) + ' ' + (($cliArgs | ForEach-Object { ConvertTo-ArgToken $_ }) -join ' '))
+                $pf = Get-GeminiCoordinatorPreflight $State $coord
+                $policy = New-CoordinatorGeminiPolicy $coord
+                if ($pf.halt) { Write-Note "DRY-RUN: the turn would not start; the relay would halt: $($pf.halt)" }
+                elseif ($pf.error) { Write-Note "DRY-RUN: the turn would not start: $($pf.error)" }
+                elseif ($policy.problem) { Write-Note "DRY-RUN: the turn would not start; the relay would halt: the relay's Gemini rules would not work: $($policy.problem)" }
             } else {
-                # Placeholder until the Gemini CLI coordinator turn is built (design section 15.2).
-                Write-Note ("DRY-RUN: would not dispatch {0} item(s): this relay cannot wake a coordinator in {1} yet. Nothing started, nothing written." -f $pending.Count, (Get-ToolName $coordTool))
+                # Get-BlockReason holds a coordinator in a tool the relay does not know, so this does not run.
+                Write-Note ("DRY-RUN: would not dispatch {0} item(s): this relay cannot wake a coordinator in '{1}'. Nothing started, nothing written." -f $pending.Count, $coordTool)
             }
         } else {
             Start-Dispatch $State $coord $pending
@@ -3725,7 +3752,8 @@ function Show-Status {
 function Show-CoordinatorArgs {
     # Read-only (no lock, no CLI, no key): the exact permission values and --add-dir directories Get-CliArguments passes
     # to a coordinator turn, for the enrolled coordinator, or the MailboxRoot defaults when none is enrolled. For a Codex
-    # coordinator: the codex exec arguments of its turn, the folders it may write, and its board.
+    # coordinator: the codex exec arguments of its turn, the folders it may write, and its board. For a Gemini CLI
+    # coordinator: the gemini arguments of its turn, the folders it may read, its turn limit and its rules file's text.
     $coord = Get-Coordinator
     if ($coord -and (Get-CoordTool $coord) -eq 'codex') {
         $opts = Get-CoordinatorCodexOptions $coord   # each list into a variable first, never @(<function>)
@@ -3734,6 +3762,18 @@ function Show-CoordinatorArgs {
         if ($coord.cwd) { try { $board = Join-Path ([string]$coord.cwd) 'STATUS.md' } catch { $board = '' } }   # 5.1: Join-Path throws for a drive that is not there
         $o = [ordered]@{ tool = 'codex'; codexArgs = $cliArgs.ToArray(); writableFolders = @([string]$coord.cwd, (Join-Path $Root 'tasks'));
             network = $false; board = $board }
+        Write-Output (ConvertTo-Json -InputObject $o -Depth 4)
+        return
+    }
+    if ($coord -and (Get-CoordTool $coord) -eq 'gemini') {
+        # A Gemini CLI coordinator: its turn's command line, the folders it may read, its turn limit, and the text of the
+        # rules file the relay would write before the turn (built here, never written).
+        $cliArgs = Get-GeminiArguments $coord $GeminiPolicyFile   # each list into a variable first, never @(<function>)
+        $dirs = Get-GeminiIncludeDirs $coord
+        $policy = New-CoordinatorGeminiPolicy $coord
+        $o = [ordered]@{ tool = 'gemini'; geminiArgs = $cliArgs.ToArray(); notice = 'standard input'; includeDirectories = $dirs.ToArray();
+            turnLimit = [int]$script:GeminiTurns; allowedChecks = @(Get-GeminiAllowedChecks $coord); policyFile = $GeminiPolicyFile;
+            policyProblem = [string]$policy.problem; policy = [string]$policy.text }
         Write-Output (ConvertTo-Json -InputObject $o -Depth 4)
         return
     }
@@ -4808,52 +4848,620 @@ function Invoke-EnrollCodexCoordinator {
     if ($kept) { Write-Log "The coordinator.json from before is kept as $kept." }
 }
 
-# ---------- a coordinator turn in Codex (and later Gemini CLI) ----------
-# Start-Dispatch and Complete-Dispatch hand a turn to these when the coordinator is not a Claude Code session. A Codex
-# turn is built here. A Gemini CLI turn is built by the next step of Phase 6; until then it starts nothing.
+# ---------- a Gemini CLI coordinator ----------
+# One coordinator turn in Gemini CLI is
+#   gemini --resume <session id> -p "Do what the relay notice above says." -o stream-json --approval-mode default
+#     --skip-trust --admin-policy <mailbox>\.relay\coordinator.gemini-policy.toml --include-directories <folders>
+#     [-m <model>]
+# in the session's own folder (the folder Gemini CLI named in the session's .project_root), with the notice on its
+# standard input and never on its command line: Gemini CLI puts that text, a blank line, then the -p words into the
+# prompt. The rules file limits what the turn may do. The relay writes it before each turn and checks its SHA-256
+# right before the start. It denies every tool that no rule allows: the turn may read, write only <mailbox>\STATUS.md
+# and Markdown files under <mailbox>\tasks, and run only read-only Git commands and the checks the owner enrolled. The
+# turn limit (gemini_max_session_turns) goes in a defaults file that GEMINI_CLI_SYSTEM_DEFAULTS_PATH names, for the
+# Gemini CLI process only. Gemini CLI uses the owner's own Gemini login: GEMINI_API_KEY passes through untouched (the
+# relay never reads it), and each turn may cost money. Paths that may sit on a drive that is not there (the Gemini
+# home, the coordinator's folder, the projects folder) are joined with [IO.Path]::Combine or plain text, never with a
+# bare Join-Path: in Windows PowerShell 5.1 Join-Path throws for such a drive.
+
+function Get-GeminiExePath {
+    # -GeminiExe, else gemini_exe in bin\relay-settings.json, else gemini.cmd or gemini.exe on PATH; '' when none.
+    if ($GeminiExe) { return [string]$GeminiExe }
+    foreach ($n in @('gemini.cmd', 'gemini.exe')) {
+        $c = Get-Command $n -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($c) { return [string]$c.Path }
+    }
+    return ''
+}
+
+function Find-GeminiSession([string]$Id) {
+    # Gemini CLI keeps a session in <home>\.gemini\tmp\<project>\chats\session-<time>-<first 8 of its id>.jsonl (older
+    # ones .json), and <project>\.project_root names the folder the session belongs to. Looked up by the id alone, in
+    # the first lines of each file. Returns @{ file; project_dir; root } (root '' when .project_root is missing or
+    # cannot be read), or $null. Never throws.
+    $sid = ([string]$Id).Trim().ToLowerInvariant()
+    if ($sid -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') { return $null }
+    if (-not $GeminiDataDir) { return $null }
+    $tmp = ''
+    try {
+        $tmp = [IO.Path]::Combine($GeminiDataDir, 'tmp')
+        if (-not (Test-Path -LiteralPath $tmp -PathType Container)) { return $null }
+    } catch { return $null }
+    $id8 = $sid.Substring(0, 8)
+    foreach ($p in @(Get-ChildItem -LiteralPath $tmp -Directory -Force -ErrorAction SilentlyContinue)) {
+        $chats = [IO.Path]::Combine($p.FullName, 'chats')
+        if (-not (Test-Path -LiteralPath $chats -PathType Container)) { continue }
+        $files = @(Get-ChildItem -LiteralPath $chats -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "session-*$id8*" -and ($_.Extension -ieq '.jsonl' -or $_.Extension -ieq '.json') } | Sort-Object Name)
+        foreach ($f in $files) {
+            $head = ''
+            try { $head = Read-HeadText $f.FullName 65536 } catch { continue }
+            $m = [regex]::Match($head, '"sessionId"\s*:\s*"([0-9a-fA-F-]{36})"')
+            if (-not $m.Success -or $m.Groups[1].Value.ToLowerInvariant() -ne $sid) { continue }
+            $projectRoot = ''   # never $root: names are not case-sensitive, and $Root is the mailbox
+            $rf = [IO.Path]::Combine($p.FullName, '.project_root')
+            if (Test-Path -LiteralPath $rf -PathType Leaf) { try { $projectRoot = ([IO.File]::ReadAllText($rf)).Trim() } catch { $projectRoot = '' } }
+            if ($projectRoot) { try { $projectRoot = [IO.Path]::GetFullPath($projectRoot).TrimEnd('\') } catch { $projectRoot = '' } }
+            return @{ file = $f.FullName; project_dir = $p.FullName; root = $projectRoot }
+        }
+    }
+    return $null
+}
+
+function Get-GeminiSessionFiles([hashtable]$Rec) {
+    # Every file of this session in its chats folder (a resumed old .json session may get a .jsonl beside it), from a
+    # coordinator record (session_id and transcript_path) or a turn's record (session_id and transcript). The files, or
+    # none. Never throws.
+    $t = [string]$Rec.transcript_path
+    if (-not $t) { $t = [string]$Rec.transcript }
+    $sid = ([string]$Rec.session_id).Trim().ToLowerInvariant()
+    if (-not $t -or $sid -notmatch '^[0-9a-f]{8}-') { return , @() }
+    $id8 = $sid.Substring(0, 8)
+    $dir = ''
+    try {
+        $dir = [IO.Path]::GetDirectoryName($t)
+        if (-not $dir -or -not (Test-Path -LiteralPath $dir -PathType Container)) { return , @() }
+    } catch { return , @() }
+    return , @(Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "session-*$id8*" -and ($_.Extension -ieq '.jsonl' -or $_.Extension -ieq '.json') })
+}
+
+function Test-GeminiMarker([hashtable]$D) {
+    # True when the turn's marker is in one of the session's files: Gemini CLI took the notice into the session.
+    $files = Get-GeminiSessionFiles $D   # a variable first: @(<function>) would keep the list as one item
+    foreach ($f in $files) {
+        try { if ((Read-TailText $f.FullName 8388608).IndexOf("[bridge-relay $($D.id)]", [StringComparison]::Ordinal) -ge 0) { return $true } } catch { }
+    }
+    return $false
+}
+
+function Get-GeminiFolderProblem([string]$Cwd) {
+    # What Gemini CLI would load in every coordinator turn from the coordinator's folder or a folder above it, because the
+    # relay trusts that folder (--skip-trust), or a system policy that would make it ignore the relay's rules file. Plain
+    # words, or '' when none is there. Never throws.
+    $d = ''
+    try { $d = [IO.Path]::GetFullPath($Cwd).TrimEnd('\') } catch { return "Windows cannot use the coordinator's folder '$Cwd' as a folder path." }
+    if (Test-Path -LiteralPath ($d + '\.gemini')) { return "$d\.gemini is there. Gemini CLI would load its settings (hooks, MCP servers, policies, commands) in every coordinator turn. Move it away." }
+    if (Test-Path -LiteralPath ($d + '\.agents')) { return "$d\.agents is there. Gemini CLI would load the skills in it in every coordinator turn. Move it away." }
+    # Gemini CLI loads the nearest .gemini\.env or .env from its folder up (findEnvFile in its settings.ts). The home
+    # folder's own files belong to the owner, so the walk stops there.
+    $homeDir = ''   # never $home: $HOME is a PowerShell automatic variable
+    if ($env:USERPROFILE) { try { $homeDir = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') } catch { $homeDir = '' } }
+    while ($d) {
+        if ($homeDir -and $d -ieq $homeDir) { break }
+        foreach ($rel in @('.gemini\.env', '.env')) {
+            $f = $d + '\' + $rel
+            if (Test-Path -LiteralPath $f -PathType Leaf) { return "$f is there. Gemini CLI would load the values in it in every coordinator turn. Move it away." }
+        }
+        $up = ''
+        try { $up = [string][IO.Path]::GetDirectoryName($d) } catch { $up = '' }
+        if (-not $up) { break }
+        $up = $up.TrimEnd('\')
+        if (-not $up -or $up -ieq $d) { break }
+        $d = $up
+    }
+    # While Gemini CLI's own system policy folder holds a .toml item, it ignores --admin-policy (its policy config.ts).
+    foreach ($dir in @($GeminiSystemPolicies)) {
+        $toml = @()
+        try {
+            if (-not $dir -or -not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+            $toml = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name.EndsWith('.toml', [StringComparison]::OrdinalIgnoreCase) })
+        } catch { continue }
+        if ($toml.Count) { return "$dir holds a Gemini CLI system policy ($($toml[0].Name)). While it does, Gemini CLI ignores the relay's rules file. Move that file away, or use another AI tool for the coordinator." }
+    }
+    return ''
+}
+
+function Get-GeminiIncludeDirs([hashtable]$Coord) {
+    # The folders a Gemini CLI coordinator turn may read besides its own (--include-directories): the projects folder,
+    # the workers' worktrees folder and the mailbox, those that are there, each once (a folder inside another one is
+    # left out). The rules file decides where the turn may write, whatever this list holds.
+    $list = New-Object System.Collections.Generic.List[string]
+    foreach ($d in @($ProjectsDir, (Get-WorktreesDir), $Root)) {
+        if (-not $d) { continue }
+        $full = ''
+        try {
+            if (-not (Test-Path -LiteralPath $d -PathType Container)) { continue }
+            $full = [IO.Path]::GetFullPath($d).TrimEnd('\')
+        } catch { continue }
+        if ($full -match '^[A-Za-z]:$') { $full += '\' }   # a drive alone (C:) would mean that drive's current folder
+        $inside = $false
+        foreach ($o in $list) { if (Test-InFolder $full $o) { $inside = $true } }
+        if ($inside) { continue }
+        foreach ($o in @($list.ToArray())) { if (Test-InFolder $o $full) { [void]$list.Remove($o) } }
+        $list.Add($full)
+    }
+    return , $list
+}
+
+function Get-GeminiArguments([hashtable]$Coord, [string]$PolicyPath) {
+    # The Gemini CLI command line of one coordinator turn (design D9), each part its own argument. The notice is not on
+    # it: it goes on standard input.
+    $a = New-Object System.Collections.Generic.List[string]
+    foreach ($x in @('--resume', ([string]$Coord.session_id).Trim().ToLowerInvariant(), '-p', 'Do what the relay notice above says.', '-o', 'stream-json',
+            '--approval-mode', 'default', '--skip-trust', '--admin-policy', $PolicyPath)) { $a.Add([string]$x) }
+    $dirs = Get-GeminiIncludeDirs $Coord   # a variable first: @(<function>) would keep the list as one item
+    if ($dirs.Count) { $a.Add('--include-directories'); $a.Add(($dirs -join ',')) }
+    if ($Coord.model) { $a.Add('-m'); $a.Add([string]$Coord.model) }
+    return , $a
+}
+
+function Get-GeminiCommandProblem([hashtable]$Coord) {
+    # Why the paths on a Gemini CLI coordinator turn's command line (the rules file and the include folders) cannot be
+    # used, in plain words, or ''. Gemini CLI splits --admin-policy and --include-directories at commas, and reads an @
+    # as a file to load. A .cmd or .bat launcher (gemini.cmd, as npm installs it) hands the command line to cmd.exe,
+    # which changes it at % ! ^ & | < and >.
+    $exe = Get-GeminiExePath
+    $viaCmd = [bool]($exe -match '\.(cmd|bat)$')
+    $dirs = Get-GeminiIncludeDirs $Coord   # a variable first
+    foreach ($p in (@($GeminiPolicyFile) + @($dirs))) {
+        $s = [string]$p
+        if ($s.Contains(',') -or $s.Contains('@')) { return "the path $s holds a comma or an @, which Gemini CLI would read as a list or a file" }
+        if ($viaCmd -and $s -match '[%!^&|<>]') { return "the path $s holds % ! ^ & | < or >, which cmd.exe would change on the Gemini CLI command line ($exe is a .cmd or .bat file)" }
+    }
+    return ''
+}
+
+function Set-GeminiEnvironment {
+    # Process-local, for the Gemini CLI process only: the Gemini home the relay uses (when one is set) and the relay's
+    # turn limit. The owner's own login, and GEMINI_API_KEY when it is set, pass through untouched, as for Gemini
+    # workers. Restore-SubscriptionEnvironment puts the old values back.
+    $previous = @{}
+    foreach ($n in @('GEMINI_CLI_HOME', 'GEMINI_CLI_SYSTEM_DEFAULTS_PATH')) { $previous[$n] = [Environment]::GetEnvironmentVariable($n, 'Process') }
+    if ($GeminiHomeDir) { [Environment]::SetEnvironmentVariable('GEMINI_CLI_HOME', $GeminiHomeDir, 'Process') }
+    [Environment]::SetEnvironmentVariable('GEMINI_CLI_SYSTEM_DEFAULTS_PATH', $GeminiDefaultsFile, 'Process')
+    return $previous
+}
+
+function Start-GeminiProcess([hashtable]$Coord, [string]$Stdin, [string]$Out, [string]$ErrPath, [string]$PolicyPath, [string]$PolicyHash) {
+    # Starts one Gemini CLI coordinator turn in the session's own folder, in its own hidden console, with the notice on
+    # standard input. Returns @{ proc; error; halt }. The rules file's SHA-256 is checked right before the start, so the
+    # file the turn reads is the one the relay wrote. No local here may be named $out or $err (names are not
+    # case-sensitive).
+    $exe = Get-GeminiExePath
+    $file = $exe
+    $prefix = @()
+    if ($exe -match '\.js$') {
+        $node = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $node) { return @{ proc = $null; error = 'node.exe not found (needed only for a .js stub CLI)'; halt = '' } }
+        $file = [string]$node.Path
+        $prefix = @($exe)
+    }
+    $cliArgs = Get-GeminiArguments $Coord $PolicyPath   # a variable first, never @(Get-GeminiArguments ...)
+    $argString = ((@($prefix) + @($cliArgs)) | ForEach-Object { ConvertTo-ArgToken $_ }) -join ' '
+    if ($exe -match '\.(cmd|bat)$' -and $argString -match '[%!^&|<>]') {
+        return @{ proc = $null; error = ''; halt = "the Gemini CLI command line holds % ! ^ & | < or >, which cmd.exe would change ($exe is a .cmd or .bat file)" }
+    }
+    if ($env:RELAY_TEST_CHANGE_POLICY -eq '1') { [IO.File]::AppendAllText($PolicyPath, "# changed by the relay test`n", $Utf8) }   # test only; can only make the relay halt
+    $seen = ''
+    try { $seen = Get-FileSha256 $PolicyPath } catch { $seen = '' }
+    if (-not $PolicyHash -or $seen -ne $PolicyHash) { return @{ proc = $null; error = ''; halt = "the Gemini rules file $PolicyPath changed after the relay wrote it" } }
+    $proc = $null
+    $launchError = ''
+    $previous = $null
+    try {
+        $previous = Set-GeminiEnvironment
+        try {
+            # Hidden own console: Ctrl+C in the relay window must never reach the coordinator turn.
+            $proc = Start-Process -FilePath $file -ArgumentList $argString -WorkingDirectory ([string]$Coord.cwd) -WindowStyle Hidden -PassThru `
+                -RedirectStandardInput $Stdin -RedirectStandardOutput $Out -RedirectStandardError $ErrPath
+        } catch { $launchError = 'could not start Gemini CLI: ' + $_.Exception.Message }
+    } finally { Restore-SubscriptionEnvironment $previous }
+    if (-not $launchError -and -not $proc) { $launchError = 'could not start Gemini CLI (no process returned)' }
+    return @{ proc = $proc; error = $launchError; halt = '' }
+}
+
+function ConvertTo-TomlText([string]$Text) {
+    # As bin\spawn-worker.ps1 writes it: a TOML basic string, with backslashes, quotes and control characters escaped.
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('"')
+    foreach ($ch in ([string]$Text).ToCharArray()) {
+        $c = [int]$ch
+        if ($c -eq 92) { [void]$sb.Append('\\') }
+        elseif ($c -eq 34) { [void]$sb.Append('\"') }
+        elseif ($c -lt 32 -or $c -eq 127) { [void]$sb.Append(('\u{0:X4}' -f $c)) }
+        else { [void]$sb.Append($ch) }
+    }
+    [void]$sb.Append('"')
+    return $sb.ToString()
+}
+
+function ConvertTo-TomlList([string[]]$Items) { return '[' + ((@($Items) | ForEach-Object { ConvertTo-TomlText $_ }) -join ', ') + ']' }
+
+function ConvertTo-CasePattern([string]$Text) {
+    # Text as a pattern that Gemini CLI's policy matches in the JSON text of a tool call's arguments: each \ or /
+    # matches \\ or /, each ASCII letter either case, and every other character that a pattern reads specially is
+    # escaped.
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($ch in ([string]$Text).ToCharArray()) {
+        $c = [int]$ch   # compare code points: -ge on [char] is not case-sensitive
+        if ($c -eq 92 -or $c -eq 47) { [void]$sb.Append('(?:\\\\|/)') }
+        elseif (($c -ge 65 -and $c -le 90) -or ($c -ge 97 -and $c -le 122)) { [void]$sb.Append('[' + [char]::ToLowerInvariant($ch) + [char]::ToUpperInvariant($ch) + ']') }
+        elseif ('^$.|?*+()[]{}'.IndexOf($ch) -ge 0) { [void]$sb.Append('\' + $ch) }
+        else { [void]$sb.Append($ch) }
+    }
+    return $sb.ToString()
+}
+
+function ConvertTo-PathPattern([string]$Path) {
+    # A full path as Gemini CLI's policy sees it inside JSON text (ConvertTo-CasePattern of its full form).
+    return (ConvertTo-CasePattern ([IO.Path]::GetFullPath($Path).TrimEnd('\')))
+}
+
+function ConvertTo-GeminiPrefixPattern([string]$Prefix) {
+    # The pattern Gemini CLI makes of a commandPrefix entry (buildArgsPatterns in its policy utils.ts): the JSON text of
+    # "command": and the prefix without its closing quote, each character a pattern reads specially escaped, then a
+    # space, a quote or an escaped quote. The relay runs Gemini CLI's own safety test on it.
+    $json = '"command":"' + (([string]$Prefix) -replace '\\', '\\' -replace '"', '\"')
+    return ([regex]::Replace($json, '[-\[\]{}()*+?.,\\^$|#\s"]', '\$&') + '(?:[\s"]|\\")')
+}
+
+function Get-GeminiPatternProblem([string]$Pattern) {
+    # Gemini CLI's isSafeRegExp (its policy utils.ts): a pattern that does not compile, is longer than 2048 characters,
+    # or has a repeated group followed by another repeat. Gemini CLI drops such a rule without a word. '' when it keeps it.
+    try { $null = New-Object System.Text.RegularExpressions.Regex($Pattern) } catch { return 'it is not a valid pattern' }
+    if ($Pattern.Length -gt 2048) { return 'it is longer than 2048 characters' }
+    if ($Pattern -match '\([^)]*[*+?{].*\)[*+?{]') { return 'Gemini CLI would call it unsafe (a repeated group followed by another repeat)' }
+    return ''
+}
+
+function Get-GeminiAllowedChecks($Coord) {
+    # The enrolled checks a Gemini CLI coordinator may run: each one checked again as at enrollment, so a hand-edited
+    # .relay\coordinator.json adds nothing (Get-AllowedChecks), and never node (Get-GeminiCheckError).
+    return @(Get-AllowedChecks $Coord | Where-Object { -not (Get-GeminiCheckError $_) })
+}
+
+function New-CoordinatorGeminiPolicy($Coord) {
+    # The rules file of a Gemini CLI coordinator turn, in Gemini CLI's TOML policy format. --admin-policy puts its rules
+    # in the highest tier, so they outrank every user, workspace and default rule. Every deny has priority 900 and
+    # every allow 100, so a deny always wins, and anything that no rule allows is denied (priority 0); in a turn with
+    # no person, a question is a refusal too. Returns @{ text; problem }. It only builds the text: the caller writes the
+    # file (a dry run never writes). problem: a rule that Gemini CLI would drop without a word, in plain words; then no
+    # turn may use the text.
+    $file = '\x00"file_path":"'   # each top-level argument is wrapped in NUL characters in the text Gemini CLI matches
+    $sep = '(?:\\\\|/)'
+    $board = $file + (ConvertTo-PathPattern (Join-Path $Root 'STATUS.md')) + '"\x00'
+    # A Markdown file under tasks, with no : after the drive (so never a stream of another file).
+    $tasks = $file + (ConvertTo-PathPattern (Join-Path $Root 'tasks')) + $sep + '[^":]*\.[mM][dD]"\x00'
+    $up = $file + '[^"]*\.\.'
+    # A file that an AI tool reads as its standing orders, in any folder and any letter case. No repeated group: Gemini
+    # CLI would drop such a rule.
+    $orderNames = @('GEMINI.md', 'AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md', 'CLAUDE.local.md')
+    $orders = $file + '(?:[^"]*\\\\|[^"]*/|)(?:' + ((@($orderNames) | ForEach-Object { ConvertTo-CasePattern $_ }) -join '|') + ')"\x00'
+    $allow = @('git status', 'git log', 'git diff', 'git show', 'git rev-parse', 'git branch --list', 'git ls-tree', 'git cat-file', 'git worktree list') + @(Get-GeminiAllowedChecks $Coord)
+    $deny = @('git push', 'git commit', 'git merge', 'git rebase', 'git reset', 'git checkout', 'git switch', 'git worktree add', 'git worktree remove', 'gh', 'npm', 'npx')
+    $gitC = 'git -C (?:\\"[^"]*\\"|[^\s"]+) (?:status|log|diff|show|rev-parse|branch --list|ls-tree|cat-file|worktree list)(?:[\s"]|\\")'
+    $badOpt = '.*\s(?:-c|-O|--output|--open-files-in-pager|--ext-diff|--textconv|--filters|--exec-path|--config-env)(?:[\s="]|\\)'
+    # Gemini CLI matches the command rules anywhere in the arguments' text; the command itself is the one top-level
+    # argument named command, so a call with another argument named command is refused.
+    $oneCommand = '[^\x00]"command":'
+    # Each pattern as Gemini CLI builds it: a commandRegex after "command":", a commandPrefix escaped.
+    $checks = [ordered]@{ 'status board write' = $board; 'task file write' = $tasks; 'no .. in a path' = $up; 'no standing orders file' = $orders;
+        'one command argument' = $oneCommand; 'git -C' = ('"command":"' + $gitC); 'git options' = ('"command":"' + $badOpt) }
+    foreach ($p in @($allow + $deny)) { $checks["prefix '$p'"] = ConvertTo-GeminiPrefixPattern $p }
+    foreach ($k in @($checks.Keys)) {
+        $why = Get-GeminiPatternProblem ([string]$checks[$k])
+        if ($why) { return @{ text = ''; problem = "the rule $k would be dropped by Gemini CLI: $why" } }
+    }
+    $L = New-Object System.Collections.Generic.List[string]
+    $L.Add("# Gemini CLI admin policy for the coordinator of $Root, written by the relay's bin\bridge-relay.ps1 before each turn.")
+    $L.Add('# The rule with the highest priority wins: every deny below (900) outranks every allow (100), and anything no rule')
+    $L.Add('# allows is denied (0). In a turn with no person, a question is a refusal too.')
+    $L.Add('')
+    $L.Add('[[rule]]'); $L.Add('toolName = "*"'); $L.Add('decision = "deny"'); $L.Add('priority = 0')
+    $L.Add('denyMessage = ' + (ConvertTo-TomlText "The relay does not let the coordinator use this. If it is needed, write a $OwnerTag note in the task's status.md and end the turn."))
+    $L.Add('')
+    $L.Add('# Read and search.')
+    $L.Add('[[rule]]'); $L.Add('toolName = ' + (ConvertTo-TomlList @('read_file', 'read_many_files', 'glob', 'grep_search', 'list_directory'))); $L.Add('decision = "allow"'); $L.Add('priority = 100')
+    $L.Add('')
+    $L.Add('# Write only the status board and Markdown files under tasks.')
+    foreach ($tn in @('write_file', 'replace')) {
+        foreach ($pat in @($board, $tasks)) {
+            $L.Add('[[rule]]'); $L.Add("toolName = `"$tn`""); $L.Add('argsPattern = ' + (ConvertTo-TomlText $pat)); $L.Add('decision = "allow"'); $L.Add('priority = 100')
+            $L.Add('')
+        }
+    }
+    $L.Add('# Never a path with .., and never a file that an AI tool reads as its standing orders.')
+    $L.Add('[[rule]]'); $L.Add('toolName = ' + (ConvertTo-TomlList @('write_file', 'replace'))); $L.Add('argsPattern = ' + (ConvertTo-TomlText $up)); $L.Add('decision = "deny"'); $L.Add('priority = 900')
+    $L.Add('denyMessage = ' + (ConvertTo-TomlText 'A path with .. is not allowed. Use the full path of STATUS.md or of a .md file under tasks.'))
+    $L.Add('')
+    $L.Add('[[rule]]'); $L.Add('toolName = ' + (ConvertTo-TomlList @('write_file', 'replace'))); $L.Add('argsPattern = ' + (ConvertTo-TomlText $orders)); $L.Add('decision = "deny"'); $L.Add('priority = 900')
+    $L.Add('denyMessage = ' + (ConvertTo-TomlText "GEMINI.md, AGENTS.md and CLAUDE.md files hold an AI tool's standing orders, so the coordinator may not write one. If one is needed, write a $OwnerTag note in the task's status.md."))
+    $L.Add('')
+    $L.Add('# Shell: only these read-only Git commands and the checks the owner enrolled. Gemini CLI checks each part of a')
+    $L.Add('# chain on its own, and a redirection turns an allow into a question, which a turn with no person refuses.')
+    $L.Add('[[rule]]'); $L.Add('toolName = "run_shell_command"'); $L.Add('commandPrefix = ' + (ConvertTo-TomlList $allow)); $L.Add('decision = "allow"'); $L.Add('priority = 100')
+    $L.Add('')
+    $L.Add('[[rule]]'); $L.Add('toolName = "run_shell_command"'); $L.Add('commandRegex = ' + (ConvertTo-TomlText $gitC)); $L.Add('decision = "allow"'); $L.Add('priority = 100')
+    $L.Add('')
+    $L.Add('# Never Git options that write a file, run a program or change Git''s settings, and never these commands.')
+    $L.Add('[[rule]]'); $L.Add('toolName = "run_shell_command"'); $L.Add('commandRegex = ' + (ConvertTo-TomlText $badOpt)); $L.Add('decision = "deny"'); $L.Add('priority = 900')
+    $L.Add('')
+    $L.Add('[[rule]]'); $L.Add('toolName = "run_shell_command"'); $L.Add('commandPrefix = ' + (ConvertTo-TomlList $deny)); $L.Add('decision = "deny"'); $L.Add('priority = 900')
+    $L.Add('')
+    $L.Add('[[rule]]'); $L.Add('toolName = "run_shell_command"'); $L.Add('argsPattern = ' + (ConvertTo-TomlText $oneCommand)); $L.Add('decision = "deny"'); $L.Add('priority = 900')
+    $L.Add('denyMessage = ' + (ConvertTo-TomlText 'A shell command takes one command argument, and nothing else named command.'))
+    $L.Add('')
+    $L.Add('# No web, no memory, and no MCP tools from any server.')
+    $L.Add('[[rule]]'); $L.Add('toolName = ' + (ConvertTo-TomlList @('web_fetch', 'google_web_search', 'save_memory'))); $L.Add('decision = "deny"'); $L.Add('priority = 900')
+    $L.Add('')
+    $L.Add('[[rule]]'); $L.Add('toolName = "*"'); $L.Add('mcpName = "*"'); $L.Add('decision = "deny"'); $L.Add('priority = 900')
+    return @{ text = (($L -join "`n") + "`n"); problem = '' }
+}
+
+function Get-GeminiCoordinatorPreflight([hashtable]$State, [hashtable]$Coord) {
+    # Right before a Gemini CLI coordinator turn. @{ error; halt; file }: error is a normal failure (back off, try
+    # again); halt stops coordinator turns until -ClearHalt; file is the session's file, found again.
+    if ($GeminiHomeError) { return @{ error = ''; halt = "$GeminiHomeError, so no Gemini CLI coordinator turn starts"; file = '' } }
+    $exe = Get-GeminiExePath
+    if (-not $exe) { return @{ error = 'Gemini CLI was not found (install it, or set gemini_exe in bin\relay-settings.json)'; halt = ''; file = '' } }
+    $rooted = $false
+    try { $rooted = [IO.Path]::IsPathRooted($exe) } catch { $rooted = $false }
+    if (-not $rooted) { return @{ error = "gemini_exe must be a full path (got $exe)"; halt = ''; file = '' } }
+    if ($exe -match '\.js$') {
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { return @{ error = "stub Gemini CLI not found at $exe"; halt = ''; file = '' } }
+        if (-not (Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue)) { return @{ error = 'node.exe not found (needed only for a .js stub CLI)'; halt = ''; file = '' } }
+    } elseif (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { return @{ error = "Gemini CLI was not found at $exe"; halt = ''; file = '' } }
+    $cwd = [string]$Coord.cwd
+    $there = $false
+    try { $there = [bool]($cwd -and (Test-Path -LiteralPath $cwd -PathType Container)) } catch { $there = $false }
+    if (-not $there) { return @{ error = "the coordinator's folder was not found: $cwd"; halt = ''; file = '' } }
+    $why = Get-CoordinatorFolderError $cwd 'gemini'
+    if ($why) { return @{ error = ''; halt = "the coordinator's folder $cwd cannot be used any more: $why"; file = '' } }
+    $gp = Get-GeminiFolderProblem $cwd
+    if ($gp) { return @{ error = ''; halt = $gp; file = '' } }
+    # .relay\coordinator.json is checked again on every turn, as the Claude Code coordinator's checks are.
+    $mw = Get-ToolModelError ([string]$Coord.model) 'gemini'
+    if ($mw) { return @{ error = ''; halt = "the model in .relay\coordinator.json cannot be used ($mw) Enroll again with -Enroll -Tool gemini"; file = '' } }
+    $found = Find-GeminiSession ([string]$Coord.session_id)
+    if (-not $found) { return @{ error = "Gemini CLI session $($Coord.session_id) was not found under $GeminiDataDir\tmp; enroll again with -Enroll -Tool gemini"; halt = ''; file = '' } }
+    # Gemini CLI finds a session to resume only among the sessions of the folder it runs in.
+    if ($found.root -and -not (Test-SameFolder $found.root $cwd)) { return @{ error = ''; halt = "the Gemini CLI session $($Coord.session_id) now belongs to the folder $($found.root), not $cwd (it moved); enroll again with -Enroll -Tool gemini"; file = '' } }
+    $cp = Get-GeminiCommandProblem $Coord
+    if ($cp) { return @{ error = ''; halt = $cp; file = '' } }
+    return @{ error = ''; halt = ''; file = [string]$found.file }
+}
+
+function Get-GeminiCoordinatorBusy([hashtable]$State, [hashtable]$Coord) {
+    # Why the coordinator's Gemini CLI session cannot take a turn now, or ''. Get-BusyReason has looked for a running
+    # coordinator turn already. Never two programs in one session (design D10): a process with the session id on its
+    # command line, or a session file that another program wrote within the quiet window (Gemini CLI also runs without
+    # a window, and a window that opened the session with /resume names no id).
+    $sid = ([string]$Coord.session_id).Trim().ToLowerInvariant()
+    $procs = Get-SessionProcesses $sid
+    if ($null -eq $procs) { return 'the process list could not be read to confirm the session is idle' }
+    if ($procs.Count -gt 0) { return ('session ' + $sid + ' is open in pid ' + (($procs | ForEach-Object { $_.ProcessId }) -join ',')) }
+    if ($QuietSeconds -gt 0) {
+        $files = Get-GeminiSessionFiles $Coord   # a variable first: @(<function>) would keep the list as one item
+        $newest = $null
+        foreach ($f in $files) { if ($null -eq $newest -or $f.LastWriteTimeUtc -gt $newest) { $newest = $f.LastWriteTimeUtc } }
+        if ($null -ne $newest) {
+            $tw = ConvertTo-Unix $newest
+            $now = Get-Now
+            if ($tw -gt ($now - $QuietSeconds) -and $tw -gt ([int64]$State.last_finish_utc + 15)) {
+                return "the session file was written $($now - $tw) s ago by another client (quiet window $QuietSeconds s)"
+            }
+        }
+    }
+    return ''
+}
+
+function Read-GeminiEvents([string]$Path) {
+    # gemini -o stream-json writes one event per line: init, message, tool_use, tool_result, error and result.
+    $r = @{ any = $false; session = ''; status = ''; error = ''; message = '' }
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $r }
+    $raw = ''
+    try { $raw = Read-SharedText $Path } catch { return $r }
+    foreach ($line in ($raw -split "`r?`n")) {
+        $l = $line.Trim()
+        if (-not $l.StartsWith('{')) { continue }
+        $e = $null
+        try { $e = ConvertTo-HT (ConvertFrom-Json -InputObject $l) } catch { continue }
+        if (-not ($e -is [hashtable])) { continue }
+        $r.any = $true
+        $type = [string]$e['type']
+        if ($type -eq 'init') { $r.session = ([string]$e['session_id']).Trim().ToLowerInvariant() }
+        elseif ($type -eq 'message' -and [string]$e['role'] -eq 'assistant' -and $e['content']) {
+            if ($e['delta']) { $r.message += [string]$e['content'] } else { $r.message = [string]$e['content'] }
+        }
+        elseif ($type -eq 'error' -and [string]$e['severity'] -ne 'warning') { $r.error = [string]$e['message'] }
+        elseif ($type -eq 'result') {
+            $r.status = [string]$e['status']
+            if (-not $r.error -and ($e['error'] -is [hashtable])) { $r.error = [string]$e['error']['message'] }
+        }
+    }
+    return $r
+}
+
+function Get-GeminiExitWords($Code, [string]$Said) {
+    # Plain words for Gemini CLI's exit code ($null: the relay restarted, so it has no exit code), and what it said.
+    $w = switch ([string]$Code) {
+        '1'   { 'Gemini CLI or its model service reported an error (exit 1)' }
+        '41'  { 'Gemini CLI is not signed in (exit 41). Sign in once in a Gemini CLI window on this computer' }
+        '42'  { "Gemini CLI found no session with that id in the coordinator's folder, or the input was not valid (exit 42)" }
+        '44'  { 'Gemini CLI could not start its sandbox (exit 44)' }
+        '52'  { 'Gemini CLI found a problem in its settings (exit 52)' }
+        '53'  { 'the turn hit its turn limit (gemini_max_session_turns in bin\cost-limits.json), so Gemini CLI stopped it (exit 53)' }
+        '54'  { 'a tool failed in the turn (exit 54)' }
+        '55'  { 'Gemini CLI does not trust the folder (exit 55)' }
+        '130' { 'the turn was stopped (exit 130)' }
+        ''    { 'Gemini CLI ended, and the relay could not read its exit code (the relay restarted)' }
+        default { "Gemini CLI ended with exit $Code" }
+    }
+    if ($Said) { $w = $w + ': ' + (Get-Short $Said 200) }
+    return $w
+}
+
+function Invoke-EnrollGeminiCoordinator {
+    # Operator only (-Enroll -Tool gemini -SessionId <id> [-CoordinatorCwd <folder>] [-Model <model>] [-AllowCheck]).
+    # Records a Gemini CLI session as this mailbox's coordinator. Enrolling wakes nothing: the start requests that are
+    # there now count as known, and only new notifications wake the session.
+    if ($GeminiHomeError) { Fail "A Gemini CLI coordinator cannot be enrolled: $GeminiHomeError. Nothing was saved." }
+    if ([string]$SessionId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+        Fail "-SessionId must be the Gemini CLI session id (a UUID; got '$SessionId'). Gemini CLI shows it with /stats. The relay never guesses it."
+    }
+    $sid = ([string]$SessionId).ToLowerInvariant()
+    $found = Find-GeminiSession $sid
+    if (-not $found) { Fail "No Gemini CLI session $sid was found under $GeminiDataDir\tmp. Take the id from the session itself (/stats), and pass -GeminiCliHome if Gemini CLI keeps its files elsewhere." }
+    $cwd = [string]$found.root
+    $cwdWarning = ''
+    if ($CoordinatorCwd) {
+        $want = ''
+        try { $want = [IO.Path]::GetFullPath($CoordinatorCwd).TrimEnd('\') } catch { Fail "-CoordinatorCwd '$CoordinatorCwd' is not a folder path Windows can use. Nothing was saved." 64 }
+        if ($cwd -and -not (Test-SameFolder $cwd $want)) { Fail "Gemini CLI session $sid belongs to the folder $cwd, not $want. Gemini CLI finds a session only from its own folder. Leave -CoordinatorCwd out, or give $cwd." }
+        if (-not $cwd) {
+            $cwd = $want
+            $cwdWarning = "WARNING: Gemini CLI wrote no .project_root for this session, so the relay could not check that it belongs to $want. A turn from the wrong folder ends with exit 42 and is not delivered."
+        }
+    }
+    if (-not $cwd) { Fail "Could not tell which folder Gemini CLI session $sid belongs to (no .project_root in $($found.project_dir)). Pass -CoordinatorCwd <the folder you started it in>." }
+    $why = Get-CoordinatorFolderError $cwd 'gemini'
+    if ($why) { Fail "The Gemini CLI session's folder $cwd cannot be the coordinator's folder: $why. Start the coordinator session in a folder of its own, such as $Root\coordinator, then enroll again." }
+    $gp = Get-GeminiFolderProblem $cwd
+    if ($gp) { Fail "$gp Nothing was saved." }
+    $mw = Get-ToolModelError $Model 'gemini'
+    if ($mw) { Fail $mw 64 }
+    $pids = Get-SessionProcesses $sid
+    if ($null -eq $pids) { Fail 'Could not read the process list to confirm the session is not running. Not enrolled.' }
+    if ($pids.Count -gt 0) { Fail ("Gemini CLI session $sid is open right now (pid " + (($pids | ForEach-Object { $_.ProcessId }) -join ',') + '). Exit it first: the relay must never resume a running session.') }
+    $coord = @{ tool = 'gemini'; session_id = $sid; cwd = $cwd; transcript_path = [string]$found.file; project_dir = [string]$found.project_dir; gemini_home = $GeminiHomeDir;
+        enrolled_utc = (Get-Now); enrolled = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv); follow_name = ''; started_ms = 0;
+        verified = 'local Gemini CLI session found for this folder; not open; quiet'; model = [string]$Model; effort = '';
+        allowed_checks = $CheckList.ToArray();
+        resume_rule = 'gemini --resume <id> -p <fixed words> -o stream-json --approval-mode default --skip-trust --admin-policy <relay rules file> --include-directories <folders> [-m <model>], the notice on stdin, in the session folder; own Gemini login' }
+    if ($QuietSeconds -gt 0) {
+        $files = Get-GeminiSessionFiles $coord   # a variable first
+        $newest = $null
+        foreach ($f in $files) { if ($null -eq $newest -or $f.LastWriteTimeUtc -gt $newest) { $newest = $f.LastWriteTimeUtc } }
+        if ($null -ne $newest) {
+            $age = (Get-Now) - (ConvertTo-Unix $newest)
+            if ($age -lt $QuietSeconds) { Fail "Session $sid was written $age s ago; it may still be open. Exit it, wait $QuietSeconds s, then enroll again." }
+        }
+    }
+    $policy = New-CoordinatorGeminiPolicy $coord
+    if ($policy.problem) { Fail "The relay's Gemini rules would not work: $($policy.problem). Nothing was saved." }
+    $cp = Get-GeminiCommandProblem $coord
+    if ($cp) { Fail "A Gemini CLI coordinator cannot work for this mailbox: $cp. Nothing was saved." }
+    $kept = Backup-RelayFile $CoordFile   # a copy of the old record first, whatever changes
+    Save-Json $CoordFile $coord
+    $state = Get-State
+    foreach ($flag in @('last_block', 'follow_coordinator_miss', 'follow_coordinator_refused')) { [void]$state.flags.Remove($flag) }
+    Update-StartRequests $state $true $coord   # start files that are there now count as known: never run
+    Save-State $state
+    $limitWord = 'none'
+    if ([int]$script:GeminiTurns -ne 0) { $limitWord = [string]$script:GeminiTurns }
+    Write-Log ("Enrolled Gemini CLI session $sid as the coordinator (folder $cwd). Each turn runs with the relay's rules file: it may read, write only $Root\STATUS.md and Markdown files under $Root\tasks, and run read-only Git commands and the allowed checks. " +
+        "Turn limit: $limitWord (gemini_max_session_turns in bin\cost-limits.json). Model: $(if ($Model) { $Model } else { 'Gemini CLI default' }). Gemini CLI uses your own Gemini login, and each turn costs money.")
+    Write-Log ('Allowed checks: ' + $(if ($CheckList.Count) { ($CheckList | ForEach-Object { "'" + $_ + "'" }) -join ', ' } else { 'none' }) + '. To change them, enroll again.')
+    if ($cwdWarning) { Write-Log $cwdWarning }
+    if (-not (Test-Path -LiteralPath ($cwd + '\GEMINI.md') -PathType Leaf)) { Write-Log "WARNING: $cwd\GEMINI.md is not there. Copy relay\COORDINATOR.md there as GEMINI.md, so the coordinator reads its standing orders." }
+    if (-not (Get-StartRequestsOn $coord)) { Write-Log 'WARNING: start_requests is false in bin\relay-settings.json, so this coordinator cannot start workers.' }
+    if (-not (Get-GeminiExePath)) { Write-Log 'WARNING: Gemini CLI was not found on PATH. Install it, or set gemini_exe in bin\relay-settings.json, before the first turn.' }
+    if ($kept) { Write-Log "The coordinator.json from before is kept as $kept." }
+}
+
+# ---------- a coordinator turn in Codex or Gemini CLI ----------
+# Start-Dispatch and Complete-Dispatch hand a turn to these when the coordinator is not a Claude Code session. Both
+# tools share the steps (design section 13.9): the notice, a write-ahead record, the preflight, the guard's look and the
+# start; at the end, the evidence (the tool's own events and the notice's marker in the session's own files), the
+# outcome, and the guard's look again.
 
 function Start-ToolDispatch([hashtable]$State, [hashtable]$Coord, [object[]]$Pending) {
     $script:LastLaunched = $null
     $coordTool = Get-CoordTool $Coord
-    if ($coordTool -ne 'codex') {
-        # Not built yet (Gemini CLI): Get-BusyReason holds every turn of such a coordinator first, so this does not run.
-        # If it does, it starts nothing and changes nothing: the notifications stay pending.
-        Write-Log ("Not dispatched: this relay cannot wake a coordinator in '{0}' yet. {1} notification(s) stay pending." -f $coordTool, @($Pending).Count)
+    if (@('codex', 'gemini') -notcontains $coordTool) {
+        # Get-BlockReason holds every turn of a tool the relay does not know first, so this does not run. If it does, it
+        # starts nothing and changes nothing: the notifications stay pending.
+        Write-Log ("Not dispatched: this relay cannot wake a coordinator in '{0}'. {1} notification(s) stay pending." -f $coordTool, @($Pending).Count)
         return
     }
     $now = Get-Now
     if (-not (Test-Path -LiteralPath $DispatchDir)) { New-Item -ItemType Directory -Path $DispatchDir -Force | Out-Null }
     $id = 'R' + (Get-Date).ToString('yyyyMMdd-HHmmss', $Inv) + '-' + [guid]::NewGuid().ToString('N').Substring(0, 4)
-    $batch = @($Pending | Select-Object -First 10)   # the Codex notice is one command-line argument
+    $max = 20                                   # the Gemini CLI notice goes on standard input
+    if ($coordTool -eq 'codex') { $max = 10 }   # the Codex notice is one command-line argument
+    $batch = @($Pending | Select-Object -First $max)
     $prompt = New-CoordinatorPrompt $id $batch $Coord
     $promptFile = Join-Path $DispatchDir "$id.prompt.txt"
     $stdin = Join-Path $DispatchDir "$id.stdin.txt"
     $out = Join-Path $DispatchDir "$id.out.jsonl"
     $errFile = Join-Path $DispatchDir "$id.err.txt"   # never $err: Start-CodexProcess names its parameter $Err
     [IO.File]::WriteAllText($promptFile, $prompt, $Utf8)
-    [IO.File]::WriteAllText($stdin, '', $Utf8)
-    $target = Get-CoordinatorCodexTarget $Coord
-    $options = Get-CoordinatorCodexOptions $Coord   # a list, so a variable first: @(<function>) would keep it as one item
+    $stdinText = ''
+    if ($coordTool -eq 'gemini') { $stdinText = $prompt }   # Gemini CLI: the notice only on standard input
+    [IO.File]::WriteAllText($stdin, $stdinText, $Utf8)
+    $target = $null
+    $options = $null
+    $optList = @()   # never @($options): @($null) is one item
+    $billing = 'gemini-own-login (paid per use)'
+    if ($coordTool -eq 'codex') {
+        $target = Get-CoordinatorCodexTarget $Coord
+        $options = Get-CoordinatorCodexOptions $Coord   # a list, so a variable first: @(<function>) would keep it as one item
+        $optList = $options.ToArray()
+        $billing = 'chatgpt-sign-in'
+    }
     $State.seq = [int64]$State.seq + 1
     # guard: the program files' stamps at the start. The turn may outlive this relay process, so its record keeps them,
     # and they are compared when the turn ends, in this relay process or in the next one.
     $d = @{ id = $id; seq = $State.seq; tool = $coordTool; state = 'launching'; items = @($batch | ForEach-Object { $_.id }); started_utc = $now; finished_utc = 0;
         session_id = [string]$Coord.session_id; transcript = [string]$Coord.transcript_path; cwd = [string]$Coord.cwd; pid = 0; proc_start = '';
         out = $out; err = $errFile; stdin = $stdin; prompt_file = $promptFile; accepted_utc = 0; exit_code = $null; outcome = ''; error = '';
-        cost = $null; turns = $null; duration_ms = $null; subtype = ''; result_session = ''; summary = ''; billing = 'chatgpt-sign-in';
-        options = $options.ToArray(); policy_sha256 = ''; guard = (Get-RelayFileStamps $true) }
+        cost = $null; turns = $null; duration_ms = $null; subtype = ''; result_session = ''; summary = ''; billing = $billing;
+        options = $optList; policy_sha256 = ''; guard = (Get-RelayFileStamps $true) }
     $State.dispatches[$id] = $d
     foreach ($n in $batch) { $n.state = 'launched'; $n.dispatch_id = $id; $n.attempts = [int]$n.attempts + 1 }
     Save-State $State   # write-ahead, as for a Claude Code turn: from here on a relay stop is settled from evidence
 
-    $pf = Get-CodexCoordinatorPreflight $State $Coord
-    if ($pf.halt) { Set-DispatchHalted $State $d $pf.halt; return }
-    if ($pf.error) { $d.guard = $null; Set-DispatchFailed $State $d $pf.error; return }
-    $roll = Get-CodexRolloutPath $target   # the thread file, found again if Codex moved it
-    if ($roll) { $d.transcript = $roll; $target.rollout_path = $roll }
+    $pf = $null
+    if ($coordTool -eq 'codex') { $pf = Get-CodexCoordinatorPreflight $State $Coord } else { $pf = Get-GeminiCoordinatorPreflight $State $Coord }
+    if ($pf.halt) { Set-DispatchHalted $State $d ([string]$pf.halt); return }
+    if ($pf.error) { $d.guard = $null; Set-DispatchFailed $State $d ([string]$pf.error); return }
+    if ($coordTool -eq 'codex') {
+        $roll = Get-CodexRolloutPath $target   # the thread file, found again if Codex moved it
+        if ($roll) { $d.transcript = $roll; $target.rollout_path = $roll }
+    } elseif ($pf.file) { $d.transcript = [string]$pf.file }   # the session's file, found again
     if (-not (Test-RelayFiles $State 'before a coordinator turn')) { Set-DispatchHalted $State $d ([string]$State.halt); return }
-    $started = Start-CodexProcess $target $prompt $stdin $out $errFile $options
-    if ($started.error) { $d.guard = $null; Set-DispatchFailed $State $d $started.error; return }
+    $started = $null
+    if ($coordTool -eq 'codex') {
+        $started = Start-CodexProcess $target $prompt $stdin $out $errFile $options
+    } else {
+        # The rules file and the turn limit, written for this turn; the rules file's SHA-256 is checked right before the
+        # start (Start-GeminiProcess).
+        $policy = New-CoordinatorGeminiPolicy $Coord
+        if ($policy.problem) { Set-DispatchHalted $State $d "the relay's Gemini rules would not work: $($policy.problem)"; return }
+        $limit = [int]$script:GeminiTurns
+        if ($limit -eq 0) { $limit = -1 }   # 0 means no limit, which Gemini CLI writes as -1
+        try {
+            [IO.File]::WriteAllText($GeminiPolicyFile, [string]$policy.text, $Utf8)
+            [IO.File]::WriteAllText($GeminiDefaultsFile, ('{"model":{"maxSessionTurns":' + $limit + '}}'), $Utf8)
+            $d.policy_sha256 = Get-FileSha256 $GeminiPolicyFile
+        } catch { $d.guard = $null; Set-DispatchFailed $State $d ('could not write the Gemini rules file: ' + $_.Exception.Message); return }
+        $d.turn_limit = $limit
+        Save-State $State
+        $started = Start-GeminiProcess $Coord $stdin $out $errFile $GeminiPolicyFile ([string]$d.policy_sha256)
+        if ($started.halt) { Set-DispatchHalted $State $d ([string]$started.halt); return }
+    }
+    if ($started.error) { $d.guard = $null; Set-DispatchFailed $State $d ([string]$started.error); return }
     $proc = $started.proc
     try { $null = $proc.Handle } catch { }   # keep a handle so the exit code stays readable
     $d.pid = $proc.Id
@@ -4864,8 +5472,14 @@ function Start-ToolDispatch([hashtable]$State, [hashtable]$Coord, [object[]]$Pen
     $script:LastLaunched = $id
     [void]$State.flags.Remove('last_block')
     Save-State $State
-    Write-Log ('Dispatched {0} to the Codex coordinator thread {1} (pid {2}; {3} item(s); workspace-write sandbox, no network): {4}' -f $id, $Coord.session_id, $proc.Id, $batch.Count,
-        (($batch | ForEach-Object { $_.detail }) -join '; '))
+    $what = (($batch | ForEach-Object { $_.detail }) -join '; ')
+    if ($coordTool -eq 'codex') {
+        Write-Log ('Dispatched {0} to the Codex coordinator thread {1} (pid {2}; {3} item(s); workspace-write sandbox, no network): {4}' -f $id, $Coord.session_id, $proc.Id, $batch.Count, $what)
+    } else {
+        $limitWord = 'none'
+        if ([int]$d.turn_limit -gt 0) { $limitWord = [string]$d.turn_limit }
+        Write-Log ('Dispatched {0} to the Gemini CLI coordinator session {1} (pid {2}; {3} item(s); the relay''s rules file; turn limit {4}): {5}' -f $id, $Coord.session_id, $proc.Id, $batch.Count, $limitWord, $what)
+    }
 }
 
 function Set-DispatchHalted([hashtable]$State, [hashtable]$D, [string]$Why) {
@@ -4897,14 +5511,15 @@ function Test-DispatchGuard([hashtable]$State, [hashtable]$D) {
 
 function Complete-ToolDispatch([hashtable]$State, [hashtable]$D) {
     # The end of a coordinator turn that is not Claude Code's. Delivery is decided by evidence, as for Claude Code: the
-    # tool's own events and the notice's marker in the thread file. The exit code only picks the words, and a turn this
-    # relay process did not start (no exit code) is decided the same way.
+    # tool's own events and the notice's marker in the session's own files (Codex's thread file, Gemini CLI's session
+    # files). The exit code only picks the words, and a turn this relay process did not start (no exit code: the relay
+    # restarted) is decided the same way.
     $dispatchTool = Get-DispatchTool $D
-    if ($dispatchTool -ne 'codex') {
-        # Not built yet (Gemini CLI): only a state.json from a newer relay can hold such a turn. This relay cannot read
-        # its outcome, so the turn counts as not delivered, and its notifications stay pending.
+    if (@('codex', 'gemini') -notcontains $dispatchTool) {
+        # Only a state.json from a newer relay can hold such a turn. This relay cannot read its outcome, so the turn
+        # counts as not delivered, and its notifications stay pending.
         if ($script:Procs.ContainsKey($D.id)) { [void]$script:Procs.Remove($D.id) }
-        Set-DispatchFailed $State $D ("this relay cannot read the outcome of a coordinator turn in '{0}' yet" -f $dispatchTool)
+        Set-DispatchFailed $State $D ("this relay cannot read the outcome of a coordinator turn in '{0}'" -f $dispatchTool)
         return
     }
     $now = Get-Now
@@ -4916,56 +5531,105 @@ function Complete-ToolDispatch([hashtable]$State, [hashtable]$D) {
     }
     $D.exit_code = $exit
     $exitWord = $(if ($null -eq $exit) { 'unknown' } else { [string]$exit })
-    $ev = Read-CodexEvents $D.out
     $marker = Test-DispatchMarker $D
-    $errText = ''
-    try { if ($D.err -and (Test-Path -LiteralPath $D.err)) { $errText = Get-Short (Read-SharedText $D.err) 300 } } catch { }
+    $errRaw = ''
+    try { if ($D.err -and (Test-Path -LiteralPath $D.err)) { $errRaw = Read-SharedText $D.err } } catch { }
+    $errText = Get-Short $errRaw 300
     $D.finished_utc = $now
-    $D.result_session = [string]$ev.thread
-    if ($ev.message) { $D.summary = Get-Short $ev.message 300 }
     $State.last_finish_utc = $now
     $enrolled = ([string]$D.session_id).ToLowerInvariant()
+    $toolName = Get-ToolName $dispatchTool
+    if ($dispatchTool -eq 'codex') {
+        $ev = Read-CodexEvents $D.out
+        $D.result_session = [string]$ev.thread
+        $other = [string]$ev.thread
+        $good = ($ev.completed -and -not $ev.failed)
+        $bad = [bool]($ev.failed -or $ev.error)
+        $badText = Get-Short ("$($ev.failed) $($ev.error)") 300
+        $notDelivered = "Codex ended without a result (exit $exitWord)"
+        if ($ev.failed) { $notDelivered = "the Codex turn failed before the notice reached the thread: $($ev.failed)" }
+        elseif ($ev.error) { $notDelivered = "Codex reported an error before the notice reached the thread: $($ev.error)" }
+        if ($errText) { $notDelivered += ": $errText" }
+        $where = 'thread'
+        $mismatchItems = 'delivered to a different thread; not replayed'
+        $mismatchOutcome = "SESSION MISMATCH: Codex used thread $other, enrolled is $enrolled"
+        $mismatchHalt = "session mismatch on $($D.id): Codex reported thread $other instead of the enrolled $enrolled"
+        $mismatchAlert = "Relay halted: coordinator turn $($D.id) ran in Codex thread $other, not the enrolled $enrolled. Check the enrollment (-Enroll -Tool codex), then run -ClearHalt."
+    } else {
+        $ev = Read-GeminiEvents $D.out
+        $D.result_session = [string]$ev.session
+        $other = [string]$ev.session
+        # A success result with an error on the way (Gemini CLI's own turn limit, say) is a turn that ended with an error.
+        $good = ($ev.status -eq 'success' -and -not $ev.error)
+        $bad = [bool]($ev.error -or $ev.status -eq 'error' -or ($null -ne $exit -and @(53, 54) -contains [int]$exit))
+        $badText = Get-GeminiExitWords $exit ([string]$ev.error)
+        $said = [string]$ev.error
+        if (-not $said) { $said = $errText }
+        $notDelivered = Get-GeminiExitWords $exit $said
+        $where = 'session'
+        $mismatchItems = 'delivered to a different session; not replayed'
+        $mismatchOutcome = "SESSION MISMATCH: Gemini CLI used session $other, enrolled is $enrolled"
+        $mismatchHalt = "session mismatch on $($D.id): Gemini CLI reported session $other instead of the enrolled $enrolled"
+        $mismatchAlert = "Relay halted: coordinator turn $($D.id) ran in Gemini CLI session $other, not the enrolled $enrolled. Check the enrollment (-Enroll -Tool gemini), then run -ClearHalt."
+        # Gemini CLI skips a defaults file that people other than an administrator can change, so the relay's turn
+        # limit may not count: say so once.
+        $allText = $errRaw
+        try { if ($D.out -and (Test-Path -LiteralPath $D.out)) { $allText += "`n" + (Read-SharedText $D.out) } } catch { }
+        if ($allText -match 'Skipping system defaults') {
+            $D.turn_limit = 'skipped by Gemini CLI'
+            Add-Alert $State 'gemini-turn-limit-skipped' ('Gemini CLI did not use the relay''s turn limit for the coordinator: it skips a defaults file that people other than an administrator can change. ' +
+                'To be sure of a turn limit, also set model.maxSessionTurns in your own Gemini settings.')
+        }
+    }
+    $summaryText = [string]$ev.message
+    if ($summaryText) { $D.summary = Get-Short $summaryText 300 }
     $delivered = $true
-    if ($ev.thread -and $ev.thread -ne $enrolled) {
+    if ($other -and $other -ne $enrolled) {
         $D.state = 'completed'
-        $D.outcome = "SESSION MISMATCH: Codex used thread $($ev.thread), enrolled is $enrolled"
-        Set-ItemsDone $State $D 'delivered to a different thread; not replayed'
-        $State.halt = "session mismatch on $($D.id): Codex reported thread $($ev.thread) instead of the enrolled $enrolled"
-        Add-Alert $State '' "Relay halted: coordinator turn $($D.id) ran in Codex thread $($ev.thread), not the enrolled $enrolled. Check the enrollment (-Enroll -Tool codex), then run -ClearHalt."
-    } elseif ($ev.completed -and -not $ev.failed) {
+        $D.outcome = $mismatchOutcome
+        Set-ItemsDone $State $D $mismatchItems
+        $State.halt = $mismatchHalt
+        Add-Alert $State '' $mismatchAlert
+    } elseif ($good) {
         $D.state = 'completed'
         $D.outcome = 'success'
-        Set-ItemsDone $State $D 'completed: the coordinator turn ended successfully (Codex)'
+        Set-ItemsDone $State $D "completed: the coordinator turn ended successfully ($toolName)"
         $State.failures = 0
         $State.next_attempt_utc = 0
     } elseif (-not $marker) {
         # Not delivered: backoff, the notifications wait, and the relay halts after MaxFailures in a row.
-        $msg = "Codex ended without a result (exit $exitWord)"
-        if ($ev.failed) { $msg = "the Codex turn failed before the notice reached the thread: $($ev.failed)" }
-        elseif ($ev.error) { $msg = "Codex reported an error before the notice reached the thread: $($ev.error)" }
-        if ($errText) { $msg += ": $errText" }
-        Set-DispatchFailed $State $D $msg
+        Set-DispatchFailed $State $D $notDelivered
         $delivered = $false
-    } elseif ($ev.failed -or $ev.error) {
+    } elseif ($bad) {
         $D.state = 'completed'
         $D.outcome = 'turn ended with an error; delivered, not replayed'
-        $D.error = Get-Short ("$($ev.failed) $($ev.error)") 300
+        $D.error = $badText
         Set-ItemsDone $State $D 'delivered; the turn ended with an error; not replayed'
         Add-Backoff $State
-        Add-Alert $State '' "Coordinator turn $($D.id) (Codex) ended with an error: $($D.error). Not replayed."
+        Add-Alert $State '' "Coordinator turn $($D.id) ($toolName) ended with an error: $($D.error). Not replayed."
         if ([int]$State.failures -ge $MaxFailures) {
             $State.halt = "$($State.failures) consecutive failed coordinator turns; last: $($D.error)"
             Add-Alert $State '' "Relay halted after $($State.failures) consecutive failed coordinator turns. Run -ClearHalt after checking."
         }
     } else {
         $D.state = 'completed'
-        $D.outcome = 'unknown: Codex ended without a result, but the notice is in the thread (delivered; not replayed)'
+        $D.outcome = "unknown: $toolName ended without a result, but the notice is in the $where (delivered; not replayed)"
         if ($errText) { $D.error = $errText }
         Set-ItemsDone $State $D 'delivered; terminal outcome unknown (not replayed)'
-        Add-Alert $State '' "Coordinator turn $($D.id) (Codex) ended without a result (exit $exitWord) after its notice reached the thread. Not replayed. Check the coordinator's status files."
+        Add-Alert $State '' "Coordinator turn $($D.id) ($toolName) ended without a result (exit $exitWord) after its notice reached the $where. Not replayed. Check the coordinator's status files."
     }
-    if ($delivered) { Copy-CoordinatorBoard $D }   # the turn's own folder: its board may have changed
+    if ($delivered -and $dispatchTool -eq 'codex') { Copy-CoordinatorBoard $D }   # the turn's own folder: its board may have changed
     Test-DispatchGuard $State $D   # every turn that ran, whatever its outcome
+    if ($dispatchTool -eq 'gemini' -and $D.policy_sha256) {
+        # The rules file is written only before a turn, and one turn runs at a time: a change now was made while Gemini
+        # CLI read it, so the relay stops (after the turn's own outcome is recorded), as its guard does.
+        $policyNow = ''
+        try { $policyNow = Get-FileSha256 $GeminiPolicyFile } catch { $policyNow = '' }
+        if ($policyNow -ne [string]$D.policy_sha256 -and -not $State.halt) {
+            $State.halt = "the Gemini rules file $GeminiPolicyFile changed while coordinator turn $($D.id) ran"
+            Add-Alert $State '' "Relay halted: the Gemini rules file $GeminiPolicyFile changed while coordinator turn $($D.id) ran. A session or a worker may have made the change. Look at it, then run bridge-relay.ps1 -ClearHalt."
+        }
+    }
     if (-not $delivered) { return }   # Set-DispatchFailed wrote the ledger line and removed the turn's files
     Write-Log ('Dispatch {0} {1}: {2}; exit {3}' -f $D.id, $D.state, $D.outcome, $exitWord)
     Add-LedgerLine $D '-'
@@ -4973,7 +5637,7 @@ function Complete-ToolDispatch([hashtable]$State, [hashtable]$D) {
 }
 
 function Show-ToolCoordinatorStatus([hashtable]$State, [hashtable]$Coord) {
-    # -Status for a coordinator that is not a Claude Code session.
+    # -Status for a coordinator that is not a Claude Code session. Read-only.
     $coordTool = Get-CoordTool $Coord
     if ($coordTool -eq 'codex') {
         $found = [bool](Get-CodexRolloutPath (Get-CoordinatorCodexTarget $Coord))
@@ -4987,9 +5651,22 @@ function Show-ToolCoordinatorStatus([hashtable]$State, [hashtable]$Coord) {
         Write-Host ("Coordinator turns: Codex's workspace-write sandbox, with no network; a turn can write only $($Coord.cwd) and $Root\tasks. " +
             "The relay copies $($Coord.cwd)\STATUS.md into the mailbox after each turn. Each turn counts toward the daily wake limit; Codex reports no cost.")
     } elseif ($coordTool -eq 'gemini') {
-        $tp = [bool]($Coord.transcript_path -and (Test-Path -LiteralPath ([string]$Coord.transcript_path) -PathType Leaf))
-        Write-Host "Coordinator: ENROLLED Gemini CLI session $($Coord.session_id) (folder $($Coord.cwd); enrolled $($Coord.enrolled); session file found: $tp)"
-        Write-Host 'Coordinator turns: this copy of the relay cannot wake a coordinator in Gemini CLI yet, so nothing is sent; pending notifications are kept.'
+        $files = Get-GeminiSessionFiles $Coord   # a variable first
+        Write-Host "Coordinator: ENROLLED Gemini CLI session $($Coord.session_id) (folder $($Coord.cwd); enrolled $($Coord.enrolled); session file found: $([bool]($files.Count -gt 0)))"
+        $limitWord = 'none'
+        if ([int]$script:GeminiTurns -ne 0) { $limitWord = [string]$script:GeminiTurns }
+        Write-Host ("Coordinator turns: the relay's rules file, written before each turn: a turn may read, write only $Root\STATUS.md and Markdown files under $Root\tasks, " +
+            "and run read-only Git commands and the allowed checks. Turn limit $limitWord (gemini_max_session_turns in bin\cost-limits.json). " +
+            'Your own Gemini login, and each turn costs money. Each turn counts toward the daily wake limit.')
+        $checksNow = @(Get-GeminiAllowedChecks $Coord)
+        Write-Host ('Coordinator allowed checks: ' + $(if ($checksNow.Count) { ($checksNow | ForEach-Object { "'" + $_ + "'" }) -join ', ' } else { 'none' }))
+        $exe = Get-GeminiExePath
+        Write-Host ('Gemini CLI: ' + $(if ($exe) { $exe } else { 'NOT FOUND (install it, or set gemini_exe in bin\relay-settings.json)' }))
+        if ($GeminiHomeError) { Write-Host "Gemini CLI home problem: $GeminiHomeError" }
+        $gp = Get-GeminiFolderProblem ([string]$Coord.cwd)
+        if ($gp) { Write-Host "Coordinator folder problem: $gp" }
+        $policy = New-CoordinatorGeminiPolicy $Coord
+        if ($policy.problem) { Write-Host "Coordinator rules problem: the relay's Gemini rules would not work: $($policy.problem)" }
     } else {
         Write-Host "Coordinator: ENROLLED with an AI tool the relay does not know ('$coordTool'). Nothing is sent. Enroll again with -Enroll -Tool claude, codex or gemini."
         return
@@ -4997,26 +5674,6 @@ function Show-ToolCoordinatorStatus([hashtable]$State, [hashtable]$Coord) {
     $procs = Get-SessionProcesses ([string]$Coord.session_id)
     if ($null -eq $procs) { Write-Host 'Coordinator open now: unknown (the process list could not be read)' }
     elseif ($procs.Count -gt 0) { Write-Host ("Coordinator open now in pid {0}: the relay waits until it is closed" -f (($procs | ForEach-Object { $_.ProcessId }) -join ',')) }
-}
-
-# ---------- Phase 6: placeholders for later steps ----------
-# The coordinator's plumbing already calls these. Each one refuses or does nothing, in plain words, until the next step
-# of Phase 6 builds it: a Gemini CLI coordinator. scripts/check.js refuses a second definition of a name, so the step
-# that builds one replaces it here. With a Claude Code or Codex coordinator none of them changes what the relay does.
-
-function Get-GeminiCoordinatorBusy([hashtable]$State, [hashtable]$Coord) {
-    # Placeholder (a Gemini CLI coordinator): every turn waits, so nothing is sent, and the reason is logged once.
-    return 'this relay cannot wake a coordinator in Gemini CLI yet (.relay\coordinator.json names gemini). Pending notifications are kept. Enroll a Claude Code or Codex coordinator with -Enroll'
-}
-
-function Test-GeminiMarker([hashtable]$D) {
-    # Placeholder (a Gemini CLI coordinator): no Gemini CLI session file is read yet, so no notice is found there.
-    return $false
-}
-
-function Invoke-EnrollGeminiCoordinator {
-    # Placeholder (a Gemini CLI coordinator): refuses, and saves nothing.
-    Fail 'A coordinator in Gemini CLI is not ready in this copy of the relay yet. Enroll a Claude Code coordinator (-Enroll -SessionName <name>) or a Codex coordinator (-Enroll -Tool codex -ThreadName <name>) for now. Nothing was saved.' 64
 }
 
 # ---------- main ----------
