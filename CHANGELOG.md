@@ -8,8 +8,17 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **Gemini CLI.** Pleni now shows your Gemini CLI sessions too, and the helpers they start: on the
+  map, in the List, in each session's side panel, and on the Usage page, where its tokens are
+  counted. With the AI tools button on, Gemini CLI gets a tile of its own. Pleni reads only Gemini
+  CLI's chat logs in `~/.gemini/tmp` (or in the `.gemini` folder inside `GEMINI_CLI_HOME`) and its
+  list of your project folders. It never opens your Gemini login or settings files, and it never
+  shows what the model was thinking. Like Grok and Kimi Code, Gemini CLI is watch-only in Pleni:
+  no button sends it anything. Google turned off sign-in with a personal Google account for
+  Gemini CLI on June 18, 2026. Gemini CLI still works with a paid API key, Vertex AI or a work
+  license, and Pleni shows whatever Gemini CLI sessions are on your computer either way.
 - **AI tool tiles.** A new **AI tools** button on the Map gives each AI tool you use (Claude Code,
-  Codex, Grok and Kimi Code) a tile of its own, with its sessions under it. A tool's tile shows
+  Codex, Grok, Kimi Code and Gemini CLI) a tile of its own, with its sessions under it. A tool's tile shows
   even when none of its sessions is running, and the relay's tile stays on the map too. Click the
   button again to hide them. The same switch is in **Settings → You and the map**. It works from
   any signed-in device, since it only changes the map.
@@ -34,7 +43,7 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   Click a project to see its sessions. A Codex or `_worktrees` copy of a project counts as part of
   it. Add, change and delete projects on the computer that runs Pleni; another device can only look.
 - **Usage.** A **Usage** button in the Map and List headers (and in their pop-out windows) opens a
-  window with one card for each AI tool: Claude Code, Codex, Grok and Kimi Code. Each card shows
+  window with one card for each AI tool: Claude Code, Codex, Grok, Kimi Code and Gemini CLI. Each card shows
   the tokens used today and in the last 7 days, read from the session files on this computer.
   Pleni uses no login key and never asks the AI companies. It keeps the window up to date while
   it is open.
@@ -43,8 +52,8 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   Claude Code** part in **Settings → Buttons** adds a small Pleni status line to Claude Code's
   settings file (a copy of the file goes to Pleni's backups folder first, your own status line
   keeps showing, and Disconnect puts it back). Claude Code then hands Pleni its limits after each
-  reply, for Pro, Max and Ultra plans. Grok and Kimi Code save no limits, so their cards say where
-  to look: type `/usage` in the tool.
+  reply, for Pro, Max and Ultra plans. Grok, Kimi Code and Gemini CLI save no limits, so their
+  cards say where to look: type `/usage` in the tool (`/stats` in Gemini CLI).
 - **A Cloud page for your Codex cloud tasks.** Off until you tick **Show my Codex cloud tasks** in
   **Settings → Sources**, on the computer that runs Pleni. It lists your tasks, newest first, with
   the title, a status (Working, Ready, Applied or Error), the environment, when it changed, the

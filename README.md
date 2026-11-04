@@ -8,7 +8,7 @@
 <h1 align="center">Pleni — Plenipo Browser</h1>
 
 <p align="center">
-  See your Claude Code, Codex, Grok and Kimi Code sessions work together, live in your browser.
+  See your Claude Code, Codex, Grok, Kimi Code and Gemini CLI sessions work together, live in your browser.
   Send them a message and answer their questions there too.
 </p>
 
@@ -38,7 +38,7 @@
 When you use Claude Code or Codex, each session can start helpers of its own (sub-agents) and
 hand work to them. With a few of these running at once, it gets hard to tell who is doing what.
 
-Pleni shows you. It reads the files that Claude Code, Codex, Grok and Kimi Code already write on your computer,
+Pleni shows you. It reads the files that Claude Code, Codex, Grok, Kimi Code and Gemini CLI already write on your computer,
 works out who started whom, and draws it as a live map in your browser. Lines light up when work
 is handed down and when a report comes back up.
 
@@ -140,8 +140,8 @@ In a copy of the source, `npm start` and `npm run demo` do the same as `npx plen
   **Connect plan limits** under **Plan limits from Claude Code**. Pleni adds a small status line
   to Claude Code's settings file (a copy of the file goes to Pleni's backups folder first, your
   own status line keeps showing, and **Disconnect** puts it back). This works for Pro, Max and
-  Ultra plans, and Claude Code needs a trusted folder. Grok and Kimi Code save no limits, so
-  their cards say to type `/usage` in the tool.
+  Ultra plans, and Claude Code needs a trusted folder. Grok, Kimi Code and Gemini CLI save no
+  limits, so their cards say what to type in the tool: `/usage`, or `/stats` in Gemini CLI.
 - **Activity** — every hand-off, newest first.
 - **Mail** — shown when your agents use agent mail (see below). It shows every message between you
   and your agents in full, newest first, marks the new ones, and gives the command to answer each.
@@ -516,6 +516,7 @@ Pleni finds the usual folders on its own. You can change any of them in **Settin
 | Codex sessions and helpers          | `~/.codex` (on Windows, `C:\Users\<you>\.codex`)                                                                   | `CODEX_HOME`        |
 | Grok sessions                       | `~/.grok` (on Windows, `C:\Users\<you>\.grok`)                                                                     | `GROK_HOME`         |
 | Kimi Code sessions and helpers      | `~/.kimi-code` (on Windows, `C:\Users\<you>\.kimi-code`)                                                           | `KIMI_CODE_HOME`    |
+| Gemini CLI sessions and helpers     | `~/.gemini` (on Windows, `C:\Users\<you>\.gemini`)                                                                 | `GEMINI_CLI_HOME`   |
 | A coordination mailbox (optional)   | Off until you choose a folder                                                                                      | Settings            |
 
 Pleni shows sessions that were active in the last 24 hours. You can change that in
@@ -537,6 +538,7 @@ Pleni keeps its own settings in one file, `settings.json`:
 | `CODEX_HOME`                 | Where Codex keeps its files                |
 | `GROK_HOME`                  | Where Grok keeps its files                 |
 | `KIMI_CODE_HOME`             | Where Kimi Code keeps its files            |
+| `GEMINI_CLI_HOME`            | Where Gemini CLI's `.gemini` folder is     |
 
 **The mailbox** is for people who have two AI sessions work through a shared folder of
 Markdown files: one hands out tasks, the other reports back. If you do not use one, leave it off.
@@ -680,7 +682,7 @@ You hire roles, give the team a goal, and Plenipo starts the workers, checks the
 and keeps a record of what they did.
 
 Pleni is a separate, simpler edition. It does not run any workers. It watches the Claude Code,
-Codex, Grok and Kimi Code sessions you already run yourself, on Windows, macOS, or Linux. You can use either one, or
+Codex, Grok, Kimi Code and Gemini CLI sessions you already run yourself, on Windows, macOS, or Linux. You can use either one, or
 both. Both are made by 8 West Ventures, LLC.
 
 ## What comes next

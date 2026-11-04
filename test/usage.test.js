@@ -36,6 +36,7 @@ function setup(t, { settings = {}, ...options } = {}) {
     codex: path.join(dir, 'codex'),
     grok: path.join(dir, 'grok'),
     kimi: path.join(dir, 'kimi'),
+    gemini: path.join(dir, 'gemini'),
   };
   for (const root of Object.values(roots)) fs.mkdirSync(root, { recursive: true });
   const clock = { now: NOW };
@@ -372,6 +373,45 @@ test('Kimi Code: only usage records count, helpers count, and a repeated record 
   assert.equal(tools.kimi.limits, null);
 });
 
+// ---- Gemini CLI ----
+
+const GEMINI = '5b6c7d8e-0000-4000-8000-000000000001';
+const geminiTokens = (over = {}) => ({ input: 110, output: 5, cached: 100, thoughts: 3, tool: 2, total: 120, ...over });
+const geminiReply = (id, when, tokens = geminiTokens()) => ({ id, timestamp: when, type: 'gemini', content: 'SECRET-WORDS', model: 'gemini-x', tokens });
+const chatFile = (roots, name, folder = 'project') => path.join(roots.gemini, 'tmp', folder, 'chats', name);
+
+test('Gemini CLI: each reply counts once, helpers and older .json files count, and cached tokens are taken out', async (t) => {
+  const { roots, usage } = setup(t);
+  const name = `session-2026-06-10T09-00-${GEMINI.slice(0, 8)}.jsonl`;
+  put(chatFile(roots, name), [
+    { sessionId: GEMINI, projectHash: 'a'.repeat(64), startTime: iso(10, 8), lastUpdated: iso(10, 8) },
+    { id: 'u1', timestamp: iso(10, 9), type: 'user', content: [{ text: 'SECRET-WORDS' }] },
+    geminiReply('g1', iso(10, 9), geminiTokens({ output: 1 })),
+    geminiReply('g1', iso(10, 9)), // the same reply written again, with its final numbers
+    geminiReply('g2', iso(9, 22), { input: 20, output: 4, cached: 0, total: 24 }),
+    { $set: { lastUpdated: iso(10, 9) } },
+    { $set: { messages: [geminiReply('g3', iso(10, 10), { input: 50, output: 10, cached: 40, total: 60 })] } },
+  ]);
+  // A copy of the same session in an older project folder named by a hash counts once.
+  put(chatFile(roots, name, 'f'.repeat(64)), geminiReply('g1', iso(10, 9)));
+  // A helper, and an older one-object session file.
+  put(chatFile(roots, `${GEMINI}/helper-1.jsonl`), geminiReply('h1', iso(10, 11), { input: 7, output: 3, cached: 0, total: 10 }));
+  put(chatFile(roots, 'session-2026-06-08T09-00-6c7d8e9f.json'), JSON.stringify({ sessionId: '6c7d8e9f-0000-4000-8000-000000000002', messages: [geminiReply('o1', iso(8, 9), { input: 30, output: 6, cached: 10, total: 36 })] }));
+  // Other files are never read.
+  put(path.join(roots.gemini, 'tmp', 'project', 'logs.jsonl'), geminiReply('x1', iso(10, 9)));
+  put(chatFile(roots, 'notes.jsonl'), geminiReply('x2', iso(10, 9)));
+  const { tools } = await usage.read();
+  // g1: 110 sent less 100 from memory, plus 2 for tool use = 12; 5 written back plus 3 thinking = 8.
+  // g3: 10 and 10, with 40 from memory. h1: 7 and 3.
+  assert.deepEqual(tools.gemini.today, tokens(29, 21, 140, 0));
+  assert.deepEqual(tools.gemini.days[5], { date: '2026-06-09', ...tokens(20, 4, 0, 0) });
+  assert.deepEqual(tools.gemini.days[4], { date: '2026-06-08', ...tokens(20, 6, 10, 0) });
+  assert.equal(tools.gemini.on, true);
+  assert.equal(tools.gemini.limits, null);
+  assert.equal(tools.gemini.error, null);
+  assert.equal(tools.gemini.atLeast, false);
+});
+
 // ---- reading, reusing and limits ----
 
 test('a file that grows is read from where it stopped, and a half-written last line waits', async (t) => {
@@ -432,7 +472,7 @@ test('a tool that is off is not read, and a missing folder gets a plain message'
   assert.equal(tools.claude.error, null);
   const nowhere = createUsage({ getRoots: () => ({}), getSettings: () => cleanSettings({}), now: () => NOW });
   const none = (await nowhere.read()).tools;
-  for (const name of ['claude', 'codex', 'grok', 'kimi']) assert.match(none[name].error, /does not know where/);
+  for (const name of ['claude', 'codex', 'grok', 'kimi', 'gemini']) assert.match(none[name].error, /does not know where/);
 });
 
 test('Claude Code limits come from the hook, and a hook that fails changes nothing', async (t) => {
@@ -447,12 +487,13 @@ test('Claude Code limits come from the hook, and a hook that fails changes nothi
 
 test('the demo answers in the same shape, with limits for Claude Code and Codex only', () => {
   const demo = demoUsage(NOW);
-  assert.deepEqual(Object.keys(demo.tools), ['claude', 'codex', 'grok', 'kimi']);
+  assert.deepEqual(Object.keys(demo.tools), ['claude', 'codex', 'grok', 'kimi', 'gemini']);
   assert.equal(demo.at, NOW);
   assert.equal(demo.tools.claude.limits.from, 'statusLine');
   assert.equal(demo.tools.codex.limits.from, 'files');
   assert.equal(demo.tools.grok.limits, null);
   assert.equal(demo.tools.kimi.limits, null);
+  assert.equal(demo.tools.gemini.limits, null);
   for (const tool of Object.values(demo.tools)) {
     assert.deepEqual(tool.days.map((d) => d.date), DAYS);
     assert.equal(tool.week.total, tool.days.reduce((n, d) => n + d.total, 0));

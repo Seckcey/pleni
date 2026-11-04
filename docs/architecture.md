@@ -1,7 +1,7 @@
 # Pleni architecture
 
-Pleni ("Plenipo Browser") is a small local web app. It reads the session files that Claude Code and
-Codex already write on your computer, works out who is working on what, and shows it live in your
+Pleni ("Plenipo Browser") is a small local web app. It reads the session files that Claude Code,
+Codex, Grok, Kimi Code and Gemini CLI already write on your computer, works out who is working on what, and shows it live in your
 browser as an organization map with the hand-offs between agents drawn as moving lines.
 
 Version 0.1 mostly **watches**. It never stops or changes a session, and it never writes into
@@ -76,6 +76,7 @@ src/sources/claude.js   Claude Code sessions and sub-agents
 src/sources/codex.js    Codex threads and sub-agents
 src/sources/grok.js     Grok sessions
 src/sources/kimi.js     Kimi Code sessions and sub-agents
+src/sources/gemini.js   Gemini CLI sessions and sub-agents
 src/sources/mailbox.js  optional coordination mailbox (task folders of Markdown files)
 src/model.js            builds the snapshot the page draws (nodes, edges, events)
 src/repos.js            the GitHub repository of a session's folder, from its git settings (remote address only)
@@ -130,6 +131,7 @@ export const DEFAULTS = {
     codex: { enabled: true, root: null },             // null = $CODEX_HOME or ~/.codex
     grok: { enabled: true, root: null },              // null = $GROK_HOME or ~/.grok
     kimi: { enabled: true, root: null },              // null = $KIMI_CODE_HOME or ~/.kimi-code
+    gemini: { enabled: true, root: null },            // null = $GEMINI_CLI_HOME/.gemini or ~/.gemini
     mailbox: { enabled: false, root: null, planner: null, coordinator: null }, // planner/coordinator: node key or session name
   },
   people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role, reportsTo?: nodeKey | 'you', watch?: true, answer?: true } }  max 500
@@ -174,13 +176,15 @@ Exports:
   creating the folder.
 - `renameWithRetry(from, to)` renames, trying again up to 5 times when Windows answers `EPERM`,
   `EACCES` or `EBUSY` (a virus scanner or sync tool holding the file). The key file uses it too.
-- `resolveRoots(settings, env, platform, home)` returns `{ claude, claudeDesktop, codex, mailbox }`
-  absolute paths or `null`. Defaults: `claude` = `$CLAUDE_CONFIG_DIR` or `~/.claude`; `codex` =
-  `$CODEX_HOME` or `~/.codex`; `claudeDesktop` = `%APPDATA%\Claude` on Windows,
-  `~/Library/Application Support/Claude` on macOS, `~/.config/Claude` elsewhere; `mailbox` only when
-  set.
-- `isNodeKey(s)`: `/^(claude|codex):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/` or `you` or
-  `project:<name>` (name 1–120 chars, no control characters).
+- `resolveRoots(settings, env, platform, home)` returns `{ claude, claudeDesktop, codex, grok, kimi,
+  gemini, mailbox }` absolute paths or `null`. Defaults: `claude` = `$CLAUDE_CONFIG_DIR` or
+  `~/.claude`; `codex` = `$CODEX_HOME` or `~/.codex`; `grok` = `$GROK_HOME` or `~/.grok`; `kimi` =
+  `$KIMI_CODE_HOME` or `~/.kimi-code`; `gemini` = `.gemini` inside `$GEMINI_CLI_HOME` (which names
+  the home folder that holds `.gemini`, not `.gemini` itself) or `~/.gemini`; `claudeDesktop` =
+  `%APPDATA%\Claude` on Windows, `~/Library/Application Support/Claude` on macOS,
+  `~/.config/Claude` elsewhere; `mailbox` only when set.
+- `isNodeKey(s)`: `/^(claude|codex|grok|kimi|gemini):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/`, `you`,
+  `relay`, `mailbox:<task id>/W<n>`, or `project:<name>` (name 1–120 chars, no control characters).
 - Environment overrides applied by the CLI: `PLENI_PORT`, `PLENI_HOME`.
 
 ## Reading JSONL (`src/jsonl.js`)
@@ -222,8 +226,9 @@ All sources return sessions in this common shape:
 
 ```js
 Session = {
-  platform: 'claude' | 'codex',
-  key: string,              // 'claude:<sessionId>' | 'claude:<sessionId>/<agentId>' | 'codex:<threadId>'
+  platform: 'claude' | 'codex' | 'grok' | 'kimi' | 'gemini',
+  key: string,              // 'claude:<sessionId>' | 'claude:<sessionId>/<agentId>' | 'codex:<threadId>' | …
+                            // | 'gemini:<sessionId>' | 'gemini:<sessionId>/<agentId>'
   id: string,               // session or thread id
   parentKey: string | null, // who started it, if anyone
   kind: 'session' | 'agent' | 'reviewer',
@@ -268,7 +273,9 @@ Each source also exports `detail(key, since)` for the side drawer: up to 200 rec
 `{ at, kind: 'user' | 'assistant' | 'thinking' | 'tool' | 'result' | 'error', tool: string | null,
 text: string | null }` (`text` ≤2000 chars and only with snippets; thinking text is never returned,
 only the fact that the model was thinking) and a `next` cursor (a byte offset) for the following
-poll.
+poll. A source may also answer `reset: true`: its `events` are then the whole recent list, and the
+page shows them in place of what it had (the Gemini CLI reader does this, because Gemini CLI writes a
+message again whenever it changes).
 
 ### Claude Code (`src/sources/claude.js`)
 
@@ -403,6 +410,103 @@ The same contract as the Codex reader (`createGrokSource` / `createKimiSource`, 
   event log per agent, `agents/<agent id>/wire.jsonl` (prompts, turns, messages, model requests,
   usage, permission and plan mode). Sub-agents hang under the main agent with `spawned: true`.
 
+### Gemini CLI (`src/sources/gemini.js`)
+
+```js
+export function createGeminiSource({ root, settings, now = Date.now })
+// -> { poll(): { ok, error, root, sessions: Session[] }, detail(key, since) }
+```
+
+Read-only, like Grok and Kimi Code: no button in Pleni opens, sends to, rolls over, answers or
+changes a Gemini CLI session. These are the files of Gemini CLI 0.66, as its source code describes
+them.
+
+- **Where:** `<root>/tmp/<project>/chats/session-<YYYY-MM-DDTHH-MM>-<first 8 of the id>.jsonl`, one
+  per session. Version 0.38 and older wrote one `session-….json` object instead (`{ sessionId,
+  projectHash, startTime, lastUpdated, messages, summary?, kind? }`): it is read whole, when it is
+  at most 16 MB, and again when it changes. A helper's log is `chats/<session id>/<agent id>.jsonl`,
+  and its metadata says `kind: 'subagent'`. The listing is refreshed every 30 s, and at once for the
+  helper folder of a session that moved. It keeps files changed within `recentHours`: the newest
+  300 sessions, and up to 50 helpers for each, 600 logs in all.
+- **The working folder** is not in the session. `<root>/tmp/<project>/.project_root` (at most 4 KB,
+  trimmed, an absolute path) names it; else `<root>/projects.json` does (`{ projects: { "<folder>":
+  "<project>" } }`, read the other way round). An older project folder is named by the SHA-256 of
+  its working folder (64 hex digits): the `projects.json` folder with that hash, which the
+  metadata's `projectHash` can also name. A helper with none takes its session's.
+- **Copies:** an older hash-named project folder may hold copies of the same sessions. Each key shows
+  once: the copy with the newest `lastUpdated` (or, without one, the newest record time), and on a
+  tie the newest file.
+- **Reading a log:** the first line is the metadata (`{ sessionId, projectHash, startTime,
+  lastUpdated, kind?, directories? }`), read with `readHeadLine`. The id comes from there, never from
+  the file name. Each later line is one of these:
+  - a message (with a string `id`). The same id again later is a newer copy of it: the newest copy
+    wins, in the place where the first copy came;
+  - `{ $set }`, merged into the metadata (`lastUpdated`, `summary`, `sessionId`, `kind`;
+    `memoryScratchpad` and `directories` are never kept). An older `messages` key gives the whole
+    list;
+  - `{ $rewindTo: <id> }`: that message and every one after it go. When the message lies before the
+    part that was read, all of that part goes;
+  - `{ $patch }`: `id` with fields changes those fields of that message (tool calls are matched by
+    their own id); `updates` does the same for each message it names (a list of `{ id, … }`), or
+    gives more fields for `id`; `removeIds` takes messages out; `orderIds` puts the messages it
+    names in its order, and the others keep their places. A message that was not read is left alone.
+
+  A line that does not parse is skipped, and a half-written last line waits for its newline. Logs
+  are tailed like Kimi Code's: about the last 4 MB at first, and near the end again after 16 MB of
+  backlog. A log read from its middle gets its first prompt and a model from its first 2 MB, once.
+  At most 5000 messages are kept per log, each cut short (1000 characters of text, and no tool
+  results).
+- **Messages** are `{ id, timestamp, type, content, displayContent? }`, with `type` `user`,
+  `gemini`, `info`, `error` or `warning`. A `gemini` message may have `toolCalls` (`{ id, name,
+  args, result?, status, timestamp, displayName?, description? }`), `thoughts`, `tokens` and
+  `model`. `content` is text, or Gemini parts (`{ text }`, `{ functionCall }`, `{ functionResponse }`);
+  `displayContent` is what the person typed, which Pleni shows first. The `thoughts` list and any part
+  with `thought: true` are the model thinking: never kept or shown, only the fact that it thought. A
+  tool call's `description` is the tool's own long description, so only its `args` give the detail.
+  A `user` message whose parts hold a `functionResponse` is tool results going back to the model,
+  not the person. User text that starts with `/`, `?`, `<session_context>` or `<hook_context>` is a
+  command, help or added context, not the person either.
+- **Keys:** `gemini:<session id>` (a lower-case UUID), and `gemini:<session id>/<agent id>` for a
+  helper (kind `agent`, `spawned`, its parent the session). An id that does not fit `isNodeKey` is
+  skipped. A log beside the sessions whose metadata says `subagent` names no parent, so it shows as
+  a helper on its own.
+- **Turns,** in message order: the person's prompt, or tool results going back to the model, starts
+  a turn or keeps it going. A `gemini` message with a tool call that is `validating`, `scheduled`,
+  `executing` or `awaiting_approval` keeps it going, with those calls open. One whose calls all
+  ended keeps it going too, since their results go back to the model, unless every call was
+  `cancelled` (the turn was stopped) or a helper's `complete_task` call succeeded (it handed back its
+  result). A `gemini` message with no tool calls (and no function calls in its parts) ends the
+  turn, and an `error` message ends it with an error. `info` and `warning` messages and commands
+  change nothing.
+- **Status:** **working** while a turn is going and `lastAt` is within `staleMinutes`, else
+  **idle**; **error** when the turn ended with an error; for a helper, **done** when its turn ended,
+  or when the session that started it has no tool call still open and wrote something after the
+  helper's last word; **ready** when the turn ended within `activeMinutes`; else **idle**. A session
+  whose helper is working is working too (only ready and idle are lifted).
+- **Needs you:** a tool call that has been `awaiting_approval` for at least 2 seconds (approval
+  rules answer most calls at once) gives `needs: { kind: 'permission', text, at }`, with `text`
+  "Asks to use <tool>: <detail>" only with snippets. It stays until the call is answered or the turn
+  ends.
+- **The other fields:** `title` is the metadata's `summary`, else the first prompt (≤120 chars),
+  and only with snippets, because both are session text (`titleSource` `summary` or `first-prompt`).
+  `model` is the newest `gemini` message's `model`. `effort`, `branch` and `entrypoint` are null.
+  `startedAt` is `startTime`. `lastAt` is the newest time of a message, tool call or thought;
+  `lastUpdated` counts only when there is none, because it can change when nothing happened in the
+  session. `lastText` is the newest reply's text. `activity`, while working, is the newest open tool
+  call by its `displayName`, with a detail from its `args`.
+- **Links:** a helper's start is a **down** link on its session (label: the helper's title), and its
+  end an **up** link (label: its last reply); labels only with snippets.
+- **Detail:** the last 2 MB of the log (an older `.json` file whole), read the same way, so each
+  message shows once: the person's
+  prompts (`user`), replies (`assistant`), one `thinking` mark for a reply that thought, each tool
+  call (`tool`, by `displayName`, with its detail) and how it ended (`result`, or `error` with the
+  error or "Stopped" for a cancelled call), tool results from `functionResponse` parts that no call
+  showed, and `error` messages. Every answer is the whole recent list, with `reset: true`. When a
+  `.jsonl` log has not grown since `since` (its size), the answer is `{ events: [], next: since }`.
+- **Never opened:** Pleni reads only `tmp/*/chats/**`, `tmp/*/.project_root` and `projects.json`,
+  so never `oauth_creds.json`, `google_accounts.json`, `gemini-credentials.json`, `settings.json`,
+  `trustedFolders.json` or any `.env` file.
+
 ### Mailbox (`src/sources/mailbox.js`)
 
 An optional folder that two agents use to coordinate through Markdown files: a **planner** assigns
@@ -501,11 +605,11 @@ MailboxState = {
 ## Snapshot (`src/model.js`)
 
 ```js
-export function buildSnapshot({ now, settings, claude, codex, mailbox, dismissed, actions })  // any source may be null
+export function buildSnapshot({ now, settings, claude, codex, grok, kimi, gemini, mailbox, dismissed, actions, asks, demo })  // any source may be null
 Snapshot = {
   version: 1, now,
   demo: boolean,   // true only in the demo, where the Projects page offers no New, Edit or Delete
-  sources: { claude: SourceInfo, codex: SourceInfo, grok: SourceInfo, kimi: SourceInfo, mailbox: SourceInfo | null },
+  sources: { claude: SourceInfo, codex: SourceInfo, grok: SourceInfo, kimi: SourceInfo, gemini: SourceInfo, mailbox: SourceInfo | null },
   nodes: Node[], edges: Edge[], events: Event[], counts: { working, ready, idle, done, error, total },
   attention: [{ id: '<key>|<kind>', key, kind, text, at }],  // at is 0 when unknown
   tasks: MailboxState['tasks'] | null,
@@ -519,7 +623,7 @@ Snapshot = {
 }
 SourceInfo = { enabled, ok, error, count }
 Node = {
-  key, parent, platform: 'human' | 'group' | 'claude' | 'codex' | 'grok' | 'kimi' | 'relay',
+  key, parent, platform: 'human' | 'group' | 'claude' | 'codex' | 'grok' | 'kimi' | 'gemini' | 'relay',
   kind: 'person' | 'project' | 'tool' | 'relay' | 'session' | 'agent' | 'reviewer',
   title, subtitle, rank, role, tier: 'senior' | 'junior' | null,
   model, modelLabel, effort, status, startedAt, lastAt, activity, lastText,
@@ -549,7 +653,7 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
   sessions → sub-agents, recursively. A sub-agent whose parent is not listed hangs under its project.
 - AI tool tiles: while `toolTiles` is true, each top-level session hangs under its AI tool's tile,
   `tool:<platform>` (kind `tool`, platform the tool, parent `you`, title "Claude Code", "Codex",
-  "Grok" or "Kimi Code", rank "AI tool", subtitle "N sessions" or "No sessions now"), instead of
+  "Grok", "Kimi Code" or "Gemini CLI", rank "AI tool", subtitle "N sessions" or "No sessions now"), instead of
   under `you` or its project, so grouping by project waits. A tool has a tile when its source is on
   and found its folder (`SourceInfo.ok`) or has sessions, even when none is listed, and also when
   anything on the map hangs under it. Who reports to whom (below) still wins, so the mailbox chain
@@ -1296,7 +1400,7 @@ text from a session.
 
 ```js
 export function createUsage({ getRoots, getSettings, now, claudeLimits, maxBytes, maxFiles })  // -> { read }
-// read({ fresh }) -> Promise<{ at, tools: { claude, codex, grok, kimi } }>, never rejects
+// read({ fresh }) -> Promise<{ at, tools: { claude, codex, grok, kimi, gemini } }>, never rejects
 export function lastDays(now)  // -> { keys: ['YYYY-MM-DD' x 7], starts: [8 local midnights], start, end }
 ```
 
@@ -1315,7 +1419,7 @@ Each tool is `{ on, today, week, days, atLeast, limits, error }`:
   `from` is `'files'` (Codex) or `'statusLine'` (Claude Code), `plan` is a string or `null`, and
   `windows` is `[{ minutes, usedPercent, resetsAt }]` (`minutes` and `resetsAt` may be `null`;
   `resetsAt` is in ms; `usedPercent` is 0 to 100). A window the tool did not give is left out, never
-  made up. Grok and Kimi Code save no limits, so theirs is always `null`.
+  made up. Grok, Kimi Code and Gemini CLI save no limits, so theirs is always `null`.
   **Claude Code's hook:** `createUsage({ claudeLimits })` takes an optional function (it may be
   async) that returns an `L` with `from: 'statusLine'`, or `null`. The server gives it
   `statusLineLimits(dir)` while `actions.limits` is on (see Plan limits for Claude Code below).
@@ -1356,6 +1460,14 @@ Each tool is `{ on, today, week, days, atLeast, limits, error }`:
   agent and every helper. Only lines with `type` `usage.record` count; `time` is epoch ms. A record
   is keyed by `(time, agentId, model, the four numbers)`. `input` is `usage.inputOther`, `output` is
   `usage.output`, `cacheRead` is `usage.inputCacheRead`, `cacheWrite` is `usage.inputCacheCreation`.
+- **Gemini CLI:** the logs `src/sources/gemini.js` reads: `<gemini root>/tmp/<project>/chats/session-*.jsonl`,
+  each helper's `chats/<session id>/*.jsonl`, and the older `session-*.json`, read whole when it
+  changes (one over 8 MB is skipped and sets `atLeast`). Only `gemini` messages with `tokens` count,
+  also those inside an older `$set` with `messages`. A message is keyed by its `id`, so a newer copy
+  of it, or a copy of the session in an older hash-named project folder, counts once. The time is its
+  `timestamp`. As with Codex, `tokens.input` holds the cached part: `input` is `tokens.input -
+  tokens.cached` (not below 0) plus `tokens.tool` (tool-use prompts), `output` is `tokens.output`
+  plus `tokens.thoughts` (thinking), `cacheRead` is `tokens.cached`, and `cacheWrite` is 0.
 
 **Limits on work.** Only files changed since the start of the oldest of the 7 days are read. Pleni
 remembers each file's size and where it stopped, and reads only the bytes added to a growing `.jsonl`
@@ -1636,7 +1748,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   `people[key].watch` (`false` removes it). Only a session on the map or the relay can be watched:
   other keys get `400`, a tile that is not on the map `404`. It answers `{ ok: true }`.
 - **POST /api/hide** `{ key, hide: true }` passes the same checks and saves `people[key].role =
-  'hidden'` for a Claude Code, Codex, Grok or Kimi Code session or helper on the map (kind session,
+  'hidden'` for a Claude Code, Codex, Grok, Kimi Code or Gemini CLI session or helper on the map (kind session,
   agent or reviewer; other keys `400`, a tile not on the map `404`). It answers
   `{ ok: true, role }` with the role it had before (null for none). `{ key, hide: false, role }` puts
   that role back (one of `superintendent`, `coordinator`, `lead`, `worker`, or null to remove it),
@@ -1722,7 +1834,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   like the snapshot). It answers `{ demo, limitsOn, at, tools }`, the shape `createUsage().read()` gives (see
   Usage) plus `limitsOn` (`settings.actions.limits`, false in the demo), with `?fresh=1` to skip the 30-second reuse. In the demo it answers `demoUsage(now)`:
   made-up numbers, limits for Claude Code (`from: 'statusLine'`) and Codex (`from: 'files'`) and
-  none for Grok and Kimi Code; it reads no folder. `createServer({ usage })` lets tests replace it.
+  none for Grok, Kimi Code and Gemini CLI; it reads no folder. `createServer({ usage })` lets tests replace it.
 - **GET /api/statusline** needs the key cookie and a request from this computer. It answers `{ on,
   demo, ok, error, file, found, connected, stale, previous, lines }`: `on` is `settings.actions.limits`
   and the rest is `readStatusSetup`. In the demo it answers a fixed made-up state (`on: false`,
@@ -1804,7 +1916,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   ignored. A new answer goes through `setHtml`, so nothing is repainted when the words did not
   change, and the scroll place and a focused link are kept. Times in it are clock times, never "5 min ago", so
   a quiet minute changes nothing. One card for each tool whose `on` is true (a plain line when all
-  four are off), with the tool's mark and name (and a Codex plan name when it has one):
+  five are off), with the tool's mark and name (and a Codex plan name when it has one):
   - **Plan limits.** One bar for each window: `role="meter"` (0 to 100, `aria-label` and
     `aria-valuetext`) with the words in front, such as "5-hour limit: 63% used, resets at 4:30 PM"
     or "Weekly limit: 22% used, resets Mon 9:00 AM" (a name from `window.name`, else 300 minutes is
@@ -1819,8 +1931,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
     `#/settings/buttons` on this computer (`LOCAL_PAGE`), or "Connect it on the computer that runs
     Pleni." on another device, and "See them on claude.ai" (`https://claude.ai/settings/usage`,
     `target="_blank" rel="noopener noreferrer"`). Codex: "Codex saves its limits after each reply. None
-    in the last 7 days." and a link to `https://chatgpt.com/codex/settings/usage`. Grok and Kimi Code:
-    "<Tool> does not save plan limits on this computer. In <Tool>, type /usage."
+    in the last 7 days." and a link to `https://chatgpt.com/codex/settings/usage`. Grok, Kimi Code and
+    Gemini CLI: "<Tool> does not save plan limits on this computer. In <Tool>, type /usage." (`/stats`
+    for Gemini CLI)
   - **Tokens.** "Today: 1.2 million tokens" and "Last 7 days: 8.4 million tokens" (`total`; "at
     least" in front when `atLeast`, with a note that Pleni stopped reading early), each with a line
     "Sent 900k · written back 250k · saved to memory 40k · read again from memory 40 million (not
@@ -1856,7 +1969,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   Dragging a session or relay tile more than 6 px onto another tile (or onto the person) posts
   `/api/placement`; valid bosses light up, Esc or a drop elsewhere cancels, and a short notice offers
   Undo. The drawer's **Reports to** menu does the same from the keyboard, with **Automatic** to undo.
-- **Tile:** platform mark (Claude Code, Codex, Grok or Kimi Code), title, rank, model label, status dot and words
+- **Tile:** platform mark (Claude Code, Codex, Grok, Kimi Code or Gemini CLI; Grok and Kimi Code are plain letters and Gemini CLI a plain diamond, not their makers' logos), title, rank, model label, status dot and words
   ("Needs you", "Working", "Finished", "Idle", "Done", "Error"), the current activity or last text, and how
   long ago.
 - **List:** a table of sessions grouped by project with status filters; it is also the accessible
@@ -2109,7 +2222,7 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   in its List row, and a line at the top of its side panel's Now tab: "Roll over soon: Memory 87%
   full, squeezed 3 times." Its Details tab shows Memory ("680k of 780k tokens (87% full)", or
   "40k tokens in use" while the size is unknown) and Squeezed ("3 times, last 2 hours ago").
-- **Hide from the map:** the Now tab of a Claude Code, Codex, Grok or Kimi Code session or helper
+- **Hide from the map:** the Now tab of a Claude Code, Codex, Grok, Kimi Code or Gemini CLI session or helper
   has **Hide from the map**, which posts `/api/hide`. The side panel closes, since the tile is
   gone, and the notice at the bottom of the page offers Undo, which puts back the role it had.
   Settings' own copy gets the role too. Roll over's Check step offers **Hide the old session** once
@@ -2155,7 +2268,9 @@ export function createDemoSource({ now = Date.now })  // -> { poll(): { claude, 
 A deterministic, time-driven cast: a person, two projects, a Codex planner with two sub-agents, a
 Claude coordinator with three sub-agents (one working, one waiting, one done; the coordinator has a
 long session's numbers, so it shows "Roll over soon"), and a small mailbox
-with a note for the person, with hand-offs that light up every few seconds. In its agent mail, the
+with a note for the person, with hand-offs that light up every few seconds. A Grok session and a Kimi
+Code session work in the same projects, and a Gemini CLI session updates the field app's help pages,
+with a helper that is done. In its agent mail, the
 planner (which the relay wakes) and "Sales tax research" write to each other every loop, the
 person writes to "Sales tax research", and "Sales tax research" has sent the person ("Ada") a
 question that waits. It is used by `node bin/pleni.js --demo`, the screenshots and the
