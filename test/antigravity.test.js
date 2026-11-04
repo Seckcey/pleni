@@ -43,6 +43,8 @@ const note = (ms, type, content = '', extra = {}) => ({ source: 'SYSTEM', type, 
 // The result of an invoke_subagent call names each helper's conversation.
 const invoked = (ms, ids) => ran(ms, 'INVOKE_SUBAGENT', ids.map((id) => `Started a subagent.\nconversationId: "${id}"`).join('\n'));
 const numbered = (list, from = 0) => list.map((step, i) => (typeof step === 'string' ? step : { step_index: from + i, ...step }));
+// A step cleared to save space: no words, and no time left.
+const cleared = (step, index) => ({ ...step, created_at: undefined, content: '', status: 'CLEARED', step_index: index });
 
 // A conversation's transcript, its steps numbered in order. Strings are written as they are.
 function writeTranscript(root, id, steps, { full = false, mtime } = {}) {
@@ -232,27 +234,39 @@ test('a request without tags keeps the person\'s own words, even an upper-case <
     'Replace <YOUR_PROJECT_ID> in deploy.sh with my project and run it',
     'Use <ENTER> to submit, not <TAB>',
     `What does the <API_KEY> setting in config.json do?\n${ADDED}`,
-    // A closed block inside a sentence is the person's own too.
+    // A closed block inside a sentence is the person's own too, and so is one at the start of a
+    // line with more words after it on that line.
     'Why does <TITLE>Home</TITLE> not show?',
+    '<TITLE>Home</TITLE> does not show on the page',
+    'Fix this:\n<NOTE>keep it short</NOTE> and add a test',
     // A closed block on lines of its own is one Antigravity CLI added, whatever its name.
     'Sum up the thread\n<PREVIOUS_CONVERSATION_THREAD>\nEarlier words.\n</PREVIOUS_CONVERSATION_THREAD>',
     // A known block may run on to the end of a text that was cut short.
     'Short ask\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-04T10:',
   ];
   said.forEach((content, i) => writeTranscript(root, idAt(i + 1), [{ ...ask(at, ''), content }, reply(at + 1000, 'Done.')]));
-  const { source, poll } = open(root);
-  const titles = poll().sessions.map((s) => s.title);
+  // A pasted log with a tag on each of many lines, never closed after it (a closing tag before it
+  // does not close it): the words stay, and they are read in one go, so even a long log is quick.
+  const pasted = Array.from({ length: 20000 }, (_, i) => `<WARN>\nDisk is ${i % 100}% full.`).join('\n');
+  writeTranscript(root, idAt(20), [{ ...ask(at, ''), content: `What does </WARN> mean in this log?\n${pasted}` }, reply(at + 1000, 'The disk fills up.')]);
+  const { source, get, poll } = open(root);
+  const titles = poll().sessions.filter((s) => s.id !== idAt(20)).map((s) => s.title);
   const words = [
     'Fill in the <TODO> parts of main.js',
     'Replace <YOUR_PROJECT_ID> in deploy.sh with my project and run it',
     'Use <ENTER> to submit, not <TAB>',
     'What does the <API_KEY> setting in config.json do?',
     'Why does <TITLE>Home</TITLE> not show?',
+    '<TITLE>Home</TITLE> does not show on the page',
+    'Fix this: <NOTE>keep it short</NOTE> and add a test',
     'Sum up the thread',
     'Short ask',
   ];
   assert.deepEqual(titles, words);
-  assert.deepEqual(said.map((_, i) => source.detail(keyOf(idAt(i + 1)), null).events[0].text), words, 'the side panel shows the same words');
+  const shown = (id) => source.detail(keyOf(id), null).events[0].text;
+  assert.deepEqual(said.map((_, i) => shown(idAt(i + 1)).replace(/\s+/g, ' ')), words, 'the side panel shows the same words');
+  assert.match(get(keyOf(idAt(20))).title, /^What does <\/WARN> mean in this log\? <WARN> Disk is 0% full\. <WARN> Disk is 1% full\./);
+  assert.match(shown(idAt(20)), /^What does <\/WARN> mean in this log\?\n<WARN>\nDisk is 0% full\.\n<WARN>\nDisk is 1% full\./);
 });
 
 test('thinking is never kept or shown: only the fact that the model thought', (t) => {
@@ -516,7 +530,12 @@ test('a tool that waits for the person to allow it, or to answer its question, n
   writeTranscript(root, idAt(5), [ask(T0 - MINUTE, 'Clean it'), runs(T0 - 50 * SECOND, 'rm -rf dist'), waits(T0 - 40 * SECOND), reply(T0 - 30 * SECOND, 'I left the folder as it is.')]);
   // A question the agent asks waits for the person's answer: it is not a request to use a tool.
   const question = { questions: [{ question: 'Which database should I use?', options: ['Postgres', 'SQLite'], is_multi_select: false }] };
-  writeTranscript(root, idAt(6), [ask(T0 - MINUTE, 'Set up the database'), uses(T0 - 40 * SECOND, [call('ask_question', question)]), ran(T0 - 30 * SECOND, 'ASK_QUESTION', '', { status: 'WAITING' })]);
+  const asks = (n, name, type) => writeTranscript(root, idAt(n), [ask(T0 - MINUTE, 'Set up the database'), uses(T0 - 40 * SECOND, [call(name, question)]), ran(T0 - 30 * SECOND, type, '', { status: 'WAITING' })]);
+  asks(6, 'ask_question', 'ASK_QUESTION');
+  // The name of the step is Pleni's guess: an ask_question call asks, whatever its step is called,
+  // and so does an ASK_QUESTION step whose call has another name (that call's words are not shown).
+  asks(7, 'ask_question', 'ASK_USER_QUESTION');
+  asks(8, 'ask_user', 'ASK_QUESTION');
 
   const { clock, get } = open(root);
   const needs = (n) => get(keyOf(idAt(n))).needs;
@@ -528,6 +547,8 @@ test('a tool that waits for the person to allow it, or to answer its question, n
   assert.deepEqual(s.activity, { tool: 'run_command', detail: 'rm -rf build', at: T0 - 10 * SECOND });
   assert.deepEqual([2, 3, 4, 5].map(needs), [null, null, null, null]);
   assert.deepEqual(needs(6), { kind: 'question', text: 'Which database should I use?', at: T0 - 30 * SECOND });
+  assert.deepEqual(needs(7), { kind: 'question', text: 'Which database should I use?', at: T0 - 30 * SECOND });
+  assert.deepEqual(needs(8), { kind: 'question', text: null, at: T0 - 30 * SECOND });
   const quiet = open(root, { content: 'none' });
   quiet.clock.now = T0 + 6 * SECOND;
   assert.deepEqual(quiet.get(keyOf(idAt(1))).needs, { kind: 'permission', text: null, at: T0 - 10 * SECOND });
@@ -679,26 +700,29 @@ test('a helper hangs under the conversation its reminder names, not under a fork
   const parent = idAt(20);
   const forks = [idAt(10), idAt(30)]; // made later, with copies of the parent's steps; one id sorts first
   const helper = idAt(40);
-  const lost = idAt(41); // its INVOKE_SUBAGENT step was cleared, so nothing names it now
+  const lost = idAt(41); // started first; its start is cleared in the parent now, but not in the forks
   const started = [
     ask(at, 'Why is checkout slow?'),
-    uses(at + 1000, [call('invoke_subagent', { Subagents: [{ Role: 'Slow query finder' }] })]),
+    uses(at + 1000, [call('invoke_subagent', { Subagents: [{ Role: 'Index checker' }] })]),
+    invoked(at + 1500, [lost]),
+    uses(at + 1600, [call('invoke_subagent', { Subagents: [{ Role: 'Slow query finder' }] })]),
     invoked(at + 2000, [helper]),
-    reply(at + 3000, 'A helper is looking for slow queries.'),
+    reply(at + 3000, 'Two helpers are on it.'),
   ];
-  writeTranscript(root, parent, started);
+  // After the forks were made, the parent's oldest steps were squeezed.
+  writeTranscript(root, parent, [...started.slice(0, 3).map((step, i) => cleared(step, i)), ...started.slice(3)]);
   for (const id of forks) writeTranscript(root, id, [...started, ask(at + 60000, 'Something else'), reply(at + 61000, 'Done.')]);
   const reminded = (ms, line, text) => ({ ...ask(ms, text), content: `<subagent_reminder>\nYou are a subagent.\n${line}\n</subagent_reminder>\n<USER_REQUEST>\n${text}\n</USER_REQUEST>` });
   writeTranscript(root, helper, [reminded(at + 2500, `The caller agent that started you has id: ${parent}`, 'Find the slow queries.'), uses(T0 - MINUTE, [call('grep_search', { Query: 'SELECT' })])]);
   // Its own id comes first: the line that names the caller agent wins.
-  writeTranscript(root, lost, [reminded(at + 2600, `Your conversation id: ${lost}\n<caller agent id="${parent}">`, 'Check the indexes.'), reply(at + 9000, 'Two indexes are missing.')]);
+  writeTranscript(root, lost, [reminded(at + 1550, `Your conversation id: ${lost}\n<caller agent id="${parent}">`, 'Check the indexes.'), reply(at + 9000, 'Two indexes are missing.')]);
 
   const byId = new Map(open(root).poll().sessions.map((s) => [s.id, s]));
   assert.equal(byId.get(helper).parentKey, keyOf(parent));
   assert.equal(byId.get(helper).title, 'Slow query finder', 'it keeps the role its parent gave it');
-  assert.equal(byId.get(lost).parentKey, keyOf(parent), 'the reminder links a helper that nothing names any more');
+  assert.equal(byId.get(lost).parentKey, keyOf(parent), 'the reminder links a helper that only the forks name now');
   assert.equal(byId.get(parent).status, 'working', 'the parent waits for its helper');
-  assert.deepEqual(byId.get(parent).links.map((l) => [l.dir, l.other]), [['down', keyOf(helper)], ['down', keyOf(lost)], ['up', keyOf(lost)]]);
+  assert.deepEqual(byId.get(parent).links.map((l) => [l.dir, l.other]), [['down', keyOf(lost)], ['down', keyOf(helper)], ['up', keyOf(lost)]]);
   for (const id of forks) {
     assert.equal(byId.get(id).status, 'idle', 'a fork does not wait for a helper it did not start');
     assert.deepEqual(byId.get(id).links, []);
@@ -752,6 +776,14 @@ test('a helper forked from a helper hangs under the one that started it, though 
   assert.deepEqual([byId.get(worker).parentKey, byId.get(worker).title], [keyOf(coordinator), 'Cache worker']);
   // They all start with the same copied step, so their links share a time.
   assert.deepEqual(byId.get(coordinator).links.map((l) => `${l.dir} ${l.other}`).sort(), [worker, tester, linter].map((id) => `down ${keyOf(id)}`));
+
+  // Later the coordinator's oldest steps are squeezed, with its starts of the tester and the worker,
+  // and Pleni starts again. The worker's copy of those steps still names the tester, but the tester's
+  // own reminder, not a copy, names the coordinator: so the tester stays there.
+  writeTranscript(root, coordinator, [...steps.slice(0, 5).map((step, i) => cleared(step, i)), ...steps.slice(5), invoked(at + 1910, [linter]), reply(at + 2000, 'Three workers are on it.')]);
+  byId = new Map(open(root).poll().sessions.map((s) => [s.id, s]));
+  assert.deepEqual([tester, worker].map((id) => byId.get(id).parentKey), [keyOf(coordinator), keyOf(coordinator)]);
+  assert.deepEqual(byId.get(worker).links, [], 'the worker did not start the tester');
 });
 
 test('a helper of a helper that works keeps every conversation above it working', (t) => {
@@ -855,9 +887,6 @@ test('a working helper never hides its parent\'s error, a helper\'s own error sh
 
 // ---- rewrites, broken lines and big transcripts ----
 
-// A step cleared to save space: no words, and no time left.
-const cleared = (step, index) => ({ ...step, created_at: undefined, content: '', status: 'CLEARED', step_index: index });
-
 test('a checkpoint that writes the transcript again, smaller, is read again, keeping the first request, the start time and the helpers', (t) => {
   const root = agyHome(t);
   const at = T0 - 8 * MINUTE;
@@ -897,7 +926,7 @@ test('a checkpoint that writes the transcript again, smaller, is read again, kee
   byId = new Map(poll().sessions.map((s) => [s.id, s]));
   const s = byId.get(CID);
   assert.equal(s.lastText, 'Second answer.');
-  assert.equal(s.title, 'First request', 'the first request still names it');
+  assert.deepEqual([s.title, s.titleSource], ['First request', 'first-prompt'], 'the first request still names it');
   assert.equal(s.status, 'ready');
   assert.equal(s.startedAt, at, 'the start time is kept, though the cleared steps have no time');
   const kid = byId.get(KID);
@@ -979,30 +1008,42 @@ test('a broken line is skipped, and a half-written last line waits for its newli
 
 test('a big transcript read from near its end keeps its first request, start and the helpers it named early on, with their roles', (t) => {
   const at = T0 - 60 * MINUTE;
+  const MiB = 1024 * 1024;
   const kids = [KID, idAt(3), idAt(4), idAt(5)];
   const start = (index, ms, ids, status = 'DONE') => ({ ...invoked(ms, ids), status, step_index: index });
   const helps = (role) => call('invoke_subagent', { Subagents: [{ Role: role }] });
+  const first = [call('view_file', { AbsolutePath: '/home/ada/project/notes/transcript.jsonl' }), helps('Docs indexer'), helps('Code indexer'), helps('Test indexer')];
   // One reply reads a file and starts three helpers. Antigravity CLI writes a step again when it
-  // changes, so the first start is written before it names its helper, and again after the second.
+  // changes: the reply while it runs, before all its calls are there, and once it is done, and the
+  // first start before it names its helper, and again only when that helper is done, after a later
+  // reply.
   const steps = [
     { ...ask(at, 'Index the whole repository'), step_index: 0 },
-    { ...uses(at + 1000, [call('view_file', { AbsolutePath: '/home/ada/project/notes/transcript.jsonl' }), helps('Docs indexer'), helps('Code indexer'), helps('Test indexer')]), step_index: 1 },
+    { ...uses(at + 1000, first.slice(0, 1), { status: 'RUNNING' }), step_index: 1 },
     // The file holds a reply of another conversation: words in a tool's result are not a reply.
     { ...ran(at + 1500, 'VIEW_FILE', '{"type":"PLANNER_RESPONSE","content":"Done."}'), step_index: 2 },
     start(3, at + 2000, [], 'WAITING'),
+    { ...uses(at + 1000, first), step_index: 1 },
     start(4, at + 2100, [kids[1]], 'RUNNING'),
-    start(3, at + 2000, [kids[0]]),
     start(4, at + 2100, [kids[1]]),
     start(5, at + 2200, [kids[2]]),
-    // A later reply starts one more.
-    { ...uses(at + 2300, [helps('Link checker')]), step_index: 6 },
-    start(7, at + 2400, [kids[3]]),
+    // A later reply writes a long file and starts one more. In the big transcript, the part that
+    // is read starts within this reply's line, so the start comes after the reply's place.
+    { ...uses(at + 2300, [call('write_to_file', { TargetFile: '/home/ada/project/index.md', CodeContent: 'z'.repeat(300 * 1024) }), helps('Link checker')]), step_index: 6 },
+    { ...ran(at + 2350, 'WRITE_TO_FILE', 'Wrote index.md.'), step_index: 7 },
+    start(8, at + 2400, [kids[3]]),
   ];
   const read = (big) => {
     const root = agyHome(t);
-    const filler = big ? Array.from({ length: 50 }, (_, i) => ({ ...ran(at + 3000 + i, 'VIEW_FILE', 'y'.repeat(100 * 1024)), step_index: 8 + i })) : [];
-    const file = writeTranscript(root, CID, [...steps, ...filler, { ...reply(T0 - 2 * MINUTE, 'The index is ready.'), step_index: 58 }], { full: true });
-    assert.equal(fs.statSync(file).size > 4 * 1024 * 1024, big);
+    const filler = Array.from({ length: 39 }, (_, i) => ({ ...ran(at + 3000 + i, 'VIEW_FILE', 'y'.repeat(big ? 100 * 1024 : 10)), step_index: 9 + i }));
+    const all = [...steps, ...filler, start(3, at + 2000, [kids[0]]), { ...reply(T0 - 2 * MINUTE, 'The index is ready.'), step_index: 48 }];
+    const file = writeTranscript(root, CID, all, { full: true });
+    const size = fs.statSync(file).size;
+    assert.equal(size > 4 * MiB, big);
+    if (big) {
+      const before = numbered(steps.slice(0, 8)).map(line).join('').length;
+      assert.ok(size - 4 * MiB > before && size - 4 * MiB < before + line(steps[8]).length, 'the read part starts within the later reply');
+    }
     for (const id of kids) writeTranscript(root, id, [ask(at + 2500, 'Index one part'), reply(at + 9000, 'Done.')]);
     return new Map(open(root).poll().sessions.map((s) => [s.id, s]));
   };

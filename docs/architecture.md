@@ -571,11 +571,12 @@ others who read the files, so every field is read as optional.
   time and the helpers found before are kept. A transcript read from near its end (the first time,
   and again after it was written again or after 16 MB of backlog) gets its first request, its start
   time and whether it is a helper from its first 2 MB, and the helpers it started, with the roles
-  their calls gave them, from the 16 MB before the part that is read. At most 5000 steps are kept
-  per transcript, each cut short (1000 characters of text, and no tool results). A conversation
-  shows only once the steps read hold a request, a reply, a tool's result or an error: one whose
-  read part holds only steps that keep the books, or only the end of one line longer than 4 MB, is
-  left out until its next step is written.
+  their calls gave them, from the 16 MB before the part that is read and from the line that runs on
+  into that part (read to its end when it ends within 1 MB, since that part starts after it). At
+  most 5000 steps are kept per transcript, each cut short (1000 characters of text, and no tool
+  results). A conversation shows only once the steps read hold a request, a reply, a tool's result
+  or an error: one whose read part holds only steps that keep the books, or only the end of one
+  line longer than 4 MB, is left out until its next step is written.
 - **The working folder** is not in a transcript. It comes, in this order, from
   `<root>/cache/conversation_metadata.json` (`{ conversations: { "<id>": { summary: { WorkspaceURIs:
   ["file:///…"] } } } }`; the first `file://` address that gives a full folder path wins, and Pleni
@@ -595,8 +596,10 @@ others who read the files, so every field is read as optional.
   only mentions makes no helper. Each takes its role when the result is JSON that gives one, else
   the role that the call the step answers gave the helper in the same place (`Subagents[].Role`):
   the n-th `invoke_subagent` call of the reply before the step, where n counts the `INVOKE_SUBAGENT`
-  steps in between (each step once, in the place of its first copy), or, for the first of those
-  steps, all the reply's calls together when it names the helpers of all of them. A named
+  steps in between (each step once, in the place of its first copy, even when that copy came before
+  the part that is read; a reply written again keeps its place and gives its newer calls), or, for
+  the first of those steps, all the reply's calls together when it names the helpers of all of
+  them. So a big transcript gives each helper the role a small one would. A named
   conversation that Pleni shows hangs under the one that named it (kind `agent`, `spawned`,
   `parentKey` that conversation's key). A conversation with `<subagent_reminder>` in its first 50
   steps is a helper too, on its own when no conversation names it. When a reminder there gives the
@@ -605,13 +608,16 @@ others who read the files, so every field is read as optional.
   when no step names it any more: a fork (`/fork`, a switch of agent, a `/btw` question) copies its
   conversation's steps, so it names the same helpers. The last reminder there that gives an id
   counts, because a helper forked from a helper starts with a copy of that helper's steps, reminder
-  and all. When its own reminder comes after the first 50 steps, only the copy is read: so when the
-  conversation the id names does not name the helper, but a conversation whose reminder gives that
-  same id does, the steps decide instead. A fork made in a helper's conversation (a `/btw` question
-  or a switch of agent there) has only the helper's reminder, so it hangs under the helper's
-  caller: the files do not tell it apart from a helper whose start was cleared. Only that id is
-  kept. Else a helper named by two conversations stays with the first by id, and a link that would
-  make a loop is left out.
+  and all. When its own reminder comes after the first 50 steps, only the copy is read, and a copied
+  step keeps its time: so when the conversation the id names does not name the helper, but a
+  conversation whose own reminder is that same one (the same id and time) does, the steps decide
+  instead. But a helper's own reminder is believed: when the step that started it was cleared in
+  the conversation its reminder names, a helper forked from that conversation later, whose copy of
+  its steps still holds that step, does not take it. A fork made in a helper's conversation (a
+  `/btw` question or a switch of agent there) has only the helper's reminder, so it hangs under the
+  helper's caller: the files do not tell it apart from a helper whose start was cleared. Only that
+  id is kept. Else a helper named by two conversations stays with the first by id, and a link that
+  would make a loop is left out.
 - **Turns,** in step order: a request starts one. A reply that calls tools, or is still `RUNNING`,
   keeps it going, and so does each tool's result, which goes back to the model; a tool that failed
   does too, since the model sees the error and goes on. A reply with no tool calls ends the turn; a
@@ -631,9 +637,10 @@ others who read the files, so every field is read as optional.
   kind: 'permission', text, at }`, with `text` "Asks to use <tool>: <detail>" only with snippets and
   `at` the step's time. An `ask_question` call (or an `ASK_QUESTION` step) waits the same way for
   the person's answer, not for leave to use a tool: it gives `kind: 'question'`, with `text` the
-  words of its first question, only with snippets. It stays until the step changes or the turn
-  ends. That `WAITING` is the word for this wait is Pleni's best guess: no saved transcript shows
-  one. `PENDING` (not started yet) counts as running, not as waiting for the person.
+  words of the first question of its `ask_question` call (none when the call the step answers has
+  another name), only with snippets. It stays until the step changes or the turn ends. That
+  `WAITING` is the word for this wait is Pleni's best guess: no saved transcript shows one.
+  `PENDING` (not started yet) counts as running, not as waiting for the person.
 - **The other fields:** `title`, only with snippets, is a helper's role, else the conversation's
   title in the metadata (`summary.Title` or `summary.title`), else its first request (≤120 chars),
   else its first prompt in `history.jsonl` that is not a command (`titleSource` `role`, `summary`,
@@ -651,7 +658,7 @@ others who read the files, so every field is read as optional.
   `pattern`), the base name of `AbsolutePath`, `TargetFile`, `DirectoryPath`, `SearchDirectory`,
   `SearchPath` or `ImageName`, the host of a `Url` (or `url`), a helper's role, the `Recipient`
   of a `send_message` call (the agent the message goes to; never the message), or the words of the
-  first of an `ask_question` call's `questions`.
+  first of an `ask_question` call's `questions` (or `Questions`).
 - **Links:** a helper's start is a **down** link on the conversation that started it (label: the
   helper's title), and its end an **up** link (label: its last reply); labels only with snippets.
 - **Detail:** the last 2 MB of the transcript, read the same way, so each step shows once: the

@@ -30,6 +30,7 @@ const TAIL_BYTES = 4 * MiB;
 const CATCH_UP_BYTES = 16 * MiB; // more unread bytes than this: start again near the end
 const HEAD_SCAN_BYTES = 2 * MiB; // looked through for the first request of a transcript read from near its end
 const CALL_SCAN_BYTES = 16 * MiB; // looked through for helpers before the part of a big transcript that is read
+const CROSS_BYTES = MiB; // how far that look reads on, for the line that runs on into the part that is read
 const DETAIL_BYTES = 2 * MiB;
 const META_BYTES = 16 * MiB;
 const LAST_BYTES = MiB;
@@ -70,7 +71,9 @@ const NOTES = new Set(['CHECKPOINT', 'CONVERSATION_HISTORY', 'SYSTEM_MESSAGE', '
 // These known ones may run on to the end of a text that was cut short. Any other upper-case block
 // goes only when it is closed and its opening tag is on a line of its own, so a <TODO> or
 // <API_KEY> in the person's own words stays.
-const ADDED = /<(ADDITIONAL_METADATA|USER_INFORMATION|user_information|subagent_reminder)>[\s\S]*?(?:<\/\1>|$)|(?:^|\n)<([A-Z][A-Z0-9_]{2,})>[ \t]*\r?\n[\s\S]*?<\/\2>/g;
+const KNOWN_BLOCKS = ['ADDITIONAL_METADATA', 'USER_INFORMATION', 'user_information', 'subagent_reminder'];
+const BLOCK_OPEN = new RegExp(`(^|\\n)<([A-Z][A-Z0-9_]{2,})>(?=[ \\t]*\\r?\\n)|<(${KNOWN_BLOCKS.join('|')})>`, 'g');
+const BLOCK_CLOSE = /<\/([A-Za-z][A-Za-z0-9_]{2,})>/g;
 // What a working helper turns into working in each conversation above it.
 const LIFTED = new Set(['ready', 'idle', 'done']);
 // "Created At: …" and "Completed At: …" lines at the top of a tool's result.
@@ -213,9 +216,10 @@ function newEntry(id, file, old) {
     mark: null, // the bytes just before where reading stopped: { end, bytes }
     log: newLog(),
     // Kept when the file is written again, and when the other transcript name takes over: it is
-    // the same conversation. `cut` is true when the first request was cleared of its words, and
-    // `caller` is the conversation a helper's reminder names.
-    head: old ? { ...old.head, steps: 0 } : { prompt: null, cut: false, helper: false, caller: null, steps: 0 },
+    // the same conversation. `cut` is true when the first request was cleared of its words,
+    // `caller` is the conversation a helper's reminder names, and `callerAt` the time of the step
+    // that holds that reminder.
+    head: old ? { ...old.head, steps: 0 } : { prompt: null, cut: false, helper: false, caller: null, callerAt: null, steps: 0 },
     children: old ? old.children : new Map(), // helper id -> the role it was given, or null
     firstAt: old ? old.firstAt : null, // the oldest step time seen
     version: 0, // goes up whenever something new was read
@@ -225,9 +229,10 @@ function newEntry(id, file, old) {
 }
 
 // The steps of a transcript in order, each step_index once. `whole` is false when the start of
-// the file was not read, or old steps were forgotten.
+// the file was not read, or old steps were forgotten. `walk` follows the replies and helper starts,
+// those looked through before the part that is read too, for the roles of helpers.
 function newLog() {
-  return { order: [], byKey: new Map(), whole: true, lines: 0, seenAt: null, firstAt: null };
+  return { order: [], byKey: new Map(), whole: true, lines: 0, seenAt: null, firstAt: null, walk: newWalk() };
 }
 
 // ---- the cache and history files ----
@@ -423,19 +428,17 @@ function restart(entry) {
 function applyRecord(entry, rec) {
   const step = slimStep(rec, POLL_KEEP);
   if (!step) return;
-  const key = put(entry.log, step);
+  put(entry.log, step);
   if (entry.fromStart) noteHead(entry, step);
   noteFirst(entry, step);
-  if (step.children.length) {
-    const { calls, n } = callBefore(entry.log, key);
-    addNamed(entry, step, calls, n);
-  }
+  walkCalls(entry, step);
 }
 
 // The first request, and the reminder that tells a helper it is one and who started it, from steps
 // read in order from the start of the file. A squeeze clears the first request of its words: the
 // next request is not the first one, so `cut` says so. A forked helper's transcript starts with a
 // copy of its parent's steps, reminder and all, so the last reminder that names a caller counts.
+// A copied step keeps its time, so the time of the reminder's step tells a copy from the original.
 function noteHead(entry, step) {
   const head = entry.head;
   if (head.prompt === null && step.kind === 'prompt') {
@@ -446,7 +449,10 @@ function noteHead(entry, step) {
   head.steps++;
   if (step.reminder) {
     head.helper = true;
-    if (step.caller) head.caller = step.caller;
+    if (step.caller) {
+      head.caller = step.caller;
+      head.callerAt = step.at;
+    }
   }
 }
 
@@ -468,10 +474,11 @@ function scanBefore(entry, end) {
   scanCalls(entry, end);
 }
 
-// From the CALL_SCAN_BYTES before the part that is read, only the INVOKE_SUBAGENT steps are taken,
-// with the invoke_subagent calls of the reply before each, for the roles they gave. Only lines that
-// hold one of those two words are parsed, and the parsed step decides: a tool's result may hold
-// the words too.
+// From the CALL_SCAN_BYTES before the part that is read, only the replies and INVOKE_SUBAGENT steps
+// are taken, for the helpers those steps started and the roles their calls gave them. Only lines
+// that hold one of those two words are parsed, and the parsed step decides: a tool's result may
+// hold the words too. The part that is read starts after the line that runs on into it, so that
+// line is read here, to its end, when it ends within CROSS_BYTES.
 function scanCalls(entry, end) {
   const from = Math.max(0, end - CALL_SCAN_BYTES);
   if (end <= from) return;
@@ -479,7 +486,9 @@ function scanCalls(entry, end) {
   try {
     fd = fs.openSync(entry.file, 'r');
     // One byte more in front tells whether the first line is whole.
-    const data = readRange(fd, from === 0 ? 0 : from - 1, from === 0 ? end : end - from + 1);
+    const start = from === 0 ? 0 : from - 1;
+    const data = readRange(fd, start, end - start + CROSS_BYTES);
+    const stop = end - start; // a line that starts here or later is in the part that is read
     let pos = 0;
     if (from > 0) {
       const first = data.indexOf(NEWLINE);
@@ -487,11 +496,12 @@ function scanCalls(entry, end) {
       pos = first + 1;
     }
     let nl;
-    const walk = callWalker(entry);
-    while ((nl = data.indexOf(NEWLINE, pos)) !== -1) {
+    while (pos < stop && (nl = data.indexOf(NEWLINE, pos)) !== -1) {
       const line = data.subarray(pos, nl);
       pos = nl + 1;
-      if (line.includes(INVOKE_HINT) || line.includes(REPLY_HINT)) walk(slimStep(parseLine(line), POLL_KEEP));
+      if (!line.includes(INVOKE_HINT) && !line.includes(REPLY_HINT)) continue;
+      const step = slimStep(parseLine(line), POLL_KEEP);
+      if (step) walkCalls(entry, step);
     }
   } catch {
     // The helpers are a bonus; the rest of the transcript is read without them.
@@ -500,29 +510,46 @@ function scanCalls(entry, end) {
   }
 }
 
-// Takes steps in file order and names the helpers of each INVOKE_SUBAGENT step, as the log would: a
-// step written again keeps the place of its first copy, and so the call that copy answered.
-function callWalker(entry) {
-  let calls = NONE; // the invoke_subagent calls of the newest reply
-  let n = 0; // the INVOKE_SUBAGENT steps since that reply, each step_index once
-  const firsts = new Map(); // step_index -> where its first copy came: { calls, n }
-  return (step) => {
-    if (step?.kind === 'reply') {
-      calls = invokeCalls(step);
-      n = 0;
-    } else if (step?.type === INVOKE) {
-      let at = step.index === null ? undefined : firsts.get(step.index);
-      if (!at) {
-        at = { calls, n: n++ };
-        if (step.index !== null) firsts.set(step.index, at);
-      }
-      if (step.children.length) addNamed(entry, step, at.calls, at.n);
+// The newest reply and how many INVOKE_SUBAGENT steps came after it, each step once, and where each
+// reply and INVOKE_SUBAGENT step came, by step_index.
+function newWalk() {
+  return { reply: null, n: 0, replies: new Map(), starts: new Map() };
+}
+
+// Names the helpers of an INVOKE_SUBAGENT step, with the roles of the call it answers. Steps come in
+// file order and are placed as the log places them: a step written again keeps the place of its
+// first copy. So a reply written again keeps its place and gives its newer calls, and a helper's
+// start written again answers the call that its first copy answered.
+function walkCalls(entry, step) {
+  const walk = entry.log.walk;
+  const index = step.index;
+  if (step.kind === 'reply') {
+    const seen = index === null ? undefined : walk.replies.get(index);
+    if (seen) {
+      seen.calls = invokeCalls(step);
+      return;
     }
-  };
+    walk.reply = { calls: invokeCalls(step) };
+    walk.n = 0;
+    if (index !== null) remember(walk.replies, index, walk.reply);
+  } else if (step.type === INVOKE) {
+    let at = index === null ? undefined : walk.starts.get(index);
+    if (!at) {
+      at = { reply: walk.reply, n: walk.n++ };
+      if (index !== null) remember(walk.starts, index, at);
+    }
+    if (step.children.length) addNamed(entry, step, at.reply?.calls ?? NONE, at.n);
+  }
+}
+
+// Like the log, forgets the oldest past MAX_STEPS.
+function remember(map, key, value) {
+  map.set(key, value);
+  if (map.size > MAX_STEPS) map.delete(map.keys().next().value);
 }
 
 // A step, or a newer copy of one with the same step_index: the newest copy wins, in the place the
-// first one came. Returns the step's key.
+// first one came.
 function put(log, step) {
   const key = step.index !== null ? `s${step.index}` : `l${log.lines}`;
   log.lines++;
@@ -535,7 +562,6 @@ function put(log, step) {
     }
   }
   log.byKey.set(key, step);
-  return key;
 }
 
 // The newest and oldest step times seen. A step taken out later still happened.
@@ -616,8 +642,32 @@ function kindOf(step) {
 function requestText(content) {
   if (typeof content !== 'string') return null;
   const tagged = /<USER_REQUEST>([\s\S]*?)(?:<\/USER_REQUEST>|$)/.exec(content);
-  const text = tagged ? tagged[1] : content.replace(ADDED, '');
+  const text = tagged ? tagged[1] : withoutBlocks(content);
   return text.trim() || null;
+}
+
+// The text without the blocks Antigravity CLI adds, read once from the start. It first notes where
+// each name is closed last, so an opening tag with no closing tag after it costs no search, and a
+// long text with many of them is still quick.
+function withoutBlocks(text) {
+  const lastClose = new Map(); // tag name -> where its last closing tag starts
+  for (const m of text.matchAll(BLOCK_CLOSE)) lastClose.set(m[1], m.index);
+  const open = new RegExp(BLOCK_OPEN);
+  let out = '';
+  let kept = 0;
+  let m;
+  while ((m = open.exec(text)) !== null) {
+    const name = m[2] ?? m[3];
+    const closed = lastClose.get(name) >= open.lastIndex;
+    if (!closed && !KNOWN_BLOCKS.includes(name)) continue;
+    // A known block that is not closed runs on to the end, from its own '<'.
+    const from = closed ? m.index : m.index + (m[1]?.length ?? 0);
+    const end = closed ? text.indexOf(`</${name}>`, open.lastIndex) + name.length + 3 : text.length;
+    out += text.slice(kept, from);
+    kept = end;
+    open.lastIndex = end;
+  }
+  return out + text.slice(kept);
 }
 
 function resultText(content) {
@@ -744,19 +794,6 @@ function addNamed(entry, step, calls, n) {
   const kids = step.children.filter((child) => child.id !== entry.id);
   const roles = rolesFor(kids, calls, n);
   addFound(entry, kids.map((child, i) => ({ id: child.id, role: child.role ?? roles[i] ?? null })));
-}
-
-// The invoke_subagent calls of the reply before a step, and how many INVOKE_SUBAGENT steps came
-// between them.
-function callBefore(log, key) {
-  const at = log.order.lastIndexOf(key);
-  let n = 0;
-  for (let i = at - 1; i >= 0 && i >= at - 50; i--) {
-    const step = log.byKey.get(log.order[i]);
-    if (step.kind === 'reply') return { calls: invokeCalls(step), n };
-    if (step.type === INVOKE) n++;
-  }
-  return { calls: NONE, n: 0 };
 }
 
 function invokeCalls(step) {
@@ -977,14 +1014,17 @@ function parentsOf(chosen) {
 }
 
 // The shown conversation a helper's reminder names. A forked helper whose own reminder came after
-// its first 50 steps has only the copy of its parent's: when the conversation that copy names does
-// not name the helper, but one with that same caller does, the copy came from that one.
+// its first 50 steps has only the copy of its parent's, and a copy keeps the time of its step: when
+// a conversation whose own reminder is that same one (the same caller and time) names the helper,
+// the copy came from that one, so the steps decide. A helper's own reminder is believed, even when
+// a sibling forked later names it in its copy of their caller's steps.
 function callerOf(id, chosen) {
-  const caller = chosen.get(id).head.caller;
+  const { caller, callerAt } = chosen.get(id).head;
   if (!caller || caller === id || !chosen.has(caller)) return null;
   if (chosen.get(caller).children.has(id)) return caller;
   for (const entry of chosen.values()) {
-    if (entry.head.caller === caller && entry.children.has(id)) return null;
+    const copied = callerAt !== null && entry.head.caller === caller && entry.head.callerAt === callerAt;
+    if (copied && entry.children.has(id)) return null;
   }
   return caller;
 }
