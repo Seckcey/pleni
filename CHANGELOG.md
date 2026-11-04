@@ -8,6 +8,19 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **HQ and project mailboxes.** When your mailbox folder is an HQ (one planner, the orchestrator,
+  for several projects; see "Run several projects (HQ)" in the relay's README), Pleni reads the
+  project mailboxes it lists too, at most 20. The map shows you, then the orchestrator, then HQ's
+  relay and a tile for each project, with that project's relay, coordinator and workers under it.
+  The orchestrator is the Codex thread HQ's relay wakes, and the line between them lights when the
+  relay wakes it. A project tile takes the name of the project on the Projects page with the same
+  name, or whose name matches the project's id, so grouping by project puts that project's other
+  sessions under it too. The Tasks page groups tasks by project, HQ first, and each relay notice
+  says which project it is about. A project mailbox Pleni cannot find shows as that project's
+  problem; the others go on. A lone mailbox looks and works as before, with the same keys, so your
+  saved choices keep working. A project's relay can be watched and moved like any relay. Pleni only
+  reads these folders and never sends their paths to the page. The demo is now an HQ with two
+  projects.
 - **Gemini CLI.** Pleni now shows your Gemini CLI sessions too, and the helpers they start: on the
   map, in the List, in each session's side panel, and on the Usage page, where its tokens are
   counted. With the AI tools button on, Gemini CLI gets a tile of its own. Pleni reads only Gemini

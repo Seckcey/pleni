@@ -182,8 +182,35 @@ const isSession = (n) => !!n && (n.kind === 'session' || n.kind === 'agent' || n
 const isRelay = (n) => !!n && n.kind === 'relay';
 // Sessions and the relay can be put under a new boss; the person and project tiles cannot.
 const canMove = (n) => isSession(n) || isRelay(n);
-// A mailbox worker run (mailbox:<task>/W1) keeps no session file of its own.
+// A mailbox worker run (mailbox:<task>/W1, or mailbox:<box>:<task>/W1 in a project mailbox of an HQ)
+// keeps no session file of its own.
 const isWorkerKey = (key) => String(key || '').startsWith('mailbox:');
+// A relay's tile: 'relay' (HQ's own, or a lone mailbox's) or 'relay:<box>' (a project mailbox's).
+const isRelayKey = (key) => key === 'relay' || /^relay:[a-z0-9][a-z0-9-]{0,39}$/.test(String(key || ''));
+
+// An HQ and its project mailboxes (snapshot.boxes, HQ first), or none for a lone mailbox.
+function hqBoxes() {
+  const list = S.snap && Array.isArray(S.snap.boxes) ? S.snap.boxes : [];
+  return list.filter((b) => b && typeof b.id === 'string' && typeof b.name === 'string');
+}
+
+// The mailbox a relay, task or worker key belongs to in an HQ: 'relay', 'task:<id>' and
+// 'mailbox:<task>/W1' are HQ's own, 'relay:<box>', 'task:<box>:<id>' and 'mailbox:<box>:<task>/W1' a
+// project's. Null without an HQ.
+function boxOfKey(key) {
+  const list = hqBoxes();
+  if (!list.length) return null;
+  const k = String(key || '');
+  const m = /^relay:([a-z0-9-]+)$/.exec(k) || /^(?:task|mailbox):([a-z0-9-]+):/.exec(k);
+  return list.find((b) => b.id === (m ? m[1] : 'hq')) || null;
+}
+
+// The project mailboxes that hang under a project tile.
+function boxesOfTile(n) {
+  if (!n || n.kind !== 'project') return [];
+  return hqBoxes().filter((b) => b.id !== 'hq' && b.project === n.project);
+}
+const BOX_UNREAD = 'Mailbox not read';
 // Open in PowerShell opens a window on the computer that runs Pleni, so it is offered only on a page
 // opened there, not through a proxy from another device.
 const LOCAL_PAGE = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
@@ -461,8 +488,10 @@ function keyName(key) {
   if (k.startsWith('path:')) return `agent ${k.slice(5).split('/').filter(Boolean).pop() || ''}`.trim();
   if (k.startsWith('project:')) return k.slice(8);
   if (k.startsWith('tool:')) return PLATFORM_WORDS[k.slice(5)] || k.slice(5);
-  if (k === 'relay') return 'the mailbox relay';
-  const w = /^mailbox:(.+)\/(W\d+)$/.exec(k);
+  if (k === 'relay') return hqBoxes().length ? 'the HQ relay' : 'the mailbox relay';
+  const r = /^relay:([a-z0-9-]+)$/.exec(k);
+  if (r) return `the ${(boxOfKey(k) || { name: r[1] }).name} relay`;
+  const w = /^mailbox:(?:[a-z0-9-]+:)?(.+)\/(W\d+)$/.exec(k);
   if (w) return `worker ${w[2]} on ${w[1]}`;
   return k || 'a session not shown here';
 }
@@ -485,8 +514,17 @@ function rankLine(n) {
   if (n.kind === 'project') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'Project';
   if (n.kind === 'tool') return [n.rank, n.subtitle].filter(Boolean).join(' · ') || 'AI tool';
   if (isRelay(n)) return ['Relay', n.subtitle].filter(Boolean).join(' · ');
-  const folder = S.snap && S.snap.nodes && !S.snap.nodes.some((x) => x.kind === 'project') ? n.projectLabel : null;
+  // A session under a project tile does not need its folder said again.
+  const folder = underProject(n) ? null : n.projectLabel;
   return [n.rank, PLATFORM_WORDS[n.platform], folder, n.subtitle].filter(Boolean).join(' · ');
+}
+
+function underProject(n) {
+  const byKey = S.index && S.index.byKey;
+  if (!byKey) return false;
+  let p = byKey.get(n.parent);
+  for (let i = 0; p && i < 64; i++, p = byKey.get(p.parent)) if (p.kind === 'project') return true;
+  return false;
 }
 
 // A worker's model or effort that its sergeant did not choose is marked "(default)".
@@ -1177,6 +1215,10 @@ function renderNotices() {
     const s = src[name];
     if (s && s.enabled && s.ok === false) out.push(notice(false, `${label} could not be read.`, s.error || 'Pleni will try again.'));
   }
+  // HQ's own trouble is the mailbox's, above; each project mailbox says its own.
+  for (const b of hqBoxes()) {
+    if (b.id !== 'hq' && b.error) out.push(notice(false, `The mailbox of the project ${b.name} could not be read.`, `${b.error} The other projects go on.`));
+  }
   setHtml($('#notices'), out.join(''));
 }
 
@@ -1556,8 +1598,11 @@ function tileHtml(p, L, ix, i) {
     label = [title, rank, words, c.total ? countsPlain(c) : ''].filter(Boolean).join(', ');
   } else {
     const c = ix.counts.get(n.key) || { total: 0 };
-    body = `<span class="tile-meta">${countsHtml(c)}</span>`;
-    label = [title, rank, countsPlain(c)].filter(Boolean).join(', ');
+    // A project mailbox of an HQ that Pleni cannot read shows so on its project's tile.
+    const unread = boxesOfTile(n).some((b) => b.error);
+    if (unread) cls.push('st-error');
+    body = `<span class="tile-meta">${unread ? `<span class="pill">${esc(BOX_UNREAD)}</span>` : ''}${countsHtml(c)}</span>`;
+    label = [title, rank, unread ? BOX_UNREAD : '', countsPlain(c)].filter(Boolean).join(', ');
   }
   if (quiet) label += `, ${quiet} quiet not shown`;
   const mail = mailText(n);
@@ -2756,17 +2801,50 @@ function renderTasks() {
     );
     return;
   }
-  const sorted = tasks.slice().sort((a, b) => String(b.id).localeCompare(String(a.id)));
-  const open = sorted.filter((t) => !taskState(t.state).closed);
-  const closed = sorted.filter((t) => taskState(t.state).closed);
+  const open = tasks.filter((t) => !taskState(t.state).closed);
   const needs = open.filter((t) => Array.isArray(t.attention) && t.attention.length).length;
-  setText($('#tasks-meta'), `${open.length} open · ${needs} need a look · ${closed.length} closed`);
-  const details = $('#tasks details.fold');
-  const wasOpen = details ? details.open : false;
+  setText($('#tasks-meta'), `${open.length} open · ${needs} need a look · ${tasks.length - open.length} closed`);
+  // Each list of closed tasks stays open or shut as the person left it.
+  const folds = new Map($$('#tasks details.fold').map((d) => [d.dataset.box || '', d.open]));
+  const groups = taskGroups(tasks);
+  if (groups.length === 1 && groups[0].id === '') {
+    setHtml($('#tasks'), taskListHtml(groups[0], folds.get('') === true));
+    return;
+  }
   setHtml(
     $('#tasks'),
+    groups
+      .map((g, i) => {
+        const count = g.tasks.filter((t) => !taskState(t.state).closed).length;
+        const bad = g.error ? `<p class="note src-bad">Pleni could not read this mailbox. ${esc(g.error)}</p>` : '';
+        return (
+          `<section class="task-group" aria-labelledby="tasks-g${i}"><h2 id="tasks-g${i}">${esc(g.name)} <span class="quiet">${esc(`${count} open`)}</span></h2>` +
+          `${bad}${taskListHtml(g, folds.get(g.id) === true)}</section>`
+        );
+      })
+      .join(''),
+  );
+}
+
+// The Tasks page's groups: one for a lone mailbox (id ''); in an HQ, HQ first, then each project
+// mailbox by name.
+function taskGroups(tasks) {
+  const boxes = hqBoxes();
+  if (!boxes.length) return [{ id: '', name: '', error: null, tasks }];
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || a.id.localeCompare(b.id);
+  const order = [...boxes.filter((b) => b.id === 'hq'), ...boxes.filter((b) => b.id !== 'hq').sort(byName)];
+  return order.map((b) => ({ id: b.id, name: b.name, error: b.error || null, tasks: tasks.filter((t) => (t.box || 'hq') === b.id) }));
+}
+
+// One mailbox's open tasks, newest id first, then its closed ones folded away.
+function taskListHtml(group, wasOpen) {
+  const sorted = group.tasks.slice().sort((a, b) => String(b.id).localeCompare(String(a.id)));
+  const open = sorted.filter((t) => !taskState(t.state).closed);
+  const closed = sorted.filter((t) => taskState(t.state).closed);
+  const box = group.id ? ` data-box="${esc(group.id)}"` : '';
+  return (
     (open.length ? `<ul class="tasks">${open.map(taskHtml).join('')}</ul>` : '<p class="empty">No open tasks.</p>') +
-      (closed.length ? `<details class="fold"${wasOpen ? ' open' : ''}><summary>${esc(plural(closed.length, 'closed task', 'closed tasks'))}</summary><ul class="tasks">${closed.map(taskHtml).join('')}</ul></details>` : ''),
+    (closed.length ? `<details class="fold"${box}${wasOpen ? ' open' : ''}><summary>${esc(plural(closed.length, 'closed task', 'closed tasks'))}</summary><ul class="tasks">${closed.map(taskHtml).join('')}</ul></details>` : '')
   );
 }
 
@@ -3591,7 +3669,7 @@ function rollStepsHtml(n, r) {
   const copy = (which, what) => `<button type="button" class="btn" data-copy="${which}">Copy ${what}</button>`;
   const check = found
     ? `<p>New session found: <button type="button" class="linkish" data-node="${esc(found.key)}">${esc(titleOf(found))}</button>, started ${agoHtml(found.startedAt)}.` +
-      `${found.parent === 'relay' ? ' The relay now wakes it.' : ''}</p>` +
+      `${isRelayKey(found.parent) ? ' The relay now wakes it.' : ''}</p>` +
       `<div class="roll-btns"><button type="button" class="btn" data-hide="${esc(n.key)}" data-title="${esc(titleOf(n))}">Hide the old session</button></div>`
     : '<p>Pleni has not found the new session yet.</p>';
   return (
@@ -4352,10 +4430,12 @@ function mailHtml(n) {
 }
 
 // The command that answers a message: agent-mail.ps1 by its full path when Pleni knows the mailbox
-// folder, so it runs from any folder. PowerShell writes a ' inside '...' as ''.
-function mailAnswerCommand(me, to) {
+// folder, so it runs from any folder. PowerShell writes a ' inside '...' as ''. A project mailbox of
+// an HQ (`box`) has a folder the page is never told, so its command runs in that folder.
+function mailAnswerCommand(me, to, box = null) {
   const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
-  const root = S.roots && typeof S.roots.mailbox === 'string' ? S.roots.mailbox.replace(/[\\/]+$/, '') : '';
+  const own = !box || box === 'hq';
+  const root = own && S.roots && typeof S.roots.mailbox === 'string' ? S.roots.mailbox.replace(/[\\/]+$/, '') : '';
   const sep = root.includes('/') && !root.includes('\\') ? '/' : '\\';
   const script = root ? `& ${q(`${root}${sep}bin${sep}agent-mail.ps1`)}` : '.\\bin\\agent-mail.ps1';
   return `${script} -Send -From ${q(me)} -To ${q(to)} -Text 'your answer'`;
@@ -4459,12 +4539,16 @@ function mailItemHtml(x, fresh, me) {
     ? `<div class="mail-text">${esc(x.text)}</div>`
     : '<p class="note">The message is hidden: session text is off in Settings.</p>';
   let answer = '';
+  const project = str(x.box) && x.box !== 'hq' ? str(x.boxName) || str(x.box) : '';
   if (x.toYou && !x.fromYou) {
-    const i = S.mail.cmds.push(mailAnswerCommand(me, str(x.fromName) || str(x.from))) - 1;
-    answer = `<div class="mail-answer"><code>${esc(S.mail.cmds[i])}</code><button type="button" class="btn" data-mail-copy="${i}">Copy the answer command</button></div>`;
+    const i = S.mail.cmds.push(mailAnswerCommand(me, str(x.fromName) || str(x.from), str(x.box) || null)) - 1;
+    const where = project ? `<p class="note">Run it in the mailbox folder of ${esc(project)}.</p>` : '';
+    answer = `<div class="mail-answer"><code>${esc(S.mail.cmds[i])}</code><button type="button" class="btn" data-mail-copy="${i}">Copy the answer command</button></div>${where}`;
   }
+  // In an HQ, each message says which mailbox it is in.
+  const box = str(x.boxName) ? `<span class="quiet">in ${esc(x.boxName)}</span>` : '';
   return (
-    `<li class="mail-msg${fresh ? ' is-new' : ''}"><div class="mail-head"><span class="mail-who"><b>${esc(from)}</b> to <b>${esc(to)}</b></span>${state}` +
+    `<li class="mail-msg${fresh ? ' is-new' : ''}"><div class="mail-head"><span class="mail-who"><b>${esc(from)}</b> to <b>${esc(to)}</b></span>${box}${state}` +
     `${timeHtml(x.at, stamp(x.at))}</div>${text}${answer}</li>`
   );
 }
@@ -4583,7 +4667,22 @@ function groupNowHtml(n) {
     })
     .join('');
   const heading = n.kind === 'person' ? 'Under you' : isRelay(n) ? 'Under the relay' : n.kind === 'tool' ? `${esc(titleOf(n))} sessions` : 'In this project';
-  return `${n.kind === 'person' ? asksHtml('you') : ''}<p class="dnow">${esc(cap(countsPlain(c)))}.</p>${n.kind === 'tool' ? toolNowHtml(n) : ''}${mailHtml(n)}<h3>${heading}</h3>${list ? `<ul class="kids">${list}</ul>` : '<p class="empty">Nothing listed right now.</p>'}`;
+  return `${n.kind === 'person' ? asksHtml('you') : ''}<p class="dnow">${esc(cap(countsPlain(c)))}.</p>${hqNowHtml(n)}${n.kind === 'tool' ? toolNowHtml(n) : ''}${mailHtml(n)}<h3>${heading}</h3>${list ? `<ul class="kids">${list}</ul>` : '<p class="empty">Nothing listed right now.</p>'}`;
+}
+
+// In an HQ: which mailbox a relay runs, what a project's tile holds, and a mailbox Pleni cannot read.
+function hqNowHtml(n) {
+  const bad = (b) => (b.error ? `<p class="dnow src-bad">Pleni could not read the mailbox of ${esc(b.name)}. ${esc(b.error)}</p>` : '');
+  if (isRelay(n)) {
+    const b = boxOfKey(n.key);
+    if (!b) return '';
+    if (b.id === 'hq') return '<p class="dnow">This is the relay of HQ. It wakes the orchestrator when something new waits for it in HQ or in any of its projects.</p>';
+    return `<p class="dnow">This relay runs the mailbox of the project <b>${esc(b.name)}</b>. It wakes that project's coordinator.</p>${bad(b)}`;
+  }
+  const boxes = boxesOfTile(n);
+  if (!boxes.length) return '';
+  const names = boxes.map((b) => `<b>${esc(b.name)}</b>`).join(', ');
+  return `<p class="dnow">A project of HQ: ${names}. Its relay, coordinator and workers hang under this tile, under the orchestrator.</p>${boxes.map(bad).join('')}`;
 }
 
 // An AI tool's tile: what hangs under it, and where to see its token use or change where Pleni looks.
@@ -4606,6 +4705,8 @@ function detailsHtml(n) {
   add('Rank', esc(n.rank || ''));
   add('Role', esc(cap(n.role || '')));
   add('Project', esc(n.project ? projectLabel(n.project) : ''));
+  // A relay in an HQ names the mailbox it runs.
+  if (isRelay(n)) add('Project', esc((boxOfKey(n.key) || { name: '' }).name));
   if (isSession(n) && typeof n.github === 'string' && GITHUB_PATH.test(n.github)) {
     add('GitHub', `<span class="gh-links">${githubLink(n.github, '', n.github)}${branchLinks(n.github, n.subtitle)}</span>`);
   }
@@ -6162,18 +6263,28 @@ function sourceRow(name, label, text, help) {
   );
 }
 
+// When the mailbox is an HQ: its projects, and whether Pleni can read each one.
+function hqSourceHtml() {
+  const projects = hqBoxes().filter((b) => b.id !== 'hq');
+  if (!hqBoxes().length) return '';
+  const list = projects
+    .map((b) => `<li><b>${esc(b.name)}</b>: ${b.error ? `<span class="src-bad">${esc(b.error)}</span>` : 'read.'}</li>`)
+    .join('');
+  return `<p class="note hq-note">This folder is an HQ with ${esc(plural(projects.length, 'project mailbox', 'project mailboxes'))}.</p>${list ? `<ul class="note hq-list">${list}</ul>` : ''}`;
+}
+
 function mailboxRows() {
   const d = S.set.draft;
   const id = 's-src-mailbox';
   const on = getPath(d, 'sources.mailbox.enabled', false) === true;
   const root = getPath(d, 'sources.mailbox.root', null);
-  const help = 'A folder where a planner agent hands out tasks and a coordinator agent reports back in Markdown files. Pleni only reads it.';
+  const help = 'A folder where a planner agent hands out tasks and a coordinator agent reports back in Markdown files. If it is an HQ, which lists project mailboxes, Pleni reads those too. Pleni only reads them.';
   return (
     `<div class="srow"><span class="lbl" id="${id}-lbl">Folder</span><div class="src">` +
     `<div class="checks"><label><input type="checkbox" id="${id}-on" data-path="sources.mailbox.enabled" data-kind="bool"${on ? ' checked' : ''}>Read a coordination mailbox</label></div>` +
     `<label class="sr-only" for="${id}-root">Mailbox folder</label>` +
     `<input class="field" id="${id}-root" type="text" data-path="sources.mailbox.root" data-kind="root" value="${esc(root || '')}" placeholder="The full path of the mailbox folder" autocomplete="off" spellcheck="false"${desc(id, help)}>` +
-    `</div>${helpHtml(id, help)}</div>` +
+    `${hqSourceHtml()}</div>${helpHtml(id, help)}</div>` +
     sessionNameRow('s-planner', 'Planner', 'sources.mailbox.planner', 'The session that hands out the tasks. Type part of its name, or pick one from the list. Pleni uses the newest session whose name has that text.') +
     sessionNameRow('s-coordinator', 'Coordinator', 'sources.mailbox.coordinator', 'The session that reports back. Type part of its name. If you leave it empty, Pleni uses the one the mailbox names, if any.')
   );

@@ -47,12 +47,19 @@ test('the demo returns the source shapes the store expects', () => {
     assert.ok(s.links.length <= 50);
     for (let i = 1; i < s.links.length; i++) assert.ok(s.links[i - 1].at <= s.links[i].at);
   }
+  // An HQ, whose relay wakes the orchestrator, with two project mailboxes, each with its own relay.
   const m = state.mailbox;
   assert.equal(m.ok, true);
-  assert.equal(m.relay.coordinatorKey, DEMO_KEYS.coordinator);
-  assert.ok(m.events.length > 0 && m.events.length <= 300);
-  for (let i = 1; i < m.events.length; i++) assert.ok(m.events[i - 1].at >= m.events[i].at);
-  assert.ok(m.tasks.every((task) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/.test(task.id)));
+  assert.equal(m.relay.plannerKey, DEMO_KEYS.planner);
+  assert.deepEqual(m.hq.projects.map((p) => [p.id, p.name]), [['billing', 'Billing service'], ['field-app', 'Field app']]);
+  assert.equal(m.hq.projects[0].mailbox.relay.coordinatorKey, DEMO_KEYS.coordinator);
+  assert.equal(m.hq.projects[1].mailbox.relay.coordinatorKey, DEMO_KEYS.fieldCoordinator);
+  for (const box of [m, ...m.hq.projects.map((p) => p.mailbox)]) {
+    assert.equal(box.ok, true);
+    assert.ok(box.events.length > 0 && box.events.length <= 300);
+    for (let i = 1; i < box.events.length; i++) assert.ok(box.events[i - 1].at >= box.events[i].at);
+    assert.ok(box.tasks.every((task) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/.test(task.id)));
+  }
 });
 
 test('the cast has every status and the planned shape', () => {
@@ -88,7 +95,9 @@ test('hand-offs light up every few seconds', () => {
     now.set(t);
     const state = source.poll();
     for (const s of allSessions(state)) for (const link of s.links) if (link.at > NOW - 60000) times.add(link.at);
-    for (const event of state.mailbox.events) if (event.at > NOW - 60000) times.add(event.at);
+    for (const box of [state.mailbox, ...state.mailbox.hq.projects.map((p) => p.mailbox)]) {
+      for (const event of box.events) if (event.at > NOW - 60000) times.add(event.at);
+    }
     for (const s of allSessions(state)) assert.ok(s.links.every((link) => link.at <= t));
   }
   const sorted = [...times].sort((a, b) => a - b);
@@ -116,14 +125,20 @@ test('working sessions move while the others keep still', () => {
 
 test('the demo snapshot shows two projects, ranks and a live mailbox line', () => {
   const s = demoSnapshot(NOW, { titles: 'military', groupBy: 'project' });
+  // The orchestrator's own folder, then HQ's two project mailboxes, which hold their projects' sessions.
   const projects = s.nodes.filter((n) => n.kind === 'project').map((n) => n.title);
-  assert.deepEqual(projects, ['billing-service', 'field-app']);
+  assert.deepEqual(projects, ['hq', 'Billing service', 'Field app']);
   for (const status of ['working', 'ready', 'idle', 'done', 'error']) assert.ok(s.counts[status] > 0, status);
   assert.equal(s.nodes.find((n) => n.key === DEMO_KEYS.planner).rank, 'Colonel');
   assert.equal(s.nodes.find((n) => n.key === DEMO_KEYS.coordinator).rank, 'Sergeant');
-  // The mailbox runs planner -> relay -> coordinator, and both legs light together.
+  // Each project's mailbox runs orchestrator -> project -> its relay -> its coordinator, and the legs
+  // light together; HQ's relay lights when it wakes the orchestrator.
   const legs = s.edges.filter((e) => e.kind === 'mailbox');
-  assert.deepEqual(legs.map((e) => [e.from, e.to]), [[DEMO_KEYS.planner, 'relay'], ['relay', DEMO_KEYS.coordinator]]);
+  assert.deepEqual(legs.map((e) => [e.from, e.to]), [
+    [DEMO_KEYS.planner, 'project:Billing service'], ['project:Billing service', 'relay:billing'], ['relay:billing', DEMO_KEYS.coordinator],
+    [DEMO_KEYS.planner, 'project:Field app'], ['project:Field app', 'relay:field-app'], ['relay:field-app', DEMO_KEYS.fieldCoordinator],
+    [DEMO_KEYS.planner, 'relay'],
+  ]);
   assert.ok(legs.every((e) => e.active));
   assert.ok(s.edges.some((e) => e.kind === 'spawn' && e.active));
   assert.ok(s.events.some((e) => e.kind === 'spawn'));
@@ -206,4 +221,29 @@ test('the demo\'s Codex cloud tasks are made up, checked, newest first, and cove
     assert.ok(task.updatedAt < NOW);
   }
   assert.deepEqual(demoCloud(NOW), answer, 'the same time gives the same tasks');
+});
+
+test('the demo is an HQ: the orchestrator above HQ\'s relay and two projects, each with its relay, coordinator and workers', () => {
+  const s = demoSnapshot(NOW);
+  const node = (key) => s.nodes.find((n) => n.key === key);
+  const kids = (key) => s.nodes.filter((n) => n.parent === key).map((n) => n.key);
+  const orchestrator = node(DEMO_KEYS.planner);
+  assert.deepEqual([orchestrator.title, orchestrator.parent], ['Orchestrator', 'you']);
+  for (const key of ['relay', 'project:Billing service', 'project:Field app']) assert.ok(kids(DEMO_KEYS.planner).includes(key), key);
+  assert.equal(node('relay').title, 'HQ relay');
+  for (const [tile, relay, lead] of [['project:Billing service', 'relay:billing', DEMO_KEYS.coordinator], ['project:Field app', 'relay:field-app', DEMO_KEYS.fieldCoordinator]]) {
+    assert.deepEqual(kids(tile), [relay]);
+    assert.deepEqual(kids(relay), [lead]);
+    assert.equal(node(lead).rank, 'Coordinator');
+  }
+  // Workers: runs that kept no session file, and one that is a Claude Code session of its own.
+  assert.ok(kids(DEMO_KEYS.coordinator).includes('mailbox:billing:T-101/W1'));
+  const field = kids(DEMO_KEYS.fieldCoordinator).map((key) => node(key));
+  assert.deepEqual(field.map((n) => [n.title, n.status]), [['W1 · T-201: Offline map tiles', 'done'], ['W2 · T-201: Offline map tiles', 'working']]);
+  assert.ok(field[1].key.startsWith('claude:'));
+  assert.deepEqual(s.boxes.map((b) => [b.id, b.name, b.error, b.project]), [['hq', 'HQ', null, null], ['billing', 'Billing service', null, 'Billing service'], ['field-app', 'Field app', null, 'Field app']]);
+  assert.deepEqual([...new Set(s.tasks.map((task) => task.boxName))], ['HQ', 'Billing service', 'Field app']);
+  // HQ's relay wakes the orchestrator for new items, and that lights their line.
+  assert.ok(s.events.some((e) => e.kind === 'wake' && e.from === 'relay' && e.to === DEMO_KEYS.planner && /new item/.test(e.text)));
+  assert.equal(JSON.stringify(s).includes('/home/ada'), false, 'no folder paths');
 });
