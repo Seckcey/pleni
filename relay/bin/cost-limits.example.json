@@ -6,8 +6,9 @@
   "relay_max_agent_turns_at_once": 3,
   "worker_runs_per_day": {
     "codex": 12,
-    "gemini": 4
+    "gemini": 4,
+    "antigravity": 4
   },
   "gemini_max_session_turns": 30,
-  "note": "Copy this file to cost-limits.json to change the limits. enabled=false turns off the dollar caps per run and per day; costs are still written down. relay_max_wakes_per_day=0 means no limit on coordinator turns. relay_max_codex_wakes_per_day: how many planner turns the Codex wake may start a day (0 means no limit). relay_max_agent_wakes_per_day: how many times a day the relay may wake each agent for its mail (0 means no limit). relay_max_agent_turns_at_once: how many agents it may wake for mail at the same time (1 to 10). worker_runs_per_day: how many Codex and Gemini workers may start in one day, counted from the runs.md of each task (0 means no limit). gemini_max_session_turns: how many turns a Gemini worker may take (0 means no limit)."
+  "note": "Copy this file to cost-limits.json to change the limits. enabled=false turns off the dollar caps per run and per day; costs are still written down. relay_max_wakes_per_day=0 means no limit on coordinator turns. relay_max_codex_wakes_per_day: how many planner turns the Codex wake may start a day (0 means no limit). relay_max_agent_wakes_per_day: how many times a day the relay may wake each agent for its mail (0 means no limit). relay_max_agent_turns_at_once: how many agents it may wake for mail at the same time (1 to 10). worker_runs_per_day: how many Codex, Gemini and Antigravity workers may start in one day, counted from the runs.md of each task (0 means no limit). gemini_max_session_turns: how many turns a Gemini worker may take (0 means no limit)."
 }

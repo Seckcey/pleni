@@ -36,6 +36,9 @@ Made by 8 West Ventures, LLC.
   `codex`, signed in with ChatGPT.
 - Only for workers in Codex or Gemini (optional, see [Workers in Codex or Gemini](#workers-in-codex-or-gemini-optional)):
   the `codex` command line signed in with ChatGPT, or Gemini CLI with a paid plan, and Git.
+- Only for workers in Antigravity CLI (off by default, see [Antigravity workers](#antigravity-workers-off-by-default)):
+  Antigravity CLI (`agy`) signed in, and Git. Read that part first: Google's consumer terms may not
+  allow it, and your Google account could be suspended or closed.
 - Node.js and Git, only to run the relay's test.
 
 ## What is in this folder
@@ -52,6 +55,7 @@ Made by 8 West Ventures, LLC.
 | `tests\stub-claude.js`              | The fake Claude that the test uses.                                            |
 | `tests\stub-codex.js`               | The fake Codex that the test uses.                                             |
 | `tests\stub-gemini.js`              | The fake Gemini CLI that the test uses.                                        |
+| `tests\stub-agy.js`                 | The fake Antigravity CLI that the test uses.                                   |
 | `templates\`                        | Blank task files: assignment, status, questions, answers, handoff, review, and a worker's brief and report. |
 | `PROTOCOL.md`                       | The rules everyone follows. In a mailbox it is called `README.md`.             |
 | `COORDINATOR.md`                    | Standing orders for the coordinator. In a mailbox it is called `CLAUDE.md`.     |
@@ -92,9 +96,11 @@ has just the examples. The relay reads them when it starts.
 | `worktrees_dir` | The folder where workers work. A worker starts only inside it. Leave it out to use `<projects_dir>\_worktrees\claude`. |
 | `owner_name`    | Your name, for the relay's notes: "Any other command needs Ada", and the tag `NEEDS-ADA`. Leave it out and they say "the owner" and `NEEDS-OWNER`. |
 | `codex_exe`     | For the Codex wake and Codex workers: the full path of the Codex command. Leave it out to use `codex` from your PATH. |
-| `worker_tools`  | The AI tools that may run workers: a list from `"claude"`, `"codex"` and `"gemini"`. Leave it out for `["claude"]`. See [Workers in Codex or Gemini](#workers-in-codex-or-gemini-optional). |
+| `worker_tools`  | The AI tools that may run workers: a list from `"claude"`, `"codex"`, `"gemini"` and `"antigravity"`. Leave it out for `["claude"]`. See [Workers in Codex or Gemini](#workers-in-codex-or-gemini-optional) and [Antigravity workers](#antigravity-workers-off-by-default). |
 | `claude_exe`    | The full path of Claude Code for workers. Leave it out to use `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`. |
 | `gemini_exe`    | Only for Gemini workers: the full path of Gemini CLI. Leave it out to use `gemini` from your PATH. |
+| `antigravity_exe` | Only for Antigravity workers: the full path of Antigravity CLI. Leave it out to use `%LOCALAPPDATA%\agy\bin\agy.exe`, or `agy` from your PATH. |
+| `antigravity_sandbox` | Only for Antigravity workers: `true` runs their commands in Antigravity CLI's terminal sandbox (`--sandbox`). Leave it out, or `false`, to keep it off. |
 | `codex_exec_args` | Only for the Codex wake: extra options for `codex exec`, one per entry, such as `["--sandbox", "workspace-write"]`. Options that turn the sandbox off are refused. |
 | `role`          | Only in HQ: `"hq"`. Then the relay also wakes the orchestrator for the projects in `projects`. Leave it out in every other mailbox. |
 | `projects`      | Only in HQ: the project mailboxes, each one `{ "id": "notes", "name": "Notes", "mailbox": "C:\\Users\\ada\\mailboxes\\notes" }`. The id is 1 to 40 small letters, digits or hyphens, and never `hq`. The mailbox is the full path of a folder that is there, and not HQ itself. The relay skips a bad entry and says why in `-Status` and `relay.log`. |
@@ -109,7 +115,7 @@ has just the examples. The relay reads them when it starts.
 | `relay_max_codex_wakes_per_day` | How many times a day the relay may wake the planner's Codex thread. The usual number is 12. `0` means no limit. |
 | `relay_max_agent_wakes_per_day` | How many times a day the relay may wake each agent for its mail. The usual number is 12. `0` means no limit. |
 | `relay_max_agent_turns_at_once` | How many agents the relay may wake for mail at the same time, 1 to 10. The usual number is 3. |
-| `worker_runs_per_day`     | How many Codex and Gemini workers may start in one day, such as `{"codex": 12, "gemini": 4}`. Those are the usual numbers. `0` means no limit. |
+| `worker_runs_per_day`     | How many Codex, Gemini and Antigravity workers may start in one day, such as `{"codex": 12, "gemini": 4, "antigravity": 4}`. Those are the usual numbers. `0` means no limit. |
 | `gemini_max_session_turns` | How many turns a Gemini worker may take. The usual number is 30. `0` means no limit. |
 
 A "worktree" is a second working folder of a Git repository, on its own branch. Each task gets
@@ -225,7 +231,8 @@ It runs in the thread's own folder, and it uses your ChatGPT sign-in, never an A
 
 Workers run in Claude Code. If you turn them on, the coordinator can also start a worker in Codex
 or in Gemini CLI, with `-Tool codex` or `-Tool gemini`. Through the coordinator, the planner can ask
-for them too. Both stay off until you turn them on.
+for them too. Both stay off until you turn them on. Workers in Antigravity CLI have a part of their
+own, with a warning: [Antigravity workers](#antigravity-workers-off-by-default).
 
 1. **Sign in.**
    - Codex: install the `codex` command line and run `codex login`. Choose ChatGPT. The relay never
@@ -251,8 +258,9 @@ What each tool may do:
 | Tool   | How the relay starts it | What it may change | What it may run |
 | ------ | ----------------------- | ------------------ | --------------- |
 | Claude | `claude -p`, with your Claude plan. | The worktree and its report. A reviewer: only its report. | `git` and `node`, but never push, merge, rebase, reset, checkout, switch, branch, worktree, tag, stash or config; never `npm`, `npx` or the web. |
-| Codex  | `codex exec`, with your ChatGPT plan, in Codex's `workspace-write` sandbox. | The worktree and the task's `workers` folder. It cannot write in the folder where Git keeps the repository, so it cannot add a Git hook or change Git's settings. It does not commit: when it finishes, the launcher commits its changes. A reviewer works in the `workers` folder, so it can change only that folder. It can still read the worktree. | What the sandbox lets it run. The relay turns the sandbox's network off, whatever your own Codex settings say. |
+| Codex  | `codex exec`, with your ChatGPT plan, in Codex's `workspace-write` sandbox. | The worktree and the task's `workers` folder. It cannot write in the folder where Git keeps the repository, so it cannot add a Git hook or change Git's settings. It does not commit: when it finishes, the launcher commits its changes, with no Git hooks. A reviewer works in the `workers` folder, so it can change only that folder. It can still read the worktree. | What the sandbox lets it run. The relay turns the sandbox's network off, whatever your own Codex settings say. |
 | Gemini | `gemini -p`, with your Gemini login, and a policy that the relay writes for each run (`W<n>.gemini-policy.toml`). | The worktree and the `workers` folder. A reviewer: only its report. | Only `git status`, `diff`, `log`, `show` and `rev-parse`, `git add` and `commit` (not a reviewer), and `node <a script>`, without `>` or `>>`. Never push and the other git commands above, `npm`, `npx`, `node -e`, the web or MCP tools. |
+| Antigravity | `agy`, with your Google sign-in. Off by default: see [Antigravity workers](#antigravity-workers-off-by-default). | The worktree and the `workers` folder. A reviewer: only the `workers` folder. It does not commit: the launcher does. | Only what your own Antigravity settings allow. With no rule there, nothing. |
 
 A Gemini worker gets the whole brief in its prompt. It can read only its worktree and the task's
 `workers` folder, so the coordinator puts what it needs from the assignment into the brief.
@@ -284,6 +292,123 @@ What the relay writes down:
 administrator can change it, as in a mailbox folder. When Gemini CLI says so in its output, run.json
 says `"turn_limit": "skipped by Gemini CLI"`. To be sure of a limit, also set
 `model.maxSessionTurns` in your own Gemini settings (`%USERPROFILE%\.gemini\settings.json`).
+
+## Antigravity workers (off by default)
+
+**Read this first.** Google's FAQ for Antigravity says that running `agy` inside other programs "is
+not supported under consumer plans". It also says that using an Antigravity login from other
+software breaks Google's terms, and that Google may suspend or close the account for it. The relay
+is such a program. So if you turn this on, your Google account could be suspended, or closed for
+good. Turn it on only if you accept that risk. Every Antigravity run writes this warning in its log
+(`W<n>.log`):
+
+> Google's consumer terms may not allow running Antigravity CLI from other programs. Your Google
+> account could be suspended or closed. Turn it off by taking antigravity out of worker_tools.
+
+With it on, the coordinator can start a worker in Antigravity CLI (`agy`) with `-Tool antigravity`.
+
+### Turn it on
+
+1. **Sign in.** Install Antigravity CLI. Open a window, run `agy` once, and sign in. The relay never
+   reads, copies or writes your login. A worker that is not signed in stops, and its `W<n>.run.json`
+   says so.
+2. **Turn it on.** Add `"antigravity"` to `worker_tools` in `bin\relay-settings.json`, for example
+   `"worker_tools": ["claude", "antigravity"]`.
+3. **Show the relay the program,** if it is not `%LOCALAPPDATA%\agy\bin\agy.exe` and not on your
+   PATH: set `antigravity_exe` to its full path.
+4. **Check the daily limit.** Unless you change `worker_runs_per_day` in `bin\cost-limits.json` (for
+   example `{"antigravity": 2}`), 4 Antigravity workers may start in one day.
+5. **Tell the coordinator.** Add `antigravity` to the `- **Tool:**` line of your
+   `templates\worker-brief.md`. If your `CLAUDE.md` already has the order "Choose the AI tool for each
+   worker", replace that order by hand with the new one from `COORDINATOR.md`. If it does not, add it
+   as in [Update the relay in a mailbox](#update-the-relay-in-a-mailbox).
+
+To turn it off again, take `"antigravity"` out of `worker_tools`.
+
+### What it may do
+
+The launcher starts `agy` with no window. The prompt goes on its input (stdin), never on the command
+line:
+
+```
+agy --input-format stream-json --output-format stream-json --mode accept-edits --add-dir <workers folder> --effort <effort>
+```
+
+- **Files:** in `accept-edits` mode, it may change files in the worktree and in the task's `workers`
+  folder. A reviewer works in the `workers` folder, so it can change only that folder.
+- **Reading:** it can read only those folders. A reviewer can read only the `workers` folder, unless
+  you let it read your worktrees (see below). So the coordinator puts what a worker needs from the
+  assignment into its brief.
+- **Commands:** none, unless you allow them. Antigravity CLI has no permission file for one run. Its
+  rules live in your own Antigravity settings, and the relay never changes that file. A run with no
+  window denies each command that no rule allows, and goes on without it. It lists what it denied in
+  `W<n>.log.err`.
+- **Commits:** with no rule, a worker cannot run `git` either. So when it finishes, the launcher
+  commits its changes, as for Codex. A run that changed nothing gets no commit, and a failed run
+  gets none either. The worker could have changed files that Git reads, so the launcher's own `git`
+  commands run no Git hooks (small programs Git can start by itself) and no file monitor program.
+  If the run changed the worktree's `.git` file (it tells Git where Git's own folder is), the
+  launcher commits nothing and says so in `W<n>.log`. Then look at the worktree before you use it.
+- **Only in a Git worktree:** an Antigravity worker works only in a worktree made with
+  `git worktree add`, the way the coordinator makes them. In a plain copy of a repository, Git's own
+  folder is inside the worker's folder, where the worker could change it, so the launcher refuses.
+- **Your own setup counts too.** Your Antigravity rules, hooks (commands Antigravity runs by itself
+  at set moments, such as after it changes a file), MCP servers (helper programs that give it more
+  tools, such as a link to a database) and plugins (add-on packs that can hold both) apply to a
+  worker the same way they apply to you. A hook can run a command without asking. If your settings
+  say `"toolPermission": "always-proceed"`, a worker may run any command. Keep the usual value.
+- **What the launcher refuses:** it does not start an Antigravity worker, and says why, when there
+  is a `.agents` folder (or `.agent`, `_agents` or `_agent`) with `hooks.json`, `mcp_config.json`,
+  `plugins.json`, `plugins` or `agents` (custom agents, which can bring their own MCP servers) in
+  it, or a `.gemini\config.json` (it can send Antigravity CLI to one more such folder). It looks in
+  the worktree and the `workers` folder, and in each folder above them up to the top of their Git
+  repository, because Antigravity CLI reads those too. Antigravity CLI loads all of these when it
+  starts, and they can run commands without asking.
+- **Model and effort:** with no `-Model`, it uses Antigravity CLI's own default model. `-Model` names
+  one of its models (`agy models` lists them); a Claude model is refused. Its efforts are `low`,
+  `medium` and `high`. `xhigh`, the usual one, runs as `high`, and `max` is refused.
+- **What the relay writes down:** `W<n>.run.json` gets `tool` (`antigravity`), `session_id` (the
+  conversation id that Antigravity CLI reports, saved as soon as it does), `tokens` and `commit`.
+  `runs.md` says `antigravity` in its Tool column. When a run fails, run.json and `W<n>.log` say why
+  in plain words: not signed in, the relay's input was wrong (exit 1), another error (exit 1, with
+  Antigravity CLI's own words), a wrong flag (exit 2), the model or its service failed (exit 3), or
+  a result that was not `SUCCESS`.
+
+### The sandbox
+
+Set `"antigravity_sandbox": true` in `bin\relay-settings.json` to add `--sandbox`. Then a worker's
+commands run in Antigravity CLI's terminal sandbox: they stay off the network (except the sites your
+`read_url` rules allow), and they can write only in the worker's folders and in temporary folders.
+The sandbox is only for commands. It does not stop the worker's own file edits, which
+`accept-edits` lets through in its folders. On Windows, the sandbox needs Windows 11 24H2 with the
+August 2026 update or newer. On an older Windows, the setting does nothing. It is off unless you set
+it.
+
+The sandbox does not allow more commands by itself. But if your settings say
+`"toolPermission": "proceed-in-sandbox"`, a worker may then run any command inside the sandbox.
+
+### Let it run git and node
+
+A worker runs no checks unless you allow the commands, in your own Antigravity settings file,
+`%USERPROFILE%\.gemini\antigravity-cli\settings.json`. Add rules under `permissions`, for example:
+
+```json
+{
+  "permissions": {
+    "allow": ["command(git status)", "command(git diff)", "command(node)"],
+    "deny": ["command(git push)"]
+  }
+}
+```
+
+- These rules count for every Antigravity session on this computer, not only for workers.
+- `command(node)` lets it run any `node` command, also code that is not in a file (`node -e`).
+- Do not allow `command(git)` or `command(*)`: then a worker could push, or run anything. A `deny`
+  rule always wins over an `allow` rule.
+- To let a reviewer read your worktrees, add a `read_file` rule for the worktrees folder, such as
+  `"read_file(/Users/ada/projects/_worktrees/claude)"`. Write the path the way Antigravity compares
+  paths: without the drive letter (`C:`), and with `/`.
+- You can also add rules inside `agy`, with `/permissions`.
 
 ## Agent mail (optional)
 
@@ -533,7 +658,7 @@ base commit lines:
 For the AI tool order, put this under the model and effort line:
 
 ```markdown
-- **Tool:** claude | codex | gemini   (only a tool that worker_tools in bin\relay-settings.json lists)
+- **Tool:** claude | codex | gemini | antigravity   (only a tool that worker_tools in bin\relay-settings.json lists)
 ```
 
 Then tell the coordinator to read `CLAUDE.md` again, or roll it over: a new session always reads it.
@@ -545,8 +670,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File bin\bridge-relay-check.ps1
 ```
 
 It takes 6 to 10 minutes. It builds fake mailboxes in your temp folder, runs the relay, agent mail
-and the worker launcher against them with a fake Claude, a fake Codex and a fake Gemini CLI, and
-removes them at the end. It never touches a real mailbox or a real session, and it costs nothing.
+and the worker launcher against them with a fake Claude, a fake Codex, a fake Gemini CLI and a fake
+Antigravity CLI, and removes them at the end. It never touches a real mailbox or a real session, and it costs nothing.
 It needs Git, for a fake worktree. Each pull request to this repository runs it on Windows too.
 
 The test sets two variables for the worker launcher that only the test uses:
@@ -570,8 +695,11 @@ The relay:
 - gives each coordinator turn a fixed list of commands it may run, and a list it may not. The
   coordinator may not change the relay's own files, and a worker may not push or merge. These
   lists are a guard, not a sealed box, so keep an eye on what the sessions do;
-- starts a worker in Codex or Gemini only when `worker_tools` lists that tool, never more of them
-  in a day than `worker_runs_per_day` allows, and a Gemini worker only with the relay's own policy.
+- starts a worker in Codex, Gemini or Antigravity only when `worker_tools` lists that tool, never
+  more of them in a day than `worker_runs_per_day` allows, and a Gemini worker only with the relay's
+  own policy;
+- never reads, copies or writes the login of an AI tool that runs a worker, and never changes that
+  tool's own settings files.
 
 ## Costs
 
@@ -582,5 +710,7 @@ numbers are estimates from Claude Code, not bills.
 Each planner turn and each agent turn the relay starts uses your ChatGPT plan. It gets a line in
 `.relay\dispatches.md` too, without a cost, because Codex does not report one.
 
-A Codex worker uses your ChatGPT plan too. A Gemini worker costs money for every run. Their lines in
-`runs.md` show the tokens they used, without a cost, because neither tool reports one.
+A Codex worker uses your ChatGPT plan too. A Gemini worker costs money for every run. An Antigravity
+worker uses your Google plan (or your Gemini API key, if you set Antigravity CLI up with one). Their
+lines in `runs.md` show the tokens they used, without a cost, because none of these tools reports
+one.
