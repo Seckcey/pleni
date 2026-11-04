@@ -331,6 +331,7 @@ test('session() gives the folder, state, name, model, effort and permission mode
   assert.equal(store.session(`${CLAUDE_KEY}/a1b2c3`), null);
   assert.equal(store.session('grok:cccccccc-0000-4000-8000-000000000001'), null);
   assert.equal(store.session('gemini:dddddddd-0000-4000-8000-000000000001'), null);
+  assert.equal(store.session('antigravity:eeeeeeee-0000-4000-8000-000000000001'), null);
   assert.equal(store.session('claude:aaaaaaaa-0000-4000-8000-00000000ffff'), null);
   assert.equal(store.session(null), null);
   assert.equal(store.demo, false);

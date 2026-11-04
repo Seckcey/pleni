@@ -68,6 +68,7 @@ test('cleanSettings keeps good values', () => {
       grok: { enabled: true, root: null },
       kimi: { enabled: true, root: null },
       gemini: { enabled: false, root: null },
+      antigravity: { enabled: false, root: null },
       mailbox: { enabled: true, root, planner: `codex:${UUID}`, coordinator: `claude:${UUID}` },
     },
     people: { you: { label: 'Ada' }, [`claude:${UUID}`]: { label: 'Builder', role: 'coordinator', watch: true, answer: true }, relay: { watch: true } },
@@ -221,7 +222,7 @@ test('cleanSettings drops unknown keys', () => {
   assert.deepEqual(Object.keys(settings), Object.keys(DEFAULTS));
   assert.deepEqual(Object.keys(settings.window), ['activeMinutes', 'recentHours', 'staleMinutes']);
   assert.deepEqual(Object.keys(settings.modelTiers), ['senior', 'junior']);
-  assert.deepEqual(Object.keys(settings.sources), ['claude', 'claudeDesktop', 'codex', 'grok', 'kimi', 'gemini', 'mailbox']);
+  assert.deepEqual(Object.keys(settings.sources), ['claude', 'claudeDesktop', 'codex', 'grok', 'kimi', 'gemini', 'antigravity', 'mailbox']);
   assert.deepEqual(settings.sources.claude, { enabled: true, root: null });
   assert.deepEqual(settings.remote, { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] });
   assert.deepEqual(settings.people, { you: { label: 'Ada' } });
@@ -270,6 +271,7 @@ test('isNodeKey accepts only real node keys', () => {
     `claude:${UUID}/agent_one-2`,
     `gemini:${UUID}`,
     `gemini:${UUID}/codebase_investigator-a1b2`,
+    `antigravity:${UUID}`,
     'project:pleni',
     'project:My Project (old)',
     `project:${'p'.repeat(120)}`,
@@ -289,6 +291,8 @@ test('isNodeKey accepts only real node keys', () => {
     `claude:${UUID}/a/b`,
     `other:${UUID}`,
     `gemini:${UUID}/Agent.One`,
+    `antigravity:${UUID.toUpperCase()}`,
+    `agy:${UUID}`,
     `claude:${UUID}\n`,
     'project:',
     `project:${'p'.repeat(121)}`,
@@ -387,6 +391,7 @@ test('resolveRoots uses platform defaults', () => {
     grok: '/home/ada/.grok',
     kimi: '/home/ada/.kimi-code',
     gemini: '/home/ada/.gemini',
+    antigravity: '/home/ada/.gemini/antigravity-cli',
     mailbox: null,
   });
   assert.deepEqual(resolveRoots(DEFAULTS, {}, 'darwin', '/Users/ada'), {
@@ -396,6 +401,7 @@ test('resolveRoots uses platform defaults', () => {
     grok: '/Users/ada/.grok',
     kimi: '/Users/ada/.kimi-code',
     gemini: '/Users/ada/.gemini',
+    antigravity: '/Users/ada/.gemini/antigravity-cli',
     mailbox: null,
   });
   assert.deepEqual(resolveRoots(DEFAULTS, { APPDATA: 'C:\\Users\\ada\\AppData\\Roaming' }, 'win32', 'C:\\Users\\ada'), {
@@ -405,6 +411,7 @@ test('resolveRoots uses platform defaults', () => {
     grok: 'C:\\Users\\ada\\.grok',
     kimi: 'C:\\Users\\ada\\.kimi-code',
     gemini: 'C:\\Users\\ada\\.gemini',
+    antigravity: 'C:\\Users\\ada\\.gemini\\antigravity-cli',
     mailbox: null,
   });
   assert.equal(resolveRoots(DEFAULTS, {}, 'win32', 'C:\\Users\\ada').claudeDesktop, 'C:\\Users\\ada\\AppData\\Roaming\\Claude');
@@ -442,6 +449,7 @@ test('resolveRoots prefers roots from settings', () => {
     grok: '/home/ada/.grok',
     kimi: '/home/ada/.kimi-code',
     gemini: '/home/ada/.gemini',
+    antigravity: '/home/ada/.gemini/antigravity-cli',
     mailbox: '/data/mailbox',
   });
   assert.deepEqual(resolveRoots(null, {}, 'linux', '/home/ada').mailbox, null);
@@ -542,7 +550,7 @@ test('node keys include the relay and mailbox worker runs, and people keep a val
   assert.equal(people[`codex:${UUID}/a1`], undefined, 'not a project');
 });
 
-test('Grok, Kimi Code and Gemini CLI have their own folders, environment variables and node keys', () => {
+test('Grok, Kimi Code, Gemini CLI and Antigravity CLI have their own folders, environment variables and node keys', () => {
   const home = path.resolve(os.tmpdir(), 'home-ada');
   const roots = resolveRoots(cleanSettings({}), {}, process.platform, home);
   assert.equal(roots.grok, path.join(home, '.grok'));
@@ -566,8 +574,21 @@ test('Grok, Kimi Code and Gemini CLI have their own folders, environment variabl
   assert.deepEqual(off.sources.gemini, { enabled: false, root: null });
   assert.deepEqual(cleanSettings({}).sources.grok, { enabled: true, root: null });
   assert.deepEqual(cleanSettings({}).sources.gemini, { enabled: true, root: null });
-  for (const key of [`grok:${UUID}`, `kimi:${UUID}`, `kimi:${UUID}/agent-0`, `gemini:${UUID}`, `gemini:${UUID}/helper-1`]) assert.equal(isNodeKey(key), true, key);
+  for (const key of [`grok:${UUID}`, `kimi:${UUID}`, `kimi:${UUID}/agent-0`, `gemini:${UUID}`, `gemini:${UUID}/helper-1`, `antigravity:${UUID}`]) assert.equal(isNodeKey(key), true, key);
   assert.equal(isNodeKey(`other:${UUID}`), false);
+});
+
+test('Antigravity CLI keeps its files in .gemini/antigravity-cli, which no environment variable moves', () => {
+  const home = path.resolve(os.tmpdir(), 'home-ada');
+  assert.equal(resolveRoots(cleanSettings({}), {}, process.platform, home).antigravity, path.join(home, '.gemini', 'antigravity-cli'));
+  // GEMINI_CLI_HOME moves Gemini CLI's folder, not Antigravity CLI's.
+  const env = { GEMINI_CLI_HOME: path.resolve(os.tmpdir(), 'gemini-home') };
+  assert.equal(resolveRoots(cleanSettings({}), env, process.platform, home).antigravity, path.join(home, '.gemini', 'antigravity-cli'));
+  assert.equal(resolveRoots(cleanSettings({}), {}, 'win32', 'C:\\Users\\ada').antigravity, 'C:\\Users\\ada\\.gemini\\antigravity-cli');
+  const own = path.resolve(os.tmpdir(), 'my-antigravity');
+  assert.equal(resolveRoots(cleanSettings({ sources: { antigravity: { root: own } } }), env, process.platform, home).antigravity, own);
+  assert.deepEqual(cleanSettings({}).sources.antigravity, { enabled: true, root: null });
+  assert.deepEqual(cleanSettings({ sources: { antigravity: { enabled: false, root: 'not absolute' } } }).sources.antigravity, { enabled: false, root: null });
 });
 
 test('rollSoon limits are whole numbers in range, and 0 turns one off', () => {

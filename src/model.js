@@ -20,8 +20,8 @@ const STATUSES = ['working', 'ready', 'idle', 'done', 'error'];
 const KINDS = ['session', 'agent', 'reviewer'];
 const NO_PROJECT = 'Other';
 // The AI tools whose sessions Pleni reads, and the names their tiles show (settings.toolTiles).
-const TOOLS = ['claude', 'codex', 'grok', 'kimi', 'gemini'];
-const TOOL_NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', gemini: 'Gemini CLI' };
+const TOOLS = ['claude', 'codex', 'grok', 'kimi', 'gemini', 'antigravity'];
+const TOOL_NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', gemini: 'Gemini CLI', antigravity: 'Antigravity CLI' };
 const GIT_CACHE_MAX = 500;
 const GITHUB_PATH = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 
@@ -37,7 +37,7 @@ const gitCache = new Map();
 // `actions` says which actions the page may offer: { openTerminal, rollover, newAgent, teleport, send }, each true when that
 // button is turned on and can work on this computer.
 // `asks` are the questions Pleni holds for the person (src/answers.js), as createAsks().list() gives them.
-export function buildSnapshot({ now, settings, claude = null, codex = null, grok = null, kimi = null, gemini = null, mailbox = null, dismissed = null, actions = null, asks = null, demo = false } = {}) {
+export function buildSnapshot({ now, settings, claude = null, codex = null, grok = null, kimi = null, gemini = null, antigravity = null, mailbox = null, dismissed = null, actions = null, asks = null, demo = false } = {}) {
   const s = cleanSettings(settings);
   const ctx = {
     now: Number.isFinite(now) ? now : Date.now(),
@@ -46,9 +46,9 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
     projectFolders: projectFolders(s.projectList),
     projectIdsByCwd: new Map(),
   };
-  const all = collectSessions([claude, codex, grok, kimi, gemini]);
+  const all = collectSessions([claude, codex, grok, kimi, gemini, antigravity]);
   // A tile for each AI tool that is on and was found, even with no sessions (settings.toolTiles).
-  ctx.tools = s.toolTiles ? availableTools({ claude, codex, grok, kimi, gemini }) : [];
+  ctx.tools = s.toolTiles ? availableTools({ claude, codex, grok, kimi, gemini, antigravity }) : [];
   // The mailbox in Settings and, when it is an HQ, the project mailboxes it lists.
   ctx.boxes = mailboxBoxes(mailbox, s);
   ctx.linkedTiles = linkedTiles(ctx.boxes);
@@ -83,6 +83,7 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
       grok: sourceInfo(grok, sessionsOf(grok).length),
       kimi: sourceInfo(kimi, sessionsOf(kimi).length),
       gemini: sourceInfo(gemini, sessionsOf(gemini).length),
+      antigravity: sourceInfo(antigravity, sessionsOf(antigravity).length),
       mailbox: tasks ? sourceInfo(mailbox, tasks.length) : null,
     },
     nodes,
@@ -412,7 +413,7 @@ function collectSessions(results) {
 }
 
 function cleanSession(raw) {
-  if (!isObject(raw) || typeof raw.key !== 'string' || !/^(claude|codex|grok|kimi|gemini):./.test(raw.key)) return null;
+  if (!isObject(raw) || typeof raw.key !== 'string' || !/^(claude|codex|grok|kimi|gemini|antigravity):./.test(raw.key)) return null;
   const parentKey = typeof raw.parentKey === 'string' && raw.parentKey && raw.parentKey !== raw.key ? raw.parentKey : null;
   return {
     key: raw.key,

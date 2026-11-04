@@ -37,6 +37,7 @@ function setup(t, { settings = {}, ...options } = {}) {
     grok: path.join(dir, 'grok'),
     kimi: path.join(dir, 'kimi'),
     gemini: path.join(dir, 'gemini'),
+    antigravity: path.join(dir, 'antigravity'),
   };
   for (const root of Object.values(roots)) fs.mkdirSync(root, { recursive: true });
   const clock = { now: NOW };
@@ -412,6 +413,43 @@ test('Gemini CLI: each reply counts once, helpers and older .json files count, a
   assert.equal(tools.gemini.atLeast, false);
 });
 
+// ---- Antigravity CLI ----
+
+test('Antigravity CLI: its files hold no token counts, so nothing is counted and nothing is read', async (t) => {
+  const { roots, usage } = setup(t);
+  // A transcript with numbers that look like tokens: Pleni must not make them up into a count.
+  const transcript = path.join(roots.antigravity, 'brain', '5b6c7d8e-0000-4000-8000-0000000000aa', '.system_generated', 'logs', 'transcript.jsonl');
+  put(transcript, { step_index: 0, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: iso(10, 9), content: 'SECRET-WORDS', usage: { input_tokens: 500, output_tokens: 50 } });
+  // A Gemini CLI log, to show that the spies see what Pleni reads.
+  put(path.join(roots.gemini, 'tmp', 'project', 'chats', 'session-2026-06-10T09-00-5b6c7d8e.jsonl'), { id: 'g1', timestamp: iso(10, 9), type: 'gemini', tokens: { input: 1, output: 1 } });
+  const spies = ['open', 'readFile', 'readdir'].map((name) => t.mock.method(fs.promises, name));
+  const { tools } = await usage.read();
+  const looked = spies.flatMap((spy) => spy.mock.calls.map((c) => String(c.arguments[0])));
+  for (const spy of spies) spy.mock.restore();
+  assert.ok(looked.some((file) => file.startsWith(roots.gemini)));
+  assert.equal(looked.some((file) => file.startsWith(roots.antigravity)), false, 'no Antigravity CLI file or folder is read');
+  const a = tools.antigravity;
+  assert.equal(a.on, true);
+  assert.equal(a.counted, false);
+  assert.equal(a.error, null);
+  assert.equal(a.limits, null);
+  assert.equal(a.atLeast, false);
+  assert.deepEqual(a.today, tokens(0, 0, 0, 0));
+  assert.deepEqual(a.week, tokens(0, 0, 0, 0));
+  assert.deepEqual(a.days.map((d) => d.date), DAYS);
+  assert.equal(tools.gemini.counted, true);
+  // Without its folder, the card says so in plain words.
+  fs.rmSync(roots.antigravity, { recursive: true });
+  const gone = (await usage.read({ fresh: true })).tools.antigravity;
+  assert.match(gone.error, /could not find the Antigravity CLI files/);
+  assert.equal(gone.counted, false);
+  // Turned off in Settings: not looked at.
+  const off = setup(t, { settings: { sources: { antigravity: { enabled: false } } } });
+  const offTool = (await off.usage.read()).tools.antigravity;
+  assert.equal(offTool.on, false);
+  assert.equal(offTool.error, null);
+});
+
 // ---- reading, reusing and limits ----
 
 test('a file that grows is read from where it stopped, and a half-written last line waits', async (t) => {
@@ -472,7 +510,7 @@ test('a tool that is off is not read, and a missing folder gets a plain message'
   assert.equal(tools.claude.error, null);
   const nowhere = createUsage({ getRoots: () => ({}), getSettings: () => cleanSettings({}), now: () => NOW });
   const none = (await nowhere.read()).tools;
-  for (const name of ['claude', 'codex', 'grok', 'kimi', 'gemini']) assert.match(none[name].error, /does not know where/);
+  for (const name of ['claude', 'codex', 'grok', 'kimi', 'gemini', 'antigravity']) assert.match(none[name].error, /does not know where/);
 });
 
 test('Claude Code limits come from the hook, and a hook that fails changes nothing', async (t) => {
@@ -487,13 +525,18 @@ test('Claude Code limits come from the hook, and a hook that fails changes nothi
 
 test('the demo answers in the same shape, with limits for Claude Code and Codex only', () => {
   const demo = demoUsage(NOW);
-  assert.deepEqual(Object.keys(demo.tools), ['claude', 'codex', 'grok', 'kimi', 'gemini']);
+  assert.deepEqual(Object.keys(demo.tools), ['claude', 'codex', 'grok', 'kimi', 'gemini', 'antigravity']);
   assert.equal(demo.at, NOW);
   assert.equal(demo.tools.claude.limits.from, 'statusLine');
   assert.equal(demo.tools.codex.limits.from, 'files');
   assert.equal(demo.tools.grok.limits, null);
   assert.equal(demo.tools.kimi.limits, null);
   assert.equal(demo.tools.gemini.limits, null);
+  // Pleni counts no tokens for Antigravity CLI, in the demo too.
+  assert.equal(demo.tools.antigravity.limits, null);
+  assert.equal(demo.tools.antigravity.counted, false);
+  assert.equal(demo.tools.antigravity.week.total, 0);
+  assert.equal(demo.tools.gemini.counted, true);
   for (const tool of Object.values(demo.tools)) {
     assert.deepEqual(tool.days.map((d) => d.date), DAYS);
     assert.equal(tool.week.total, tool.days.reduce((n, d) => n + d.total, 0));

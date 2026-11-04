@@ -24,8 +24,10 @@ const DATE_DIR = /^\d{1,4}$/;
 const GEMINI_FILE = /^session-.*\.jsonl?$/;
 const GEMINI_ID = /^[0-9a-f-]{8,64}$/i;
 
-export const TOOLS = ['claude', 'codex', 'grok', 'kimi', 'gemini'];
-const NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', gemini: 'Gemini CLI' };
+export const TOOLS = ['claude', 'codex', 'grok', 'kimi', 'gemini', 'antigravity'];
+const NAMES = { claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi Code', gemini: 'Gemini CLI', antigravity: 'Antigravity CLI' };
+// The Antigravity CLI files that Pleni reads hold no token counts, so Pleni has none to count.
+const UNCOUNTED = new Set(['antigravity']);
 
 // ---- days ----
 
@@ -69,8 +71,9 @@ function addTo(t, input, output, cacheRead, cacheWrite) {
   t.cacheWrite += cacheWrite;
 }
 
-// `buckets` is 7 { input, output, cacheRead, cacheWrite } objects, oldest first.
-function toolAnswer({ on, win, buckets = null, atLeast = false, limits = null, error = null }) {
+// `buckets` is 7 { input, output, cacheRead, cacheWrite } objects, oldest first. `counted` is false
+// for a tool whose files hold no token counts: its numbers are always zero.
+function toolAnswer({ on, win, buckets = null, atLeast = false, limits = null, error = null, counted = true }) {
   const week = zeroTokens();
   const days = win.keys.map((date, i) => {
     const b = buckets?.[i] ?? zeroTokens();
@@ -78,7 +81,7 @@ function toolAnswer({ on, win, buckets = null, atLeast = false, limits = null, e
     return { date, ...withTotal(b) };
   });
   const { date, ...today } = days[DAY_COUNT - 1];
-  return { on, today, week: withTotal(week), days, atLeast, limits, error };
+  return { on, today, week: withTotal(week), days, atLeast, limits, error, counted };
 }
 
 function emptyBuckets() {
@@ -628,7 +631,7 @@ function finite(value) {
 //                      gives a function that returns { at, from: 'statusLine', plan, windows } or
 //                      null; it may be async. Without it, Claude Code has no limits here.
 //   maxBytes, maxFiles -> what one read may take from each tool (tests make them small)
-// read({ fresh }) -> { at, tools: { claude, codex, grok, kimi, gemini } }, the last answer reused for 30 s.
+// read({ fresh }) -> { at, tools: { claude, codex, grok, kimi, gemini, antigravity } }, the last answer reused for 30 s.
 export function createUsage({ getRoots, getSettings, now = Date.now, claudeLimits = null, maxBytes = MAX_BYTES, maxFiles = MAX_FILES } = {}) {
   const limits = { maxFiles };
   const state = Object.fromEntries(TOOLS.map((name) => [name, { rootKey: null, files: new Map(), ledger: createLedger() }]));
@@ -655,7 +658,7 @@ export function createUsage({ getRoots, getSettings, now = Date.now, claudeLimit
       try {
         tools[name] = await readTool(name, roots, settings, win);
       } catch {
-        tools[name] = toolAnswer({ on: enabled(settings, name), win, error: `Pleni could not read the ${NAMES[name]} usage.` });
+        tools[name] = toolAnswer({ on: enabled(settings, name), win, counted: !UNCOUNTED.has(name), error: `Pleni could not read the ${NAMES[name]} usage.` });
       }
     }
     const result = { at: t, tools };
@@ -674,12 +677,13 @@ export function createUsage({ getRoots, getSettings, now = Date.now, claudeLimit
 
   async function readTool(name, roots, settings, win) {
     const on = enabled(settings, name);
-    if (!on) return toolAnswer({ on, win });
+    const counted = !UNCOUNTED.has(name);
+    if (!on) return toolAnswer({ on, win, counted });
     const folders = name === 'claude'
       ? [roots.claude, enabled(settings, 'claudeDesktop') ? roots.claudeDesktop : null]
       : [roots[name]];
     const known = [...new Set(folders.filter((f) => typeof f === 'string' && f))];
-    if (known.length === 0) return toolAnswer({ on, win, error: `Pleni does not know where ${NAMES[name]} keeps its files.` });
+    if (known.length === 0) return toolAnswer({ on, win, counted, error: `Pleni does not know where ${NAMES[name]} keeps its files.` });
     const mine = state[name];
     const rootKey = JSON.stringify(known);
     if (mine.rootKey !== rootKey) {
@@ -692,8 +696,8 @@ export function createUsage({ getRoots, getSettings, now = Date.now, claudeLimit
     const buckets = await collectTool(name, known, mine, win, budget);
     // Claude Code's limits do not come from its session files, so they show even without them.
     const found = name === 'claude' ? await claudeHook() : name === 'codex' && buckets ? codexLimits(mine.files.values()) : null;
-    if (buckets === null) return toolAnswer({ on, win, limits: found, error: `Pleni could not find the ${NAMES[name]} files on this computer.` });
-    return toolAnswer({ on, win, buckets, atLeast: budget.cut, limits: found });
+    if (buckets === null) return toolAnswer({ on, win, counted, limits: found, error: `Pleni could not find the ${NAMES[name]} files on this computer.` });
+    return toolAnswer({ on, win, counted, buckets, atLeast: budget.cut, limits: found });
   }
 
   // The hook never stops a read: if it fails, Claude Code simply has no limits to show.
@@ -741,6 +745,8 @@ export function createUsage({ getRoots, getSettings, now = Date.now, claudeLimit
         : followGeminiJson(cand, file, budget, mine.ledger, win)));
       return mine.ledger.buckets(win);
     }
+    // Nothing to count: Pleni only checks that the folder is there.
+    if (name === 'antigravity') return (await isDirectory(folders[0])) ? emptyBuckets() : null;
     return null;
   }
 

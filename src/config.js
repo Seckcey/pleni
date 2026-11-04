@@ -25,6 +25,7 @@ export const DEFAULTS = deepFreeze({
     grok: { enabled: true, root: null },
     kimi: { enabled: true, root: null },
     gemini: { enabled: true, root: null },
+    antigravity: { enabled: true, root: null },
     mailbox: { enabled: false, root: null, planner: null, coordinator: null },
   },
   people: {},
@@ -83,7 +84,7 @@ const MAX_REMOTE = 20;
 const MAX_LAN_ADDRESSES = 10;
 const MAX_TIER_WORDS = 50;
 const MAX_PATH = 4096;
-const NODE_KEY = /^(claude|codex|grok|kimi|gemini):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
+const NODE_KEY = /^(claude|codex|grok|kimi|gemini|antigravity):[0-9a-f-]{8,64}(\/[0-9a-z_-]{1,64})?$/;
 // A mailbox worker run: mailbox:<task id>/W<n>, or mailbox:<box>:<task id>/W<n> in a project
 // mailbox of an HQ, where <box> is the project's id (never "hq", which is HQ itself). It keeps no
 // session file of its own. A task id never holds ':'.
@@ -118,6 +119,8 @@ export function resolveRoots(settings, env = process.env, platform = process.pla
     kimi: pick('kimi', envPath(env, 'KIMI_CODE_HOME', p) || p.join(home, '.kimi-code')),
     // GEMINI_CLI_HOME names the home folder that holds .gemini, not .gemini itself.
     gemini: pick('gemini', p.join(envPath(env, 'GEMINI_CLI_HOME', p) || home, '.gemini')),
+    // Antigravity CLI keeps its files in .gemini/antigravity-cli; no environment variable moves it.
+    antigravity: pick('antigravity', p.join(home, '.gemini', 'antigravity-cli')),
     mailbox: pick('mailbox', null),
   };
 }
@@ -224,7 +227,7 @@ function cleanTiers(raw) {
 function cleanSources(raw) {
   const s = isObject(raw) ? raw : {};
   const out = {};
-  for (const name of ['claude', 'claudeDesktop', 'codex', 'grok', 'kimi', 'gemini']) {
+  for (const name of ['claude', 'claudeDesktop', 'codex', 'grok', 'kimi', 'gemini', 'antigravity']) {
     const src = isObject(s[name]) ? s[name] : {};
     out[name] = { enabled: cleanBool(src.enabled, DEFAULTS.sources[name].enabled), root: cleanRoot(src.root) };
   }

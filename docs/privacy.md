@@ -1,6 +1,6 @@
 # Privacy in Pleni
 
-Pleni runs on your own computer. It reads files that Claude Code, Codex, Grok, Kimi Code and Gemini CLI already write, and it
+Pleni runs on your own computer. It reads files that Claude Code, Codex, Grok, Kimi Code, Gemini CLI and Antigravity CLI already write, and it
 shows what it finds in your browser. This page says exactly what it reads, what it shows, and
 what it never does.
 
@@ -29,12 +29,17 @@ what it never does.
 ## What Pleni reads
 
 Pleni reads only the places below, and only the parts it needs. For session files (the
-transcripts of Claude Code, Codex, Grok, Kimi Code and Gemini CLI sessions and their helpers) it looks only at files that
+transcripts of Claude Code, Codex, Grok, Kimi Code, Gemini CLI and Antigravity CLI sessions and their helpers) it looks only at files that
 changed in the last 24 hours (the `recentHours` setting). The small notes files of the Claude
-desktop app, the mailbox's task files, and the Codex list of session names are read whatever
-their age, because they are small and say which session is which. For big files Pleni reads from
-the end, about the last 4 MB at first, and then only the new lines as they are added. It may also
-read the start of a file once, to find a session's name and where it started.
+desktop app, the mailbox's task files, the Codex list of session names, Gemini CLI's
+`projects.json` and `.project_root` files, and Antigravity CLI's two cache lists and its
+`history.jsonl` are read whatever their age, because they say which session is which and which
+folder it works in. For big files Pleni reads from the end, about the last 4 MB at first, and then
+only the new lines as they are added. It may also read the start of a file once, to find a
+session's name and where it started. For a big Kimi Code or Antigravity CLI log, it also looks
+through up to 16 MB before that last part, only to find the helpers the session started (and, for
+Antigravity CLI, the role each was given). It may look at the start and those 16 MB again when the
+tool writes the log over or after a long gap, so a log under about 20 MB may be read whole.
 
 | Where                                   | What Pleni reads                                                                                         |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -44,6 +49,7 @@ read the start of a file once, to find a session's name and where it started.
 | Grok folder (usually `~/.grok`)          | Each session's summary and its event, chat and update logs in `sessions/` |
 | Kimi Code folder (usually `~/.kimi-code`) | Each session's `state.json` and its agents' `wire.jsonl` logs in `sessions/` |
 | Gemini CLI folder (usually `~/.gemini`)  | Only three things in it: each session's chat log in `tmp/<project>/chats/` (and its helpers' logs in a folder there named after the session), the small `.project_root` file in `tmp/<project>/` that names the project's folder, and `projects.json`, the list of your project folders. Never the login files (`oauth_creds.json`, `google_accounts.json`, `gemini-credentials.json`), `settings.json`, `trustedFolders.json` or any `.env` file. Of each reply's thoughts, Pleni keeps only that there were some, and when |
+| Antigravity CLI folder (usually `~/.gemini/antigravity-cli`) | Only four things in it: each conversation's log in `brain/<conversation>/.system_generated/logs/` (`transcript_full.jsonl`, or `transcript.jsonl` when there is no uncut one), and three small lists that say which folder each conversation works in: `cache/conversation_metadata.json` (also its title), `cache/last_conversations.json` and `history.jsonl` (also the first prompt you typed, used as a name when nothing else gives one, or when Antigravity CLI has cleared that prompt from the log to save space). Never your login (it is kept in the system's own password store, or a file such as `antigravity-oauth-token`), `settings.json`, the conversation databases (`.db` and `-wal` files) or anything else in the folder, such as a conversation's plans and notes. Of each reply's thinking, Pleni keeps only that there was some |
 | Codex folder, while Settings → Models is open | From `config.toml`, only the model and effort lines (`model`, `model_reasoning_effort`, and `default_subagent_model` and `default_subagent_reasoning_effort` under `[agents]`); the whole file is read to find them, and nothing else in it is kept or shown. From each worker type file in `agents/`, its name, description, model and effort. From `models_cache.json`, the list of models Codex offers you: each model's name and the effort levels it takes |
 | Claude Code folder, while Settings → Models is open | From `settings.json`, only `model`, the effort kept for each model under `modelSettings`, and from its `env` block only `CLAUDE_CODE_SUBAGENT_MODEL`, `ANTHROPIC_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL` and `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`; the whole file is read to find them, and nothing else in it is shown. From each agent file in `agents/`, the name, description, model and effort in the block at its top. The same three setting names are also looked up in Pleni's own environment |
 | Codex coordinator list, if present      | `coordinators/registry.sqlite3` (opened read-only) and `coordinators/superintendent.json`, only to learn which coordinator started which worker |
@@ -90,8 +96,9 @@ Always:
 Only when the `content` setting is `snippets` (this is the default):
 
 - A short note about the current tool step, at most 140 characters. It is built from the step's
-  description, the first line of a command, a file's name (not its folder), a search pattern, a
-  helper's task description, or a web site's host name.
+  description, the first line of a command, a file's name (not its folder), a search's words or
+  pattern, a helper's task description, the name of the agent a message goes to (never the
+  message), a question the agent asks you, or a web site's host name.
 - The last thing the assistant said, at most 280 characters.
 - In the side panel: up to 200 recent steps, each with at most 2,000 characters of text.
 - Mailbox task titles and the headings of mailbox entries.
@@ -114,7 +121,7 @@ recent pop-ups in its notification list until you clear them.
 ## What Pleni never does
 
 - It never writes, moves, or deletes anything in the Claude Code, Codex, Grok, Kimi Code, Gemini CLI,
-  Claude desktop app, or mailbox folders. The exceptions are **Save to Codex** and **Save to Claude Code** on the Models
+  Antigravity CLI, Claude desktop app, or mailbox folders. The exceptions are **Save to Codex** and **Save to Claude Code** on the Models
   page (see [below](#models)), and **Connect** and **Disconnect** for **Answer questions**, which add
   and take out Pleni's own two hooks in Claude Code's `settings.json` (see below), and **Connect**
   and **Disconnect** for **plan limits**, which add and take out Pleni's status line there.
@@ -172,7 +179,9 @@ recent pop-ups in its notification list until you clear them.
   status line back and deletes Pleni's three files. If you changed the status line yourself in the
   meantime, Pleni leaves your file alone and says so. Claude Code only runs a status line in a
   folder you trust. Grok, Kimi Code and Gemini CLI save no limits, so Pleni shows where to look in each tool
-  instead.
+  instead. The Antigravity CLI files that Pleni reads hold no limits and no token counts, and Pleni
+  never opens its databases, so Pleni counts nothing for it and shows where to look there too
+  (`/usage`).
 - **New agent** (Settings → Buttons, off until you turn it on, Windows only, this computer only)
   opens one PowerShell window in the folder of a session you pick and runs `claude --name <name>`
   or `codex` there. The name you type is held to the same plain marks. Pleni sends the new agent

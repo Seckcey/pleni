@@ -743,7 +743,7 @@ test('POST /api/settings saves into PLENI_HOME and reloads the store', async (t)
 
   assert.equal(store.reloads.length, 1);
   assert.deepEqual(store.reloads[0].settings, saved);
-  assert.deepEqual(Object.keys(store.reloads[0].roots).sort(), ['claude', 'claudeDesktop', 'codex', 'gemini', 'grok', 'kimi', 'mailbox']);
+  assert.deepEqual(Object.keys(store.reloads[0].roots).sort(), ['antigravity', 'claude', 'claudeDesktop', 'codex', 'gemini', 'grok', 'kimi', 'mailbox']);
 
   const again = await request(port, { path: '/api/settings' });
   assert.equal(again.json.settings.displayName, 'Ada');
@@ -1569,6 +1569,11 @@ test('hide saves Role "Hide it" for a session, says the role it had, and Undo pu
   store.current = { ...store.current, nodes: [...store.current.nodes, { key: gemini, title: 'Docs pass', kind: 'session', parent: 'you' }] };
   assert.deepEqual((await hide(port, { key: gemini, hide: true })).json, { ok: true, role: null });
   assert.deepEqual(memory.state.settings.people[gemini], { role: 'hidden' });
+  // And an Antigravity CLI helper, which is a conversation of its own.
+  const antigravity = 'antigravity:0f8e2c4a-1b3d-4e5f-8a9b-00000000beef';
+  store.current = { ...store.current, nodes: [...store.current.nodes, { key: antigravity, title: 'Slow query finder', kind: 'agent', parent: 'you' }] };
+  assert.deepEqual((await hide(port, { key: antigravity, hide: true })).json, { ok: true, role: null });
+  assert.deepEqual(memory.state.settings.people[antigravity], { role: 'hidden' });
 });
 
 test('hide refuses the person, groups, the relay, worker runs, bad roles, unknown tiles and cross-site requests', async (t) => {
@@ -1664,13 +1669,15 @@ test('GET /api/usage answers the shape, from made-up files, and any signed-in de
   assert.equal(res.status, 200);
   assert.equal(res.json.demo, false);
   assert.equal(typeof res.json.at, 'number');
-  assert.deepEqual(Object.keys(res.json.tools), ['claude', 'codex', 'grok', 'kimi', 'gemini']);
+  assert.deepEqual(Object.keys(res.json.tools), ['claude', 'codex', 'grok', 'kimi', 'gemini', 'antigravity']);
   const claude = res.json.tools.claude;
   assert.deepEqual(claude.today, { input: 11, output: 5, cacheRead: 100, cacheWrite: 4, total: 20 });
   assert.equal(claude.days.length, 7);
   assert.equal(claude.on, true);
   assert.equal(claude.limits, null);
   assert.match(res.json.tools.codex.error, /Codex/);
+  assert.equal(claude.counted, true);
+  assert.equal(res.json.tools.antigravity.counted, false, 'Pleni counts no tokens for Antigravity CLI');
   const laptop = await request(port, { path: '/api/usage?fresh=1', headers: FROM_LAPTOP });
   assert.equal(laptop.status, 200);
   assert.equal(laptop.json.tools.claude.today.total, 20);
@@ -1716,6 +1723,9 @@ test('GET /api/usage in the demo answers made-up numbers and reads no folder', a
   assert.equal(res.json.tools.grok.limits, null);
   assert.equal(res.json.tools.kimi.limits, null);
   assert.equal(res.json.tools.gemini.limits, null);
+  assert.equal(res.json.tools.antigravity.limits, null);
+  assert.equal(res.json.tools.antigravity.counted, false);
+  assert.equal(res.json.tools.antigravity.week.total, 0);
   assert.equal(res.json.tools.claude.days.length, 7);
 });
 

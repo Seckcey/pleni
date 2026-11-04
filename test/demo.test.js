@@ -16,7 +16,7 @@ function clock(start = NOW) {
 }
 
 function allSessions(state) {
-  return ['claude', 'codex', 'grok', 'kimi', 'gemini'].flatMap((name) => state[name].sessions);
+  return ['claude', 'codex', 'grok', 'kimi', 'gemini', 'antigravity'].flatMap((name) => state[name].sessions);
 }
 
 function demoSnapshot(now, settings = {}) {
@@ -34,7 +34,7 @@ test('the same time always gives the same demo data', () => {
 
 test('the demo returns the source shapes the store expects', () => {
   const state = createDemoSource({ now: () => NOW }).poll();
-  for (const name of ['claude', 'codex', 'grok', 'kimi', 'gemini']) {
+  for (const name of ['claude', 'codex', 'grok', 'kimi', 'gemini', 'antigravity']) {
     assert.equal(state[name].ok, true);
     assert.ok(state[name].sessions.length > 0, name);
     assert.equal(state[name].error, null);
@@ -82,6 +82,14 @@ test('the cast has every status and the planned shape', () => {
   const gemini = sessions.filter((s) => s.platform === 'gemini');
   const lead = gemini.find((s) => s.kind === 'session');
   assert.deepEqual(gemini.filter((s) => s.parentKey === lead.key).map((s) => [s.kind, s.status]), [['agent', 'done']]);
+
+  // An Antigravity CLI session at work, with a helper of its own that finished. Antigravity CLI
+  // names no model in its files, so the demo has none either.
+  const agy = sessions.filter((s) => s.platform === 'antigravity');
+  const main = agy.find((s) => s.kind === 'session');
+  assert.equal(main.status, 'working');
+  assert.deepEqual(agy.filter((s) => s.parentKey === main.key).map((s) => [s.kind, s.status]), [['agent', 'done']]);
+  assert.ok(agy.every((s) => s.model === null && !s.key.includes('/')));
 
   const models = new Set(sessions.map((s) => s.model));
   for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'gpt-6.1-sol']) assert.ok(models.has(model), model);
