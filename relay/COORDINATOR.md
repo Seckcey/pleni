@@ -81,7 +81,8 @@ You are the **Claude coordinator**. **Codex, the planner, is your boss.** The fu
     - Gemini costs money for every run, and each of these tools has a daily limit
       (`worker_runs_per_day`).
     - A Codex or Antigravity worker does not commit: the launcher commits its changes when it
-      finishes. Review that commit like any other.
+      finishes. Review that commit like any other. If the worker changed the worktree's `.git`, the
+      launcher commits nothing and says so in `W<n>.log`: look at the worktree before you use it.
     - A Gemini or Antigravity worker can read only its worktree and the task's `workers` folder (an
       Antigravity reviewer: only the `workers` folder, unless the owner allowed more). Put what it
       needs from the assignment into its brief.

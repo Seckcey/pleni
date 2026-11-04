@@ -6,11 +6,14 @@
 //   ok             print stream-json events: init (a new conversation id), one step_update, and a SUCCESS result with
 //                  token usage (exit 0)
 //   write          like ok, but first change a file in the working folder, the way a real worker does
+//   gitlink        like write (a file of its own), and also change the working folder's .git file
 //   sleep:<s>      like ok, but the run takes <s> seconds after init
 //   exit:1         bad input: an ERROR result, and the reason on stderr (exit 1)
-//   exit:3         a model or service failure: init, an ERROR result, and an AGY_ERROR line on stderr (exit 3)
+//   exit:3         a model or service failure: init, an ERROR result, and an AGY_ERROR line on stderr (exit 3). The
+//                  two hold different words, so the test can tell which one the launcher read.
 //   result-error   init, then an ERROR result, but exit 0 (Antigravity CLI does this in a stream-json session)
 //   auth           not signed in: "authentication required" on stderr, and no events (exit 1)
+//   not-eligible   an account Antigravity CLI does not serve: the reason only on stderr, and no events (exit 1)
 // A stdin line that is not JSON, or has no "event" field, ends the run with an ERROR result (exit 1), as Antigravity
 // CLI does.
 // It records each call in <RELAY_STUB_DIR>\agy-calls.jsonl: the arguments, the stdin text and what it read from it, the
@@ -70,6 +73,8 @@ function step(fields) { event({ event: 'step_update', step_update: { conversatio
 
 if (mode === 'auth') {
   finish(1, 'auth', 'Error: authentication required. Run agy in a terminal to sign in.');
+} else if (mode === 'not-eligible') {
+  finish(1, 'not-eligible', 'Error: Eligibility check failed: Your current account is not eligible for Antigravity.');
 } else if (badInput || mode === 'exit:1') {
   const why = badInput || 'invalid model selection (--model "stub-unknown" --effort ""): model stub-unknown is not recognized as a known model';
   result('ERROR', { conversation_id: '', error: why, num_turns: 0 });
@@ -83,7 +88,7 @@ if (mode === 'auth') {
   if (sm) sleep(Number(sm[1]) * 1000);
   if (mode === 'exit:3') {
     step({ step_index: 0, state: 'DONE', step_type: 'user_input' });
-    result('ERROR', { error: 'The model is overloaded. Try again later.' });
+    result('ERROR', { error: 'the turn ended on a model error' });
     const detail = { status: 'UNAVAILABLE', code: 503, retryable: true, error_id: 'stub-error-1', message: 'The model is overloaded. Try again later.' };
     finish(3, 'exit-3', 'AGY_ERROR: ' + JSON.stringify(detail));
   } else if (mode === 'result-error') {
@@ -93,9 +98,14 @@ if (mode === 'auth') {
   } else {
     // Mode 'write': change a file in the working folder, so the launcher has work to commit.
     if (mode === 'write') fs.writeFileSync(path.join(process.cwd(), 'agy-stub-change.txt'), 'changed by the stub Antigravity worker\n');
+    // Mode 'gitlink': a file of its own, and a changed .git file, which tells Git where its own folder is.
+    if (mode === 'gitlink') {
+      fs.writeFileSync(path.join(process.cwd(), 'agy-stub-gitlink.txt'), 'changed by the stub Antigravity worker, with its .git\n');
+      try { fs.appendFileSync(path.join(process.cwd(), '.git'), '\n'); } catch (e) { /* no .git file here */ }
+    }
     const usage = { input_tokens: 10418, output_tokens: 589, thinking_tokens: 551, cache_read_tokens: 8113, total_tokens: 11007 };
     step({ step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: 'stub Antigravity worker run done\n', usage });
     result('SUCCESS', { response: 'stub Antigravity worker run done\n', usage });
-    finish(0, mode === 'write' ? 'write' : 'ok', null);
+    finish(0, mode === 'write' || mode === 'gitlink' ? mode : 'ok', null);
   }
 }

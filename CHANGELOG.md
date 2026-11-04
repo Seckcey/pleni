@@ -8,6 +8,16 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **Relay workers in Codex, Gemini CLI or Antigravity CLI.** The mailbox relay's coordinator can
+  now start a worker in Codex, Gemini CLI or Antigravity CLI, not only in Claude Code. Each one
+  stays off until you add it to `worker_tools` in the mailbox's `bin\relay-settings.json`, and each
+  has a daily limit. A Gemini worker costs money for every run. Read the relay README's part on
+  Antigravity workers before you turn them on: Google's consumer terms may not allow running
+  Antigravity CLI from other programs, and your Google account could be suspended or closed. The
+  launcher commits a Codex or Antigravity worker's changes itself, with no Git hooks. To use them,
+  copy the new relay scripts into your mailbox (see "Update the relay in a mailbox" in the relay's
+  README) and give the coordinator the order "Choose the AI tool for each worker" from
+  `relay/COORDINATOR.md`.
 - **HQ and project mailboxes.** When your mailbox folder is an HQ (one planner, the orchestrator,
   for several projects; see "Run several projects (HQ)" in the relay's README), Pleni reads the
   project mailboxes it lists too, at most 20. The map shows you, then the orchestrator, then HQ's

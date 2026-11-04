@@ -38,7 +38,7 @@ Made by 8 West Ventures, LLC.
   the `codex` command line signed in with ChatGPT, or Gemini CLI with a paid plan, and Git.
 - Only for workers in Antigravity CLI (off by default, see [Antigravity workers](#antigravity-workers-off-by-default)):
   Antigravity CLI (`agy`) signed in, and Git. Read that part first: Google's consumer terms may not
-  allow it, and your Google account could be suspended.
+  allow it, and your Google account could be suspended or closed.
 - Node.js and Git, only to run the relay's test.
 
 ## What is in this folder
@@ -258,7 +258,7 @@ What each tool may do:
 | Tool   | How the relay starts it | What it may change | What it may run |
 | ------ | ----------------------- | ------------------ | --------------- |
 | Claude | `claude -p`, with your Claude plan. | The worktree and its report. A reviewer: only its report. | `git` and `node`, but never push, merge, rebase, reset, checkout, switch, branch, worktree, tag, stash or config; never `npm`, `npx` or the web. |
-| Codex  | `codex exec`, with your ChatGPT plan, in Codex's `workspace-write` sandbox. | The worktree and the task's `workers` folder. It cannot write in the folder where Git keeps the repository, so it cannot add a Git hook or change Git's settings. It does not commit: when it finishes, the launcher commits its changes. A reviewer works in the `workers` folder, so it can change only that folder. It can still read the worktree. | What the sandbox lets it run. The relay turns the sandbox's network off, whatever your own Codex settings say. |
+| Codex  | `codex exec`, with your ChatGPT plan, in Codex's `workspace-write` sandbox. | The worktree and the task's `workers` folder. It cannot write in the folder where Git keeps the repository, so it cannot add a Git hook or change Git's settings. It does not commit: when it finishes, the launcher commits its changes, with no Git hooks. A reviewer works in the `workers` folder, so it can change only that folder. It can still read the worktree. | What the sandbox lets it run. The relay turns the sandbox's network off, whatever your own Codex settings say. |
 | Gemini | `gemini -p`, with your Gemini login, and a policy that the relay writes for each run (`W<n>.gemini-policy.toml`). | The worktree and the `workers` folder. A reviewer: only its report. | Only `git status`, `diff`, `log`, `show` and `rev-parse`, `git add` and `commit` (not a reviewer), and `node <a script>`, without `>` or `>>`. Never push and the other git commands above, `npm`, `npx`, `node -e`, the web or MCP tools. |
 | Antigravity | `agy`, with your Google sign-in. Off by default: see [Antigravity workers](#antigravity-workers-off-by-default). | The worktree and the `workers` folder. A reviewer: only the `workers` folder. It does not commit: the launcher does. | Only what your own Antigravity settings allow. With no rule there, nothing. |
 
@@ -297,12 +297,13 @@ says `"turn_limit": "skipped by Gemini CLI"`. To be sure of a limit, also set
 
 **Read this first.** Google's FAQ for Antigravity says that running `agy` inside other programs "is
 not supported under consumer plans". It also says that using an Antigravity login from other
-software breaks Google's terms, and that Google may suspend the account for it. The relay is such a
-program. So if you turn this on, your Google account could be suspended. Turn it on only if you
-accept that risk. Every Antigravity run writes this warning in its log (`W<n>.log`):
+software breaks Google's terms, and that Google may suspend or close the account for it. The relay
+is such a program. So if you turn this on, your Google account could be suspended, or closed for
+good. Turn it on only if you accept that risk. Every Antigravity run writes this warning in its log
+(`W<n>.log`):
 
 > Google's consumer terms may not allow running Antigravity CLI from other programs. Your Google
-> account could be suspended. Turn it off by taking antigravity out of worker_tools.
+> account could be suspended or closed. Turn it off by taking antigravity out of worker_tools.
 
 With it on, the coordinator can start a worker in Antigravity CLI (`agy`) with `-Tool antigravity`.
 
@@ -343,30 +344,45 @@ agy --input-format stream-json --output-format stream-json --mode accept-edits -
   window denies each command that no rule allows, and goes on without it. It lists what it denied in
   `W<n>.log.err`.
 - **Commits:** with no rule, a worker cannot run `git` either. So when it finishes, the launcher
-  commits its changes, as for Codex. A run that changed nothing gets no commit.
-- **Your own setup counts too.** Your Antigravity rules, hooks, MCP servers and plugins apply to a
-  worker the same way they apply to you. If your settings say `"toolPermission": "always-proceed"`,
-  a worker may run any command. Keep the usual value.
-- **What the launcher refuses:** it does not start an Antigravity worker, and says why, when the
-  worktree or the `workers` folder has a `.agents` folder (or `.agent`, `_agents` or `_agent`) with
-  `hooks.json`, `mcp_config.json`, `plugins.json` or `plugins` in it. Antigravity CLI loads those when
-  it starts, and they can run commands.
+  commits its changes, as for Codex. A run that changed nothing gets no commit, and a failed run
+  gets none either. The worker could have changed files that Git reads, so the launcher's own `git`
+  commands run no Git hooks (small programs Git can start by itself) and no file monitor program.
+  If the run changed the worktree's `.git` file (it tells Git where Git's own folder is), the
+  launcher commits nothing and says so in `W<n>.log`. Then look at the worktree before you use it.
+- **Only in a Git worktree:** an Antigravity worker works only in a worktree made with
+  `git worktree add`, the way the coordinator makes them. In a plain copy of a repository, Git's own
+  folder is inside the worker's folder, where the worker could change it, so the launcher refuses.
+- **Your own setup counts too.** Your Antigravity rules, hooks (commands Antigravity runs by itself
+  at set moments, such as after it changes a file), MCP servers (helper programs that give it more
+  tools, such as a link to a database) and plugins (add-on packs that can hold both) apply to a
+  worker the same way they apply to you. A hook can run a command without asking. If your settings
+  say `"toolPermission": "always-proceed"`, a worker may run any command. Keep the usual value.
+- **What the launcher refuses:** it does not start an Antigravity worker, and says why, when there
+  is a `.agents` folder (or `.agent`, `_agents` or `_agent`) with `hooks.json`, `mcp_config.json`,
+  `plugins.json`, `plugins` or `agents` (custom agents, which can bring their own MCP servers) in
+  it, or a `.gemini\config.json` (it can send Antigravity CLI to one more such folder). It looks in
+  the worktree and the `workers` folder, and in each folder above them up to the top of their Git
+  repository, because Antigravity CLI reads those too. Antigravity CLI loads all of these when it
+  starts, and they can run commands without asking.
 - **Model and effort:** with no `-Model`, it uses Antigravity CLI's own default model. `-Model` names
   one of its models (`agy models` lists them); a Claude model is refused. Its efforts are `low`,
   `medium` and `high`. `xhigh`, the usual one, runs as `high`, and `max` is refused.
 - **What the relay writes down:** `W<n>.run.json` gets `tool` (`antigravity`), `session_id` (the
   conversation id that Antigravity CLI reports, saved as soon as it does), `tokens` and `commit`.
   `runs.md` says `antigravity` in its Tool column. When a run fails, run.json and `W<n>.log` say why
-  in plain words: not signed in, bad input (exit 1), a wrong flag (exit 2), the model or its service
-  failed (exit 3), or a result that was not `SUCCESS`.
+  in plain words: not signed in, the relay's input was wrong (exit 1), another error (exit 1, with
+  Antigravity CLI's own words), a wrong flag (exit 2), the model or its service failed (exit 3), or
+  a result that was not `SUCCESS`.
 
 ### The sandbox
 
 Set `"antigravity_sandbox": true` in `bin\relay-settings.json` to add `--sandbox`. Then a worker's
-commands run in Antigravity CLI's terminal sandbox: they stay off the network, and they can write
-only in the worker's folders and in temporary folders. On Windows, the sandbox needs Windows 11 24H2
-with the August 2026 update or newer. On an older Windows, the setting does nothing. It is off unless
-you set it.
+commands run in Antigravity CLI's terminal sandbox: they stay off the network (except the sites your
+`read_url` rules allow), and they can write only in the worker's folders and in temporary folders.
+The sandbox is only for commands. It does not stop the worker's own file edits, which
+`accept-edits` lets through in its folders. On Windows, the sandbox needs Windows 11 24H2 with the
+August 2026 update or newer. On an older Windows, the setting does nothing. It is off unless you set
+it.
 
 The sandbox does not allow more commands by itself. But if your settings say
 `"toolPermission": "proceed-in-sandbox"`, a worker may then run any command inside the sandbox.

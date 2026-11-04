@@ -524,7 +524,7 @@ work and a **coordinator** reports back.
 <root>/tasks/<taskId>/status.md       coordinator; holds "**Current state:** <STATE>"
 <root>/tasks/<taskId>/questions.md    coordinator; "## Q<n> — <time> — BLOCKING|NON-BLOCKING"
 <root>/tasks/<taskId>/handoff.md      coordinator
-<root>/tasks/<taskId>/workers/W<n>.run.json, W<n>-report.md   optional worker runs; session_id names the run's Claude session
+<root>/tasks/<taskId>/workers/W<n>.run.json, W<n>-report.md   optional worker runs; tool names the AI tool the run used, such as claude, codex or gemini (none means claude), and session_id its session
 <root>/NEEDS-<NAME>.md                optional notes for the person, such as NEEDS-ADA.md
 <root>/.relay/coordinator.json        optional: { session_id, follow_name?, ... } of the coordinator's Claude session
 <root>/.relay/codex.json              optional: { thread_id, follow_name?, ... } of the planner's Codex thread, if the relay wakes it (Pleni reads it only in an HQ)

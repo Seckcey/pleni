@@ -101,7 +101,8 @@ always use the script, so nobody reads half a message.
    file scope that does not overlap; read-only reviewers are allowed) and starts the worker.
 5. **Workers do the work:** only inside their worktree and file scope. They commit locally and
    write `W1-report.md`. A Codex worker cannot write Git's own folder, and an Antigravity worker
-   runs no `git` unless the owner allows it, so the launcher commits their changes when they finish.
+   runs no `git` unless the owner allows it, so the launcher commits their changes when they finish,
+   with no Git hooks. It commits nothing after a run that changed the worktree's `.git`.
 6. **The coordinator reviews:** reads the diff, runs the named checks again, and sends the worker
    back if needed.
 7. **Questions, at any time:**

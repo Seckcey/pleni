@@ -16,7 +16,8 @@
     in --mode accept-edits, with the owner's own Antigravity login, which the launcher never reads. Google's consumer
     terms may not allow running it from other programs, so every run writes a warning in <W>.log. There is no
     permission file for one run: its commands follow the owner's own Antigravity settings, and with no rule there it
-    runs none, so the launcher commits its changes, as for Codex. antigravity_sandbox: true adds --sandbox.
+    runs none, so the launcher commits its changes, as for Codex: with no Git hooks, and only when the run left the
+    worktree's .git alone. It works only in a Git worktree (git worktree add). antigravity_sandbox: true adds --sandbox.
   - Programs: claude_exe, codex_exe, gemini_exe and antigravity_exe in bin\relay-settings.json (full paths; a .js path
     runs through node, which the test uses). Without them: %APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe,
     codex or gemini from PATH, and %LOCALAPPDATA%\agy\bin\agy.exe (else agy from PATH).
@@ -78,7 +79,7 @@ $ToolName  = @{ claude = 'Claude'; codex = 'Codex'; gemini = 'Gemini'; antigravi
 $ToolArticle = 'a'   # "an Antigravity worker"
 if ($Tool -eq 'antigravity') { $ToolArticle = 'an' }
 # The risk the owner accepted by turning Antigravity workers on. Every Antigravity run writes the warning in its log.
-$AgyRisk = "Google's consumer terms may not allow running Antigravity CLI from other programs. Your Google account could be suspended."
+$AgyRisk = "Google's consumer terms may not allow running Antigravity CLI from other programs. Your Google account could be suspended or closed."
 $AgyWarning = $AgyRisk + ' Turn it off by taking antigravity out of worker_tools.'
 $ClaudeDefaultModel = 'claude-opus-5-5[1m]'
 # Gemini CLI's own fixed folder for admin policies on Windows. While it holds a .toml file, Gemini CLI ignores
@@ -413,6 +414,49 @@ function Get-CodexConfigModel {
     return ''
 }
 
+function Find-GitTop([string]$Dir) {
+    # The folder that holds the .git of the Git repository that <Dir> is in: <Dir> itself or a folder above it, or ''.
+    $d = $Dir
+    for ($i = 0; $i -lt 40 -and $d; $i++) {
+        if (Test-Path -LiteralPath (Join-Path $d '.git')) { return $d }
+        $parent = Split-Path -Parent $d
+        if (-not $parent -or $parent -eq $d) { break }
+        $d = $parent
+    }
+    return ''
+}
+
+function Get-GitLink([string]$Dir) {
+    # What tells Git where its own folder is for <Dir>: 'file:<top>|<text>' when the repository's top holds a Git
+    # worktree's small .git file, 'folder:<top>' when it holds Git's whole folder, 'none' outside a repository, or
+    # 'other'. Save-ToolWork compares it before and after a run.
+    $top = Find-GitTop $Dir
+    if (-not $top) { return 'none' }
+    $p = Join-Path $top '.git'
+    $item = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+    if (-not $item) { return 'other' }
+    if ($item.PSIsContainer) { return "folder:$top" }
+    if ($item.Length -gt 4096) { return 'other' }
+    try { return "file:$top|" + [IO.File]::ReadAllText($p) } catch { return 'other' }
+}
+
+function Get-AgyFolders([string]$Start) {
+    # The folders whose .agents folder Antigravity CLI reads for a run in <Start>: <Start> and, inside a Git
+    # repository, each folder above it up to the repository's top.
+    $top = Find-GitTop $Start
+    if (-not $top) { return @($Start) }
+    $out = New-Object System.Collections.Generic.List[string]
+    $d = $Start
+    for ($i = 0; $i -lt 40 -and $d; $i++) {
+        $out.Add($d)
+        if ($d -eq $top) { break }
+        $parent = Split-Path -Parent $d
+        if (-not $parent -or $parent -eq $d) { break }
+        $d = $parent
+    }
+    return $out.ToArray()
+}
+
 $ToolModel = ''      # Codex, Gemini and Antigravity: the value for -m (--model); '' means the tool's own default model
 # Antigravity CLI's efforts in a headless run are low, medium and high. xhigh, the usual -Effort, runs as high.
 $AgyEffort = $Effort.ToLowerInvariant()
@@ -456,19 +500,35 @@ if ($Tool -ne 'claude') {
         }
     }
     if ($Tool -eq 'antigravity') {
-        # Antigravity CLI loads hooks, MCP servers and plugins from an .agents folder (or .agent, _agents, _agent) in
-        # each folder it works in, and those can run commands without asking. A worker works in the worktree and the
-        # workers folder.
-        foreach ($d in @($Worktree, $WorkerDir)) {
-            foreach ($folder in @('.agents', '.agent', '_agents', '_agent')) {
-                foreach ($item in @('hooks.json', 'mcp_config.json', 'plugins.json', 'plugins')) {
-                    $f = Join-Path (Join-Path $d $folder) $item
-                    if (Test-Path -LiteralPath $f) {
-                        throw ("Refusing: $f is there. Antigravity CLI reads it when it starts, and it can run commands from it " +
-                            '(hooks, MCP servers or plugins). Take it out of the branch, or use another tool for this worker. Nothing was started.')
+        # Antigravity CLI loads hooks, MCP servers, plugins and custom agents from an .agents folder (or .agent, _agents,
+        # _agent) in the folder it works in and in each folder above it up to the repository's top, and a
+        # .gemini\config.json there can send it to one more such folder. Those can run commands without asking. A worker
+        # works in the worktree and the workers folder.
+        $what = 'hooks (commands Antigravity CLI runs by itself at set moments), MCP servers (helper programs that give it more tools) or plugins (packs of these)'
+        foreach ($start in @($Worktree, $WorkerDir)) {
+            foreach ($d in @(Get-AgyFolders $start)) {
+                $f = Join-Path $d '.gemini\config.json'
+                if (Test-Path -LiteralPath $f) {
+                    throw ("Refusing: $f is there. Antigravity CLI reads it when it starts, and it can send Antigravity CLI to more $what. " +
+                        'Take it out of the branch, or use another tool for this worker. Nothing was started.')
+                }
+                foreach ($folder in @('.agents', '.agent', '_agents', '_agent')) {
+                    foreach ($item in @('hooks.json', 'mcp_config.json', 'plugins.json', 'plugins', 'agents')) {
+                        $f = Join-Path (Join-Path $d $folder) $item
+                        if (Test-Path -LiteralPath $f) {
+                            throw ("Refusing: $f is there. Antigravity CLI reads it when it starts, and it can run commands from it without asking: $what. " +
+                                'Take it out of the branch, or use another tool for this worker. Nothing was started.')
+                        }
                     }
                 }
             }
+        }
+        # The launcher commits an implementation worker's changes with its own git commands (Save-ToolWork). In a Git
+        # worktree, Git's own folder is outside the worktree. A plain copy of a repository keeps it inside, where the
+        # worker could change Git's settings, so the launcher does not start a worker there.
+        if ($Type -eq 'implementation' -and -not (Get-GitLink $Worktree).StartsWith('file:')) {
+            throw ("Refusing: $Worktree is not in a Git worktree (one made with git worktree add). There, Git's own folder would be " +
+                'where an Antigravity worker can change it, so the launcher could not commit its changes safely. Use a worktree from git worktree add. Nothing was started.')
         }
     }
 }
@@ -727,23 +787,37 @@ if ($Tool -eq 'claude') {
     Add-Note (Get-EffortText)
     Add-Note "$ToolName reports no cost in dollars, so -MaxBudgetUsd does not apply. worker_runs_per_day in bin\cost-limits.json limits the runs."
 
+    # The worktree's .git as it is before the run. Save-ToolWork's git commands trust it only if the run left it alone.
+    $gitLinkBefore = Get-GitLink $Worktree
+
     function Save-ToolWork {
-        # A Codex worker cannot write Git's own folder, and an Antigravity worker runs no git command unless the owner
-        # allowed it in Antigravity's own settings. So the launcher commits their changes, outside the tool.
+        # A Codex worker cannot write Git's own folder, and an Antigravity worker runs no command unless the owner's own
+        # Antigravity rules allow it. So the launcher commits their changes, outside the tool. A worker can still change
+        # files, so the launcher's git commands trust nothing it could have changed: they run no Git hooks and no file
+        # monitor program, and they do not run at all when the run changed what tells Git where its own folder is.
+        $gitLink = Get-GitLink $Worktree
+        if ($gitLink -cne $gitLinkBefore -or $gitLink -eq 'other') {
+            Add-Note ("The $ToolName worker changed the worktree's .git during its run, so the launcher ran no git command there and " +
+                'committed nothing. Look at the worktree before you use it.')
+            return
+        }
         $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $git) { Add-Note "Git was not found, so the $ToolName worker's changes stay uncommitted in the worktree."; return }
+        # A hooks folder that does not exist (a new name each time), so Git finds no hooks; and no file monitor program.
+        $noHooks = Join-Path ([IO.Path]::GetTempPath()) ('relay-no-hooks-' + [guid]::NewGuid().ToString('N'))
+        $safe = @('-c', "core.hooksPath=$noHooks", '-c', 'core.fsmonitor=false')
         $previous = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
-            $changes = ((& $git.Path -C $Worktree status --porcelain 2>$null) | Out-String).Trim()
+            $changes = ((& $git.Path -C $Worktree @safe status --porcelain 2>$null) | Out-String).Trim()
             if ($LASTEXITCODE -ne 0) { Add-Note "git status failed in the worktree, so the $ToolName worker's changes were not committed."; return }
             if (-not $changes) { Add-Note "The $ToolName worker changed no files, so there was nothing to commit."; return }
-            $null = & $git.Path -C $Worktree add -A 2>$null
+            $null = & $git.Path -C $Worktree @safe add -A 2>$null
             if ($LASTEXITCODE -ne 0) { Add-Note "git add failed, so the $ToolName worker's changes stay uncommitted in the worktree."; return }
             $message = "$TaskId ${Worker}: changes from the $ToolName worker run"
-            $said = ((& $git.Path -C $Worktree commit -q -m $message 2>&1) | ForEach-Object { [string]$_ }) -join ' '
+            $said = ((& $git.Path -C $Worktree @safe commit -q --no-verify -m $message 2>&1) | ForEach-Object { [string]$_ }) -join ' '
             if ($LASTEXITCODE -ne 0) { Add-Note "git commit failed, so the $ToolName worker's changes stay uncommitted in the worktree: $said"; return }
-            $sha = ((& $git.Path -C $Worktree rev-parse HEAD 2>$null) | Out-String).Trim()
+            $sha = ((& $git.Path -C $Worktree @safe rev-parse HEAD 2>$null) | Out-String).Trim()
             $state.commit = $sha
             Add-Note "Committed the $ToolName worker's changes as $sha."
         } finally { $ErrorActionPreference = $previous }
@@ -827,17 +901,28 @@ if ($Tool -eq 'claude') {
             return ''
         }
 
+        function Get-AgyStderrText([string]$ErrText) {
+            # A reason from Antigravity CLI's stderr, for a failure whose result gave none: the AGY_ERROR message, else
+            # the last line that starts with Error, fatal or panic (without its 'Error:'), else the last line that is
+            # not a warning. Or ''.
+            $why = Get-AgyErrorText $ErrText
+            if ($why) { return $why }
+            $lines = @(([string]$ErrText -split "`r?`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+                if ($lines[$i] -match '(?i)^(error|fatal|panic)\b') { return (Get-ShortText ($lines[$i] -replace '(?i)^error:\s*', '')) }
+            }
+            for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+                if ($lines[$i] -notmatch '(?i)^warning\b') { return (Get-ShortText $lines[$i]) }
+            }
+            return ''
+        }
+
         function Get-AgyFailure([int]$Code, $Ev, [string]$ErrText) {
             # Why a run did not finish, in plain words: a short word for the state, and a sentence. Two empty strings
             # when it finished. Antigravity CLI exits 0 even when it denied a tool or ran out of time, so the result's
-            # status decides.
+            # status decides. Exit 1 is its usual error code, so only its known input errors count as bad input.
             if ($Code -eq 0 -and $Ev.status -eq 'SUCCESS') { return @('', '') }
-            $said = ''
             $text = Get-ShortText ([string]$Ev.error)
-            if ($text) {
-                $said = " It said: $text"
-                if ($text -notmatch '[.!?]$') { $said += '.' }
-            }
             if ($ErrText -match '(?i)authentication required' -or $text -match '(?i)authentication required') {
                 return @('not signed in', 'Antigravity CLI is not signed in (it said: authentication required). Run agy once in a window and sign in. Then start the worker again.')
             }
@@ -847,14 +932,25 @@ if ($Tool -eq 'claude') {
                 if ($why) { return @('service error', "The model or Antigravity's service failed (exit 3): $why") }
                 return @('service error', "The model or Antigravity's service failed (exit 3).")
             }
-            if ($Code -eq 1) { return @('bad input', "Antigravity CLI said the input was bad (exit 1), so it did not do the work.$said") }
+            if (-not $text) { $text = Get-AgyStderrText $ErrText }
+            $said = ''
+            if ($text) {
+                $said = " It said: $text"
+                if ($text -notmatch '[.!?]$') { $said += '.' }
+            }
+            if ($Code -eq 1) {
+                if ($text -match '(?i)invalid model selection|missing the event field|invalid JSON line|unsupported content') {
+                    return @('bad input', "Antigravity CLI said the relay's input was wrong (exit 1).$said")
+                }
+                return @('', "Antigravity CLI stopped with an error (exit 1).$said")
+            }
             if ($Code -eq 2) {
-                return @('wrong flag', ("Antigravity CLI did not know a flag or a command that the relay gave it (exit 2), so it did not do the work. " +
+                return @('wrong flag', ("Antigravity CLI did not know a flag or a command that the relay gave it (exit 2). " +
                     "The relay needs Antigravity CLI 1.4.12 or newer.$said"))
             }
             if ($Code -eq 0) {
                 $s = [string]$Ev.status
-                if (-not $s) { return @('', 'Antigravity CLI did not finish the work: it ended without a result.') }
+                if (-not $s) { return @('', "Antigravity CLI did not finish the work: it ended without a result.$said") }
                 return @('', "Antigravity CLI did not finish the work: it ended with status $s.$said")
             }
             return @('', "Antigravity CLI stopped with exit code $Code.$said")
@@ -874,7 +970,9 @@ if ($Tool -eq 'claude') {
         $cliArgs += @('--effort', $AgyEffort)
         if ($AgySandbox) {
             $cliArgs += '--sandbox'
-            Add-Note "antigravity_sandbox is on, so the worker's commands run in Antigravity CLI's terminal sandbox (--sandbox), without the network."
+            Add-Note ("antigravity_sandbox is on, so the relay asked Antigravity CLI to run the worker's commands in its terminal sandbox (--sandbox), " +
+                'away from the network (except sites your read_url rules allow) and from private folders. On a Windows without the sandbox ' +
+                '(Windows 10, or Windows 11 before 24H2 with the August 2026 update) this does nothing.')
         }
         # The prompt as one stream-json line on stdin, never on the command line (with stream-json input, Antigravity
         # CLI drops a -p prompt). The file ends after that line, which closes stdin, so the run ends after one turn.
