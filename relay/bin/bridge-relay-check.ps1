@@ -18,7 +18,8 @@
   running sessions) holds the coordinator turn, and files left behind by closed windows do not; 17 agent mail
   (agent-mail.ps1: send, read and wait by name, with names, sizes and unknown agents checked); 18 agent mail wakes
   (-EnrollAgent by name, one wake per new message, none for mail already read, waits while the thread is open, two
-  agents at once, and -MaxAgentTurnsAtOnce); 19-22 HQ (role hq in bin\relay-settings.json, with two project mailboxes
+  agents at once, -MaxAgentTurnsAtOnce, and the planner and an agent that share one thread, both signed up and both
+  moved to a newer thread with the name); 19-22 HQ (role hq in bin\relay-settings.json, with two project mailboxes
   that share one fake Codex home): one orchestrator wake for the items of both projects, with an --add-dir for each,
   nothing for what waited when a project was added, and a dry run that changes nothing; a project's item waits while
   that project's coordinator turn runs, the other project's goes, and never two Codex processes; a project that wakes
@@ -28,7 +29,8 @@
   and a tool that worker_tools does not list is refused; Codex and Gemini workers with tests\stub-codex.js and
   tests\stub-gemini.js (their commands, prompts on stdin and ids, OPENAI_API_KEY removed, GEMINI_API_KEY passed
   through and never written down, a Codex worker that starts without the owner's config.toml and command rules and
-  gets their model, effort and sign-in store from the launcher, a Codex CLI that is too old, the Gemini policy, exits
+  gets their model, sign-in store and Windows sandbox from the launcher, with its effort from -Effort (xhigh unless
+  given, never config.toml's), a Codex CLI that is too old, the Gemini policy, exits
   41 and 55, and refusals for the daily limit, a .gemini\settings.json in the worktree, Gemini system policies and a changed policy file). 25 Antigravity CLI
   workers with tests\stub-agy.js: off until worker_tools lists them; the command, the prompt as one stream-json line
   on stdin, and the conversation id saved while the run goes; the tokens; the warning in the log; the launcher's
@@ -38,7 +40,9 @@
   items and a .gemini\config.json in the worktree, the workers folder and the folders up to the worktree's top, a
   folder that is not a Git worktree, a Claude model, max effort and the daily limit. 26-27 start requests
   (tasks\<TASK-ID>\workers\W<n>-start.md, which the relay runs with the mailbox's own bin\spawn-worker.ps1): off for
-  a Claude Code coordinator until start_requests turns them on, a start file there at enrollment never runs, a dry
+  a Claude Code coordinator until start_requests turns them on, a start file there at enrollment never runs, a second
+  sign-up that keeps a waiting request waiting, counts one the relay never recorded as known (a log line and a note for
+  the coordinator), clears the failures and the backoff, and keeps a halt and says so, a dry
   run, the request's budget and effort reach the worker, one start per version (the same bytes again start nothing),
   refusals as notes in one coordinator turn (an unknown tool, a tool that worker_tools does not list, a worker that
   still runs, and the launcher's own words), none during a coordinator turn; a new worktree made from the brief's Base
@@ -46,13 +50,15 @@
   the daily limit of worker starts, PAUSE, and the guard on the relay's own files: a changed bin\spawn-worker.ps1
   halts the relay loop, and no worker starts until -ClearHalt. 28 a Codex coordinator (-Enroll -Tool codex, with
   tests\stub-codex.js): refusals in plain words (another tool's word, the planner's thread, the mailbox folder, max
-  effort, -AllowCheck, a session's options), enrolled by name with a copy of the old coordinator.json, its thread
+  effort, -AllowCheck, a session's options), enrolled by name with a copy of the old coordinator.json and without the
+  old coordinator's failures and backoff, its thread
   refused as the planner and as an agent, a dry run, a turn with only the relay's own sandbox options in its own folder
   (never codex_exec_args; without the owner's config.toml and command rules, and the relay halts for a Codex CLI that is
   too old), its STATUS.md copied into the mailbox, waits while another program holds the thread or a
   window has it open, a planted bin file halts the relay after the turn, a turn in another thread halts it, a .codex
-  folder or an AGENTS.override.md halts it before the turn, a rollover to a newer thread with the name (the new folder's
-  old board kept in .relay\backups), none to one that is already an agent, a tool the relay does not know, -Status and
+  folder, an AGENTS.override.md, or an AGENTS.md in a folder above it in its Git repository halts it before the turn
+  (and -Enroll refuses the last), a rollover to a newer thread with the name only once its folder holds an AGENTS.md (the
+  new folder's old board kept in .relay\backups), none to one that is already an agent, a tool the relay does not know, -Status and
   -ShowCoordinatorArgs, a mailbox path with an & refused, and HQ: a project cannot enroll HQ's orchestrator thread as
   its coordinator, and a project coordinator.json that names it stops HQ's wakes. 29 a Gemini CLI coordinator (-Enroll
   -Tool gemini, with tests\stub-gemini.js): refusals in plain words (an unknown session, -Effort, -SessionName, a folder
@@ -1477,6 +1483,20 @@ try {
         $r = Invoke-Relay $fx 'UnenrollAgent' @{ AgentName = 'Sergeant Two' }
         Check ($r.code -eq 0 -and -not (Get-RelayJson $fx 'agents.json').'sergeant-two') '-UnenrollAgent did not remove Sergeant Two'
         Check (@(Get-Calls $fx 'start').Count -eq 0) 'agent mail woke the coordinator'
+        # The planner and a mail agent may share one Codex thread: the planner signs up on the agent's thread, and a
+        # newer thread with the name takes over both jobs at once. The agent signs up again on the planner's thread.
+        $r = Invoke-Relay $fx 'EnrollCodex' @{ ThreadName = 'Sergeant One' }
+        Check ($r.code -eq 0 -and (Get-RelayJson $fx 'codex.json').thread_id -eq $t1) "-EnrollCodex refused the thread of the agent Sergeant One as the planner (exit $($r.code)): $(Get-Tail $r.out 200)"
+        $w3 = Join-Path $fx.dir 'sergeant3'
+        New-Item -ItemType Directory -Path $w3 -Force | Out-Null
+        $t3 = [guid]::NewGuid().ToString()
+        Write-Thread $fx $t3 '2026-10-09T07:00:00Z' $w3 'Sergeant One'
+        $null = Invoke-Relay $fx 'Once' $null
+        $cxj = Get-RelayJson $fx 'codex.json'
+        $agj = Get-RelayJson $fx 'agents.json'
+        Check ($cxj.thread_id -eq $t3 -and $agj.'sergeant-one'.thread_id -eq $t3) "the planner and the agent that share a thread did not both move to the newer thread (planner '$($cxj.thread_id)', agent '$($agj.'sergeant-one'.thread_id)')"
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant One' }
+        Check ($r.code -eq 0) "-EnrollAgent refused the planner's thread for the agent that shares it (exit $($r.code)): $(Get-Tail $r.out 200)"
     }
 
     Invoke-Scenario '19 HQ: one orchestrator wake covers items from both projects; what waited when a project was added wakes nothing; -DryRun changes nothing' {
@@ -1812,40 +1832,43 @@ try {
             Check ($tip -match 'W9: changes from the Codex worker run') "the launcher's commit has the wrong message: $tip"
             Check ((Read-Shared (Join-Path $fx.workers 'W9.log')) -match "Committed the Codex worker's changes as") 'W9.log does not say the launcher committed the changes'
 
-            # The launcher starts Codex without config.toml and the command rules, so it passes on the three settings it
-            # keeps: model, effort and sign-in store. Room for five more runs here (the limit was 3).
+            # The launcher starts Codex without config.toml and the command rules, so it passes on the settings it keeps:
+            # the model, the sign-in store and the Windows sandbox. The effort is not one of them: it is -Effort, xhigh
+            # unless given, as before. Room for five more runs here (the limit was 3).
             Write-Text (Join-Path $fx.mb 'bin\cost-limits.json') '{"worker_runs_per_day":{"codex":8,"gemini":0}}'
             $cfgFile = Join-Path $fx.codex 'config.toml'
             $cfgOriginal = Read-Shared $cfgFile
             $cfgStart = @('exec', '--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--sandbox', 'workspace-write',
                 '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'web_search=disabled', '--add-dir', $fx.workers)
-            # A config.toml with an effort, a sign-in store and an MCP server table (synthetic): no -Effort, so the effort
-            # and the store come through; the MCP server table is not in any argument.
+            # A config.toml with an effort, a sign-in store and an MCP server table (synthetic): no -Effort, so the worker
+            # still runs at xhigh, and the store comes through; the MCP server table is not in any argument.
             Write-Text $cfgFile ("model = `"gpt-stub-default`"`r`nmodel_reasoning_effort = `"medium`"`r`ncli_auth_credentials_store = `"keyring`"`r`n`r`n" +
                 "[mcp_servers.x]`r`ncommand = `"stub-mcp-server`"`r`nargs = [`"--flag`"]`r`n`r`n[windows]`r`nsandbox = `"elevated`"`r`n")
             Write-Brief $fx 'W12' 'implementation' 'codex'
             $r = Invoke-Spawn $fx @('-Worker', 'W12', '-Tool', 'codex', '-Foreground')
-            Check ($r.code -eq 0 -and (Read-Shared (Join-Path $fx.workers 'W12.log')) -match "launcher: effort medium \(Codex's default, from its config.toml\)") "W12.log does not say that the effort came from config.toml: $(Get-Tail $r.out)"
+            $l12 = Read-Shared (Join-Path $fx.workers 'W12.log')
+            Check ($r.code -eq 0 -and $l12 -match 'launcher: effort xhigh' -and $l12 -notmatch 'effort medium|model_reasoning_effort') "W12.log does not say that the effort is xhigh, or names the effort of config.toml: $(Get-Tail $r.out)"
             $w = @(Get-CodexWorkerCalls $fx)
             Check ($w.Count -eq 4) "expected 4 Codex worker runs, got $($w.Count)"
             if ($w.Count -ge 4) {
-                $why = Compare-ArgList @($w[3].args) ($cfgStart + @('-m', 'gpt-stub-default', '-c', 'model_reasoning_effort=medium', '-c', 'cli_auth_credentials_store=keyring', '-c', 'windows.sandbox=elevated', '-'))
-                Check (-not $why) "the Codex command does not carry the effort, the sign-in store and the Windows sandbox from config.toml: $why"
+                $why = Compare-ArgList @($w[3].args) ($cfgStart + @('-m', 'gpt-stub-default', '-c', 'model_reasoning_effort=xhigh', '-c', 'cli_auth_credentials_store=keyring', '-c', 'windows.sandbox=elevated', '-'))
+                Check (-not $why) "the Codex command does not carry the effort xhigh, and the sign-in store and the Windows sandbox from config.toml: $why"
                 Check (-not ((@($w[3].args) -join ' ') -match 'mcp_servers|stub-mcp-server|--flag')) 'an MCP server from config.toml reached the Codex command'
             }
-            Check ((Get-RunJson $fx 'W12').effort -eq 'medium') 'W12.run.json does not hold the effort that Codex ran with'
+            Check ((Get-RunJson $fx 'W12').effort -eq 'xhigh') 'W12.run.json does not hold the effort that Codex ran with (xhigh)'
             Check ((Read-Shared (Join-Path $fx.workers 'W12.log')) -notmatch 'Windows sandbox is not set up') 'W12.log says the Windows sandbox is not set up, but config.toml has one'
-            # -Effort and -Model win over config.toml; the store still comes through.
+            # -Model wins over config.toml, and -Effort is used as given; the store still comes through.
             Write-Brief $fx 'W13' 'implementation' 'codex'
             $null = Invoke-Spawn $fx @('-Worker', 'W13', '-Tool', 'codex', '-Model', 'gpt-given', '-Effort', 'low', '-Foreground')
             $w = @(Get-CodexWorkerCalls $fx)
             Check ($w.Count -eq 5) "expected 5 Codex worker runs, got $($w.Count)"
             if ($w.Count -ge 5) {
                 $why = Compare-ArgList @($w[4].args) ($cfgStart + @('-m', 'gpt-given', '-c', 'model_reasoning_effort=low', '-c', 'cli_auth_credentials_store=keyring', '-c', 'windows.sandbox=elevated', '-'))
-                Check (-not $why) "-Model and -Effort did not win over config.toml: $why"
+                Check (-not $why) "-Model did not win over config.toml, or -Effort was not used as given: $why"
             }
             # Values that fail their checks are left out, with a plain line in the log that names the key and never the
-            # value; the sign-in store "file" (Codex's default) is not passed.
+            # value; the sign-in store "file" (Codex's default) is not passed. The effort of config.toml is not read at
+            # all for a worker, so no line names it.
             Write-Text $cfgFile ("model = `"claude-secret-model`"`r`nmodel_reasoning_effort = `"max-secret-effort`"`r`ncli_auth_credentials_store = `"secret-store`"`r`n`r`n[windows]`r`nsandbox = `"secret-sandbox`"`r`n")
             Write-Brief $fx 'W14' 'implementation' 'codex'
             $null = Invoke-Spawn $fx @('-Worker', 'W14', '-Tool', 'codex', '-Foreground')
@@ -1856,8 +1879,8 @@ try {
                 Check (-not $why) "a value of config.toml that fails its check reached the Codex command: $why"
             }
             $l14 = Read-Shared (Join-Path $fx.workers 'W14.log')
-            Check (($l14 -match "config\.toml has a 'model' that the relay cannot pass on") -and ($l14 -match "config\.toml has a 'model_reasoning_effort' that the relay cannot pass on") -and
-                ($l14 -match "config\.toml has a 'cli_auth_credentials_store' that the relay cannot pass on") -and ($l14 -match "config\.toml has a 'windows\.sandbox' that the relay cannot pass on")) 'W14.log does not name the four keys that were left out'
+            Check (($l14 -match "config\.toml has a 'model' that the relay cannot pass on") -and ($l14 -notmatch "'model_reasoning_effort'") -and
+                ($l14 -match "config\.toml has a 'cli_auth_credentials_store' that the relay cannot pass on") -and ($l14 -match "config\.toml has a 'windows\.sandbox' that the relay cannot pass on")) 'W14.log does not name the three keys that were left out, or names the effort key, which a worker never reads'
             Check ($l14 -notmatch 'claude-secret-model|max-secret-effort|secret-store|secret-sandbox') 'W14.log shows a value from config.toml'
             Check ($l14 -match "Windows sandbox is not set up \(no \[windows\] sandbox in its config\.toml\)") 'W14.log does not say that the Windows sandbox is not set up'
             Check ($l14 -match 'launcher: Codex starts with --ignore-user-config and --ignore-rules, so it uses none of the extra folders, MCP servers \(add-on tools\), hooks \(commands Codex runs by itself at set moments\) or command rules \(your list of commands Codex may run without asking\)') 'W14.log does not say what the two flags do'
@@ -2233,6 +2256,30 @@ try {
         Check (@(Get-ClaudeWorkerCalls $fx).Count -eq 0) 'a worker started while start requests were off'
         $rec = Get-StartRecord $fx 'W1'
         Check ($rec -and $rec.state -eq 'new') "the new start request is not recorded as new (state '$($rec.state)')"
+        # The coordinator signed up again: W1, which waits, keeps waiting. W7, which the relay never recorded, counts as
+        # known, with a line in the log and a note for the coordinator. The failures and the backoff from before are
+        # gone, as at a rollover; a halt stays, and -Enroll says so. state.json is changed by hand while no relay runs.
+        Write-Brief $fx 'W7' 'implementation' 'claude'
+        Write-StartRequest $fx 'W7' $null
+        $sf = Join-Path $fx.mb '.relay\state.json'
+        $st = ConvertFrom-Json -InputObject (Read-Shared $sf)
+        $st.failures = 2
+        $st.next_attempt_utc = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 3600
+        $st.halt = 'a synthetic halt of the relay test'
+        Write-Text $sf (ConvertTo-Json -InputObject $st -Depth 12)
+        $r = Invoke-Relay $fx 'Enroll' @{ SessionId = $fx.sid }
+        Check ($r.code -eq 0) "-Enroll again exit code $($r.code): $(Get-Tail $r.out)"
+        $rec = Get-StartRecord $fx 'W1'
+        Check ($rec -and $rec.state -eq 'new') "a start request that waited did not keep waiting when the coordinator signed up again (state '$($rec.state)')"
+        $rec = Get-StartRecord $fx 'W7'
+        Check ($rec -and $rec.state -eq 'known' -and (Test-Said $r.out 'W7-start\.md of T-\S+ \(version [0-9a-f]+\) was not run because the coordinator was signed up again\. Start requests are off for this coordinator, so start the worker yourself with bin.spawn-worker')) "a start file the relay never recorded did not count as known with a line in the log (state '$($rec.state)'): $(Get-Tail $r.out)"
+        $st = Get-RelayState $fx
+        $told = @(Get-Values $st.notes | Where-Object { $_.state -eq 'pending' -and [string]$_.detail -match 'W7-start\.md of T-\S+ was not run because the coordinator was signed up again; start requests are off for this coordinator, so start the worker yourself with bin\\spawn-worker\.ps1 if it is still needed' })
+        Check ($told.Count -eq 1) "the coordinator has no note that W7-start.md was not run ($($told.Count) note(s))"
+        Check ([int]$st.failures -eq 0 -and [int64]$st.next_attempt_utc -eq 0 -and [string]$st.halt -eq 'a synthetic halt of the relay test') "-Enroll did not clear the failures and the backoff, or did not keep the halt (failures '$($st.failures)', next attempt '$($st.next_attempt_utc)', halt '$($st.halt)')"
+        Check (Test-SaidText $r.out 'The relay is still halted: a synthetic halt of the relay test. Run -ClearHalt after you check it.') "-Enroll did not say that the relay is still halted: $(Get-Tail $r.out)"
+        $r = Invoke-Relay $fx 'ClearHalt' $null
+        Check ($r.code -eq 0) "-ClearHalt exit code $($r.code)"
         # Turned on: a dry run tells what it would start, and changes nothing.
         Set-WorkerSettings $fx @{ claude_exe = $StubCli; start_requests = $true }
         $sf = Join-Path $fx.mb '.relay\state.json'
@@ -2458,9 +2505,18 @@ try {
             Check ($r.code -ne 0 -and (Test-SaidText $r.out $x.words)) "-$($x.mode) $optText was not refused with '$($x.words)' (exit $($r.code)): $(Get-Tail $r.out 200)"
         }
         Check ((Get-FileHash -LiteralPath $cf -Algorithm SHA256).Hash -eq $hash0) 'a refused -Enroll changed coordinator.json'
-        # Enrolled by name, with an effort: a Codex coordinator in a folder of its own.
+        # Enrolled by name, with an effort: a Codex coordinator in a folder of its own. The Claude Code coordinator's
+        # failures and backoff (set by hand here, while no relay runs) do not carry over to it.
+        $sf = Join-Path $fx.mb '.relay\state.json'
+        $st = ConvertFrom-Json -InputObject (Read-Shared $sf)
+        $st.failures = 2
+        $st.next_attempt_utc = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 3600
+        Write-Text $sf (ConvertTo-Json -InputObject $st -Depth 12)
         $r = Invoke-Relay $fx 'Enroll' @{ Tool = 'codex'; ThreadName = 'Coordinator'; Effort = 'high' }
         Check ($r.code -eq 0) "-Enroll -Tool codex exit code $($r.code): $(Get-Tail $r.out)"
+        $st = Get-RelayState $fx
+        Check ([int]$st.failures -eq 0 -and [int64]$st.next_attempt_utc -eq 0) "the Claude Code coordinator's failures or backoff carried over to the Codex coordinator (failures '$($st.failures)', next attempt '$($st.next_attempt_utc)')"
+        Check (-not (Test-SaidText $r.out 'The relay is still halted')) "-Enroll said that the relay is halted, but it is not: $(Get-Tail $r.out)"
         $cj = Get-RelayJson $fx 'coordinator.json'
         Check ($cj -and $cj.tool -eq 'codex' -and $cj.session_id -eq $ct -and $cj.cwd -eq $coord -and $cj.effort -eq 'high' -and $cj.follow_name -eq 'Coordinator') ("coordinator.json does not hold the Codex coordinator (tool '{0}', thread '{1}', folder '{2}', effort '{3}', name '{4}')" -f $cj.tool, $cj.session_id, $cj.cwd, $cj.effort, $cj.follow_name)
         $baks = @(Get-ChildItem -LiteralPath (Join-Path $fx.mb '.relay\backups') -File -Filter 'coordinator.json.*.bak' -ErrorAction SilentlyContinue)
@@ -2579,9 +2635,27 @@ try {
         Check ([string](Get-RelayState $fx).halt -match 'AGENTS\.override\.md is there') "an AGENTS.override.md in the coordinator's folder did not halt the relay"
         Check (@(Get-CodexResumeCalls $fx).Count -eq $before) 'a coordinator turn started while an AGENTS.override.md was in its folder'
         Remove-Item -LiteralPath $override -Force
+        # An AGENTS.md in a folder above, in the Git repository that the coordinator's folder is in (a .git folder made
+        # here for the test): Codex reads every AGENTS.md from the top of the repository down, so the relay halts the
+        # same way, and -Enroll refuses such a folder.
+        $gitMark = Join-Path $fx.dir '.git'
+        $aboveOrders = Join-Path $fx.dir 'AGENTS.md'
+        New-Item -ItemType Directory -Path $gitMark -Force | Out-Null
+        Write-Text $aboveOrders "# Other orders (synthetic)`r`n"
+        try {
+            $null = Invoke-Relay $fx 'ClearHalt' $null
+            $null = Invoke-Relay $fx 'Once' $null
+            Check ([string](Get-RelayState $fx).halt -match 'AGENTS\.md is in a folder above') "an AGENTS.md above the coordinator's folder, in its Git repository, did not halt the relay (halt '$((Get-RelayState $fx).halt)')"
+            Check (@(Get-CodexResumeCalls $fx).Count -eq $before) 'a coordinator turn started while an AGENTS.md was above its folder in its Git repository'
+            $r = Invoke-Relay $fx 'Enroll' @{ Tool = 'codex'; ThreadName = 'Coordinator'; Effort = 'high' }
+            Check ($r.code -ne 0 -and (Test-SaidText $r.out 'is in a folder above')) "-Enroll -Tool codex accepted a folder with an AGENTS.md above it in its Git repository (exit $($r.code)): $(Get-Tail $r.out 200)"
+        } finally {
+            Remove-Item -LiteralPath $aboveOrders -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $gitMark -Recurse -Force -ErrorAction SilentlyContinue
+        }
         $null = Invoke-Relay $fx 'ClearHalt' $null
         $null = Invoke-Relay $fx 'Once' $null
-        Check (@(Get-CodexResumeCalls $fx).Count -eq $before + 1) 'the held notice was not delivered after the .codex folder and AGENTS.override.md were gone and the halt was cleared'
+        Check (@(Get-CodexResumeCalls $fx).Count -eq $before + 1) 'the held notice was not delivered after the .codex folder, AGENTS.override.md and the AGENTS.md above were gone and the halt was cleared'
         # A Codex CLI that is too old stops at once on --ignore-user-config (exit 2): retrying cannot help, so the relay
         # halts with plain words, starts nothing more, and keeps the notice pending until the CLI is updated.
         Set-CodexStubMode $fx 'old-cli'
@@ -2600,8 +2674,9 @@ try {
         $null = Invoke-Relay $fx 'ClearHalt' $null
         $null = Invoke-Relay $fx 'Once' $null
         Check (@(Get-CodexResumeCalls $fx).Count -eq $before + 1 -and -not (Test-Pending $fx 'tasks/T-C12/assignment.md')) 'the kept notice was not delivered after the Codex CLI was updated and the halt was cleared'
-        # Rollover: a newer thread named Coordinator, in a folder of its own, takes over between turns. That folder has
-        # an old board of its own: it is kept in .relay\backups, and a copy of the mailbox's board takes its place.
+        # Rollover: a newer thread named Coordinator, in a folder of its own, takes over between turns, once that folder
+        # holds its AGENTS.md. That folder has an old board of its own: it is kept in .relay\backups, and a copy of the
+        # mailbox's board takes its place.
         $coord2 = Join-Path $fx.dir 'coord2'
         New-Item -ItemType Directory -Path $coord2 -Force | Out-Null
         $board2 = Join-Path $coord2 'STATUS.md'
@@ -2609,6 +2684,10 @@ try {
         Write-Text $board2 $oldBoard
         $ct2 = [guid]::NewGuid().ToString()
         Write-Thread $fx $ct2 '2026-11-04T06:00:00Z' $coord2 'Coordinator'
+        # Not yet: the new folder has no AGENTS.md, so the new thread would get turns without its standing orders.
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ((Get-RelayJson $fx 'coordinator.json').session_id -eq $ct -and (Test-SaidText $r.out 'which has no AGENTS.md yet')) "the relay followed a newer thread whose folder has no AGENTS.md, or did not say why it did not: $(Get-Tail $r.out)"
+        Write-Text (Join-Path $coord2 'AGENTS.md') "# Coordinator orders (synthetic)`r`n"
         $r = Invoke-Relay $fx 'Once' $null
         Check (Test-SaidText $r.out 'Rollover:') "the relay did not log the rollover: $(Get-Tail $r.out)"
         $cj = Get-RelayJson $fx 'coordinator.json'

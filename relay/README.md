@@ -114,7 +114,7 @@ has just the examples. The relay reads them when it starts.
 | `codex_exec_args` | Only for the Codex wake: extra options for `codex exec`, one per entry, such as `["--sandbox", "workspace-write"]`. Options that turn the sandbox off are refused. |
 | `role`          | Only in HQ: `"hq"`. Then the relay also wakes the orchestrator for the projects in `projects`. Leave it out in every other mailbox. |
 | `projects`      | Only in HQ: the project mailboxes, each one `{ "id": "notes", "name": "Notes", "mailbox": "C:\\Users\\ada\\mailboxes\\notes" }`. The id is 1 to 40 small letters, digits or hyphens, and never `hq`. The mailbox is the full path of a folder that is there, and not HQ itself. The relay skips a bad entry and says why in `-Status` and `relay.log`. |
-| `hq_dir`        | Only in a project mailbox: the HQ folder. `-NewProject` writes it, and `-Status` shows it. Nothing else uses it yet. |
+| `hq_dir`        | Only in a project mailbox: the HQ folder. `-NewProject` writes it, and `-Status` shows it. A project uses it to find HQ, so it can refuse HQ's orchestrator thread and HQ's folders for its coordinator. Set it when you add a project by hand. |
 
 `bin\cost-limits.json` (if there is no such file, the limits are on):
 
@@ -266,15 +266,23 @@ status board. The folder must not be:
 - the folder where an AI tool keeps its own files (the `.codex`, `.gemini` and Claude Code folders);
 - HQ's folder (the folder of a many-project setup, see
   [Run several projects](#run-several-projects-hq)), or the folder of a project mailbox of HQ;
-- the planner's folder or an agent's folder.
+- the planner's folder or an agent's folder;
+- for a Codex coordinator inside a Git repository: a folder above it, up to the top of the
+  repository, that holds an `AGENTS.md` or an `AGENTS.override.md`. Codex reads every `AGENTS.md`
+  from the top of the repository down to its own folder, for example HQ's `AGENTS.md` with the
+  orchestrator's orders, so the coordinator would get those orders too. Outside a Git repository,
+  Codex reads only the folder's own `AGENTS.md`, and this rule does not apply.
 
 The relay checks all of this when you sign it up and before every turn, and says in plain words
-which rule a folder breaks.
+which rule a folder breaks. Signing up refuses a folder that breaks the last rule, a rollover does
+not follow a Codex thread to one, and a turn halts on one.
 
 ### Set it up
 
 1. **Update the relay in your mailbox** (see [Update the relay in a mailbox](#update-the-relay-in-a-mailbox)).
-   Copy the new scripts and `templates\worker-start.md`.
+   Copy the new scripts and `templates\worker-start.md`. (In HQ, `-UpdateProjects` does not copy
+   templates, so copy `worker-start.md` into each project that lacks it: see step 6 of
+   [Run several projects](#run-several-projects-hq).)
 2. **Make the coordinator's folder** and copy the standing orders into it. Codex reads
    `AGENTS.md`. Gemini CLI reads `GEMINI.md`. Both files are a copy of `COORDINATOR.md`:
 
@@ -309,6 +317,11 @@ which rule a folder breaks.
    no `-AllowCheck`: it runs commands in its own sandbox. For Gemini CLI you may give `-Model`, and
    `-CoordinatorCwd <folder>` if the relay cannot tell the session's folder. Gemini CLI has no
    effort setting and no names to follow. A Gemini CLI check may not start with `node`.
+
+   For Gemini CLI, also set `model.maxSessionTurns` in your own Gemini settings
+   (`%USERPROFILE%\.gemini\settings.json`) before you start the relay. Gemini CLI skips the relay's
+   own turn limit in a mailbox folder, and every turn costs money. See
+   [The turn limit of a Gemini CLI coordinator](#the-turn-limit-of-a-gemini-cli-coordinator).
 5. **Start the relay again, and check it.**
 
    ```powershell
@@ -319,8 +332,10 @@ which rule a folder breaks.
    are on, and whether the guard is on. `-DryRun` shows the command a turn would run.
    `-ShowCoordinatorArgs` shows the options of a turn, and for Gemini CLI the rules file.
 
-Signing up wakes nothing. What already waits counts as known. Only new notices wake the
-coordinator.
+Signing up starts nothing by itself. A start request that already waits keeps waiting, and the
+relay runs it later. A start request the relay never saw (one written in the last 20 seconds, for
+example) counts as known and never runs, and `relay.log` has a line for each. A notice that is
+still waiting goes to the new coordinator after `-Start`. See [Start requests](#start-requests).
 
 - **Gemini CLI:** the relay refuses a session that is open right now, or that was written less than
   90 seconds ago (`QuietSeconds`). Close the window and wait first.
@@ -340,7 +355,8 @@ coordinator.
 
 For Codex and Gemini CLI, the planner or the coordinator asks the **owner** for anything else, in
 a `NEEDS-` note. A coordinator that is refused a command writes a `NEEDS-<OWNER>/BLOCKED` note and
-ends the turn. The relay puts these rules in every notice too.
+ends the turn. A Codex or Gemini CLI coordinator puts these notes in the task's `status.md`, not
+at the mailbox root, because it may not write there. The relay puts these rules in every notice too.
 
 **What the relay changes about Codex.** This holds for a Codex coordinator and for Codex workers.
 The relay starts Codex without your own `config.toml` and your own command rules
@@ -349,13 +365,23 @@ The relay starts Codex without your own `config.toml` and your own command rules
 - extra folders;
 - MCP servers (add-on tools);
 - hooks (commands Codex runs by itself at set moments);
-- command rules (your list of commands Codex may run without asking).
+- command rules (your list of commands Codex may run without asking);
+- every other setting in `config.toml`, profiles included.
 
-Codex's own web search is off too. The relay still passes on four of your settings: your model,
-your effort, your sign-in store and your Windows sandbox. The sign-in store is where Codex keeps
-your sign-in: `keyring` is Windows Credential Manager, and `auto` is the keyring when it works. The
-relay reads those few settings from `config.toml` and nothing else. If one of them does not look
-right, the relay leaves it out and names only its key in `relay.log`.
+Codex's own web search is off too. The relay still passes on a few of your settings. It reads only
+the top level of `config.toml` (and the `[windows]` part), and nothing else:
+
+- **Your model** (`model`). A Codex worker uses `-Model` when one is given, else this one.
+- **Your effort** (`model_reasoning_effort`), for a Codex coordinator only: the effort you gave
+  when you signed it up, else this one. A Codex worker's effort is `-Effort`, or `xhigh` when none
+  is given, as before. It is never the effort in `config.toml`.
+- **Your sign-in store** (`cli_auth_credentials_store`). This is where Codex keeps your sign-in:
+  `keyring` is Windows Credential Manager, and `auto` is the keyring when it works.
+- **Your Windows sandbox** (`sandbox` in the `[windows]` part).
+
+A model or effort set in a `[profiles.<name>]` part, or chosen with `profile = "<name>"`, does not
+apply any more, like every other setting. If one of the few settings does not look right, the relay
+leaves it out and names only its key in `relay.log`.
 
 - **Set up Codex's Windows sandbox first.** Codex on Windows has no sandbox until you set it up
   (`sandbox` in the `[windows]` part of `config.toml`, which Codex's own setup writes). Without it,
@@ -413,7 +439,8 @@ The template looks like this:
 - The relay reads only these lines, written just as they are in the template. **Tool** (`claude`,
   `codex`, `gemini` or `antigravity`) and **Type** (`implementation` or `review`) must be there.
   Budget USD (0.05 to 25) is for a Claude Code worker only. Model, Effort and Requested are
-  optional. Effort is `low`, `medium`, `high`, `xhigh` or `max`.
+  optional. Effort is `low`, `medium`, `high`, `xhigh` or `max`, but Codex and Antigravity have no
+  `max`: for them use `xhigh` or lower.
 - These lines take the place of the launcher's `-Tool`, `-Type`, `-Model` and `-Effort` options. A
   coordinator that cannot run the launcher picks the worker's AI tool, model and effort here.
 - The relay refuses a line it does not know. It refuses a line written another way, and a value
@@ -425,20 +452,31 @@ The template looks like this:
   be set. That way a coordinator that cannot run `git worktree add` can still start a worker.
   The folder must not be there yet. The branch must not be there yet either. If git fails half way,
   what it left stays, and the request is refused until you delete it. The refusal note says what is
-  left.
+  left. If the launcher made the worktree and then refused for another reason, the worktree stays
+  too: ask again with `New worktree: no`.
 - **Each version of the file runs at most once.** To ask again after a refusal, fix the cause and
   change the Requested line. The same file never starts a worker twice.
 - It runs between coordinator turns, after a short wait for the file to settle. One launcher runs at
   a time, up to 5 in a round, and up to 12 a day (`relay_max_worker_starts_per_day`; `0` means no
   limit). It waits while PAUSE is there, while the relay is halted, and while a coordinator turn
-  runs.
+  runs. At the daily limit, the requests wait until the next day, and the relay writes an alert. If
+  a launcher runs longer than 30 minutes, the relay writes a `long-start` alert. It never stops
+  the launcher, and the other requests wait until it ends.
 - **A refusal comes back as a note.** The coordinator's next turn starts with a line such as: "The
   relay did not start worker W2 of T-20261104-01-notes: its brief W2-brief.md is not there; write
   the brief first. Fix it, then change W2-start.md to ask again."
 - **If the relay stops while it starts a worker,** the note says it does not know if the worker
   started. It will not try again on its own.
-- Start requests that are there when you sign up, or when the relay first looks, count as known and
-  never run.
+- When the relay first looks, every start request that is there counts as known and never runs.
+  When you sign a coordinator up, a request the relay has already seen and that waits (for the
+  daily limit, PAUSE, a halt or a coordinator turn) keeps waiting, and runs later. One the relay
+  never saw (for example, one written in the last 20 seconds) counts as known and never runs.
+  `relay.log` has a line for each. After a second sign-up, the new coordinator gets one note that
+  names them, such as: "W2-start.md of T-20261104-01-notes was not run because the coordinator was
+  signed up again; change the file to ask again." If start requests are off for that coordinator
+  (a Claude Code coordinator without `start_requests`), the note says instead that start requests
+  are off and that the coordinator starts the worker itself with `bin\spawn-worker.ps1`, if it is
+  still needed.
 
 Start requests are on by default only for a Codex or Gemini CLI coordinator. Set `start_requests` to
 `true` or `false` in `bin\relay-settings.json` to change that for any coordinator. `-Status` shows
@@ -462,13 +500,29 @@ sends no turn and starts no worker until you look. It writes an alert that names
 **To go on:** see what changed. If you changed it yourself, run `-Stop` (if the relay runs), then
 `-ClearHalt`, then `-Start`.
 
-**So to change a script, a setting or an orders file, stop the relay first.** Then run `-Status` and
-wait until it says `In flight: none`. `-Stop` never cuts off a coordinator turn that is running. If
-a turn is still running when you change a file, the relay stops itself when you start it again.
+**So to change a script, a setting or an orders file, stop the relay first.** `-Stop` never cuts
+off a coordinator turn that is running, and it does not settle it. So run `-Status` too. If it
+lists a turn in flight, wait until it says `alive False`. Then, with the old scripts still in
+place, make an empty file named `PAUSE` in the mailbox's `.relay` folder, run
+`.\bin\bridge-relay.ps1 -Once` (it settles the turn and starts nothing), and delete `PAUSE`. Now
+`-Status` says `In flight: none`. If a turn is still running when you change a file, the relay
+halts itself when you start it again, but only while its guard is on (a Codex or Gemini CLI
+coordinator, or start requests on). A Claude Code coordinator with start requests off has no
+guard, so nothing halts there.
 
-HQ's `-NewProject` changes HQ's own settings file, so stop an HQ relay first (`-StopAll`) when its
-guard is on. The guard is off for a Claude Code coordinator with start requests off, which is how
-every mailbox works today.
+Each change halts the relay once. After the relay halted for a change and you cleared it with
+`-ClearHalt`, a turn that still runs does not halt it again for that same change, only for a newer
+one.
+
+HQ's `-NewProject` changes HQ's own settings file. While HQ's relay runs with its guard on,
+`-NewProject` refuses and says: "HQ's relay is running and watches its own settings. Run -StopAll
+first, then -NewProject, then -StartAll." It also refuses while a Codex or Gemini CLI coordinator
+turn of HQ is still running, or has ended but the relay has not settled it: `-StopAll` leaves such a
+turn running, and the next relay would halt at the change. Wait until `-Status` shows no coordinator
+turn in flight. Or make an empty file named `PAUSE` in `.relay`, run `-Once`, run `-NewProject`,
+delete `PAUSE`, then run `-StartAll`. The guard is off for a Claude Code coordinator with start
+requests off, which is how every mailbox works today. Then `-NewProject` works while HQ's relay
+runs, and the step it prints (run `-StopAll`, then `-StartAll`) still applies.
 
 The relay also halts, with an alert that says what to do. Each cause below has its own bullet.
 
@@ -477,6 +531,9 @@ For a **Codex** coordinator:
 - A `.codex` folder is in the coordinator's folder. Codex would read its settings. Move it away.
 - An `AGENTS.override.md` file is in the coordinator's folder. Codex reads it in place of
   `AGENTS.md`. Move it away.
+- An `AGENTS.md` or `AGENTS.override.md` is in a folder above the coordinator's folder, in its
+  Git repository. Codex would read those orders too. Move it away, or give the coordinator a
+  folder outside the repository.
 - The coordinator's folder breaks one of the folder rules at the top of this part. Pick another
   folder.
 - The mailbox path has a character that `cmd.exe` (the Windows command window) treats specially:
@@ -484,7 +541,8 @@ For a **Codex** coordinator:
 - The model in `.relay\coordinator.json` cannot be used, or the effort is not `low`, `medium`,
   `high` or `xhigh`. Sign up again.
 - The Codex command line is too old. Update it.
-- The thread has another job (see "One thread, one job" below). Use another thread.
+- The thread has another job (see "One thread, one job" below). Use another thread. Only the
+  planner and a mail agent may share a thread.
 
 For a **Gemini CLI** coordinator:
 
@@ -525,8 +583,11 @@ again. For Gemini CLI, the exit number tells you what to do:
   happened. It does not send the notice again. Look at the coordinator's status files.
 
 **One thread, one job.** A Codex thread may be only one of: the planner, the coordinator, an agent,
-or HQ's orchestrator. Signing up refuses a thread that already has another job, and a turn halts if
-it finds one. Never let two mailboxes wake the same Codex thread.
+or HQ's orchestrator. There is one exception, as before: the planner and a mail agent may share one
+thread. The relay never wakes them at the same time, and at a rollover both move to the newer
+thread with the name. Only the coordinator and HQ's orchestrator need a thread of their own.
+Signing up refuses every other overlap, and a turn halts if it finds one. Never let two mailboxes
+wake the same Codex thread.
 
 **Close the coordinator's window before the relay wakes it.** The relay waits while a window has
 the coordinator open. It can see a Codex window and a Gemini CLI window that names the session id.
@@ -548,6 +609,16 @@ The relay keeps a copy of the old `.relay\coordinator.json` in `.relay\backups` 
 `coordinator.json.20261104-050000.bak`), every time you sign a coordinator up. The relay will not
 sign up a new coordinator while a coordinator turn still runs: wait for it to end, or settle it as
 the message says. Pleni shows the coordinator under the new tool.
+
+Signing up again also clears the old coordinator's count of failed turns and its wait (the
+backoff), as a rollover does, even when the AI tool changes. A halt stays. `-Enroll` then says:
+"The relay is still halted: <reason>. Run -ClearHalt after you check it." A start request that
+already waits keeps waiting and runs later. One the relay never saw counts as known and never runs,
+and after this second sign-up the new coordinator gets one note that names it, such as: "W2-start.md
+of T-20261104-01-notes was not run because the coordinator was signed up again; change the file to
+ask again." (With start requests off for that coordinator, the note says so, and says to start the
+worker with `bin\spawn-worker.ps1`.) A notice that was still waiting goes to the new coordinator
+after `-Start`.
 
 ### Why not Antigravity CLI yet
 
@@ -585,16 +656,18 @@ own, with a warning: [Antigravity workers](#antigravity-workers-off-by-default).
    4 Gemini workers may start in one day (`worker_runs_per_day`), and a Gemini worker may take 30
    turns (`gemini_max_session_turns`). The relay counts today's lines in each task's `runs.md`,
    and the runs that are running now.
-5. **Tell the coordinator.** Add the order "Choose the AI tool for each worker" to the end of your
-   mailbox's `CLAUDE.md`, and the `- **Tool:**` line to your `templates\worker-brief.md`. See
-   [Update the relay in a mailbox](#update-the-relay-in-a-mailbox).
+5. **Tell the coordinator.** Add the order "Choose the AI tool for each worker" (order 14) to the
+   end of your mailbox's `CLAUDE.md`, and the `- **Tool:**` line to your `templates\worker-brief.md`.
+   See [Update the relay in a mailbox](#update-the-relay-in-a-mailbox): in the lines there, set
+   `$want = 'Choose the AI tool for each worker'`, `$claudeToo = $true` and `$next`, or the lines add
+   the newest order (order 15) instead. You may also copy order 14 from `COORDINATOR.md` by hand.
 
 What each tool may do:
 
 | Tool   | How the relay starts it | What it may change | What it may run |
 | ------ | ----------------------- | ------------------ | --------------- |
 | Claude | `claude -p`, with your Claude plan. | The worktree and its report. A reviewer: only its report. | `git` and `node`, but never push, merge, rebase, reset, checkout, switch, branch, worktree, tag, stash or config; never `npm`, `npx` or the web. |
-| Codex  | `codex exec`, with your ChatGPT plan, in Codex's `workspace-write` sandbox. The launcher starts Codex without your `config.toml` and your command rules (`--ignore-user-config` and `--ignore-rules`), so their extra folders, MCP servers (add-on tools), hooks (commands Codex runs by itself at set moments) and command rules (your list of commands Codex may run without asking) do not apply. It still passes on your model, your effort, your Windows sandbox and your sign-in store. The Windows sandbox is the `sandbox` in the `[windows]` part of your `config.toml` (`elevated`, `unelevated` or `mxc`; the older `[features]` flags `elevated_windows_sandbox` and `experimental_windows_sandbox` also count). Codex has no sandbox on Windows without it, and then refuses the worker's commands and file edits, so set it up in Codex first; the worker's note says when it is not set up. The sign-in store is where Codex keeps your sign-in: `keyring` is Windows Credential Manager, and `auto` is the keyring when it works (the relay passes on only these two). It needs a Codex CLI from April 2026 or newer; an older one stops at once, and the worker's note says to update it. | The worktree and the task's `workers` folder. It cannot write in the folder where Git keeps the repository, so it cannot add a Git hook or change Git's settings. It does not commit: when it finishes, the launcher commits its changes, with no Git hooks. A reviewer works in the `workers` folder, so it can change only that folder. It can still read the worktree. | What the sandbox lets it run. The relay turns the sandbox's network off, and Codex's own web search too. Your own Codex settings and command rules do not add to what it may run. |
+| Codex  | `codex exec`, with your ChatGPT plan, in Codex's `workspace-write` sandbox. The launcher starts Codex without your `config.toml` and your command rules (`--ignore-user-config` and `--ignore-rules`), so their extra folders, MCP servers (add-on tools), hooks (commands Codex runs by itself at set moments) and command rules (your list of commands Codex may run without asking) do not apply. It still passes on your model (unless `-Model` is given), your Windows sandbox and your sign-in store. Its effort is always `-Effort`, or `xhigh` when none is given, as before, and never the effort in your `config.toml`. Every other `config.toml` setting, profiles included, does not apply. The Windows sandbox is the `sandbox` in the `[windows]` part of your `config.toml` (`elevated`, `unelevated` or `mxc`; the older `[features]` flags `elevated_windows_sandbox` and `experimental_windows_sandbox` also count). Codex has no sandbox on Windows without it, and then refuses the worker's commands and file edits, so set it up in Codex first; the worker's note says when it is not set up. The sign-in store is where Codex keeps your sign-in: `keyring` is Windows Credential Manager, and `auto` is the keyring when it works (the relay passes on only these two). It needs a Codex CLI from April 2026 or newer; an older one stops at once, and the worker's note says to update it. | The worktree and the task's `workers` folder. It cannot write in the folder where Git keeps the repository, so it cannot add a Git hook or change Git's settings. It does not commit: when it finishes, the launcher commits its changes, with no Git hooks. A reviewer works in the `workers` folder, so it can change only that folder. It can still read the worktree. | What the sandbox lets it run. The relay turns the sandbox's network off, and Codex's own web search too. Your own Codex settings and command rules do not add to what it may run. |
 | Gemini | `gemini -p`, with your Gemini login, and a policy that the relay writes for each run (`W<n>.gemini-policy.toml`). | The worktree and the `workers` folder. A reviewer: only its report. | Only `git status`, `diff`, `log`, `show` and `rev-parse`, `git add` and `commit` (not a reviewer), and `node <a script>`, without `>` or `>>`. Never push and the other git commands above, `npm`, `npx`, `node -e`, the web or MCP tools. |
 | Antigravity | `agy`, with your Google sign-in. Off by default: see [Antigravity workers](#antigravity-workers-off-by-default). | The worktree and the `workers` folder. A reviewer: only the `workers` folder. It does not commit: the launcher does. | Only what your own Antigravity settings allow. With no rule there, nothing. |
 
@@ -657,7 +730,8 @@ With it on, the coordinator can start a worker in Antigravity CLI (`agy`) with `
 5. **Tell the coordinator.** Add `antigravity` to the `- **Tool:**` line of your
    `templates\worker-brief.md`. If your `CLAUDE.md` already has the order "Choose the AI tool for each
    worker", replace that order by hand with the new one from `COORDINATOR.md`. If it does not, add it
-   as in [Update the relay in a mailbox](#update-the-relay-in-a-mailbox).
+   as in [Update the relay in a mailbox](#update-the-relay-in-a-mailbox), with `$want` set to
+   `'Choose the AI tool for each worker'` and `$claudeToo` set to `$true`.
 
 To turn it off again, take `"antigravity"` out of `worker_tools`.
 
@@ -874,8 +948,17 @@ for several mailboxes at once:
    keeps a copy of the old settings as `relay-settings.json.bak-<time>`. It refuses an id that HQ
    already has, and a folder that is not empty.
 
-   You may also add a mailbox you already have to `projects` by hand. What already waits in a new
-   project counts as known, so adding a project wakes nothing.
+   `-NewProject` changes HQ's own settings. While HQ's relay runs with its guard on (a Codex or
+   Gemini CLI coordinator in HQ, or start requests on), it refuses and says: "HQ's relay is running
+   and watches its own settings. Run -StopAll first, then -NewProject, then -StartAll." It also
+   refuses while a coordinator turn of HQ still runs, or has ended and is not settled yet (wait for
+   `-Status` to show none, or use `PAUSE` and `-Once` to settle it). With the guard off, the step
+   it prints (run `-StopAll`, then `-StartAll`) still applies.
+
+   You may also add a mailbox you already have to `projects` by hand. Then also set `hq_dir` to
+   HQ's folder in that mailbox's `bin\relay-settings.json`, or the project's checks of HQ's
+   orchestrator thread and HQ's folders are off. What already waits in a new project counts as
+   known, so adding a project wakes nothing.
 4. **Enroll each project's coordinator** in that project's own folder, as in step 2 of
    [Start the relay](#start-the-relay). Never enroll the orchestrator's thread in a project (with
    `-EnrollCodex` or `-EnrollAgent`). If a project wakes the same thread, HQ stops waking the
@@ -902,6 +985,22 @@ for several mailboxes at once:
    keeps each file it replaces as `<name>.bak-<time>`. It never copies settings, templates,
    `README.md` or `CLAUDE.md`. It skips a project whose relay runs, and says so.
 
+   Because it copies no templates, a project made before this version has no
+   `templates\worker-start.md`, which the notices of a Codex or Gemini CLI coordinator point to.
+   Copy it into each project that lacks it (change the folder to HQ's):
+
+   ```powershell
+   $hq = 'C:\Users\ada\hq'
+   $settings = Get-Content "$hq\bin\relay-settings.json" -Raw | ConvertFrom-Json
+   foreach ($p in @($settings.projects)) {
+     $t = "$($p.mailbox)\templates"
+     if (-not (Test-Path "$t\worker-start.md")) {
+       New-Item -ItemType Directory -Force $t | Out-Null
+       Copy-Item "$hq\templates\worker-start.md" $t
+     }
+   }
+   ```
+
 In HQ, `-Status` and `-DryRun` list each project: whether its folder was found, how many items wait
 in it, and whether its relay runs. HQ's `.relay\codex-attention.md` has a Project column, where `hq`
 is HQ itself. The HQ relay reads its settings when it starts, so after a change to `projects`, stop
@@ -917,11 +1016,15 @@ commands.
 - **Which session:** the newest one with that name. For a Claude Code coordinator, only Claude Code
   sessions of its working folder count. For a Codex coordinator and for the planner, only live Codex
   threads count, not archived ones.
-  - A newer Codex thread takes over as the coordinator only if three things are true. Its folder
-    passes the rules for a coordinator's folder. It has no `.codex` folder or `AGENTS.override.md`.
-    It has no other job.
-  - Otherwise the relay says why in `relay.log` and keeps the old thread.
-  - Copy the standing orders into the new thread's folder as `AGENTS.md`.
+  - A newer Codex thread takes over as the coordinator only if four things are true. Its folder
+    passes the rules for a coordinator's folder (that includes this: no `AGENTS.md` or
+    `AGENTS.override.md` is in a folder above it, inside its Git repository). It has no `.codex`
+    folder or `AGENTS.override.md`. It has no other job. Its folder holds `AGENTS.md`.
+  - Otherwise the relay says why in `relay.log` (once for each thread and each reason, so a new reason is
+    told too) and keeps the old thread.
+  - Put `AGENTS.md`, a copy of `relay\COORDINATOR.md`, in the new thread's folder **before** you give
+    the new thread the name. Until it is there, the relay keeps the old thread. (Once the relay
+    follows a thread, it guards that file, so a copy made afterwards would halt the relay.)
   - A Gemini CLI coordinator does not follow a name: Gemini CLI sessions have no names.
   Case, extra spaces, and marks around the name (like `**`) do not matter.
 - **Newest means started last.** Using an old session again never takes the name back. The relay
@@ -948,9 +1051,13 @@ If you enrolled by id (`-SessionId`, `-ThreadId`), the relay never switches. Run
 
 ## Update the relay in a mailbox
 
-1. Stop the relay: `.\bin\bridge-relay.ps1 -Stop`. Then run `-Status` and wait until it says
+1. Stop the relay: `.\bin\bridge-relay.ps1 -Stop`. Then run `-Status`. If it lists a turn in
+   flight, wait until it says `alive False`. Then, with the old scripts still in place, make an
+   empty file named `PAUSE` in the mailbox's `.relay` folder, run `.\bin\bridge-relay.ps1 -Once`
+   (it settles the turn and starts nothing), and delete `PAUSE`. Now `-Status` says
    `In flight: none`. If a coordinator turn is still running when you change a script, the relay
-   stops itself when you start it again.
+   halts itself when you start it again, but only while its guard is on (a Codex or Gemini CLI
+   coordinator, or start requests on).
 2. Get the new version. In your Pleni folder, run `git pull`.
 3. Copy the scripts into the mailbox (change the two folders to yours):
 
@@ -962,7 +1069,12 @@ If you enrolled by id (`-SessionId`, `-ThreadId`), the relay never switches. Run
    if (-not (Test-Path "$mb\templates\worker-start.md")) { Copy-Item "$repo\relay\templates\worker-start.md" "$mb\templates\" }
    ```
 
-4. Start it again: `.\bin\bridge-relay.ps1 -Start`.
+4. If `worker_tools` lists `codex`, or a Codex coordinator is signed up: Codex now needs a newer
+   Codex command line (April 2026 or newer). Run `codex exec --help`. If it does not list
+   `--ignore-user-config`, update Codex with `npm install -g @openai/codex`. Codex also no longer
+   uses your `config.toml` extras, command rules or web search, and needs Codex's Windows sandbox
+   set up (see [A coordinator in Codex or Gemini CLI](#a-coordinator-in-codex-or-gemini-cli-optional)).
+5. Start it again: `.\bin\bridge-relay.ps1 -Start`.
 
 This copies only the scripts, and the start request template if your mailbox does not have it yet.
 Your settings files, your other templates, and the coordinator's files stay as they are.
@@ -981,19 +1093,30 @@ in the coordinator's folder, if a Codex or Gemini CLI coordinator is enrolled
 coordinators only). The lines do not change them. Edit them by hand if you want the new words.
 
 The lines keep a copy of each file as `<name>.old` first, and do nothing for a file that already has
-the order. For a later order that is for every coordinator, set `$claudeToo` to `$true` and `$next`
-to the next free order number in your `CLAUDE.md`. Run the lines while the relay is stopped: its
-guard halts a running relay when a coordinator's orders file changes.
+the order. They add the newest order. To add an older one, set `$want` to a part of its title, such
+as `'Choose the AI tool for each worker'` (order 14). For an order that is for every coordinator,
+set `$claudeToo` to `$true` and `$next` to the next free order number in your `CLAUDE.md`. Run the
+lines while the relay is stopped: its guard halts a running relay when a coordinator's orders file
+changes.
 
 ```powershell
 $repo  = 'C:\Users\ada\pleni'     # change these two to your folders
 $mb    = 'C:\Users\ada\mailbox'
-$claudeToo = $false              # order 15 is only for Codex and Gemini CLI. Use $true for a later order that is for everyone
+$claudeToo = $false              # order 15 is only for Codex and Gemini CLI. Use $true for an order that is for everyone, such as order 14
+$want  = ''                      # '' adds the newest order. Or part of an order's title, such as 'Choose the AI tool for each worker'
 $next  = 14                      # the next free order number in your CLAUDE.md (used only when $claudeToo is $true)
 $nextCoordinator = 16            # the next free order number in AGENTS.md or GEMINI.md (a Codex or Gemini CLI coordinator only)
 $src   = @(Get-Content "$repo\relay\COORDINATOR.md")
-$first = @($src | Select-String -Pattern '^\d+\. \*\*')[-1].LineNumber - 1
-$order = $src[$first..($src.Count - 1)]
+$starts = @($src | Select-String -Pattern '^\d+\. \*\*' | ForEach-Object { $_.LineNumber - 1 })
+$pick = $starts.Count - 1
+if ($want) {
+  $pick = -1
+  for ($i = 0; $i -lt $starts.Count; $i++) { if ($src[$starts[$i]].Contains($want)) { $pick = $i } }
+  if ($pick -lt 0) { throw "No order in COORDINATOR.md has '$want' in its title." }
+}
+$last = $src.Count - 1
+if ($pick -lt $starts.Count - 1) { $last = $starts[$pick + 1] - 1 }
+$order = $src[$starts[$pick]..$last]
 $title = [regex]::Match($order[0], '\*\*(.+?)\*\*').Groups[1].Value
 $orders = @()
 if ($claudeToo) { $orders += @{ file = "$mb\CLAUDE.md"; next = $next } }
@@ -1017,6 +1140,9 @@ foreach ($o in $orders) {
   }
 }
 ```
+
+In HQ, `ORCHESTRATOR.md` has a new order 11, "Never wake a project's coordinator yourself". Add it by
+hand to the end of HQ's `AGENTS.md`, while the HQ relay is stopped.
 
 If the new order names a line for the worker brief, add that line to your own
 `templates\worker-brief.md` by hand. For the model and effort order, put this under the branch and

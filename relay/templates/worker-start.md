@@ -19,8 +19,10 @@ Tool: claude, codex, gemini or antigravity, and only a tool that worker_tools in
 Type: implementation or review.
 Budget USD: 0.05 to 25, for a Claude Code worker only. Leave it empty for the launcher's default of 3.
 Model: empty for the launcher's default, or one word of letters, digits and . _ : [ ] - that starts with a letter or a digit.
-Effort: low, medium, high, xhigh or max. Leave it empty for the launcher's default.
+Effort: low, medium, high, xhigh or max. Codex and Antigravity have no max: use xhigh or lower for them.
+Leave it empty for the launcher's default.
 New worktree: yes or no. Yes makes the brief's worktree on the branch claude/<TASK-ID> from the brief's Base commit.
 The folder and the branch must not be there yet. If git fails half way, what it left stays, and the request is
-refused until the owner deletes it. The refusal note says what is left.
+refused until the owner deletes it. The refusal note says what is left. If the launcher made the worktree and then
+refused for another reason, the worktree stays too: ask again with New worktree: no.
 Requested: any text, such as the date. Change it to ask again: the same file never starts a worker twice.

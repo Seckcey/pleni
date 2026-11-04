@@ -105,8 +105,8 @@ You are the **coordinator**. **Codex, the planner, is your boss.** The full prot
     - Use full paths, and write only your own files. Codex: write `STATUS.md` in your own folder; the
       relay copies it into the mailbox. Gemini CLI: write `<mailbox>\STATUS.md`.
     - You cannot change `README.md`, `CLAUDE.md` or `templates\`. When the planner asks for that,
-      write a `NEEDS-<OWNER>` note.
+      write a `NEEDS-<OWNER>` note in the task's `status.md`.
     - Codex runs your commands in a sandbox with no internet. Gemini CLI lets you run only read-only
       Git commands and the owner's checks. When a command is refused, write a
-      `NEEDS-<OWNER>/BLOCKED` note and end the turn.
+      `NEEDS-<OWNER>/BLOCKED` note in the task's `status.md` and end the turn.
     - Do not start helpers (sub-agents). They would work outside the relay's rules.

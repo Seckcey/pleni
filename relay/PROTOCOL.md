@@ -178,7 +178,8 @@ launcher runs this way:
   is the session id that Gemini CLI reports. For Antigravity, it is the conversation id that
   Antigravity CLI reports.
 - The usual model is Opus 5.5 with a 1M context, at `xhigh` effort. `-Model` and `-Effort` change
-  them for one run. A Codex, Gemini or Antigravity worker with no `-Model` uses that tool's own
+  them for one run. A Codex worker's effort is `-Effort`, or `xhigh` when none is given; it never
+  comes from the owner's Codex `config.toml`. A Codex, Gemini or Antigravity worker with no `-Model` uses that tool's own
   default model. Codex has no `max` effort, Gemini CLI has no effort setting, and Antigravity CLI
   has `low`, `medium` and `high` (`xhigh` runs as `high`).
 - Each Claude run has a dollar cap (`-MaxBudgetUsd`, usually 3) unless `bin\cost-limits.json` turns
@@ -197,7 +198,9 @@ relay to start a worker. It writes the worker's brief, then `workers/W<n>-start.
 - **New worktree: yes** makes the brief's worktree on the branch `claude/<TASK-ID>` from the
   brief's Base commit. A coordinator that cannot run `git worktree add` needs it. The folder and the
   branch must not be there yet. If git fails half way, what it left stays, and the request is
-  refused until the owner deletes it. The refusal note says what is left.
+  refused until the owner deletes it. The refusal note says what is left. If the launcher made the
+  worktree and then refused for another reason, the worktree stays too: ask again with
+  `New worktree: no`.
 - After the coordinator's turn, the relay checks the request and runs the launcher. A tool that
   `worker_tools` does not list, a brief that is not there, and a worker that still runs are
   refused. At most 12 workers start a day for start requests (`relay_max_worker_starts_per_day`).
@@ -217,7 +220,12 @@ from then on. A new coordinator or planner session should start by reading `STAT
 tasks.
 
 A Codex coordinator or a Gemini CLI coordinator gets the same wakes. A Codex thread has one job
-only: it may be the planner, the coordinator, an agent or the orchestrator, never two of them.
+only: it may be the planner, the coordinator, an agent or the orchestrator, never two of them. There
+is one exception, as before: the planner and a mail agent may share one thread. The relay never
+wakes them at the same time, and at a rollover both move to the newer thread with the name. Only
+the coordinator and the orchestrator need a thread of their own. A Codex coordinator also needs a
+folder with no `AGENTS.md` or `AGENTS.override.md` above it, up to the top of its Git repository:
+Codex reads every `AGENTS.md` from there down, so it would get those orders too.
 
 Without the relay, tell the other side in one line after you write:
 

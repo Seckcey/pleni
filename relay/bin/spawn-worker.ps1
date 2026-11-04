@@ -11,9 +11,10 @@
     Codex: `codex exec` in a new thread, signed in with ChatGPT (codex login status). OPENAI_API_KEY and the other
     OpenAI overrides are removed for the child, so it never bills an API account. It starts with --ignore-user-config and
     --ignore-rules, so none of the owner's config.toml (extra folders, MCP servers, hooks) or command rules apply, with
-    -c web_search=disabled and the network off in the sandbox. The launcher passes on only the model and effort (when
-    none was given), the sign-in store (keyring or auto) and the Windows sandbox from config.toml. It needs a Codex CLI
-    from April 2026 or newer: an older one stops at once, and the worker's note says to update Codex. Gemini: `gemini -p` with the owner's
+    -c web_search=disabled and the network off in the sandbox. The launcher passes on only the model (when none was
+    given), the sign-in store (keyring or auto) and the Windows sandbox from config.toml. The effort is -Effort, xhigh
+    unless given, as always. It needs a Codex CLI from April 2026 or newer: an older one stops at once, and the worker's
+    note says to update Codex. Gemini: `gemini -p` with the owner's
     own Gemini login (GEMINI_API_KEY passes through untouched; Gemini is paid per use), a per-run admin policy
     (--admin-policy, checked by SHA-256 right before the start) and a turn limit (GEMINI_CLI_SYSTEM_DEFAULTS_PATH).
     Antigravity: `agy` in a new headless conversation (--input-format stream-json, the prompt as one line on stdin),
@@ -517,12 +518,13 @@ function Get-RunsToday([string]$Name) {
 
 function Get-CodexConfigTop {
     # The only settings that the launcher still takes from Codex's own <CODEX_HOME>\config.toml (CODEX_HOME, else
-    # <USERPROFILE>\.codex), now that a Codex worker starts with --ignore-user-config: model, model_reasoning_effort and
+    # <USERPROFILE>\.codex), now that a Codex worker starts with --ignore-user-config: model and
     # cli_auth_credentials_store (the top-level keys, above the first [table]), and the Windows sandbox (sandbox in
-    # [windows], else the older flags in [features]). Read only, and nothing else in the file. Each value is checked; one
-    # that fails is left out and its key is named in bad (a key only, never a value). store is only keyring or auto: file
-    # is Codex's default. sandbox is only elevated, unelevated or mxc, or '' when the owner never set one up.
-    $r = @{ model = ''; effort = ''; store = ''; sandbox = ''; bad = @() }
+    # [windows], else the older flags in [features]). Read only, and nothing else in the file: not the effort, as a
+    # worker's effort is always -Effort (xhigh unless given). Each value is checked; one that fails is left out and its
+    # key is named in bad (a key only, never a value). store is only keyring or auto: file is Codex's default. sandbox is
+    # only elevated, unelevated or mxc, or '' when the owner never set one up.
+    $r = @{ model = ''; store = ''; sandbox = ''; bad = @() }
     $raw = @{}
     $win = @{}   # the Windows sandbox settings: [windows] sandbox, and the older [features] flags
     try {
@@ -541,7 +543,7 @@ function Get-CodexConfigTop {
                 continue
             }
             if ($table -eq '') {
-                if ($line -cmatch '^\s*(model|model_reasoning_effort|cli_auth_credentials_store)\s*=\s*["'']([^"'']*)["'']') {
+                if ($line -cmatch '^\s*(model|cli_auth_credentials_store)\s*=\s*["'']([^"'']*)["'']') {
                     if (-not $raw.ContainsKey($Matches[1])) { $raw[$Matches[1]] = $Matches[2] }
                 }
             } elseif ($table -ceq 'windows') {
@@ -557,10 +559,6 @@ function Get-CodexConfigTop {
     if ($m) {
         $why = Get-ModelError $m
         if ($why) { $r.bad = @($r.bad) + 'model' } else { $r.model = $m }
-    }
-    $e = ([string]$raw['model_reasoning_effort']).ToLowerInvariant()
-    if ($e) {
-        if (@('low', 'medium', 'high', 'xhigh') -contains $e) { $r.effort = $e } else { $r.bad = @($r.bad) + 'model_reasoning_effort' }
     }
     $s = [string]$raw['cli_auth_credentials_store']
     if ($s -ceq 'keyring' -or $s -ceq 'auto') { $r.store = $s }
@@ -694,21 +692,16 @@ if ($Tool -ne 'claude') {
     }
 }
 
-# Codex: the settings that stay from the owner's config.toml. The effort is the one given with -Effort, else the one in
-# config.toml, else the usual default (xhigh).
-$EffortGiven = $PSBoundParameters.ContainsKey('Effort')
-$CodexCfg = @{ model = ''; effort = ''; store = ''; sandbox = ''; bad = @() }
-$CodexEffort = $Effort
-$CodexEffortFromConfig = $false
-if ($Tool -eq 'codex') {
-    $CodexCfg = Get-CodexConfigTop
-    if (-not $EffortGiven -and $CodexCfg.effort) { $CodexEffort = $CodexCfg.effort; $CodexEffortFromConfig = $true }
-}
+# Codex: the settings that stay from the owner's config.toml. The effort is not one of them: it is -Effort, xhigh unless
+# given, the same for every tool.
+$CodexCfg = @{ model = ''; store = ''; sandbox = ''; bad = @() }
+if ($Tool -eq 'codex') { $CodexCfg = Get-CodexConfigTop }
 # An older Codex CLI does not know --ignore-user-config or --ignore-rules: clap's words on standard error, exit code 2.
 $CodexTooOldPattern = "unexpected argument\W+--ignore-(user-config|rules)\b"
 $CodexOptionWords = ('Codex starts with --ignore-user-config and --ignore-rules, so it uses none of the extra folders, MCP servers (add-on tools), ' +
     'hooks (commands Codex runs by itself at set moments) or command rules (your list of commands Codex may run without asking) from your own Codex settings. ' +
-    'Its web search is off. It keeps your model, effort, Windows sandbox and sign-in store (where Codex keeps your sign-in: keyring means Windows Credential Manager, auto means keyring when it works).')
+    'Its web search is off. It keeps your model, Windows sandbox and sign-in store (where Codex keeps your sign-in: keyring means Windows Credential Manager, auto means keyring when it works). ' +
+    'Its effort comes from -Effort (xhigh when none is given), not from your config.toml.')
 $CodexTooOldWords = 'This Codex CLI is too old for the relay. Update it (npm install -g @openai/codex) to a version from April 2026 or newer.'
 
 function Get-ModelText {
@@ -731,18 +724,13 @@ function Get-EffortText {
         if ($Effort -eq 'xhigh') { return "effort $AgyEffort (Antigravity CLI has low, medium and high, so xhigh runs as high)" }
         return "effort $AgyEffort"
     }
-    if ($Tool -eq 'codex') {
-        if ($CodexEffortFromConfig) { return "effort $CodexEffort (Codex's default, from its config.toml)" }
-        return "effort $CodexEffort"
-    }
     return "effort $Effort"
 }
 
 # ---------- detach: re-launch this script hidden in foreground mode ----------
 if (-not $Foreground) {
     $argList = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"",
-        '-TaskId', $TaskId, '-Worker', $Worker, '-Type', $Type, '-MaxBudgetUsd', $MaxBudgetUsd.ToString($Inv), '-Foreground')
-    if ($EffortGiven) { $argList += @('-Effort', $Effort) }   # the runner tells "no effort given" from a given one
+        '-TaskId', $TaskId, '-Worker', $Worker, '-Type', $Type, '-MaxBudgetUsd', $MaxBudgetUsd.ToString($Inv), '-Effort', $Effort, '-Foreground')
     if ($Model) { $argList += @('-Model', $Model) }
     if ($Tool -ne 'claude') { $argList += @('-Tool', $Tool) }
     $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -WindowStyle Hidden -PassThru
@@ -773,7 +761,6 @@ if ($Tool -eq 'codex') {
     $state.model = $ToolModel
     if (-not $ToolModel) { $state.model = $CodexCfg.model }
     if (-not $state.model) { $state.model = 'codex default' }
-    $state.effort = $CodexEffort
 } elseif ($Tool -eq 'gemini') {
     $state.billing = 'gemini-own-login (paid per use)'
     $state.budget_usd = $null          # Gemini CLI reports no cost; worker_runs_per_day limits the runs
@@ -1027,10 +1014,11 @@ if ($Tool -eq 'claude') {
         # (add-on tools, which run outside the sandbox) or hooks apply. --ignore-rules: Codex does not load the owner's
         # command rules, which can let a command run outside the sandbox. web_search=disabled keeps Codex's own web search
         # (on by default) off. Codex's system settings still load, so the -c values still hold, and writable_roots=[] leaves
-        # the run only its own folder and the --add-dir folder, as for a Codex coordinator's turn. Codex no longer reads the model, the effort, the sign-in store and the Windows sandbox
-        # from config.toml, so the launcher passes them (Get-CodexConfigTop): -Model, else the config.toml model; the effort
-        # chosen above; the store only when it is keyring or auto; windows.sandbox as the owner set it up (without it Codex
-        # on Windows has no sandbox and refuses every command that no rule allows, and every file edit).
+        # the run only its own folder and the --add-dir folder, as for a Codex coordinator's turn. Codex no longer reads the model, the sign-in store and the Windows sandbox
+        # from config.toml, so the launcher passes them (Get-CodexConfigTop): -Model, else the config.toml model; the store
+        # only when it is keyring or auto; windows.sandbox as the owner set it up (without it Codex on Windows has no
+        # sandbox and refuses every command that no rule allows, and every file edit). The effort is -Effort (xhigh unless
+        # given), as it always was: never the one in config.toml.
         $cliArgs = @('exec', '--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules', '--sandbox', 'workspace-write',
             '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'web_search=disabled')
         if ($Type -eq 'implementation') {
@@ -1041,7 +1029,7 @@ if ($Tool -eq 'claude') {
         $cliModel = $ToolModel
         if (-not $cliModel) { $cliModel = [string]$CodexCfg.model }
         if ($cliModel) { $cliArgs += @('-m', $cliModel) }
-        $cliArgs += @('-c', "model_reasoning_effort=$($CodexEffort.ToLowerInvariant())")
+        $cliArgs += @('-c', "model_reasoning_effort=$($Effort.ToLowerInvariant())")
         if ($CodexCfg.store) { $cliArgs += @('-c', "cli_auth_credentials_store=$($CodexCfg.store)") }
         if ($CodexCfg.sandbox) { $cliArgs += @('-c', "windows.sandbox=$($CodexCfg.sandbox)") }
         $cliArgs += '-'

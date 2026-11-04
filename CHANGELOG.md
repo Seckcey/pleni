@@ -15,7 +15,12 @@ All notable changes to Pleni are listed here, newest first. The format is based 
   write and run. Gemini CLI costs money for every turn, and it skips the relay's turn limit in a
   mailbox folder, so also set `model.maxSessionTurns` in your own Gemini settings. See "A
   coordinator in Codex or Gemini CLI" in the relay's README. To switch a mailbox from one tool to
-  another, stop the relay, sign up again with the other `-Tool`, and start the relay.
+  another, stop the relay, sign up again with the other `-Tool`, and start the relay. Signing up
+  again clears the old coordinator's count of failed turns and its wait, as a rollover does. A halt
+  stays, and `-Enroll` says so. A Codex coordinator needs a folder with no `AGENTS.md` or
+  `AGENTS.override.md` above it, up to the top of its Git repository, because Codex reads every
+  `AGENTS.md` from there down. A Codex thread has one job, except that the planner and a mail agent
+  may share one, as before.
 - **Start requests.** A Codex or Gemini CLI coordinator cannot run the worker launcher itself. It
   writes a small file, `W<n>-start.md`, beside the worker's brief, and the relay checks it and
   starts the worker. Each version of a request runs once, at most 12 workers start a day
@@ -123,9 +128,14 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 - **Relay workers in Codex skip your own Codex settings and rules, and have no web search.** A
   Codex worker, and a Codex coordinator, now start Codex without your `config.toml` and your
   command rules. So your extra folders, MCP servers (add-on tools), hooks (commands Codex runs by
-  itself at set moments) and command rules do not apply. The relay still passes on your model, your
-  effort, your sign-in store (where Codex keeps your sign-in) and your Windows sandbox (a locked box
-  that limits what a program may touch). Codex's own web search is off. This needs a Codex command
+  itself at set moments) and command rules do not apply. Every other `config.toml` setting stops
+  applying too, profiles included: a model or effort in a `[profiles.<name>]` part, or chosen with
+  `profile = "<name>"`, does not count. The relay still passes on your model, your sign-in store
+  (where Codex keeps your sign-in) and your Windows sandbox (a locked box that limits what a
+  program may touch), read from the top of `config.toml`. A Codex coordinator also gets its effort:
+  the one you signed it up with, else the one in `config.toml`. A Codex worker's effort is
+  `-Effort`, or `xhigh` when none is given, as before; it is never the one in `config.toml`.
+  Codex's own web search is off. This needs a Codex command
   line from April 2026 or newer: an older one stops with an "update Codex" message. Set up Codex's
   Windows sandbox first.
 
