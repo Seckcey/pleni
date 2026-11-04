@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { cleanSettings } from '../src/config.js';
 import { PULSE_MS, buildSnapshot, inFolder, modelLabel, modelTier, projectName } from '../src/model.js';
 
@@ -1440,6 +1441,114 @@ test('agent mail: the thread the relay wakes beats the newest tile with that nam
   const byThread = snap({ codex, mailbox: mailState({ agents: [agent('sergeant-ada', 'Sergeant Ada', { unread: 1, wakes: true, threadId: OLD_ONE.slice(6) })] }) });
   assert.equal(node(byThread, OLD_ONE).mail.unread, 1);
   assert.equal(node(byThread, SERGEANT).mail, null);
+});
+
+const CLAUDE_AGENT = 'claude:ffffffff-0000-4000-8000-000000000001';
+const GEMINI_AGENT = 'gemini:ffffffff-0000-4000-8000-000000000002';
+const AGY_AGENT = 'antigravity:ffffffff-0000-4000-8000-000000000003';
+
+test('agent mail: an agent in any AI tool finds its tile by the session the relay wakes', () => {
+  const sessions = {
+    claude: [
+      session(CLAUDE_AGENT, { title: 'Mail desk helper', lastAt: NOW - 20 * MIN }),
+      session('claude:ffffffff-0000-4000-8000-0000000000aa', { title: 'Mail desk', lastAt: NOW - MIN }),
+    ],
+    gemini: [session(GEMINI_AGENT, { title: 'Night shift', platform: 'gemini', lastAt: NOW - 20 * MIN })],
+    antigravity: [session(AGY_AGENT, { title: 'Far desk', platform: 'antigravity', lastAt: NOW - 20 * MIN })],
+    codex: mailTeam(),
+  };
+  const snapWith = (agents) => snap({ ...sessions, mailbox: mailState({ agents }) });
+  const box = [
+    agent('mail-desk', 'Mail desk', { unread: 1, since: NOW - MIN, wakes: true, tool: 'claude', sessionKey: CLAUDE_AGENT }),
+    agent('night-shift', 'Night shift owl', { unread: 2, since: NOW - 2 * MIN, wakes: true, tool: 'gemini', sessionKey: GEMINI_AGENT }),
+    agent('far-desk', 'Far desk', { unread: 3, since: NOW - 3 * MIN, wakes: true, tool: 'antigravity', sessionKey: null }),
+  ];
+  const s = snapWith(box);
+  assert.deepEqual(node(s, CLAUDE_AGENT).mail, { name: 'Mail desk', unread: 1, since: NOW - MIN, wakes: true, toYou: 0 }, 'the session it wakes, not the newer tile with the same name');
+  assert.equal(node(s, 'claude:ffffffff-0000-4000-8000-0000000000aa').mail, null);
+  assert.deepEqual(node(s, GEMINI_AGENT).mail, { name: 'Night shift owl', unread: 2, since: NOW - 2 * MIN, wakes: true, toYou: 0 }, 'a Gemini CLI session, whatever the agent is called');
+  // A tool Pleni does not know is never an agent's session: with a made-up key, a thread or an Antigravity tile.
+  assert.equal(node(s, AGY_AGENT).mail.unread, 3, 'with no session key, only the tile with the same name is found, as always');
+  for (const odd of [{ sessionKey: AGY_AGENT, tool: 'antigravity' }, { sessionKey: AGY_AGENT.replace('antigravity', 'grok'), tool: 'grok' }, { sessionKey: 'mailbox:T-1/W1', tool: 'x' }, { sessionKey: null, tool: 'grok', threadId: SERGEANT.slice(6) }]) {
+    const t = snapWith([agent('zed-desk', 'Zed', { unread: 1, wakes: true, ...odd })]);
+    assert.ok(t.nodes.every((n) => n.mail === null), JSON.stringify(odd));
+  }
+  // A session that is not on the map falls back to the name, as a missing Codex thread always did.
+  const away = snapWith([agent('mail-desk', 'Mail desk', { unread: 1, wakes: true, tool: 'claude', sessionKey: 'claude:ffffffff-0000-4000-8000-0000000000ee' })]);
+  assert.equal(node(away, 'claude:ffffffff-0000-4000-8000-0000000000aa').mail.unread, 1);
+  // A mailbox from before tools came has neither field: the Codex thread, then the name, as before.
+  const old = snapWith([agent('sergeant-ada', 'Sergeant Ada', { unread: 1, wakes: true, threadId: SERGEANT.slice(6) }), agent('colonel', 'Colonel')]);
+  assert.equal(node(old, SERGEANT).mail.unread, 1);
+  assert.equal(node(old, BOSS).mail.name, 'Colonel');
+  // The planner's mail name: a Codex agent entry with its thread.
+  const planner = snapWith([agent('orchestrator', 'Orchestrator', { unread: 1, wakes: true, threadId: SERGEANT_TWO.slice(6), tool: 'codex', sessionKey: SERGEANT_TWO })]);
+  assert.equal(node(planner, SERGEANT_TWO).mail.unread, 1);
+});
+
+test('agent mail: a message from another mailbox finds its sender among that mailbox\'s agents', () => {
+  const HQ_BOT = 'claude:ffffffff-0000-4000-8000-0000000000b1';
+  const NOTES_BOT = 'gemini:ffffffff-0000-4000-8000-0000000000b2';
+  const HQ_SAME_NAME = 'codex:ffffffff-0000-4000-8000-0000000000b3';
+  const ORCH = 'codex:ffffffff-0000-4000-8000-0000000000b4';
+  const sessions = {
+    claude: [session(HQ_BOT, { title: 'Desk bot' })],
+    gemini: [session(NOTES_BOT, { title: 'Notes bot', platform: 'gemini' })],
+    codex: [session(HQ_SAME_NAME, { title: 'Helper', lastAt: NOW - 30 * MIN }), session(ORCH, { title: 'Orchestrator' })],
+  };
+  const notes = mailbox({
+    relay: relayState({ coordinatorKey: null }),
+    mail: {
+      owner: 'Ada',
+      agents: [agent('helper', 'Notes bot', { wakes: true, tool: 'gemini', sessionKey: NOTES_BOT })],
+      messages: [],
+    },
+  });
+  const hqMail = {
+    owner: 'Ada',
+    agents: [
+      agent('orchestrator', 'Orchestrator', { unread: 2, since: NOW - 3 * MIN, wakes: true, tool: 'codex', sessionKey: ORCH, threadId: ORCH.slice(6) }),
+      agent('helper', 'Helper', { wakes: true, tool: 'claude', sessionKey: HQ_BOT }),
+    ],
+    messages: [
+      { to: 'orchestrator', from: 'helper', fromName: 'Notes bot', fromBox: 'notes', at: NOW - 2 * MIN, unread: true, text: 'From the notes box.' },
+      { to: 'orchestrator', from: 'helper', fromName: 'Helper', at: NOW - 3 * MIN, unread: true, text: 'From HQ.' },
+      { to: 'orchestrator', from: 'helper', fromName: 'Helper', fromBox: 'hq', at: NOW - 4 * MIN, unread: true, text: 'A line that names its own box.' },
+      { to: 'orchestrator', from: 'helper', fromName: 'Helper', fromBox: 'ghost', at: NOW - 5 * MIN, unread: true, text: 'A box that is not in HQ.' },
+    ],
+  };
+  const hq = { ...mailbox({ relay: relayState({ coordinatorKey: null, plannerKey: ORCH }), mail: hqMail }), hq: { projects: [{ id: 'notes', name: 'Notes', mailbox: notes }], skipped: [] } };
+  const s = snap({ ...sessions, mailbox: hq, settings: { sources: { mailbox: { enabled: true } } } });
+  const mail = s.events.filter((e) => e.kind === 'mail').map((e) => [e.text, e.from, e.to]);
+  assert.deepEqual(mail, [
+    ['From the notes box.', NOTES_BOT, ORCH],
+    ['From HQ.', HQ_BOT, ORCH],
+    ['A line that names its own box.', HQ_BOT, ORCH],
+    ['A box that is not in HQ.', HQ_BOT, ORCH],
+  ], "the notes box's sender is its own agent, not the HQ agent with the same mail name");
+  const line = s.edges.find((e) => [e.from, e.to].includes(NOTES_BOT) && [e.from, e.to].includes(ORCH));
+  assert.deepEqual([line.from, line.to, line.kind, line.lastUp, line.upLabel, line.active], [ORCH, NOTES_BOT, 'message', NOW - 2 * MIN, 'From the notes box.', 'up'], 'the line is drawn from the sender in the other box');
+  // A line from a box that is not in the snapshot, or a mailbox with no such agent, keeps the old way.
+  const lone = { ...mailbox({ mail: hqMail, relay: relayState({ coordinatorKey: null }) }) };
+  const alone = snap({ ...sessions, mailbox: lone, settings: { sources: { mailbox: { enabled: true } } } });
+  assert.deepEqual(alone.events.filter((e) => e.kind === 'mail').map((e) => e.from), [HQ_BOT, HQ_BOT, HQ_BOT, HQ_BOT]);
+});
+
+test('the answer command adds -Box when the message came from another mailbox', () => {
+  // The page is a browser module, so only the one function is cut out of it and run here.
+  const source = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const start = source.indexOf('function mailAnswerCommand(');
+  const end = source.indexOf('\n}\n', start);
+  assert.ok(start > 0 && end > start, 'the function is in the page');
+  const run = (roots, ...args) => vm.runInNewContext(`${source.slice(start, end + 2)}\nmailAnswerCommand(...args)`, { S: { roots }, args });
+  const roots = { mailbox: 'C:\\Users\\ada\\hq\\' };
+  const own = "& 'C:\\Users\\ada\\hq\\bin\\agent-mail.ps1' -Send -From 'Ada' -To 'Notes bot'";
+  assert.equal(run(roots, 'Ada', 'Notes bot'), `${own} -Text 'your answer'`, 'no box: the command is as it was');
+  assert.equal(run(roots, 'Ada', 'Notes bot', 'hq', null), `${own} -Text 'your answer'`);
+  assert.equal(run(roots, 'Ada', 'Notes bot', 'hq', 'hq'), `${own} -Text 'your answer'`, 'mail from the same mailbox needs no -Box');
+  assert.equal(run(roots, 'Ada', 'Notes bot', 'hq', 'notes'), `${own} -Box 'notes' -Text 'your answer'`, 'the answer goes back to the sender\'s mailbox');
+  assert.equal(run(roots, 'Ada', 'Notes bot', null, 'hq'), `${own} -Box 'hq' -Text 'your answer'`, 'a lone mailbox answers a message from HQ with -Box hq');
+  assert.equal(run(roots, 'Ada', "O'Hara", 'notes', 'hq'), ".\\bin\\agent-mail.ps1 -Send -From 'Ada' -To 'O''Hara' -Box 'hq' -Text 'your answer'", 'a project mailbox\'s command runs in its own folder');
+  assert.equal(run({}, 'Ada', 'Bo', null, 'hq'), ".\\bin\\agent-mail.ps1 -Send -From 'Ada' -To 'Bo' -Box 'hq' -Text 'your answer'");
 });
 
 test('agent mail lights the line between sender and receiver and goes in the feed', () => {

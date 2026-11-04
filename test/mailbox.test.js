@@ -703,10 +703,13 @@ test('agent mail: names, what waits for each agent, its messages, and who the re
   const mail = createMailboxSource({ root }).poll().mail;
   assert.equal(mail.owner, 'Ada');
   assert.deepEqual(mail.agents, [
-    { key: 'colonel', name: 'Colonel', unread: 0, since: null, wakes: false, threadId: null },
-    { key: 'sergeant-ada', name: 'Sergeant Ada', unread: 2, since: Date.UTC(2026, 9, 18, 10, 15, 0, 123), wakes: true, threadId: SERGEANT_THREAD },
-    { key: 'sergeant-bo', name: 'Sergeant Bo', unread: 0, since: null, wakes: true, threadId: null },
-  ]);
+    { key: 'colonel', name: 'Colonel', unread: 0, since: null, wakes: false, threadId: null, tool: null, sessionKey: null },
+    {
+      key: 'sergeant-ada', name: 'Sergeant Ada', unread: 2, since: Date.UTC(2026, 9, 18, 10, 15, 0, 123), wakes: true,
+      threadId: SERGEANT_THREAD, tool: 'codex', sessionKey: `codex:${SERGEANT_THREAD}`,
+    },
+    { key: 'sergeant-bo', name: 'Sergeant Bo', unread: 0, since: null, wakes: true, threadId: null, tool: 'codex', sessionKey: null },
+  ], 'an agents.json with no tool is a Codex mailbox, as it always was');
   assert.deepEqual(mail.messages, [
     { from: 'colonel', fromName: 'Colonel', at: Date.UTC(2026, 9, 18, 10, 17), to: 'sergeant-ada', unread: true, text: 'And the tests.' },
     { from: 'colonel', fromName: 'Colonel', at: Date.UTC(2026, 9, 18, 10, 15, 0, 123), to: 'sergeant-ada', unread: true, text: '## Plan\nCheck the **build**.' },
@@ -833,4 +836,98 @@ test('agent mail: the Mail page gets the whole of each message to or from the pe
   assert.equal(source.mail({ keys: ['ada'], all: true }).length, 5, 'every message with all');
   assert.deepEqual(createMailboxSource({ root, settings: { content: 'none' } }).mail({ keys: ['ada'] }).map((m) => m.text), [null, null]);
   assert.equal(createMailboxSource({ root: path.join(root, 'tasks') }).mail({ keys: ['ada'] }), null, 'no mail folder');
+});
+
+const CLAUDE_SESSION = '0199bbbb-0000-4000-8000-00000000000b';
+const GEMINI_SESSION = '0199cccc-0000-4000-8000-00000000000c';
+const PLANNER_THREAD = '0199dddd-0000-4000-8000-00000000000d';
+
+function wakesOf(root) {
+  const mail = createMailboxSource({ root }).poll().mail;
+  return Object.fromEntries(mail.agents.map((a) => [a.key, [a.wakes, a.tool, a.sessionKey, a.threadId]]));
+}
+
+test('agent mail: each agent names its AI tool and the session the relay wakes', (t) => {
+  const root = tempMailbox(t);
+  for (const key of ['ada-claude', 'bo-gemini', 'cy-grok', 'di-old', 'ed-blank', 'fay-codex', 'gus-bad']) fs.mkdirSync(path.join(root, 'mail', key, 'new'), { recursive: true });
+  write(root, '.relay/agents.json', JSON.stringify({
+    'ada-claude': { name: 'Ada Claude', tool: 'claude', session_id: CLAUDE_SESSION.toUpperCase(), thread_id: SERGEANT_THREAD },
+    'bo-gemini': { name: 'Bo Gemini', tool: ' Gemini ', session_id: GEMINI_SESSION },
+    'cy-grok': { name: 'Cy', tool: 'grok', session_id: GEMINI_SESSION, thread_id: SERGEANT_THREAD },
+    'di-old': { name: 'Di', thread_id: SERGEANT_THREAD },
+    'ed-blank': { name: 'Ed', tool: '  ', session_id: SERGEANT_THREAD },
+    'fay-codex': { name: 'Fay', tool: 'codex', thread_id: 'bad', session_id: PLANNER_THREAD },
+    'gus-bad': { name: 'Gus', tool: 7, session_id: 'not a session' },
+  }));
+  assert.deepEqual(wakesOf(root), {
+    'ada-claude': [true, 'claude', `claude:${CLAUDE_SESSION}`, null],
+    'bo-gemini': [true, 'gemini', `gemini:${GEMINI_SESSION}`, null],
+    'cy-grok': [true, 'grok', null, null],
+    'di-old': [true, 'codex', `codex:${SERGEANT_THREAD}`, SERGEANT_THREAD],
+    'ed-blank': [true, 'codex', `codex:${SERGEANT_THREAD}`, SERGEANT_THREAD],
+    'fay-codex': [true, 'codex', `codex:${PLANNER_THREAD}`, PLANNER_THREAD],
+    'gus-bad': [true, 'codex', null, null],
+  }, 'a Claude Code or Gemini CLI agent has a session key and no Codex thread; a tool Pleni does not know has no session');
+  // A long made-up tool name is cut short, and never becomes a session.
+  write(root, '.relay/agents.json', JSON.stringify({ 'cy-grok': { name: 'Cy', tool: 'x'.repeat(500), session_id: GEMINI_SESSION } }));
+  const [cy] = createMailboxSource({ root }).poll().mail.agents.filter((a) => a.key === 'cy-grok');
+  assert.equal(cy.tool.length, 20);
+  assert.equal(cy.sessionKey, null);
+});
+
+test('agent mail: the planner is listed under its mail name, unless an agent has that key', (t) => {
+  const root = tempMailbox(t);
+  fs.mkdirSync(path.join(root, 'mail', 'sergeant-ada', 'new'), { recursive: true });
+  write(root, '.relay/agents.json', JSON.stringify({ 'sergeant-ada': { name: 'Sergeant Ada', thread_id: SERGEANT_THREAD } }));
+  write(root, '.relay/codex.json', JSON.stringify({ thread_id: PLANNER_THREAD.toUpperCase(), mail_name: ' *Orchestrator Prime* ', follow_name: 'Old name' }));
+  assert.deepEqual(createMailboxSource({ root }).poll().mail.agents, [
+    { key: 'orchestrator-prime', name: '*Orchestrator Prime*', unread: 0, since: null, wakes: true, threadId: PLANNER_THREAD, tool: 'codex', sessionKey: `codex:${PLANNER_THREAD}` },
+    { key: 'sergeant-ada', name: 'Sergeant Ada', unread: 0, since: null, wakes: true, threadId: SERGEANT_THREAD, tool: 'codex', sessionKey: `codex:${SERGEANT_THREAD}` },
+  ], 'the planner is woken for mail to its mail name, though it has no mail folder yet');
+
+  // An agent with the planner's key keeps it.
+  write(root, '.relay/agents.json', JSON.stringify({ 'orchestrator-prime': { name: 'Agent', tool: 'claude', session_id: CLAUDE_SESSION } }), Date.now() + 5000);
+  const kept = createMailboxSource({ root }).poll().mail.agents;
+  assert.deepEqual(kept.filter((a) => a.wakes).map((a) => [a.key, a.name, a.tool, a.sessionKey]), [['orchestrator-prime', 'Agent', 'claude', `claude:${CLAUDE_SESSION}`]]);
+
+  // No mail name, no thread, or a name that makes no folder: nothing is added or no session is named.
+  for (const codex of [{ thread_id: PLANNER_THREAD }, { mail_name: '   ' }, { mail_name: '!!!', thread_id: PLANNER_THREAD }, { mail_name: 7 }, []]) {
+    write(root, '.relay/codex.json', JSON.stringify(codex), Date.now() + 9000);
+    assert.deepEqual(createMailboxSource({ root }).poll().mail.agents.filter((a) => a.wakes).map((a) => a.key), ['orchestrator-prime'], JSON.stringify(codex));
+  }
+  fs.rmSync(path.join(root, '.relay', 'agents.json'));
+  write(root, '.relay/codex.json', JSON.stringify({ mail_name: 'Orchestrator' }), Date.now() + 12000);
+  const noThread = createMailboxSource({ root }).poll().mail.agents.find((a) => a.key === 'orchestrator');
+  assert.deepEqual([noThread.wakes, noThread.threadId, noThread.sessionKey], [true, null, null], 'no thread yet: it wakes, but no tile is named');
+});
+
+test('agent mail: a Box line names the sender\'s mailbox, and Box and Hop lines are not message text', (t) => {
+  const root = tempMailbox(t);
+  buildMail(root);
+  const sent = (rel, head, body) => write(root, rel, `${head}\r\n\r\n${body}\r\n`, Date.now());
+  sent('mail/colonel/new/20261018-110000-000-ada-a1a1a1.md', 'From: Ada\r\nTo: Colonel\r\nSent: 2026-10-18T11:00:00Z\r\nBox: notes\r\nHop: 3', 'From the notes box.');
+  sent('mail/colonel/new/20261018-110100-000-ada-a2a2a2.md', 'From: Ada\r\nbox:  hq \r\nTo: Colonel', 'Lower case, spaces.');
+  sent('mail/colonel/new/20261018-110200-000-ada-a3a3a3.md', 'From: Ada\r\nBox: Bad Box', 'A bad box id.');
+  sent('mail/colonel/new/20261018-110300-000-ada-a4a4a4.md', 'From: Ada\r\nBox: ', 'An empty box.');
+  sent('mail/colonel/new/20261018-110400-000-ada-a5a5a5.md', 'From: Ada\r\nBox: ../up', 'A path.');
+  const source = createMailboxSource({ root });
+  const byText = (list) => Object.fromEntries(list.map((m) => [m.text, m.fromBox]));
+  const mail = source.poll().mail;
+  assert.deepEqual(byText(mail.messages.filter((m) => m.to === 'colonel')), {
+    'From the notes box.': 'notes',
+    'Lower case, spaces.': 'hq',
+    'A bad box id.': undefined,
+    'An empty box.': undefined,
+    'A path.': undefined,
+  });
+  assert.ok(mail.messages.every((m) => !/\bHop\b|\bBox\b/.test(m.text ?? '')), 'neither line is message text');
+  assert.equal(Object.hasOwn(mail.messages.find((m) => m.to === 'sergeant-ada'), 'fromBox'), false, 'a message with no Box line keeps its old shape');
+  assert.equal(Object.hasOwn(mail.messages.find((m) => m.text === 'A bad box id.'), 'fromBox'), false);
+
+  // The Mail page gets it too, and only when there is one.
+  const page = source.mail({ keys: [], all: true });
+  assert.equal(page.find((m) => m.text === 'From the notes box.').fromBox, 'notes');
+  assert.equal(page.find((m) => m.text === 'From the notes box.').text, 'From the notes box.');
+  assert.equal(Object.hasOwn(page.find((m) => m.text === 'A bad box id.'), 'fromBox'), false);
+  assert.equal(Object.hasOwn(page.find((m) => m.to === 'sergeant-ada'), 'fromBox'), false);
 });

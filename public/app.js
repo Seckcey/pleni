@@ -4445,14 +4445,16 @@ function mailHtml(n) {
 
 // The command that answers a message: agent-mail.ps1 by its full path when Pleni knows the mailbox
 // folder, so it runs from any folder. PowerShell writes a ' inside '...' as ''. A project mailbox of
-// an HQ (`box`) has a folder the page is never told, so its command runs in that folder.
-function mailAnswerCommand(me, to, box = null) {
+// an HQ (`box`) has a folder the page is never told, so its command runs in that folder. Mail that came
+// from another mailbox (`fromBox`) is answered with -Box, so the answer goes back to the sender's mailbox.
+function mailAnswerCommand(me, to, box = null, fromBox = null) {
   const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
   const own = !box || box === 'hq';
   const root = own && S.roots && typeof S.roots.mailbox === 'string' ? S.roots.mailbox.replace(/[\\/]+$/, '') : '';
   const sep = root.includes('/') && !root.includes('\\') ? '/' : '\\';
   const script = root ? `& ${q(`${root}${sep}bin${sep}agent-mail.ps1`)}` : '.\\bin\\agent-mail.ps1';
-  return `${script} -Send -From ${q(me)} -To ${q(to)} -Text 'your answer'`;
+  const where = fromBox && fromBox !== box ? ` -Box ${q(fromBox)}` : '';
+  return `${script} -Send -From ${q(me)} -To ${q(to)}${where} -Text 'your answer'`;
 }
 
 // ---- the Mail page ----
@@ -4555,7 +4557,7 @@ function mailItemHtml(x, fresh, me) {
   let answer = '';
   const project = str(x.box) && x.box !== 'hq' ? str(x.boxName) || str(x.box) : '';
   if (x.toYou && !x.fromYou) {
-    const i = S.mail.cmds.push(mailAnswerCommand(me, str(x.fromName) || str(x.from), str(x.box) || null)) - 1;
+    const i = S.mail.cmds.push(mailAnswerCommand(me, str(x.fromName) || str(x.from), str(x.box) || null, str(x.fromBox) || null)) - 1;
     const where = project ? `<p class="note">Run it in the mailbox folder of ${esc(project)}.</p>` : '';
     answer = `<div class="mail-answer"><code>${esc(S.mail.cmds[i])}</code><button type="button" class="btn" data-mail-copy="${i}">Copy the answer command</button></div>${where}`;
   }
