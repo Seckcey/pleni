@@ -1329,6 +1329,13 @@ function agentMailParts(boxes, tree, all, pairs, ctx) {
   const forYou = new Map();
   let owner = null;
   let any = false;
+  // A first pass: each box's mail names matched to tiles, by box id, so a message from another box
+  // finds its sender among that box's agents.
+  const tileOfBox = new Map();
+  for (const box of boxes) {
+    const mail = isObject(box.state.mail) ? box.state.mail : null;
+    if (mail) tileOfBox.set(box.id, mailTiles(mail, mailAgentsOf(mail), tree, all, ctx));
+  }
   for (const box of boxes) {
     const mail = isObject(box.state.mail) ? box.state.mail : null;
     if (!mail) {
@@ -1338,18 +1345,20 @@ function agentMailParts(boxes, tree, all, pairs, ctx) {
     }
     any = true;
     owner ??= text(mail.owner, MAX_LABEL * 2);
-    const agents = (Array.isArray(mail.agents) ? mail.agents : []).filter((a) => isObject(a) && a.key && mailKey(a.key) === a.key);
+    const agents = mailAgentsOf(mail);
     const messages = (Array.isArray(mail.messages) ? mail.messages : [])
       .filter((m) => isObject(m) && time(m.at) !== null && typeof m.to === 'string' && typeof m.from === 'string')
       .sort((a, b) => a.at - b.at || cmp(a.to, b.to) || cmp(a.from, b.from));
-    const tileOf = mailTiles(mail, agents, tree, all, ctx);
+    const tileOf = tileOfBox.get(box.id);
     const nameOf = new Map(agents.map((a) => [a.key, text(a.name, MAX_LABEL * 2)]));
     for (const agent of agents) {
       const tile = tileOf(agent.key);
       if (tile) addMailBox(tree.nodes.get(tile), agent, nameOf.get(agent.key) || agent.key);
     }
     for (const m of messages) {
-      const from = tileOf(m.from);
+      // Mail from another box (its Box: line) finds its sender among that box's agents.
+      const sender = typeof m.fromBox === 'string' && m.fromBox !== box.id ? tileOfBox.get(m.fromBox) : null;
+      const from = sender?.(m.from) || tileOf(m.from);
       const to = tileOf(m.to);
       const fromName = text(m.fromName, MAX_LABEL * 2) || nameOf.get(m.from) || m.from;
       const toName = nameOf.get(m.to) || m.to;
@@ -1389,6 +1398,11 @@ function agentMailParts(boxes, tree, all, pairs, ctx) {
     out.attention.push({ key, kind: 'mail', text: group.text ? `${who} ${what}${newest}${group.text}` : `${who} ${what}.`, at: group.at });
   }
   return out;
+}
+
+// The agents of a box's mail that have a real mail name.
+function mailAgentsOf(mail) {
+  return (Array.isArray(mail.agents) ? mail.agents : []).filter((a) => isObject(a) && a.key && mailKey(a.key) === a.key);
 }
 
 // Each turn a relay started to wake an agent for its mail lights the line from the relay to that
@@ -1431,8 +1445,10 @@ function checkWords(count) {
 }
 
 // Which tile a mail name is: the person for the relay's owner_name, "Owner" or the name in
-// Settings; the Codex thread the relay wakes for it; else the newest session tile with that whole
-// name (its own title or the name the person gave it). Null when no tile is that name.
+// Settings; the session the relay wakes for it (a Claude Code, Codex or Gemini CLI session: the
+// agent's sessionKey, else the Codex thread of an older mailbox), when its tile is on the map; else
+// the newest session tile with that whole name (its own title or the name the person gave it). Null
+// when no tile is that name.
 function mailTiles(mail, agents, tree, all, ctx) {
   const person = new Set(personMailKeys(ctx.settings, mail.owner));
   const byName = new Map();
@@ -1446,12 +1462,21 @@ function mailTiles(mail, agents, tree, all, ctx) {
       if (!best || at > best.at || (at === best.at && key < best.key)) byName.set(name, { key, at });
     }
   }
-  const threads = new Map();
+  const sessions = new Map();
   for (const agent of agents) {
-    const key = typeof agent.threadId === 'string' ? `codex:${agent.threadId}` : null;
-    if (key && KINDS.includes(tree.nodes.get(key)?.kind)) threads.set(agent.key, key);
+    const key = mailSessionKey(agent);
+    if (key && KINDS.includes(tree.nodes.get(key)?.kind)) sessions.set(agent.key, key);
   }
-  return (name) => (person.has(name) ? 'you' : threads.get(name) ?? byName.get(name)?.key ?? null);
+  return (name) => (person.has(name) ? 'you' : sessions.get(name) ?? byName.get(name)?.key ?? null);
+}
+
+// The session tile key the relay wakes for a mail agent: its sessionKey when it names a Claude Code,
+// Codex or Gemini CLI session, else the Codex thread of an older mailbox (no tool, or Codex). A tool
+// Pleni does not know has no session here.
+function mailSessionKey(agent) {
+  if (typeof agent.sessionKey === 'string') return /^(?:claude|codex|gemini):./.test(agent.sessionKey) ? agent.sessionKey : null;
+  const codex = agent.tool === undefined || agent.tool === null || agent.tool === 'codex';
+  return codex && typeof agent.threadId === 'string' ? `codex:${agent.threadId}` : null;
 }
 
 // node.mail: { name, unread, since, wakes, toYou }: the tile's mail name, how many messages wait for
