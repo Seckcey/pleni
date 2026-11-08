@@ -116,7 +116,10 @@ param(
     [string]$ProjectId,     # -NewProject: 1-40 small letters, digits or hyphens
     [string]$ProjectName,   # -NewProject: the project's name
     [string]$ProjectFolder, # -NewProject: the new mailbox folder (default <HQ>\projects\<id>)
-    [string]$AgentName,     # -EnrollAgent, -UnenrollAgent: the agent's name, the same as its Codex thread's name
+    [string]$AgentName,     # -EnrollAgent, -UnenrollAgent, -ShowAgentArgs: the agent's name (a Codex agent's is its thread's name)
+    [string]$AgentFolder,   # -EnrollAgent -Tool claude|gemini: the agent's own folder (where its session lives)
+    [string]$AgentProfile,  # -EnrollAgent: mail (reads and sends mail) or files (may also change files in its own folder)
+    [switch]$ShowAgentArgs, # read-only: one agent's turn as JSON (-AgentName)
     [string]$SessionId,
     [string]$ThreadId,      # -EnrollCodex: the Codex thread to wake
     [string]$CodexCwd,      # -EnrollCodex: the thread's folder, when its first line does not name it
@@ -147,10 +150,11 @@ param(
     [string]$Model,
     [string]$Effort,
     [string[]]$AllowCheck,
-    [string]$Tool,           # -Enroll: claude (default), codex or gemini; checked by hand so the refusal is plain words
+    [string]$Tool,           # -Enroll: claude (default), codex or gemini; -EnrollAgent: codex (default), claude or gemini; checked by hand so the refusal is plain words
     [string]$GeminiExe,      # default: gemini_exe in bin\relay-settings.json, else gemini.cmd or gemini.exe on PATH
     [string]$GeminiCliHome,  # default: $env:GEMINI_CLI_HOME, else the user's home (where Gemini CLI keeps .gemini)
-    [ValidateRange(0, 500)][int]$MaxWorkerStartsPerDay = 12 # start requests a day; 0 = unlimited
+    [ValidateRange(0, 500)][int]$MaxWorkerStartsPerDay = 12, # start requests a day; 0 = unlimited
+    [ValidateRange(0, 20)][int]$MaxNewAgentsPerDay = 2 # new agents a day; 0 = unlimited
 )
 
 $ErrorActionPreference = 'Stop'
@@ -180,20 +184,24 @@ if ($NewProject) { $modes += 'NewProject' }
 if ($UpdateProjects) { $modes += 'UpdateProjects' }
 if ($StartAll) { $modes += 'StartAll' }
 if ($StopAll) { $modes += 'StopAll' }
+if ($ShowAgentArgs) { $modes += 'ShowAgentArgs' }
 if ($modes.Count -gt 1) { Fail ('Pick one mode, got: ' + ($modes -join ', ')) 64 }
 if ($modes.Count -eq 0) { $modes = @('Status') }
 $Mode = $modes[0]
 if ($Effort -and @('low', 'medium', 'high', 'xhigh', 'max') -notcontains $Effort) { Fail "-Effort must be low, medium, high, xhigh or max (got '$Effort')" 64 }
-# -Tool: the coordinator's AI tool, checked by hand (a ValidateSet would print PowerShell's own error for an unknown word).
+# -Tool: the coordinator's AI tool (-Enroll), or an agent's (-EnrollAgent, Phase 7), checked by hand (a ValidateSet would
+# print PowerShell's own error for an unknown word).
 $AgyCoordinatorWords = "A coordinator in Antigravity CLI is not possible yet. Google's consumer terms may not allow other programs to run it, and it has no rules file for one turn. Use claude, codex or gemini. Antigravity CLI can still run workers."
 $GeminiEnrollWords = 'A Gemini CLI coordinator is enrolled by its session id: give -SessionId <id> (Gemini CLI shows it with /stats), and -CoordinatorCwd <folder> if needed.'
+$AgyAgentWords = 'An agent in Antigravity CLI is not possible yet. An agent must run agent-mail.ps1 in every turn, and Antigravity CLI can allow a command only in your own settings, for every session on this computer. Google''s consumer terms may not allow other programs to run it either. Use codex, claude or gemini. Antigravity CLI can still run workers.'
 $EnrollTool = 'claude'
+$AgentToolWord = 'codex'   # -EnrollAgent: codex unless -Tool names another. Never $agentTool in a function.
 if ($PSBoundParameters.ContainsKey('Tool')) {
-    if ($Mode -ne 'Enroll') { Fail '-Tool is accepted only with -Enroll.' 64 }
+    if ($Mode -ne 'Enroll' -and $Mode -ne 'EnrollAgent') { Fail '-Tool is accepted only with -Enroll or -EnrollAgent.' 64 }
     $wantTool = ([string]$Tool).Trim().ToLowerInvariant()
-    if ($wantTool -eq 'antigravity') { Fail $AgyCoordinatorWords 64 }
+    if ($wantTool -eq 'antigravity') { if ($Mode -eq 'Enroll') { Fail $AgyCoordinatorWords 64 } else { Fail $AgyAgentWords 64 } }
     if (@('claude', 'codex', 'gemini') -notcontains $wantTool) { Fail "-Tool must be claude, codex or gemini (got '$Tool')." 64 }
-    $EnrollTool = $wantTool
+    if ($Mode -eq 'Enroll') { $EnrollTool = $wantTool } else { $AgentToolWord = $wantTool }
 }
 $codexEnroll = ($Mode -eq 'EnrollCodex' -or ($Mode -eq 'Enroll' -and $EnrollTool -eq 'codex'))
 if (($ThreadId -or $CodexCwd -or $ThreadName) -and -not $codexEnroll) {
@@ -212,8 +220,27 @@ if ($Mode -eq 'Enroll' -and $EnrollTool -eq 'gemini') {
     if ($SessionName) { Fail $GeminiEnrollWords 64 }
     if ($Effort) { Fail 'Gemini CLI has no effort setting. Leave -Effort out.' 64 }
 }
-if ($AgentName -and @('EnrollAgent', 'UnenrollAgent') -notcontains $Mode) { Fail '-AgentName is accepted only with -EnrollAgent or -UnenrollAgent.' 64 }
-if (@('EnrollAgent', 'UnenrollAgent') -contains $Mode -and -not $AgentName) { Fail "-$Mode needs -AgentName <the agent's name>." 64 }
+if ($AgentName -and @('EnrollAgent', 'UnenrollAgent', 'ShowAgentArgs') -notcontains $Mode) { Fail '-AgentName is accepted only with -EnrollAgent, -UnenrollAgent or -ShowAgentArgs.' 64 }
+if (@('EnrollAgent', 'UnenrollAgent', 'ShowAgentArgs') -contains $Mode -and -not $AgentName) { Fail "-$Mode needs -AgentName <the agent's name>." 64 }
+# Phase 7: an agent in any AI tool. -AgentProfile is mail or files; a Codex agent with no profile works as before.
+if (($AgentFolder -or $AgentProfile) -and $Mode -ne 'EnrollAgent') { Fail '-AgentFolder and -AgentProfile are accepted only with -EnrollAgent.' 64 }
+$AgentProfileWord = ''
+if ($AgentProfile) {
+    $AgentProfileWord = ([string]$AgentProfile).Trim().ToLowerInvariant()
+    if (@('mail', 'files') -notcontains $AgentProfileWord) { Fail "-AgentProfile must be mail or files (got '$AgentProfile')." 64 }
+}
+if ($Mode -eq 'EnrollAgent') {
+    if ($AgentToolWord -eq 'codex') {
+        if ($SessionId -or $AgentFolder) { Fail 'A Codex agent is found by its thread name (-AgentName): its folder is its thread''s folder. -SessionId and -AgentFolder are for Claude Code and Gemini CLI agents.' 64 }
+        if (($Model -or $Effort) -and -not $AgentProfileWord) { Fail 'A Codex agent with no -AgentProfile uses codex_exec_args and Codex''s own model. To give it a model or an effort, give it a profile too (-AgentProfile mail or files).' 64 }
+        if ($Effort -eq 'max') { Fail 'Codex has no max effort. Use low, medium, high or xhigh.' 64 }
+    }
+    if ($AgentToolWord -eq 'claude' -and -not $AgentFolder) { Fail '-EnrollAgent -Tool claude needs -AgentFolder <the folder its session works in>.' 64 }
+    if ($AgentToolWord -eq 'gemini') {
+        if (-not $SessionId) { Fail '-EnrollAgent -Tool gemini needs -SessionId <id> (Gemini CLI shows it with /stats).' 64 }
+        if ($Effort) { Fail 'Gemini CLI has no effort setting. Leave -Effort out.' 64 }
+    }
+}
 if (($ProjectId -or $ProjectName -or $ProjectFolder) -and $Mode -ne 'NewProject') { Fail '-ProjectId, -ProjectName and -ProjectFolder are accepted only with -NewProject.' 64 }
 if ($Mode -eq 'NewProject' -and (-not $ProjectId -or -not $ProjectName)) {
     Fail '-NewProject needs -ProjectId <id> and -ProjectName <name>, and -ProjectFolder <folder> for a folder other than projects\<id> in HQ.' 64
@@ -231,6 +258,13 @@ if (-not $MailboxRoot) {
 # "relay_max_wakes_per_day": 0 means unlimited coordinator wakes (MaxWakesPerDay = 0).
 $script:CostLimits = $true
 $script:GeminiTurns = 30   # gemini_max_session_turns: the turn limit the relay asks of each Gemini CLI coordinator turn (0 = no limit)
+# Phase 7, mail agents in any tool: relay_max_agent_usd_per_day (the daily USD cap of Claude Code agent turns and new
+# Claude Code agents, while cost limits are on; 0 = no cap), agent_wakes_per_day (agent turns a day in all, by tool; a
+# tool not named has no total; 0 = no limit) and relay_max_mail_hops (relay-woken turns in a row before mail is held as a
+# possible loop; 0 = no limit). relay_max_new_agents_per_day goes into -MaxNewAgentsPerDay, as the other limits do.
+$script:AgentDailyBudgetUsd = 5
+$script:AgentToolWakes = @{ gemini = 4 }
+$script:MaxMailHops = 8
 $clFile = Join-Path ([IO.Path]::GetFullPath($MailboxRoot).TrimEnd('\')) 'bin\cost-limits.json'
 if (Test-Path -LiteralPath $clFile -PathType Leaf) {
     try {
@@ -250,6 +284,23 @@ if (Test-Path -LiteralPath $clFile -PathType Leaf) {
             else { Write-Host "WARNING: relay_max_worker_starts_per_day in $clFile must be 0 or more (0 means no limit); using $MaxWorkerStartsPerDay" }
         }
         if ($null -ne $cl.gemini_max_session_turns) { try { $gtValue = [int]$cl.gemini_max_session_turns; if ($gtValue -ge 0) { $script:GeminiTurns = $gtValue } } catch { } }
+        # Phase 7. 0 to 20 new agents a day; more counts as 20. A number below 0, or a value that is not a number, keeps
+        # the limit, with a warning. Its own try, so a bad value here never skips the stricter limits read after it.
+        if (-not $PSBoundParameters.ContainsKey('MaxNewAgentsPerDay') -and $null -ne $cl.relay_max_new_agents_per_day) {
+            $naValue = -1
+            try { $naValue = [int]$cl.relay_max_new_agents_per_day } catch { $naValue = -1 }
+            if ($naValue -ge 0) { $MaxNewAgentsPerDay = [int][Math]::Min(20, $naValue) }
+            else { Write-Host "WARNING: relay_max_new_agents_per_day in $clFile must be a number, 0 or more (0 means no limit); using $MaxNewAgentsPerDay" }
+        }
+        if ($null -ne $cl.relay_max_agent_usd_per_day) { try { $auValue = [double]$cl.relay_max_agent_usd_per_day; if ($auValue -ge 0) { $script:AgentDailyBudgetUsd = $auValue } } catch { } }
+        if ($null -ne $cl.relay_max_mail_hops) { try { $mhValue = [int]$cl.relay_max_mail_hops; if ($mhValue -ge 0) { $script:MaxMailHops = [int][Math]::Min(99, $mhValue) } } catch { } }
+        # A JSON object of tool -> number, such as {"gemini": 4}; anything else keeps the defaults.
+        if ($cl.agent_wakes_per_day -is [System.Management.Automation.PSCustomObject]) {
+            foreach ($awEntry in @($cl.agent_wakes_per_day.PSObject.Properties)) {
+                if ($null -eq $awEntry.Value) { continue }
+                try { $awValue = [int]$awEntry.Value; if ($awValue -ge 0) { $script:AgentToolWakes[([string]$awEntry.Name).ToLowerInvariant()] = $awValue } } catch { }
+            }
+        }
     } catch { Write-Host "WARNING: could not read $clFile; cost limits stay ON" }
 }
 
@@ -265,6 +316,8 @@ $HqDirSetting = ''    # "hq_dir" in a project mailbox: its HQ folder (-NewProjec
 $StartRequestsSetting = $null    # "start_requests": a real true or false wins (judged with -is [bool]); else the coordinator's tool decides
 $WorktreesSetting = ''           # "worktrees_dir", read the way bin\spawn-worker.ps1 reads it
 $WorkerToolsSetting = @('claude') # "worker_tools", read the way bin\spawn-worker.ps1 reads it
+$AgentToolsSetting = @('codex', 'claude')   # "agent_tools": the AI tools whose mail agents the relay wakes and makes (Phase 7)
+$AllowNewAgentsSetting = $null              # "allow_new_agents": only a real JSON true turns new agents on (judged with -is [bool])
 $rsFile = Join-Path ([IO.Path]::GetFullPath($MailboxRoot).TrimEnd('\')) 'bin\relay-settings.json'
 if (Test-Path -LiteralPath $rsFile -PathType Leaf) {
     try {
@@ -284,9 +337,16 @@ if (Test-Path -LiteralPath $rsFile -PathType Leaf) {
         if ($null -ne $rs.start_requests) { $StartRequestsSetting = $rs.start_requests }
         if ($rs.worktrees_dir) { $WorktreesSetting = ([string]$rs.worktrees_dir).Trim() }
         if ($null -ne $rs.worker_tools) { $WorkerToolsSetting = @(@($rs.worker_tools) | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() }) }
+        if ($null -ne $rs.agent_tools) { $AgentToolsSetting = @(@($rs.agent_tools) | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ }) }
+        if ($null -ne $rs.allow_new_agents) { $AllowNewAgentsSetting = $rs.allow_new_agents }
     } catch { Write-Host "WARNING: could not read $rsFile; using the defaults" }
 }
 if ($ProjectsDir) { $ProjectsDir = [IO.Path]::GetFullPath($ProjectsDir).TrimEnd('\') }
+# The text "true" is not a JSON true: only a real true turns new agents on.
+$AllowNewAgents = [bool](($AllowNewAgentsSetting -is [bool]) -and $AllowNewAgentsSetting)
+foreach ($atEntry in @($AgentToolsSetting | Where-Object { @('codex', 'claude', 'gemini') -notcontains $_ })) {
+    Write-Host "WARNING: agent_tools in $rsFile lists '$atEntry'; agents can run in codex, claude or gemini (Antigravity CLI: not yet)"
+}
 
 function Get-CheckPrefixError([string]$Prefix) {
     # An -AllowCheck entry becomes Bash(<prefix>*) for the unattended coordinator. Returns '' when acceptable.
@@ -433,6 +493,10 @@ $GeminiSystemPolicies = @('C:\ProgramData\gemini-cli\policies')
 if ($env:RELAY_TEST_GEMINI_POLICY_DIR) { $GeminiSystemPolicies += [string]$env:RELAY_TEST_GEMINI_POLICY_DIR }   # test only, one more folder (as in spawn-worker.ps1); can only make the relay halt
 $script:RelayStamps = $null   # the guard on the relay's own files: its first look, $null until taken
 $script:GuardOn = $false
+# Phase 7: the relay sets these only around one agent turn (a hop count for the loop guard, an agent's name, mailbox and
+# folder), so none of them may come from the window that started the relay. Cleared here, for this process only.
+foreach ($agentEnvName in @('RELAY_MAIL_HOP', 'RELAY_AGENT_NAME', 'RELAY_AGENT_MAILBOX', 'RELAY_AGENT_FOLDER')) { [Environment]::SetEnvironmentVariable($agentEnvName, $null, 'Process') }
+$AgentReqDir = Join-Path $Root 'agents'   # agent requests, agents\<name key>.md; $Root is a folder that is there, so this Join-Path is safe
 
 # ---------- HQ projects (role hq only) ----------
 function Get-ProjectFolderError([string]$Path, [bool]$MustExist) {
@@ -662,14 +726,22 @@ function Get-State {
     try { $s = Read-Json $StateFile } catch { Fail "Relay state is unreadable ($StateFile): $($_.Exception.Message). Not overwriting it; move it aside to start fresh." }
     if (-not $s) { $s = @{} }
     $defaults = @{ version = 1; baseline_utc = 0; seq = 0; files = @{}; workers = @{}; notes = @{}; dispatches = @{}; attention = @{};
-        daily = @{ date = ''; wakes = 0; cost = 0.0; codex_wakes = 0; mail_wakes = @{}; worker_starts = 0 }; failures = 0; next_attempt_utc = 0; halt = ''; last_finish_utc = 0; flags = @{};
+        daily = @{ date = ''; wakes = 0; cost = 0.0; codex_wakes = 0; mail_wakes = @{}; worker_starts = 0; agent_cost = 0.0; new_agents = 0; agent_tool_wakes = @{} };
+        failures = 0; next_attempt_utc = 0; halt = ''; last_finish_utc = 0; flags = @{};
         codex_notes = @{}; codex_dispatches = @{}; codex_failures = 0; codex_next_attempt_utc = 0; codex_halt = ''; codex_last_finish_utc = 0;
         mail_notes = @{}; mail_dispatches = @{}; mail_failures = @{}; mail_next_attempt = @{}; mail_halts = @{}; mail_last_finish = @{};
-        starts = @{}; start_baseline_utc = 0 }
+        starts = @{}; start_baseline_utc = 0;
+        agent_requests = @{}; agent_request_baseline_utc = 0; agent_versions_done = @{}; agent_requests_failures = 0; agent_requests_halt = ''; guard_halt = '' }
     foreach ($k in @($defaults.Keys)) { if (-not $s.ContainsKey($k) -or $null -eq $s[$k]) { $s[$k] = $defaults[$k] } }
     if (-not ($s.daily.mail_wakes -is [hashtable])) { $s.daily.mail_wakes = @{} }
     if ($null -eq $s.daily.worker_starts) { $s.daily.worker_starts = 0 }
     if (-not ($s.starts -is [hashtable])) { $s.starts = @{} }
+    # Phase 7: today's agent turns by tool, the USD of Claude Code agents, new agents made; agent requests (design 7.3).
+    if (-not ($s.daily.agent_tool_wakes -is [hashtable])) { $s.daily.agent_tool_wakes = @{} }
+    if ($null -eq $s.daily.agent_cost) { $s.daily.agent_cost = 0.0 }
+    if ($null -eq $s.daily.new_agents) { $s.daily.new_agents = 0 }
+    if (-not ($s.agent_requests -is [hashtable])) { $s.agent_requests = @{} }
+    if (-not ($s.agent_versions_done -is [hashtable])) { $s.agent_versions_done = @{} }
     return $s
 }
 
@@ -692,6 +764,23 @@ function Save-State([hashtable]$State) {
             if (-not $r.gone_utc) { $r.gone_utc = $now } elseif (($now - [int64]$r.gone_utc) -gt 604800) { [void]$State.starts.Remove($k) }
         }
     }
+    # Agent requests (agents\<key>.md, Phase 7) the same way: never pruned while their file is there or while 'making'.
+    if ($State.agent_requests -is [hashtable]) {
+        $now = Get-Now
+        foreach ($k in @($State.agent_requests.Keys)) {
+            $r = $State.agent_requests[$k]
+            if (-not ($r -is [hashtable]) -or $r.state -eq 'making') { continue }
+            $there = $true
+            try { $there = Test-Path -LiteralPath ([IO.Path]::Combine($AgentReqDir, "$k.md")) -PathType Leaf } catch { $there = $true }
+            if ($there) { $r.gone_utc = 0; continue }
+            if (-not $r.gone_utc) { $r.gone_utc = $now } elseif (($now - [int64]$r.gone_utc) -gt 604800) { [void]$State.agent_requests.Remove($k) }
+        }
+    }
+    # Each request version that reached 'making' is kept, so it never makes an agent again; the 500 newest stay.
+    if (($State.agent_versions_done -is [hashtable]) -and $State.agent_versions_done.Count -gt 500) {
+        $keep = @($State.agent_versions_done.Keys | Sort-Object { [int64]$State.agent_versions_done[$_] } -Descending)
+        foreach ($v in $keep[500..($keep.Count - 1)]) { [void]$State.agent_versions_done.Remove($v) }
+    }
     $done = @($State.dispatches.Values | Where-Object { $_.state -ne 'running' -and $_.state -ne 'launching' } | Sort-Object { [int64]$_.seq } -Descending)
     if ($done.Count -gt 50) { foreach ($d in $done[50..($done.Count - 1)]) { [void]$State.dispatches.Remove($d.id) } }
     $old = @($State.notes.Values | Where-Object { $_.state -eq 'completed' } | Sort-Object { [int64]$_.detected_utc } -Descending)
@@ -702,8 +791,25 @@ function Save-State([hashtable]$State) {
     if ($cold.Count -gt 200) { foreach ($n in $cold[200..($cold.Count - 1)]) { [void]$State.codex_notes.Remove($n.id) } }
     $mdone = @($State.mail_dispatches.Values | Where-Object { $_.state -ne 'running' -and $_.state -ne 'launching' } | Sort-Object { [int64]$_.seq } -Descending)
     if ($mdone.Count -gt 50) { foreach ($d in $mdone[50..($mdone.Count - 1)]) { [void]$State.mail_dispatches.Remove($d.id) } }
+    # A finished mail note is never pruned while its message still waits in new\ (design 18.1): with no note, the next
+    # Update-Mail would see the message as new and wake the agent a second time for it. Each agent's new\ is listed
+    # once. When listing it throws, that agent's old notes stay (Get-AgentNewMail itself reads quietly).
     $mold = @($State.mail_notes.Values | Where-Object { $_.state -eq 'completed' } | Sort-Object { [int64]$_.detected_utc } -Descending)
-    if ($mold.Count -gt 500) { foreach ($n in $mold[500..($mold.Count - 1)]) { [void]$State.mail_notes.Remove($n.id) } }
+    if ($mold.Count -gt 500) {
+        $mailOld = @($mold[500..($mold.Count - 1)])
+        $waiting = @{}   # note ids whose file is still in new\
+        $unlisted = @{}  # agent keys whose new\ could not be listed
+        foreach ($k in @($mailOld | ForEach-Object { [string]$_.agent } | Select-Object -Unique)) {
+            if (-not $k) { continue }
+            $files = @()
+            try { $files = Get-AgentNewMail $k } catch { $unlisted[$k] = $true; continue }   # a variable first; , @() when the folder is not there
+            foreach ($f in $files) { $waiting["$k/$($f.Name)"] = $true }
+        }
+        foreach ($n in $mailOld) {
+            if ($waiting.ContainsKey([string]$n.id) -or $unlisted.ContainsKey([string]$n.agent)) { continue }
+            [void]$State.mail_notes.Remove($n.id)
+        }
+    }
     Save-Json $StateFile $State
 }
 
@@ -747,8 +853,11 @@ function Test-DispatchMarker([hashtable]$D) {
 
 function Update-Daily([hashtable]$State) {
     $today = (Get-Date).ToString('yyyy-MM-dd', $Inv)
-    if ($State.daily.date -ne $today) { $State.daily = @{ date = $today; wakes = 0; cost = 0.0; codex_wakes = 0; mail_wakes = @{}; worker_starts = 0 } }
+    if ($State.daily.date -ne $today) {
+        $State.daily = @{ date = $today; wakes = 0; cost = 0.0; codex_wakes = 0; mail_wakes = @{}; worker_starts = 0; agent_cost = 0.0; new_agents = 0; agent_tool_wakes = @{} }
+    }
     if (-not ($State.daily.mail_wakes -is [hashtable])) { $State.daily.mail_wakes = @{} }
+    if (-not ($State.daily.agent_tool_wakes -is [hashtable])) { $State.daily.agent_tool_wakes = @{} }
 }
 
 function Add-Alert([hashtable]$State, [string]$Flag, [string]$Message) {
@@ -2575,11 +2684,8 @@ function Get-AgentNewMail([string]$Key) {
 }
 
 function Get-MailSender([string]$Path) {
-    $head = ''
-    try { $head = Read-HeadText $Path 4096 } catch { return '' }
-    $m = [regex]::Match($head, '(?m)^From:[ \t]*([^\r\n]+)')
-    if ($m.Success) { return (Get-Short $m.Groups[1].Value 80) }
-    return ''
+    # The From line of a message's head (Get-MailHead, Phase 7, keeps the pattern in one place).
+    return (Get-MailHead $Path).from
 }
 
 function Update-Mail([hashtable]$State, [hashtable]$Agents, [bool]$Known) {
@@ -2593,7 +2699,8 @@ function Update-Mail([hashtable]$State, [hashtable]$Agents, [bool]$Known) {
             $id = "$key/$($f.Name)"
             $present[$id] = $true
             if ($State.mail_notes.ContainsKey($id)) { continue }
-            $n = @{ id = $id; agent = $key; file = $f.Name; from = (Get-MailSender $f.FullName); state = 'pending'; detected_utc = $now;
+            $head = Get-MailHead $f.FullName   # Phase 7: From, Box and Hop from the message's head, in one read
+            $n = @{ id = $id; agent = $key; file = $f.Name; from = $head.from; box = $head.box; hop = $head.hop; hop_ok = $false; state = 'pending'; detected_utc = $now;
                 dispatch_id = ''; attempts = 0; outcome = ''; accepted_utc = 0; completed_utc = 0 }
             if ($Known) { $n.state = 'completed'; $n.outcome = 'waiting when the agent was enrolled (counted as known)'; $n.completed_utc = $now }
             $State.mail_notes[$id] = $n
@@ -3460,6 +3567,9 @@ function Invoke-Enroll {
         $SessionId = $named.id
     }
     $sid = $SessionId.ToLowerInvariant()
+    # One session, one job (Phase 7): not a worker's, an agent's or another mailbox's of the HQ family.
+    $other = Get-SessionJobText 'claude' $sid 'coordinator' $true $true
+    if ($other) { Fail "Claude Code session $sid is already $other. One session has one job: pick another session for the coordinator. Nothing was saved." }
     $projects = Join-Path $ClaudeConfigDir 'projects'
     $expectedDir = Join-Path $projects ($cwd -replace '[^A-Za-z0-9]', '-')
     $transcript = Join-Path $expectedDir "$sid.jsonl"
@@ -3526,8 +3636,10 @@ function Invoke-EnrollCodex {
         Fail "-ThreadId must be the Codex thread id (a UUID; got '$ThreadId'), or give -ThreadName <name> to follow a name. The relay never guesses it."
     }
     $tid = $ThreadId.ToLowerInvariant()
-    $other = Get-ThreadJobText $tid 'planner'   # one Codex thread has one job; the planner and a mail agent may share one
-    if ($other) { Fail "Codex thread $tid is already $other. A Codex thread has one job (only the planner and a mail agent may share one): pick another thread." }
+    # One Codex thread has one job (with the workers and the HQ family, Phase 7); the planner and a Codex agent with no
+    # profile may share one.
+    $other = Get-SessionJobText 'codex' $tid 'planner' $true $true
+    if ($other) { Fail "Codex thread $tid is already $other. A Codex thread has one job (only the planner and a Codex agent with no profile may share one): pick another thread." }
     $found = Find-CodexRollout $tid
     if (-not $found) {
         Fail "No Codex thread $tid found under $CodexHomeDir\sessions. Take the id from the thread itself (Pleni shows it in the thread's details), and pass -CodexHome if Codex keeps its files elsewhere."
@@ -3546,6 +3658,7 @@ function Invoke-EnrollCodex {
         wake_rule = 'codex exec --json --skip-git-repo-check [codex_exec_args] resume <thread_id> <notice>, in cwd, ChatGPT sign-in only; never --last, never a sandbox bypass; never while another Codex program holds the thread' }
     $state = Get-State
     Update-Attention $state $true   # before codex.json exists: what waits now is listed, not queued
+    $kept = Backup-RelayFile $CodexFile   # Phase 7 (D21): a copy of the old record first
     Save-Json $CodexFile $cx
     $state.codex_halt = ''
     $state.codex_failures = 0
@@ -3559,22 +3672,26 @@ function Invoke-EnrollCodex {
     $exe = Get-CodexExePath
     if (-not $exe) { Write-Log 'WARNING: the Codex CLI was not found on PATH. Install it, or set codex_exe in bin\relay-settings.json, before the first wake.' }
     if ($CodexArgsError) { Write-Log "WARNING: $CodexArgsError. No Codex wake starts until it is fixed." }
+    if ($kept) { Write-Log "The codex.json from before is kept as $kept." }
 }
 
 function Invoke-UnenrollCodex {
     $state = Get-State
     $drop = @($state.codex_notes.Values | Where-Object { $_.state -eq 'pending' })
     foreach ($n in $drop) { [void]$state.codex_notes.Remove($n.id) }
+    $kept = Backup-RelayFile $CodexFile   # Phase 7 (D21): a copy of the old record first
     if (Test-Path -LiteralPath $CodexFile) { Remove-Item -LiteralPath $CodexFile -Force }
     [void]$state.flags.Remove('last_codex_block')
     Write-AttentionFile $state
     Save-State $state
     Write-Log ("CodexWake turned off: .relay\codex.json removed; {0} pending item(s) for Codex dropped (they stay listed in .relay\codex-attention.md). A running Codex turn is never stopped." -f $drop.Count)
+    if ($kept) { Write-Log "The codex.json from before is kept as $kept." }
 }
 
 function Invoke-EnrollAgent {
     # Operator only. Records an agent whose Codex thread the relay may wake when mail waits for it. Enrolling wakes
     # nothing: the mail that waits now counts as known, so only new mail wakes the thread.
+    if ($AgentToolWord -ne 'codex' -or $AgentProfileWord) { Invoke-EnrollToolAgent; return }   # Phase 7: Claude Code, Gemini CLI, or a Codex profile
     $name = Get-AgentCleanName $AgentName
     if (-not $name -or $name -notmatch $AgentNameRe) { Fail "-AgentName must be 1-80 letters, digits, spaces and . _ - # + ' marks, starting with a letter or a digit (got '$AgentName')." 64 }
     $key = Get-AgentKey $name
@@ -3583,8 +3700,10 @@ function Invoke-EnrollAgent {
     if (-not $named) {
         Fail "No live Codex thread named '$name' was found in $CodexHomeDir (archived threads do not count). Name the thread in Codex first (in the Codex command line: /rename $name), then enroll again."
     }
-    $other = Get-ThreadJobText $named.id ('agent:' + $key)   # one Codex thread has one job; the planner and a mail agent may share one
-    if ($other) { Fail "Codex thread $($named.id) is already $other. A Codex thread has one job (only the planner and a mail agent may share one): pick another thread." }
+    # One Codex thread has one job (with the workers and the HQ family, Phase 7); the planner and a Codex agent with no
+    # profile may share one.
+    $other = Get-SessionJobText 'codex' $named.id ('agent:' + $key) $true $true
+    if ($other) { Fail "Codex thread $($named.id) is already $other. A Codex thread has one job (only the planner and a Codex agent with no profile may share one): pick another thread." }
     $own = Get-AgentCleanName ([string]$script:IndexCache.names[$named.id])
     if ($own -and $own -match $AgentNameRe -and (Get-AgentKey $own) -eq $key) { $name = $own }
     $cwd = Get-CodexThreadCwd $named.path
@@ -3606,6 +3725,7 @@ function Invoke-EnrollAgent {
     if (-not (Test-Path -LiteralPath $nf)) { [IO.File]::WriteAllText($nf, $name, $Utf8) }
     $state = Get-State
     Update-Mail $state @{ $key = $ag } $true
+    $kept = Backup-RelayFile $AgentsFile   # Phase 7 (D21): a copy of the old record first
     Save-Json $AgentsFile $agents
     foreach ($h in @($state.mail_halts, $state.mail_failures, $state.mail_next_attempt)) { [void]$h.Remove($key) }
     [void]$state.flags.Remove('last_mail_block_' + $key)
@@ -3617,6 +3737,7 @@ function Invoke-EnrollAgent {
     $exe = Get-CodexExePath
     if (-not $exe) { Write-Log 'WARNING: the Codex CLI was not found on PATH. Install it, or set codex_exe in bin\relay-settings.json, before the first wake.' }
     if ($CodexArgsError) { Write-Log "WARNING: $CodexArgsError. No Codex wake starts until it is fixed." }
+    if ($kept) { Write-Log "The agents.json from before is kept as $kept." }
 }
 
 function Invoke-UnenrollAgent {
@@ -3629,6 +3750,7 @@ function Invoke-UnenrollAgent {
     }
     $was = [string]$agents[$key].name
     [void]$agents.Remove($key)
+    $kept = Backup-RelayFile $AgentsFile   # Phase 7 (D21): a copy of the old record first
     Save-Json $AgentsFile $agents
     $state = Get-State
     $drop = @($state.mail_notes.Values | Where-Object { $_.agent -eq $key -and $_.state -eq 'pending' })
@@ -3636,6 +3758,7 @@ function Invoke-UnenrollAgent {
     [void]$state.flags.Remove('last_mail_block_' + $key)
     Save-State $state
     Write-Log "Mail wakes for '$was' turned off. Its mail stays in mail\$key; a running turn is never stopped."
+    if ($kept) { Write-Log "The agents.json from before is kept as $kept." }
 }
 
 function Invoke-ClearHalt {
@@ -4499,10 +4622,12 @@ function Get-WorktreesDir {
 
 function Get-GitRootAbove([string]$Folder) {
     # The nearest folder at or above $Folder that holds a .git folder or file (a Git repository or worktree), or ''.
+    # Plain string joining, never Join-Path: in Windows PowerShell 5.1 Join-Path throws 'Cannot find drive' for a drive
+    # that is not there, and Test-Path -LiteralPath is simply $false there. $d has no last \, so C: gives C:\.git.
     $d = ''
     try { $d = [IO.Path]::GetFullPath($Folder).TrimEnd('\') } catch { return '' }
     while ($d) {
-        if (Test-Path -LiteralPath (Join-Path $d '.git')) { return $d }
+        if (Test-Path -LiteralPath ($d + '\.git')) { return $d }
         $up = ''
         try { $up = [string][IO.Path]::GetDirectoryName($d) } catch { $up = '' }
         if (-not $up) { break }
@@ -4520,17 +4645,24 @@ function Get-HqFolder {
     return ''
 }
 
-function Get-CoordinatorFolderError([string]$Folder, [string]$ForTool) {
+function Get-CoordinatorFolderError([string]$Folder, [string]$ForTool, [string]$ExceptAgent = '', [bool]$MissingOk = $false) {
     # Why $Folder cannot be the folder of a Codex or Gemini CLI coordinator, in plain words, or '' when it can be.
+    # Phase 7 (agents use these rules too, Get-AgentFolderError): $ExceptAgent is the key of the agent whose own folder
+    # this is, so its own entry in agents.json does not count against it. $MissingOk: a new agent's folder, which the
+    # relay makes later, so a folder that is not there passes the first check (a file there still fails it).
     $f = ''
     try {
-        if (-not $Folder -or -not (Test-Path -LiteralPath $Folder -PathType Container)) { return 'it is not there' }
+        $there = [bool]($Folder -and (Test-Path -LiteralPath $Folder -PathType Container))
+        if (-not $there) {
+            if (-not $MissingOk -or -not $Folder) { return 'it is not there' }
+            if (Test-Path -LiteralPath $Folder) { return 'it is a file, not a folder' }
+        }
         $f = [IO.Path]::GetFullPath($Folder).TrimEnd('\')
     } catch { return 'Windows cannot use it as a folder path' }
     if (($f -match '^[A-Za-z]:$') -or $f.StartsWith('\\')) { return 'it is a drive or a network folder' }
     if ($f -match '(^|\\)\.git(\\|$)') { return "it is a Git folder (.git), or inside one" }
     if (Test-InFolder $Root $f) { return 'it is the mailbox folder itself, or a folder that holds it' }
-    foreach ($sub in @('bin', 'tests', 'templates', 'tasks', 'mail', '.relay')) {
+    foreach ($sub in @('bin', 'tests', 'templates', 'tasks', 'mail', '.relay', 'agents')) {   # Phase 7: agents (agent requests)
         if (Test-InFolder $f (Join-Path $Root $sub)) { return "it is inside the mailbox's $sub folder" }
     }
     if ($env:USERPROFILE -and (Test-InFolder $env:USERPROFILE $f)) { return 'it is your home folder, or a folder that holds it' }
@@ -4560,6 +4692,7 @@ function Get-CoordinatorFolderError([string]$Folder, [string]$ForTool) {
     if ($cx -and $cx.cwd -and (Test-InFolder ([string]$cx.cwd) $f)) { return "it is this mailbox's planner's folder $($cx.cwd), or a folder that holds it" }
     $agents = Get-Agents
     foreach ($k in @($agents.Keys)) {
+        if ($ExceptAgent -and $k -eq $ExceptAgent) { continue }   # Phase 7: an agent's own folder, in its own check
         $ag = $agents[$k]
         if (-not ($ag -is [hashtable]) -or -not $ag.cwd) { continue }
         if (Test-InFolder ([string]$ag.cwd) $f) { return "it is the folder of the agent '$($ag.name)', or a folder that holds it" }
@@ -4579,10 +4712,11 @@ function Get-ToolModelError([string]$Name, [string]$ForTool) {
 
 # ---------- one Codex thread, one job ----------
 # A Codex thread may be only one of: this mailbox's planner, its coordinator, one of its agents, or HQ's orchestrator
-# (and, seen from HQ, a project's coordinator). Only the planner and a mail agent may share one thread, as they could
-# before: this relay wakes both, and never at once (each one's busy check looks for the other's wake). Enrollment
-# refuses any other overlap both ways, the coordinator's preflight halts on one, and a newer thread with a followed name
-# that has another job is not followed. So two programs never wake one thread.
+# (and, seen from HQ, a project's coordinator). Only the planner and a Codex agent with no profile may share one thread,
+# as they could before: this relay wakes both, and never at once (each one's busy check looks for the other's wake).
+# Enrollment refuses any other overlap both ways, the coordinator's preflight halts on one, and a newer thread with a
+# followed name that has another job is not followed. So two programs never wake one thread. Phase 7 keeps the same rule
+# for a session of any AI tool (Get-SessionJobs, Get-SessionJobText in the agents in any tool block).
 
 function Get-HqOrchestratorThread {
     # In a project of HQ (hq_dir set; not HQ itself): HQ's orchestrator thread, from HQ's .relay\codex.json. Read-only.
@@ -4603,53 +4737,13 @@ function Get-HqOrchestratorThread {
     return @{ thread = ([string]$c.thread_id).Trim().ToLowerInvariant(); unreadable = $false }
 }
 
-function Get-ThreadJobs {
-    # Every job a Codex thread has here, as @{ job; thread; text }, the thread id in lower case. Read-only.
-    $jobs = New-Object System.Collections.ArrayList
-    $cx = Get-CodexConfig
-    if ($cx) { [void]$jobs.Add(@{ job = 'planner'; thread = ([string]$cx.thread_id).Trim().ToLowerInvariant(); text = "this mailbox's planner" }) }
-    $c = Get-Coordinator
-    if ($c -and (Get-CoordTool $c) -eq 'codex') { [void]$jobs.Add(@{ job = 'coordinator'; thread = ([string]$c.session_id).Trim().ToLowerInvariant(); text = "this mailbox's coordinator" }) }
-    $agents = Get-Agents
-    foreach ($k in @($agents.Keys)) {
-        $ag = $agents[$k]
-        if (-not ($ag -is [hashtable])) { continue }
-        $nm = [string]$ag.name
-        if (-not $nm) { $nm = [string]$k }
-        [void]$jobs.Add(@{ job = 'agent:' + $k; thread = ([string]$ag.thread_id).Trim().ToLowerInvariant(); text = "the agent '$nm'" })
-    }
-    $orch = Get-HqOrchestratorThread
-    if ($orch.thread) { [void]$jobs.Add(@{ job = 'orchestrator'; thread = $orch.thread; text = "HQ's orchestrator" }) }
-    if ($HqRole) {
-        foreach ($p in @($script:HqProjects)) {
-            $pc = $null
-            try { $pc = Read-Json (Join-Path ([string]$p.mailbox) '.relay\coordinator.json') } catch { $pc = $null }
-            if (($pc -is [hashtable]) -and (Get-CoordTool $pc) -eq 'codex') {
-                [void]$jobs.Add(@{ job = 'project-coordinator:' + $p.id; thread = ([string]$pc.session_id).Trim().ToLowerInvariant(); text = "the coordinator of project $($p.id)" })
-            }
-        }
-    }
-    return , $jobs.ToArray()
-}
-
 function Get-ThreadJobText([string]$ThreadId, [string]$Except) {
     # The first job of this Codex thread other than $Except (planner, coordinator, agent:<key> or orchestrator), in
-    # words, or ''. The planner and a mail agent may share one thread: for the planner an agent's job is no other job,
-    # and for an agent the planner's is not either. While HQ's codex.json cannot be read, the thread may be HQ's
-    # orchestrator, and that counts too.
-    $tid = ([string]$ThreadId).Trim().ToLowerInvariant()
-    if (-not $tid) { return '' }
-    $jobs = Get-ThreadJobs   # a variable first: @(<function>) would keep the list as one item
-    foreach ($j in $jobs) {
-        if (-not $j.thread -or $j.thread -ne $tid -or $j.job -eq $Except) { continue }
-        $job = [string]$j.job
-        # -and and -or have the same precedence: hence the parentheses.
-        if (($Except -eq 'planner' -and $job.StartsWith('agent:', [StringComparison]::Ordinal)) -or
-            ($Except.StartsWith('agent:', [StringComparison]::Ordinal) -and $job -eq 'planner')) { continue }
-        return [string]$j.text
-    }
-    if ($Except -ne 'orchestrator' -and (Get-HqOrchestratorThread).unreadable) { return "maybe HQ's orchestrator (HQ's .relay\codex.json could not be read)" }
-    return ''
+    # words, or ''. Phase 7: a wrapper of Get-SessionJobText (the agents in any tool block), which knows every AI tool;
+    # for a Codex thread it gives the same answers as before. The planner and a Codex agent with no profile may share one
+    # thread: for the planner such an agent's job is no other job, and for that agent the planner's is not either. While
+    # HQ's codex.json cannot be read, the thread may be HQ's orchestrator, and that counts too.
+    return (Get-SessionJobText 'codex' $ThreadId $Except)
 }
 
 function Get-CoordinatorCodexFolder {
@@ -5041,7 +5135,7 @@ function Invoke-EnrollCodexCoordinator {
     $found = Find-CodexRollout $tid
     if (-not $found) { Fail "No Codex thread $tid found under $CodexHomeDir\sessions. Take the id from the thread itself, and pass -CodexHome if Codex keeps its files elsewhere." }
     if ($found.archived) { Fail "Codex thread $tid is archived. Unarchive it in Codex first, or enroll another thread." }
-    $other = Get-ThreadJobText $tid 'coordinator'   # one Codex thread has one job
+    $other = Get-SessionJobText 'codex' $tid 'coordinator' $true $true   # one Codex thread has one job (with the workers and the HQ family, Phase 7)
     if ($other) { Fail "Codex thread $tid is already $other. One Codex thread has one job: start a new thread for the coordinator." }
     $cwd = ''
     if ($CodexCwd) {
@@ -5179,14 +5273,14 @@ function Test-GeminiMarker([hashtable]$D) {
     return $false
 }
 
-function Get-GeminiFolderProblem([string]$Cwd) {
-    # What Gemini CLI would load in every coordinator turn from the coordinator's folder or a folder above it, because the
-    # relay trusts that folder (--skip-trust), or a system policy that would make it ignore the relay's rules file. Plain
-    # words, or '' when none is there. Never throws.
+function Get-GeminiFolderProblem([string]$Cwd, [string]$Who = 'coordinator') {
+    # What Gemini CLI would load in every turn of the coordinator (or, Phase 7, of an agent: $Who is the word for it) from
+    # its folder or a folder above it, because the relay trusts that folder (--skip-trust), or a system policy that would
+    # make it ignore the relay's rules file. Plain words, or '' when none is there. Never throws.
     $d = ''
-    try { $d = [IO.Path]::GetFullPath($Cwd).TrimEnd('\') } catch { return "Windows cannot use the coordinator's folder '$Cwd' as a folder path." }
-    if (Test-Path -LiteralPath ($d + '\.gemini')) { return "$d\.gemini is there. Gemini CLI would load its settings (hooks, MCP servers, policies, commands) in every coordinator turn. Move it away." }
-    if (Test-Path -LiteralPath ($d + '\.agents')) { return "$d\.agents is there. Gemini CLI would load the skills in it in every coordinator turn. Move it away." }
+    try { $d = [IO.Path]::GetFullPath($Cwd).TrimEnd('\') } catch { return "Windows cannot use the $Who's folder '$Cwd' as a folder path." }
+    if (Test-Path -LiteralPath ($d + '\.gemini')) { return "$d\.gemini is there. Gemini CLI would load its settings (hooks, MCP servers, policies, commands) in every $Who turn. Move it away." }
+    if (Test-Path -LiteralPath ($d + '\.agents')) { return "$d\.agents is there. Gemini CLI would load the skills in it in every $Who turn. Move it away." }
     # Gemini CLI loads the nearest .gemini\.env or .env from its folder up (findEnvFile in its settings.ts). The home
     # folder's own files belong to the owner, so the walk stops there.
     $homeDir = ''   # never $home: $HOME is a PowerShell automatic variable
@@ -5195,7 +5289,7 @@ function Get-GeminiFolderProblem([string]$Cwd) {
         if ($homeDir -and $d -ieq $homeDir) { break }
         foreach ($rel in @('.gemini\.env', '.env')) {
             $f = $d + '\' + $rel
-            if (Test-Path -LiteralPath $f -PathType Leaf) { return "$f is there. Gemini CLI would load the values in it in every coordinator turn. Move it away." }
+            if (Test-Path -LiteralPath $f -PathType Leaf) { return "$f is there. Gemini CLI would load the values in it in every $Who turn. Move it away." }
         }
         $up = ''
         try { $up = [string][IO.Path]::GetDirectoryName($d) } catch { $up = '' }
@@ -5211,7 +5305,7 @@ function Get-GeminiFolderProblem([string]$Cwd) {
             if (-not $dir -or -not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
             $toml = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name.EndsWith('.toml', [StringComparison]::OrdinalIgnoreCase) })
         } catch { continue }
-        if ($toml.Count) { return "$dir holds a Gemini CLI system policy ($($toml[0].Name)). While it does, Gemini CLI ignores the relay's rules file. Move that file away, or use another AI tool for the coordinator." }
+        if ($toml.Count) { return "$dir holds a Gemini CLI system policy ($($toml[0].Name)). While it does, Gemini CLI ignores the relay's rules file. Move that file away, or use another AI tool for the $Who." }
     }
     return ''
 }
@@ -5580,6 +5674,9 @@ function Invoke-EnrollGeminiCoordinator {
         Fail "-SessionId must be the Gemini CLI session id (a UUID; got '$SessionId'). Gemini CLI shows it with /stats. The relay never guesses it."
     }
     $sid = ([string]$SessionId).ToLowerInvariant()
+    # One session, one job (Phase 7): not a worker's, an agent's or another mailbox's of the HQ family.
+    $other = Get-SessionJobText 'gemini' $sid 'coordinator' $true $true
+    if ($other) { Fail "Gemini CLI session $sid is already $other. One session has one job: pick another session for the coordinator. Nothing was saved." }
     $found = Find-GeminiSession $sid
     if (-not $found) { Fail "No Gemini CLI session $sid was found under $GeminiDataDir\tmp. Take the id from the session itself (/stats), and pass -GeminiCliHome if Gemini CLI keeps its files elsewhere." }
     $cwd = [string]$found.root
@@ -5956,11 +6053,482 @@ function Show-ToolCoordinatorStatus([hashtable]$State, [hashtable]$Coord) {
     elseif ($procs.Count -gt 0) { Write-Host ("Coordinator open now in pid {0}: the relay waits until it is closed" -f (($procs | ForEach-Object { $_.ProcessId }) -join ',')) }
 }
 
+# ---------- agents in any tool (Phase 7) ----------
+# Phase 7 lets a mail agent be a Claude Code session, a Gemini CLI session, or a Codex thread that runs under the relay's
+# own rules (enrolled with -AgentProfile, or made from an agent request), beside today's Codex agents (no profile, so
+# codex_exec_args). These are the shared parts: small helpers, the rules for an agent's own folder, the mailboxes
+# ("boxes") agent mail may reach, and one session, one job for every AI tool. An agents.json entry with no tool is a Codex
+# agent from before Phase 7 and keeps its old code path. A path that may sit on a drive that is not there is joined with
+# Get-SafePath, [IO.Path]::Combine or plain text, never with a bare Join-Path, and Test-Path -LiteralPath looks at it
+# (it is simply $false there).
+
+function Get-AgentTool($Ag) {
+    # An agent's AI tool from agents.json; an entry from before Phase 7 has none, which means codex.
+    if (-not $Ag) { return 'codex' }
+    $t = ([string]$Ag.tool).Trim().ToLowerInvariant()
+    if (-not $t) { return 'codex' }
+    return $t
+}
+
+function Get-AgentSessionId($Ag) {
+    # The session or thread an agent's turn resumes, in lower case. Codex: thread_id first (Update-AgentFollow changes
+    # it), else session_id. Claude Code and Gemini CLI: session_id.
+    $first = [string]$Ag.session_id
+    $second = [string]$Ag.thread_id
+    if ((Get-AgentTool $Ag) -eq 'codex') { $first = [string]$Ag.thread_id; $second = [string]$Ag.session_id }
+    $s = $first.Trim().ToLowerInvariant()
+    if (-not $s) { $s = $second.Trim().ToLowerInvariant() }
+    return $s
+}
+
+function Test-AgentRelayRules($Ag) {
+    # D7: every Claude Code or Gemini CLI agent, and a Codex agent with a profile or made by a request, runs under the
+    # relay's own rules. A Codex agent enrolled with no profile runs with codex_exec_args, as before Phase 7.
+    if (-not ($Ag -is [hashtable])) { return $false }
+    if ((Get-AgentTool $Ag) -ne 'codex') { return $true }
+    return [bool](([string]$Ag.profile).Trim() -or [string]$Ag.made_by -eq 'request')
+}
+
+function Get-AgentProfile($Ag) {
+    # files or mail (the safe one when the field is missing); '' for a Codex agent with no profile.
+    $p = ([string]$Ag.profile).Trim().ToLowerInvariant()
+    if ($p -eq 'files') { return 'files' }
+    if ($p -eq 'mail' -or (Test-AgentRelayRules $Ag)) { return 'mail' }
+    return ''
+}
+
+function Get-MailTool([hashtable]$D) {
+    # The AI tool of one mail turn's record; a record from before Phase 7 has none, which means codex. Never
+    # Get-DispatchTool: it reads a missing tool as claude.
+    $t = ([string]$D.tool).Trim().ToLowerInvariant()
+    if (-not $t) { return 'codex' }
+    return $t
+}
+
+function Get-MailSessionId([hashtable]$D) {
+    # The session of one mail turn's record, in lower case: session_id, else thread_id (a Codex record).
+    $s = ([string]$D.session_id).Trim().ToLowerInvariant()
+    if (-not $s) { $s = ([string]$D.thread_id).Trim().ToLowerInvariant() }
+    return $s
+}
+
+function Test-MailMarker([hashtable]$D) {
+    # The notice's marker in the agent's own session file(s): a Claude Code transcript ($D.transcript), a Gemini CLI
+    # session's files ($D.session_id and $D.transcript), or a Codex thread file ($D.rollout).
+    $mt = Get-MailTool $D
+    if ($mt -eq 'claude') { return (Test-TranscriptMarker $D) }
+    if ($mt -eq 'gemini') { return (Test-GeminiMarker $D) }
+    return (Test-CodexMarker $D)
+}
+
+function Get-AgentOrdersName([string]$AgTool) {
+    # The file an agent's tool reads as its standing orders in its own folder.
+    if ($AgTool -eq 'claude') { return 'CLAUDE.md' }
+    if ($AgTool -eq 'gemini') { return 'GEMINI.md' }
+    return 'AGENTS.md'
+}
+
+function Get-AgentMailCommand([string]$AgTool) {
+    # The start of the command an agent runs for its mail: forward slashes for Claude Code (Git Bash runs it, and a \
+    # there is an escape), backslashes for Gemini CLI and Codex (PowerShell runs it). Unquoted: a Claude Code or Gemini
+    # CLI agent's mailbox path is plain (Get-AgentMailboxPathError).
+    $p = $Root + '\bin\agent-mail.ps1'
+    if ($AgTool -eq 'claude') { $p = ($Root -replace '\\', '/') + '/bin/agent-mail.ps1' }
+    return ('powershell -NoProfile -ExecutionPolicy Bypass -File ' + $p)
+}
+
+function Get-MailHead([string]$Path) {
+    # From, Box and Hop of a message, from its head only (the lines before the first blank line, in its first 4 KB), so
+    # a line in the message text is never read as one. Returns @{ from; box; hop }. Never throws.
+    $r = @{ from = ''; box = ''; hop = 0 }
+    $head = ''
+    try { $head = Read-HeadText $Path 4096 } catch { return $r }
+    $head = @($head -split '\r?\n\r?\n', 2)[0]
+    $m = [regex]::Match($head, '(?m)^From:[ \t]*([^\r\n]+)')
+    if ($m.Success) { $r['from'] = Get-Short $m.Groups[1].Value 80 }
+    $b = [regex]::Match($head, '(?m)^Box:[ \t]*([a-z0-9][a-z0-9-]{0,39})[ \t]*\r?$')
+    if ($b.Success) { $r['box'] = $b.Groups[1].Value }
+    # [0-9], not \d: \d also takes the digits of other scripts, which [int] cannot read.
+    $h = [regex]::Match($head, '(?m)^Hop:[ \t]*([0-9]{1,3})[ \t]*\r?$')
+    if ($h.Success) { $r['hop'] = [int]$h.Groups[1].Value }
+    return $r
+}
+
+function Get-SenderName([string]$From) {
+    # A sender's name as a notice shows it: a mail name, else 'another sender', so a made-up From line never puts words
+    # of its own into a prompt.
+    $s = Get-AgentCleanName $From
+    if (-not $s -or $s -notmatch $AgentNameRe) { return 'another sender' }
+    return $s
+}
+
+function Get-AgentToolLimit([string]$AgTool) {
+    # agent_wakes_per_day for this tool (0 = no limit).
+    $v = $script:AgentToolWakes[$AgTool]
+    if ($null -eq $v) { return 0 }
+    return [int]$v
+}
+
+function Get-SafePath([string]$Base, [string]$Child) {
+    # Join-Path for a path that may sit on a drive that is not there: Windows PowerShell 5.1's Join-Path throws 'Cannot
+    # find drive' there, and the relay runs with ErrorActionPreference Stop. '' when it cannot be built.
+    if (-not $Base) { return '' }
+    $b = [string]$Base
+    if ($b -match '^[A-Za-z]:$') { $b += '\' }   # C: alone would mean the current folder of drive C
+    try { return [IO.Path]::Combine($b, $Child) } catch { return '' }
+}
+
+function Get-CmdLineProblem([string]$Exe, [string]$ArgString) {
+    # A .cmd or .bat launcher hands its command line to cmd.exe, which changes it at % ! ^ & | < and >. '' when fine.
+    if ($Exe -match '\.(cmd|bat)$' -and $ArgString -match '[%!^&|<>]') {
+        return "the command line holds % ! ^ & | < or >, which cmd.exe would change ($Exe is a .cmd or .bat file)"
+    }
+    return ''
+}
+
+function Get-MailBoxFolders {
+    # Read-only: the mailboxes ("boxes") agent mail may reach from here, as an ordered @{ box id -> folder }, this one
+    # included. HQ: itself (hq) and its projects. A project (hq_dir): HQ and the projects HQ lists, only when HQ lists
+    # this mailbox. Else none. bin\agent-mail.ps1 -Box keeps its own copy of these rules. A dictionary leaves a function
+    # as one object, so a caller may put it straight in a variable; an [ordered] one has .Contains, not .ContainsKey.
+    $out = [ordered]@{}
+    if ($HqRole) {
+        $out['hq'] = $Root
+        foreach ($p in @($script:HqProjects)) { $out[[string]$p.id] = [string]$p.mailbox }
+        return $out
+    }
+    $hq = Get-HqFolder
+    if (-not $hq -or (Test-SameFolder $hq $Root)) { return $out }
+    $set = $null
+    try {
+        $f = Get-SafePath (Get-SafePath $hq 'bin') 'relay-settings.json'   # never Join-Path: hq_dir may name a drive that is not there
+        if ($f -and (Test-Path -LiteralPath $f -PathType Leaf)) { $set = ConvertFrom-Json -InputObject (Read-SharedText $f) }
+    } catch { $set = $null }
+    if (-not $set -or ([string]$set.role).Trim() -ne 'hq') { return $out }
+    $list = [ordered]@{ hq = $hq }
+    $listed = $false
+    foreach ($pe in @($set.projects)) {
+        if ($null -eq $pe) { continue }
+        $id = ([string]$pe.id).Trim()
+        if ($id -cnotmatch '^[a-z0-9][a-z0-9-]{0,39}$' -or $id -eq 'hq' -or $list.Contains($id)) { continue }
+        $mb = ([string]$pe.mailbox).Trim()
+        if (-not $mb -or $mb -match '[\x00-\x1f"%!^&|<>`*?]') { continue }
+        try { $mb = [IO.Path]::GetFullPath($mb).TrimEnd('\') } catch { continue }
+        $there = $false
+        try { $there = [bool](Test-Path -LiteralPath $mb -PathType Container) } catch { $there = $false }
+        if (-not $there) { continue }
+        $list[$id] = $mb
+        if (Test-SameFolder $mb $Root) { $listed = $true }
+    }
+    if (-not $listed) { return $out }
+    return $list
+}
+
+function Get-MailboxRoots {
+    # This mailbox, its HQ, and every project mailbox the relay knows: no agent's folder may be inside one. Read-only.
+    $list = New-Object System.Collections.Generic.List[string]
+    $list.Add($Root)
+    $hq = Get-HqFolder
+    if ($hq -and -not $list.Contains($hq)) { $list.Add($hq) }
+    foreach ($p in @($script:HqProjects)) { if ($p.mailbox -and -not $list.Contains([string]$p.mailbox)) { $list.Add([string]$p.mailbox) } }
+    $boxes = Get-MailBoxFolders   # a dictionary leaves a function as one object
+    foreach ($id in @($boxes.Keys)) { $b = [string]$boxes[$id]; if ($b -and -not $list.Contains($b)) { $list.Add($b) } }
+    return , $list.ToArray()
+}
+
+function Get-AgentFolderError([string]$Folder, [string]$AgTool, [string]$Key, [bool]$Made = $false, [string]$ReuseOrdersSha = '') {
+    # Why $Folder cannot be the folder of agent $Key in $AgTool, in plain words with no closing period, or ''. $Made: a
+    # new agent's folder, which may not be there yet (the relay makes it only after every rule here passed); then it must
+    # be inside the projects folder, and new or empty. $ReuseOrdersSha: the orders file an earlier version of the same
+    # request left there counts as empty. Read-only. Never throws, also for a drive that is not there.
+    $f = ''
+    try { $f = [IO.Path]::GetFullPath($Folder).TrimEnd('\') } catch { return 'Windows cannot use it as a folder path' }
+    if ($f -notmatch '^[A-Za-z]:\\') { return 'it is not a full path on a drive (like C:\Users\ada\projects\crew\lark)' }
+    if ($f -match '[\x00-\x1f"%!^&|<>`*?\[\]{}(),@]') { return 'its path holds a quote or a sign that Windows, cmd.exe, a permission rule or Gemini CLI treats specially' }
+    if ($Made) {
+        if (-not $ProjectsDir) { return "no projects folder is set (projects_dir in bin\relay-settings.json), and a new agent's folder must be inside it" }
+        if (-not (Test-InFolder $f $ProjectsDir) -or (Test-SameFolder $f $ProjectsDir)) { return "it is not inside the projects folder $ProjectsDir" }
+    }
+    $why = Get-CoordinatorFolderError $f $AgTool $Key $Made
+    if ($why) { return $why }
+    $roots = Get-MailboxRoots   # a variable first: @(<function>) would keep the list as one item
+    foreach ($mb in $roots) {
+        if (Test-InFolder $f $mb) { return "it is inside the mailbox $mb. A mailbox's folders belong to its coordinator and planner, and a Claude Code window there reads the mailbox's CLAUDE.md as orders. Give the agent a folder of its own outside every mailbox" }
+    }
+    $git = Get-GitRootAbove $f
+    if ($git) { return "it is inside the Git repository $git (an agent works outside code repositories; workers do the code work)" }
+    $c = Get-Coordinator
+    if ($c -and $c.cwd -and ((Test-InFolder $f ([string]$c.cwd)) -or (Test-InFolder ([string]$c.cwd) $f))) { return "it is the coordinator's folder $($c.cwd), or inside it, or a folder that holds it" }
+    $cx = Get-CodexConfig
+    if ($cx -and $cx.cwd -and (Test-InFolder $f ([string]$cx.cwd))) { return "it is the planner's folder $($cx.cwd), or inside it" }
+    $agents = Get-Agents
+    foreach ($k in @($agents.Keys)) {
+        if ($k -eq $Key) { continue }
+        $ag = $agents[$k]
+        if (($ag -is [hashtable]) -and $ag.cwd -and (Test-InFolder $f ([string]$ag.cwd))) { return "it is the folder of the agent '$($ag.name)', or inside it" }
+    }
+    $there = $false
+    try { $there = [bool](Test-Path -LiteralPath $f -PathType Container) } catch { $there = $false }
+    if ($there) {
+        $lp = Get-FolderLinkProblem $f
+        if ($lp) { return $lp }
+        if ($Made) {
+            $all = @(Get-ChildItem -LiteralPath $f -Force -ErrorAction SilentlyContinue)
+            $reuse = $false
+            if ($all.Count -eq 1 -and $ReuseOrdersSha -and -not $all[0].PSIsContainer -and @('CLAUDE.md', 'GEMINI.md', 'AGENTS.md') -contains $all[0].Name) {
+                try { $reuse = ((Get-FileSha256 $all[0].FullName) -eq $ReuseOrdersSha) } catch { $reuse = $false }
+            }
+            if ($all.Count -and -not $reuse) { return "it is not empty (a new agent's folder must be new or empty, so no settings, hooks or orders files are in it)" }
+        }
+    }
+    # Also for a new agent's folder that is not made yet: Gemini CLI's checks look above the folder too (a .env, a
+    # system policy), and nothing checks again before the new agent's first turn.
+    $tp = Get-AgentToolFolderProblem $f $AgTool
+    if ($tp) { return $tp }
+    return (Get-ParentOrdersProblem $f $AgTool)
+}
+
+function Get-FolderLinkProblem([string]$Folder) {
+    # '' unless the folder is a link, or an entry right inside it is one (a write through one could land outside it).
+    try {
+        $fi = Get-Item -LiteralPath $Folder -Force -ErrorAction Stop
+        if ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint) { return "$Folder is a link to another folder. Give the agent a plain folder" }
+        foreach ($e in @(Get-ChildItem -LiteralPath $Folder -Force -ErrorAction Stop)) {
+            if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) { return "$($e.FullName) is a link; a write through it could land outside the agent's folder. Remove the link" }
+        }
+    } catch { return "the folder $Folder could not be listed" }
+    return ''
+}
+
+function Get-AgentToolFolderProblem([string]$Folder, [string]$AgTool) {
+    # Files in the agent's own folder that its tool would load and that could run commands or replace its orders, in
+    # plain words with no closing period, or ''.
+    if ($AgTool -eq 'codex') {
+        foreach ($n in @('.codex', 'AGENTS.override.md')) {
+            $p = Get-SafePath $Folder $n
+            if ($p -and (Test-Path -LiteralPath $p)) { return "$p is there; Codex would read it in every turn of this agent (settings that could add writable folders, or orders in place of AGENTS.md). Move it away" }
+        }
+        return ''
+    }
+    # Gemini CLI: .gemini, .agents, a .env up to the home folder, and system policies; its words end with a period.
+    if ($AgTool -eq 'gemini') { return ([string](Get-GeminiFolderProblem $Folder 'agent')).TrimEnd('.') }
+    foreach ($n in @('settings.json', 'settings.local.json')) {
+        $p = Get-SafePath (Get-SafePath $Folder '.claude') $n
+        if (-not $p -or -not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }
+        $t = ''
+        try { $t = Read-HeadText $p 1048576 } catch { return "$p could not be read" }
+        if ($t -match '(?i)"hooks"') { return "$p has hooks (commands Claude Code runs by itself). Move them away" }
+    }
+    return ''
+}
+
+function Get-ParentOrdersProblem([string]$Folder, [string]$AgTool) {
+    # An orders file in a folder above $Folder that the agent's tool reads as orders in a window the owner opens (and may
+    # read in a relay turn), or ''. Claude Code reads CLAUDE.md and CLAUDE.local.md in every folder above, up to the
+    # drive's root (not the root itself); Gemini CLI reads GEMINI.md up to the first folder with .git, or the home folder.
+    # Codex reads AGENTS.md above only inside a Git repository, where an agent's folder never is. Never throws.
+    if ($AgTool -eq 'codex') { return '' }
+    $names = @('GEMINI.md')
+    if ($AgTool -eq 'claude') { $names = @('CLAUDE.md', 'CLAUDE.local.md') }
+    $homeDir = ''   # never $home: $HOME is automatic
+    try { if ($env:USERPROFILE) { $homeDir = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') } } catch { $homeDir = '' }
+    $di = $null
+    try { $di = (New-Object System.IO.DirectoryInfo ([IO.Path]::GetFullPath($Folder))).Parent } catch { return '' }   # no disk access
+    for ($i = 0; $i -lt 64 -and $di -and $di.Parent; $i++) {   # $di.Parent: never the drive's root
+        $d = $di.FullName
+        if ($AgTool -eq 'gemini' -and $homeDir -and $d.TrimEnd('\') -ieq $homeDir) { break }
+        foreach ($n in $names) {
+            $p = Get-SafePath $d $n
+            if ($p -and (Test-Path -LiteralPath $p -PathType Leaf)) { return "$p is in a folder above it, and $(Get-ToolName $AgTool) reads it as this agent's standing orders too (in a window you open)" }
+        }
+        $gitMark = Get-SafePath $d '.git'
+        if ($AgTool -eq 'gemini' -and $gitMark -and (Test-Path -LiteralPath $gitMark)) { break }
+        $di = $di.Parent
+    }
+    return ''
+}
+
+function Get-AgentMailboxPathError {
+    # A Claude Code or Gemini CLI agent runs bin\agent-mail.ps1 by its full path, unquoted, in Git Bash or PowerShell,
+    # and its rules name that path (D23). So the mailbox path holds only plain signs; an 8.3 short name keeps its ~.
+    if ($Root -notmatch '^[A-Za-z]:\\[A-Za-z0-9\\._~-]*$') {
+        return "the mailbox folder $Root has a space or a sign other than letters, digits and . _ - ~ in its path. A Claude Code or Gemini CLI agent runs bin\agent-mail.ps1 by that path, so move the mailbox to a folder with a plain path"
+    }
+    return ''
+}
+
+function Get-MailFolderLinkProblem([string]$Key) {
+    # '' unless the mail folder, the agent's folder in it, or its new or read folder is a link (agent-mail.ps1 never
+    # writes or moves through one). Never throws.
+    $agentDir = Get-SafePath $MailDir $Key
+    foreach ($p in @($MailDir, $agentDir, (Get-SafePath $agentDir 'new'), (Get-SafePath $agentDir 'read'))) {
+        if (-not $p) { continue }
+        try {
+            $fi = Get-Item -LiteralPath $p -Force -ErrorAction Stop
+            if ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint) { return "$p is a link to another folder; the relay reads mail only in plain folders" }
+        } catch { }
+    }
+    return ''
+}
+
+function Get-SessionJobs([bool]$WithWorkers = $false, [bool]$Wide = $false, $State = $null) {
+    # Every job a session has here, as @{ job; key = '<tool>:<id in lower case>'; text } (an agent's also has rules: it
+    # runs under the relay's rules). Read-only. A session has one job (D9): this mailbox's planner, its coordinator, one
+    # agent, a new agent being made, HQ's orchestrator, or (seen from HQ) a project's coordinator; with $WithWorkers
+    # every worker run of this mailbox, and with $Wide the jobs of the other mailboxes of the HQ family (both for
+    # enrollment). $State gives the new agents being made; without it state.json is read, read-only.
+    $jobs = New-Object System.Collections.ArrayList
+    $cx = Get-CodexConfig
+    if ($cx) { [void]$jobs.Add(@{ job = 'planner'; key = 'codex:' + ([string]$cx.thread_id).Trim().ToLowerInvariant(); text = "this mailbox's planner" }) }
+    $c = Get-Coordinator
+    if ($c) { [void]$jobs.Add(@{ job = 'coordinator'; key = (Get-CoordTool $c) + ':' + ([string]$c.session_id).Trim().ToLowerInvariant(); text = "this mailbox's coordinator" }) }
+    $agents = Get-Agents
+    foreach ($k in @($agents.Keys)) {
+        $ag = $agents[$k]
+        if (-not ($ag -is [hashtable])) { continue }
+        $nm = [string]$ag.name
+        if (-not $nm) { $nm = [string]$k }
+        [void]$jobs.Add(@{ job = 'agent:' + $k; key = (Get-AgentTool $ag) + ':' + (Get-AgentSessionId $ag); text = "the agent '$nm'"; rules = [bool](Test-AgentRelayRules $ag) })
+    }
+    if ($null -eq $State) { try { $State = Read-Json $StateFile } catch { $State = $null } }   # owner commands: read only
+    if (($State -is [hashtable]) -and ($State.agent_requests -is [hashtable])) {
+        foreach ($r in @($State.agent_requests.Values)) {
+            if (($r -is [hashtable]) -and $r.state -eq 'making' -and $r.session_id) {
+                [void]$jobs.Add(@{ job = 'agent:' + [string]$r.key; key = ([string]$r.tool).Trim().ToLowerInvariant() + ':' + ([string]$r.session_id).Trim().ToLowerInvariant();
+                    text = "the new agent '$($r.name)', being made"; rules = $true })
+            }
+        }
+    }
+    $orch = Get-HqOrchestratorThread
+    if ($orch.thread) { [void]$jobs.Add(@{ job = 'orchestrator'; key = 'codex:' + $orch.thread; text = "HQ's orchestrator" }) }
+    if ($HqRole) {
+        foreach ($p in @($script:HqProjects)) {
+            $pc = $null
+            try { $pc = Read-Json (Join-Path ([string]$p.mailbox) '.relay\coordinator.json') } catch { $pc = $null }   # in a try: a project folder may be gone
+            if (($pc -is [hashtable]) -and $pc.session_id) {
+                [void]$jobs.Add(@{ job = 'project-coordinator:' + $p.id; key = (Get-CoordTool $pc) + ':' + ([string]$pc.session_id).Trim().ToLowerInvariant(); text = "the coordinator of project $($p.id)" })
+            }
+        }
+    }
+    if ($WithWorkers) {
+        foreach ($t in @(Get-ChildItem -LiteralPath (Join-Path $Root 'tasks') -Directory -ErrorAction SilentlyContinue)) {
+            foreach ($rf in @(Get-ChildItem -LiteralPath (Join-Path $t.FullName 'workers') -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^W\d{1,6}\.run\.json$' })) {
+                $s = $null
+                try { $s = ConvertTo-HT (ConvertFrom-Json -InputObject (Read-SharedText $rf.FullName)) } catch { continue }
+                if (-not ($s -is [hashtable]) -or -not $s['session_id']) { continue }
+                $wt = ([string]$s['tool']).Trim().ToLowerInvariant()
+                if (-not $wt) { $wt = 'claude' }   # a run.json from before Phase 5 has no tool
+                [void]$jobs.Add(@{ job = 'worker'; key = $wt + ':' + ([string]$s['session_id']).Trim().ToLowerInvariant(); text = ('the worker {0} of {1}' -f ($rf.Name -replace '\.run\.json$', ''), $t.Name) })
+            }
+        }
+    }
+    if ($Wide) {
+        $more = Get-FamilyJobs   # a variable first: @(<function>) would keep the list as one item
+        foreach ($j in $more) { [void]$jobs.Add($j) }
+    }
+    return , $jobs.ToArray()
+}
+
+function Get-FamilyJobs {
+    # The jobs of the other mailboxes of this HQ family (Get-MailBoxFolders: HQ and the projects HQ lists), read-only,
+    # for enrollment only. A file there that cannot be read gives key '?', which refuses every session: an enrollment
+    # never guesses. (A turn never calls this: a broken file in another mailbox stops no turn here.)
+    $jobs = New-Object System.Collections.ArrayList
+    # A project whose HQ settings file is there but cannot be read does not know HQ's list of mailboxes (then
+    # Get-MailBoxFolders gives none), so that refuses too.
+    $hqDir = Get-HqFolder
+    if ($hqDir -and -not $HqRole -and -not (Test-SameFolder $hqDir $Root)) {
+        $hqSet = $null
+        $hqFile = ''
+        try {
+            $hqFile = Get-SafePath (Get-SafePath $hqDir 'bin') 'relay-settings.json'
+            if ($hqFile -and (Test-Path -LiteralPath $hqFile -PathType Leaf)) { $hqSet = ConvertFrom-Json -InputObject (Read-SharedText $hqFile) }
+            else { $hqFile = '' }
+        } catch { $hqSet = $null }
+        if ($hqFile -and $null -eq $hqSet) { [void]$jobs.Add(@{ job = 'family:hq'; key = '?'; text = 'maybe a session of HQ (its bin\relay-settings.json could not be read; try again)' }) }
+    }
+    $boxes = Get-MailBoxFolders   # a dictionary leaves a function as one object
+    foreach ($id in @($boxes.Keys)) {
+        $b = [string]$boxes[$id]
+        if (-not $b -or (Test-SameFolder $b $Root)) { continue }
+        $label = "project $id"
+        if ($id -eq 'hq') { $label = 'HQ' }
+        foreach ($pair in @(@('codex.json', 'planner'), @('coordinator.json', 'coordinator'), @('agents.json', 'agents'))) {
+            $f = Get-SafePath (Get-SafePath $b '.relay') $pair[0]
+            if (-not $f -or -not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
+            $j = $null
+            try { $j = Read-Json $f } catch { [void]$jobs.Add(@{ job = "family:$id"; key = '?'; text = "maybe a session of $label (its .relay\$($pair[0]) could not be read; try again)" }); continue }
+            if (-not ($j -is [hashtable])) { continue }
+            if ($pair[1] -eq 'planner') { [void]$jobs.Add(@{ job = "family:${id}:planner"; key = 'codex:' + ([string]$j.thread_id).Trim().ToLowerInvariant(); text = "the planner of $label" }) }
+            elseif ($pair[1] -eq 'coordinator') { [void]$jobs.Add(@{ job = "family:${id}:coordinator"; key = (Get-CoordTool $j) + ':' + ([string]$j.session_id).Trim().ToLowerInvariant(); text = "the coordinator of $label" }) }
+            else {
+                foreach ($k in @($j.Keys)) {
+                    $one = $j[$k]
+                    if (-not ($one -is [hashtable])) { continue }
+                    $nm = [string]$one.name
+                    if (-not $nm) { $nm = [string]$k }
+                    [void]$jobs.Add(@{ job = "family:${id}:agent:$k"; key = (Get-AgentTool $one) + ':' + (Get-AgentSessionId $one); text = "the agent '$nm' of $label" })
+                }
+            }
+        }
+    }
+    return , $jobs.ToArray()
+}
+
+function Get-SessionJobText([string]$Tool, [string]$Id, [string]$Except, [bool]$WithWorkers = $false, [bool]$Wide = $false, $State = $null, [bool]$RelayRules = $false) {
+    # The first job of session <Tool>:<Id> other than $Except (planner, coordinator, agent:<key> or orchestrator), in
+    # words, or ''. An id is one session only within its tool. While HQ's codex.json cannot be read, a Codex thread may
+    # be HQ's orchestrator, and that counts too (as before). As before Phase 7: this mailbox's planner and one of its
+    # Codex agents may share one thread (this relay wakes both, never at once: each one's busy check looks for the other's
+    # wake), but only an agent with no relay rules, as every agent was before. An agent with the relay's rules ($j.rules,
+    # or $RelayRules for the agent asked about) keeps a session of its own. A job of another mailbox (family:...) never
+    # shares.
+    $sid = ([string]$Id).Trim().ToLowerInvariant()
+    if (-not $sid) { return '' }
+    $want = ([string]$Tool).Trim().ToLowerInvariant() + ':' + $sid
+    $jobs = Get-SessionJobs $WithWorkers $Wide $State   # a variable first: @(<function>) would keep the list as one item
+    foreach ($j in $jobs) {
+        $job = [string]$j.job
+        if ($job -eq $Except) { continue }
+        # One test per line: -and and -or have the same precedence.
+        if ($Except -eq 'planner' -and $job.StartsWith('agent:', [StringComparison]::Ordinal) -and -not $j.rules) { continue }
+        if (-not $RelayRules -and $Except.StartsWith('agent:', [StringComparison]::Ordinal) -and $job -eq 'planner') { continue }
+        if ($j.key -eq '?' -or $j.key -eq $want) { return [string]$j.text }
+    }
+    if ($Tool -eq 'codex' -and $Except -ne 'orchestrator' -and (Get-HqOrchestratorThread).unreadable) { return "maybe HQ's orchestrator (HQ's .relay\codex.json could not be read)" }
+    return ''
+}
+
+# ---------- Phase 7: placeholders for later stages ----------
+# Stage 7A built the foundations of Phase 7. What needs the later steps is accepted on the command line and in the
+# settings, and refused here in plain words until that step is built. Each later step replaces its part of this block:
+# a function name may be defined only once in this file (scripts/check.js checks it).
+
+function Show-AgentArgs {
+    # -ShowAgentArgs -AgentName <name> (design 14.6): one agent's turn as JSON, read-only.
+    Fail '-ShowAgentArgs comes in a later step of Phase 7. This relay cannot show an agent''s turn yet. -Status shows the enrolled agents.' 64
+}
+
+function Invoke-EnrollToolAgent {
+    # -EnrollAgent -Tool claude or gemini, or a Codex agent with -AgentProfile (design 14.2). Refused before anything is
+    # written: the writer lock is the only thing this command took.
+    $what = 'An agent in Claude Code'
+    if ($AgentToolWord -eq 'gemini') { $what = 'An agent in Gemini CLI' }
+    elseif ($AgentToolWord -eq 'codex') { $what = 'A Codex agent with -AgentProfile' }
+    Fail "$what comes in a later step of Phase 7. For now this relay enrolls only a Codex agent with no -AgentProfile, as before. Nothing was saved." 64
+}
+
+# allow_new_agents is read above, but the relay reads agent requests (agents\<name key>.md) only from a later step on.
+if ($AllowNewAgents -and @('Start', 'Once', 'StartAll', 'Status', 'DryRun') -contains $Mode) {
+    Write-Host 'NOTE: allow_new_agents is true in bin\relay-settings.json, but new agents come in a later step of Phase 7. This relay does not read agent requests (agents\<name>.md) yet.'
+}
+
 # ---------- main ----------
 switch ($Mode) {
     'Status' { Show-Status; exit 0 }
     'Stop'   { Invoke-Stop; exit 0 }
     'ShowCoordinatorArgs' { Show-CoordinatorArgs; exit 0 }
+    'ShowAgentArgs' { Show-AgentArgs; exit 0 }   # read-only, no writer lock
     'DryRun' {
         $dry = Get-State   # in-memory copy only; CanWrite stays false, so nothing is written
         Write-Note "DRY-RUN on $Root (read-only; no CLI, no key, no API credit)."
