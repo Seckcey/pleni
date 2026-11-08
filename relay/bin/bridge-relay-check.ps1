@@ -3427,8 +3427,14 @@ try {
         Remove-Item -LiteralPath $gone -Recurse -Force
         $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Gone'; Tool = 'gemini'; SessionId = $goneSid }
         Check ($r.code -ne 0 -and (Test-Said $r.out "The agent's folder was not found")) "a Gemini CLI session whose folder is gone was enrolled: $(Get-Tail $r.out)"
+        # So is a session started at a drive's top folder (C:\): Windows reads C: alone as the current folder of drive C.
+        $driveSid = [guid]::NewGuid().ToString()
+        $null = Write-GeminiSession $fx $driveSid (Join-Path $fx.dir 'crew\drive')
+        Write-Text (Join-Path $fx.dir 'gemini-home\.gemini\tmp\drive\.project_root') ([IO.Path]::GetPathRoot($fx.dir))
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Drive'; Tool = 'gemini'; SessionId = $driveSid }
+        Check ($r.code -ne 0 -and (Test-Said $r.out 'belongs to the whole drive')) "a Gemini CLI session started at a drive's top folder was enrolled: $(Get-Tail $r.out)"
         Check (-not (Test-Path -LiteralPath (Join-Path $fx.mb '.relay\agents.json')) -and -not (Test-Path -LiteralPath (Join-Path $fx.mb 'mail\sergeant-kit')) -and
-            -not (Test-Path -LiteralPath (Join-Path $fx.mb 'mail\sergeant-gone'))) 'a refused -EnrollAgent -Tool gemini saved agents.json or made a mail folder'
+            -not (Test-Path -LiteralPath (Join-Path $fx.mb 'mail\sergeant-gone')) -and -not (Test-Path -LiteralPath (Join-Path $fx.mb 'mail\sergeant-drive'))) 'a refused -EnrollAgent -Tool gemini saved agents.json or made a mail folder'
         $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Kit'; Tool = 'gemini'; SessionId = $gsid }
         Check ($r.code -eq 0 -and (Test-Said $r.out 'costs money')) "-EnrollAgent -Tool gemini exit code $($r.code): $(Get-Tail $r.out)"
         $ag = (Get-RelayJson $fx 'agents.json').'sergeant-kit'
@@ -3513,6 +3519,13 @@ try {
         $kh = [string](Get-RelayState $fx).mail_halts.'sergeant-kit'
         Check $halted "three not-signed-in turns in a row did not stop the agent's wakes (its halt '$kh')"
         Check (@(Get-GeminiResumeCalls $fx).Count -eq 5 -and (Get-NoticeCount $gfile 'M') -eq 2) 'expected 3 more turns that never reached the session'
+        $calls = @(Get-GeminiResumeCalls $fx)
+        if ($calls.Count -eq 5) {
+            # Backed off: 2 s, then 4 s (Get-Now counts whole seconds, so each wait is at least 1 s and 3 s).
+            $gap1 = [int64]$calls[3].t - [int64]$calls[2].t
+            $gap2 = [int64]$calls[4].t - [int64]$calls[3].t
+            Check ($gap1 -ge 900 -and $gap2 -ge 2900) "the agent's turns did not back off (gaps $gap1 ms and $gap2 ms; want at least 900 and 2900)"
+        }
         Check (@(Get-MailNotes $fx 'sergeant-kit' | Where-Object { $_.state -eq 'pending' }).Count -eq 1) 'the mail of turns that never reached the session is not kept'
         Check ([string](Get-RelayState $fx).halt -eq '') 'an agent''s failures halted the whole relay'
         $null = Invoke-Relay $fx 'ClearHalt' $null

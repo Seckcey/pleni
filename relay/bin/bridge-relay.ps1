@@ -4814,6 +4814,7 @@ function Get-CoordinatorFolderError([string]$Folder, [string]$ForTool, [string]$
     # Phase 7 (agents use these rules too, Get-AgentFolderError): $ExceptAgent is the key of the agent whose own folder
     # this is, so its own entry in agents.json does not count against it. $MissingOk: a new agent's folder, which the
     # relay makes later, so a folder that is not there passes the first check (a file there still fails it).
+    if ([string]$Folder -match '^[A-Za-z]:[\\/]?$') { return 'it is a drive or a network folder' }   # Windows reads C: alone as the current folder of drive C
     $f = ''
     try {
         $there = [bool]($Folder -and (Test-Path -LiteralPath $Folder -PathType Container))
@@ -6427,6 +6428,7 @@ function Get-AgentFolderError([string]$Folder, [string]$AgTool, [string]$Key, [b
     # new agent's folder, which may not be there yet (the relay makes it only after every rule here passed); then it must
     # be inside the projects folder, and new or empty. $ReuseOrdersSha: the orders file an earlier version of the same
     # request left there counts as empty. Read-only. Never throws, also for a drive that is not there.
+    if ([string]$Folder -match '^[A-Za-z]:[\\/]?$') { return 'it is a drive or a network folder' }   # Windows reads C: alone as the current folder of drive C
     $f = ''
     try { $f = [IO.Path]::GetFullPath($Folder).TrimEnd('\') } catch { return 'Windows cannot use it as a folder path' }
     if ($f -notmatch '^[A-Za-z]:\\') { return 'it is not a full path on a drive (like C:\Users\ada\projects\crew\lark)' }
@@ -7463,6 +7465,8 @@ function Invoke-EnrollToolAgent {
         $found = Find-GeminiSession $sid
         if (-not $found) { Fail "No Gemini CLI session $sid was found under $GeminiDataDir\tmp. Take the id from the session itself (/stats), and pass -GeminiCliHome if Gemini CLI keeps its files elsewhere. Nothing was saved." }
         $cwd = [string]$found.root
+        # Find-GeminiSession makes C:\ into C:, which Windows would read as the current folder of drive C.
+        if ($cwd -match '^[A-Za-z]:$') { Fail "Gemini CLI session $sid belongs to the whole drive $cwd\ (Gemini CLI was started at the drive's top folder). Give the agent a folder of its own: start Gemini CLI in that folder, then enroll that session. Nothing was saved." }
         if ($folder -and $cwd -and -not (Test-SameFolder $cwd $folder)) { Fail "Gemini CLI session $sid belongs to the folder $cwd, not $folder. Gemini CLI finds a session only from its own folder. Leave -AgentFolder out, or give $cwd. Nothing was saved." }
         if (-not $cwd -and $folder) {
             $cwd = $folder
