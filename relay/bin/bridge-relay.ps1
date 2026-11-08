@@ -840,8 +840,11 @@ function Get-ToolName([string]$Name) {
 }
 
 function Test-SameFolder([string]$A, [string]$B) {
-    # True when both name the same folder (letter case and a last \ do not count).
+    # True when both name the same folder (letter case and a last \ do not count). A drive alone (C:) is the top folder
+    # of that drive here, as in Test-InFolder: GetFullPath reads C: alone as the current folder of drive C.
     if (-not $A -or -not $B) { return $false }
+    if ($A -match '^[A-Za-z]:$') { $A += '\' }
+    if ($B -match '^[A-Za-z]:$') { $B += '\' }
     return ([IO.Path]::GetFullPath($A).TrimEnd('\') -ieq [IO.Path]::GetFullPath($B).TrimEnd('\'))
 }
 
@@ -5860,6 +5863,8 @@ function Invoke-EnrollGeminiCoordinator {
     $found = Find-GeminiSession $sid
     if (-not $found) { Fail "No Gemini CLI session $sid was found under $GeminiDataDir\tmp. Take the id from the session itself (/stats), and pass -GeminiCliHome if Gemini CLI keeps its files elsewhere." }
     $cwd = [string]$found.root
+    # Find-GeminiSession makes C:\ into C:, which Windows would read as the current folder of drive C.
+    if ($cwd -match '^[A-Za-z]:$') { Fail "Gemini CLI session $sid belongs to the whole drive $cwd\ (Gemini CLI was started at the drive's top folder). Start the coordinator session in a folder of its own, such as $Root\coordinator, then enroll that session. Nothing was saved." }
     $cwdWarning = ''
     if ($CoordinatorCwd) {
         $want = ''

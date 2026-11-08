@@ -2934,6 +2934,10 @@ try {
         # Refusals: each one ends with an error and saves nothing. $gs2 belongs to a folder with a comma in its path.
         $gs2 = [guid]::NewGuid().ToString()
         $null = Write-GeminiSession $fx $gs2 (Join-Path $fx.dir 'g,coord')
+        # $gs3 was started at a drive's top folder (C:\): Windows reads C: alone as the current folder of drive C.
+        $gs3 = [guid]::NewGuid().ToString()
+        $null = Write-GeminiSession $fx $gs3 (Join-Path $fx.dir 'gdrive')
+        Write-Text (Join-Path $fx.dir 'gemini-home\.gemini\tmp\gdrive\.project_root') ([IO.Path]::GetPathRoot($fx.dir))
         $dotGemini = Join-Path $gc '.gemini'
         foreach ($x in @(
                 @{ opt = @{ Tool = 'gemini'; SessionId = [guid]::NewGuid().ToString() }; words = 'No Gemini CLI session' },
@@ -2942,6 +2946,8 @@ try {
                 @{ opt = @{ Tool = 'gemini'; SessionId = $gs; CoordinatorCwd = $fx.planner }; words = 'belongs to the folder' },
                 @{ opt = @{ Tool = 'gemini'; SessionId = $gs }; words = '.gemini is there'; dotGemini = $true },
                 @{ opt = @{ Tool = 'gemini'; SessionId = $gs2 }; words = 'comma' },
+                @{ opt = @{ Tool = 'gemini'; SessionId = $gs3 }; words = 'belongs to the whole drive' },
+                @{ opt = @{ Tool = 'gemini'; SessionId = $gs3; CoordinatorCwd = $gc }; words = 'belongs to the whole drive' },
                 @{ opt = @{ Tool = 'gemini'; SessionId = $gs; AllowCheck = 'node --test C:\x' }; words = 'node can load code' })) {
             if ($x.dotGemini) { New-Item -ItemType Directory -Path $dotGemini -Force | Out-Null }
             try { $r = Invoke-Relay $fx 'Enroll' $x.opt } finally { if (Test-Path -LiteralPath $dotGemini) { Remove-Item -LiteralPath $dotGemini -Recurse -Force } }
