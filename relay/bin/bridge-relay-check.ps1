@@ -81,15 +81,15 @@
   bin\agent-mail.ps1 (a change while a turn runs halts the relay until -ClearHalt, and a change that a running loop
   sees halts it once), the daily dollar cap of Claude Code agents, and -UnenrollAgent with a copy of agents.json. 32 a
   Gemini CLI agent (-EnrollAgent -Tool gemini, with tests\stub-gemini.js): off until agent_tools lists gemini, in words
-  that say each turn costs money, and no -Effort; enrolled by its session id, in the folder its session belongs to;
-  its rules file (-ShowAgentArgs: its own two agent-mail.ps1 commands, -MailboxRoot denied, no file writes for a mail
-  agent, no include folders, nothing written); a dry run that writes nothing; a turn with the notice only on standard
-  input, in its own folder, with its own rules and defaults files, its pins and hop 1, and GEMINI_API_KEY passed
-  through; a wait while a window has the session open; a changed rules file stops that agent before its turn and keeps
-  its mail; not signed in backs off and stops only that agent after three in a row; a turn in another session stops
-  it; Gemini CLI's warning that it skipped the turn limit (one alert); the daily total of Gemini CLI agent turns
-  (agent_wakes_per_day); no key written anywhere; and -UnenrollAgent with a copy of agents.json, without the agent's
-  own Gemini files.
+  that say each turn costs money, no -Effort, and no session whose folder is gone, each refusal saving nothing;
+  enrolled by its session id, in the folder its session belongs to; its rules file (-ShowAgentArgs: its own two
+  agent-mail.ps1 commands, -MailboxRoot denied, no file writes for a mail agent, no include folders, nothing written);
+  a dry run that writes nothing; a turn with the notice only on standard input, in its own folder, with its own rules
+  and defaults files, its pins and hop 1, and GEMINI_API_KEY passed through; a wait while a window has the session
+  open; a changed rules file stops that agent before its turn and keeps its mail; not signed in backs off and stops
+  only that agent after three in a row; a turn in another session stops it; Gemini CLI's warning that it skipped the
+  turn limit (one alert); the daily total of Gemini CLI agent turns (agent_wakes_per_day); no key written anywhere;
+  and -UnenrollAgent with a copy of agents.json, without the agent's own Gemini files.
   It runs only the bridge-relay.ps1, agent-mail.ps1 and spawn-worker.ps1 beside it (and a fixture's own copy of that
   agent-mail.ps1), ..\tests\stub-claude.js, ..\tests\stub-codex.js, ..\tests\stub-gemini.js and ..\tests\stub-agy.js;
   other -RelayScript/-StubCli values are refused.
@@ -3419,8 +3419,16 @@ try {
         Check ($r.code -ne 0 -and (Test-Said $r.out 'Gemini CLI agents are off') -and (Test-Said $r.out 'costs money')) "a Gemini CLI agent was enrolled while they are off: $(Get-Tail $r.out)"
         $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Kit'; Tool = 'gemini'; SessionId = $gsid; Effort = 'high' }
         Check ($r.code -ne 0 -and (Test-Said $r.out 'no effort setting')) 'a Gemini CLI agent took -Effort'
-        Check (-not (Test-Path -LiteralPath (Join-Path $fx.mb '.relay\agents.json')) -and -not (Test-Path -LiteralPath (Join-Path $fx.mb 'mail\sergeant-kit'))) 'a refused -EnrollAgent -Tool gemini saved agents.json or made a mail folder'
         Set-RelaySettings $fx @{ agent_tools = @('codex', 'claude', 'gemini') }
+        # A session whose folder (the one its .project_root names) is gone is refused too.
+        $gone = Join-Path $fx.dir 'crew\gone'
+        $goneSid = [guid]::NewGuid().ToString()
+        $null = Write-GeminiSession $fx $goneSid $gone
+        Remove-Item -LiteralPath $gone -Recurse -Force
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Gone'; Tool = 'gemini'; SessionId = $goneSid }
+        Check ($r.code -ne 0 -and (Test-Said $r.out "The agent's folder was not found")) "a Gemini CLI session whose folder is gone was enrolled: $(Get-Tail $r.out)"
+        Check (-not (Test-Path -LiteralPath (Join-Path $fx.mb '.relay\agents.json')) -and -not (Test-Path -LiteralPath (Join-Path $fx.mb 'mail\sergeant-kit')) -and
+            -not (Test-Path -LiteralPath (Join-Path $fx.mb 'mail\sergeant-gone'))) 'a refused -EnrollAgent -Tool gemini saved agents.json or made a mail folder'
         $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Kit'; Tool = 'gemini'; SessionId = $gsid }
         Check ($r.code -eq 0 -and (Test-Said $r.out 'costs money')) "-EnrollAgent -Tool gemini exit code $($r.code): $(Get-Tail $r.out)"
         $ag = (Get-RelayJson $fx 'agents.json').'sergeant-kit'
