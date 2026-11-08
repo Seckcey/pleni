@@ -71,10 +71,18 @@
   anywhere. 30 a Gemini CLI coordinator's failures: not signed in backs off and halts after three in a row, no session
   with that id, Gemini CLI's own turn cap (an error event, then a success result) before the notice reached the
   session (not delivered) and after it (delivered with an error), a turn in another session halts, a crash after the
-  notice (outcome unknown), and a turn that outlives its relay (settled from its events, never two at once).
-  It runs only the bridge-relay.ps1, agent-mail.ps1 and spawn-worker.ps1 beside it, ..\tests\stub-claude.js,
-  ..\tests\stub-codex.js, ..\tests\stub-gemini.js and ..\tests\stub-agy.js; other -RelayScript/-StubCli values are
-  refused.
+  notice (outcome unknown), and a turn that outlives its relay (settled from its events, never two at once). 31 a
+  Claude Code agent (-EnrollAgent -Tool claude, with tests\stub-claude.js): refusals in plain words (no -AgentFolder,
+  Antigravity CLI, a profile other than mail or files, a name with a ' in it, Gemini CLI agents while agent_tools leaves
+  them off, a folder inside the mailbox, in a Git repository, with Claude Code hooks or below an orders file, and the
+  coordinator's own session), enrolled by name, its turn, lists and rules (-ShowAgentArgs), one wake per new message
+  with the notice only on standard input, the agent's pins and hop 1 in its turn, a wait while a window has the session
+  open, a rollover to a newer session with the name, a files agent by its id, the guard on the mailbox's own
+  bin\agent-mail.ps1 (a change while a turn runs halts the relay until -ClearHalt, and a change that a running loop
+  sees halts it once), the daily dollar cap of Claude Code agents, and -UnenrollAgent with a copy of agents.json.
+  It runs only the bridge-relay.ps1, agent-mail.ps1 and spawn-worker.ps1 beside it (and a fixture's own copy of that
+  agent-mail.ps1), ..\tests\stub-claude.js, ..\tests\stub-codex.js, ..\tests\stub-gemini.js and ..\tests\stub-agy.js;
+  other -RelayScript/-StubCli values are refused.
   Scenarios 24, 25 and 27 need git.exe, for a Git folder in their fixtures. Scenarios 24 and 29 set two test-only
   variables that spawn-worker.ps1 and bridge-relay.ps1 read (RELAY_TEST_GEMINI_POLICY_DIR and RELAY_TEST_CHANGE_POLICY);
   each one can only make the launcher refuse or the relay halt.
@@ -608,7 +616,7 @@ function Get-ClaudeWorkerCalls([hashtable]$Fx, [string]$W) {
     return @($all | Where-Object { [string]$_.prompt -match ('\\' + [regex]::Escape($W) + '-brief\.md') })
 }
 
-function Get-CoordinatorCalls([hashtable]$Fx) { return @(Get-Calls $Fx 'start' | Where-Object { $_.resume }) }   # the Claude stub's coordinator turns (--resume)
+function Get-CoordinatorCalls([hashtable]$Fx) { return @(Get-Calls $Fx 'start' | Where-Object { $_.resume -and -not $_.stdin_prompt }) }   # the Claude stub's coordinator turns (--resume; an agent's turn also resumes, with its notice on stdin)
 
 function Get-CodexResumeCalls([hashtable]$Fx) { return @(Get-CodexCalls $Fx 'start' | Where-Object { $_.kind -ne 'worker' }) }   # resume calls carry no kind
 
@@ -724,6 +732,125 @@ function Stop-Leftovers {
     return $n
 }
 
+# ---------- Phase 7: mail agents in any AI tool ----------
+function Copy-MailScript([hashtable]$Fx) {
+    # The mailbox's own bin\agent-mail.ps1, as a real mailbox has it: the guard watches it (D17), and a mailbox's copy
+    # serves only its mailbox (D22).
+    New-Item -ItemType Directory -Path (Join-Path $Fx.mb 'bin') -Force | Out-Null
+    Copy-Item -LiteralPath $AgentMail -Destination (Join-Path $Fx.mb 'bin\agent-mail.ps1') -Force
+}
+
+function Write-ClaudeAgentSession([hashtable]$Fx, [string]$Folder, [string]$Id, [string]$Title, [string]$At = '2026-11-04T05:00:00Z') {
+    # A fake Claude Code session of $Folder where -EnrollAgent -Tool claude and the Claude stub (--resume) look for it:
+    # <claude config>\projects\<the folder, each other mark as ->\<id>.jsonl, with the record /rename writes when $Title
+    # is given. Last written 10 minutes ago, so it is quiet. Makes the folder. Returns the file's path.
+    New-Item -ItemType Directory -Path $Folder -Force | Out-Null
+    $full = [IO.Path]::GetFullPath($Folder).TrimEnd('\')
+    $p = Join-Path $Fx.cfg ('projects\' + ($full -replace '[^A-Za-z0-9]', '-') + "\$Id.jsonl")
+    $t = '{"type":"user","sessionId":"' + $Id + '","timestamp":"' + $At + '","message":{"role":"user","content":"synthetic agent session"}}' + "`n"
+    if ($Title) { $t += '{"type":"custom-title","customTitle":"' + $Title + '","sessionId":"' + $Id + '"}' + "`n" }
+    Write-Text $p $t
+    (Get-Item -LiteralPath $p).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-10)
+    return $p
+}
+
+function Get-ClaudeAgentCalls([hashtable]$Fx) { return @(Get-Calls $Fx 'start' | Where-Object { $_.stdin_prompt }) }   # agent turns and first turns (-p, the notice on stdin)
+function Get-CodexTurnCalls([hashtable]$Fx) { return @(Get-CodexCalls $Fx 'start' | Where-Object { -not $_.kind }) }   # resume turns only: no worker, no first turn
+function Get-CodexAgentFirstCalls([hashtable]$Fx) { return @(Get-CodexCalls $Fx 'start' | Where-Object { $_.kind -eq 'agent' }) }
+function Get-GeminiAgentFirstCalls([hashtable]$Fx) { return @(Get-GeminiCalls $Fx 'start' | Where-Object { $_.kind -eq 'agent' }) }
+
+function Set-RelaySettings([hashtable]$Fx, [hashtable]$Values) {
+    # bin\relay-settings.json of a fixture: $Values over what is there (an HQ's role and projects stay).
+    $f = Join-Path $Fx.mb 'bin\relay-settings.json'
+    $s = [ordered]@{}
+    if (Test-Path -LiteralPath $f) { foreach ($p in (ConvertFrom-Json -InputObject (Read-Shared $f)).PSObject.Properties) { $s[$p.Name] = $p.Value } }
+    foreach ($k in @($Values.Keys)) { $s[$k] = $Values[$k] }
+    Write-Text $f (ConvertTo-Json -InputObject $s -Depth 6)
+}
+
+function Write-AgentRequest([hashtable]$Fx, [string]$Key, [hashtable]$Fields, [string]$Orders) {
+    # agents\<key>.md in the shape of templates\agent-request.md: each field as - **Field:** value, then the orders.
+    $t = "# Agent request - $Key (synthetic)`r`n`r`n"
+    foreach ($k in @('Name', 'Tool', 'Profile', 'Folder', 'Model', 'Effort', 'Requested by')) { if ($Fields.ContainsKey($k)) { $t += "- **${k}:** $($Fields[$k])`r`n" } }
+    $t += "`r`n## Standing orders`r`n`r`n$Orders`r`n"
+    Write-Text (Join-Path $Fx.mb "agents\$Key.md") $t
+}
+
+function Get-AgentRequest([hashtable]$Fx, [string]$Key) {
+    # The relay's record of one agent request (agent_requests[<key>] in state.json), or $null.
+    $st = Get-RelayState $Fx
+    if (-not $st -or -not $st.agent_requests) { return $null }
+    return $st.agent_requests.$Key
+}
+
+function Get-RequestResult([hashtable]$Fx, [string]$Key) {
+    # agents\<key>.result.md, the relay's answer to a request, or ''.
+    $f = Join-Path $Fx.mb "agents\$Key.result.md"
+    if (-not (Test-Path -LiteralPath $f)) { return '' }
+    return (Read-Shared $f)
+}
+
+function Get-MailNotes([hashtable]$Fx, [string]$Key) {
+    # The relay's notes of one agent's messages (mail_notes in state.json), oldest first.
+    $st = Get-RelayState $Fx
+    if (-not $st) { return @() }
+    return @(Get-Values $st.mail_notes | Where-Object { $_.agent -eq $Key } | Sort-Object { [int64]$_.detected_utc })
+}
+
+function Get-BackupCount([hashtable]$Fx, [string]$Name) {
+    # How many copies of .relay\<Name> the owner commands kept in .relay\backups.
+    return @(Get-ChildItem -LiteralPath (Join-Path $Fx.mb '.relay\backups') -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "$Name.*.bak" }).Count
+}
+
+function Get-FreeDrive {
+    # A drive letter that is not there, for the checks that a path on a missing drive never stops the relay. '' if none.
+    foreach ($l in [char[]]'QRSTUVWXYZ') { if (-not (Test-Path -LiteralPath "${l}:\")) { return "${l}:" } }
+    return ''
+}
+
+function Invoke-PinnedMail([hashtable]$Fx, [hashtable]$Pin, [string[]]$MailArgs) {
+    # agent-mail.ps1 as an agent runs it in a relay turn: the relay's pins (name, mailbox, folder) and hop in its
+    # environment. An empty value is left out. They are cleared again afterwards.
+    $set = @{ RELAY_AGENT_NAME = $Pin.name; RELAY_AGENT_MAILBOX = $Pin.mailbox; RELAY_AGENT_FOLDER = $Pin.folder; RELAY_MAIL_HOP = $Pin.hop }
+    try {
+        foreach ($k in @($set.Keys)) { if ($set[$k]) { [Environment]::SetEnvironmentVariable($k, [string]$set[$k], 'Process') } }
+        return (Invoke-Mail $Fx $MailArgs)
+    } finally {
+        foreach ($k in @($set.Keys)) { [Environment]::SetEnvironmentVariable($k, $null, 'Process') }
+    }
+}
+
+function Invoke-OwnCopy([hashtable]$Fx, [string[]]$MailArgs) {
+    # The mailbox's own bin\agent-mail.ps1 (Copy-MailScript), run the way an agent runs it: no -MailboxRoot is added.
+    if (-not ([string]$Fx.mb).StartsWith($Base + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "refusing: mailbox outside $Base" }
+    $script:RunNo++
+    $o = Join-Path $Fx.dir ('own-{0:d2}.out.txt' -f $script:RunNo)
+    $e = Join-Path $Fx.dir ('own-{0:d2}.err.txt' -f $script:RunNo)
+    $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Fx.mb 'bin\agent-mail.ps1')) + @($MailArgs)
+    $p = Start-Process -FilePath $PsExe -ArgumentList (($a | ForEach-Object { ConvertTo-Token $_ }) -join ' ') -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput $o -RedirectStandardError $e
+    $null = $p.Handle
+    [void]$script:Spawned.Add($p)
+    if (-not $p.WaitForExit(60000)) { try { Stop-Process -Id $p.Id -Force } catch { }; throw 'agent-mail.ps1 did not exit within 60 s' }
+    $out = Read-RelayOutput @{ out = $o; err = $e }
+    $script:LastOut = "[own agent-mail exit $($p.ExitCode)] $out"
+    return @{ code = $p.ExitCode; out = $out }
+}
+
+function Assert-NoOrdersAbove {
+    # A CLAUDE.md or GEMINI.md in a folder above this run's temp folder would make the relay refuse every agent folder
+    # here, rightly (D3), and so would a temp folder path with a space or another sign that a Claude Code or Gemini CLI
+    # agent's mailbox path may not hold (D23, Get-AgentMailboxPathError). Say so plainly instead of failing checks one by one.
+    if ($Base -notmatch '^[A-Za-z]:\\[A-Za-z0-9\\._~-]*$') { throw "setup: the temp folder path $Base holds a space or a sign other than letters, digits and . _ - ~, which a mailbox of a Claude Code or Gemini CLI agent may not hold. Re-run with a TEMP folder that has a plain path." }
+    $d = (New-Object System.IO.DirectoryInfo $Base).Parent
+    while ($d -and $d.Parent) {
+        foreach ($n in @('CLAUDE.md', 'CLAUDE.local.md', 'GEMINI.md')) {
+            if (Test-Path -LiteralPath (Join-Path $d.FullName $n) -PathType Leaf) { throw "setup: $(Join-Path $d.FullName $n) is in a folder above the test folder, so no agent folder can be under it. Run with a TEMP folder that has no such file above it." }
+        }
+        $d = $d.Parent
+    }
+}
+
 # ---------- scenarios ----------
 $NewAssignment = "# Assignment - T-NEW (synthetic)`r`n`r`n- Goal: new work.`r`n"
 function Get-Questions([int[]]$Blocking) {
@@ -743,6 +870,9 @@ try {
     New-Item -ItemType Directory -Path $env:GEMINI_CLI_HOME -Force | Out-Null
     $sec = ConvertTo-SecureString -String $DummyKey -AsPlainText -Force
     [IO.File]::WriteAllText($KeyPath, (ConvertFrom-SecureString -SecureString $sec), $Utf8)
+    # A run started from a relay turn never leaks an agent's pins or a hop into a fixture: every relay, agent-mail.ps1
+    # and stub run inherits this process's environment.
+    foreach ($v in @('RELAY_MAIL_HOP', 'RELAY_AGENT_NAME', 'RELAY_AGENT_MAILBOX', 'RELAY_AGENT_FOLDER')) { [Environment]::SetEnvironmentVariable($v, $null, 'Process') }
     Write-Host "bridge-relay-check: relay $RelayScript"
     Write-Host "                    stub  $StubCli"
     Write-Host "                    temp  $Base"
@@ -3061,6 +3191,177 @@ try {
         Check ($nb.Count -eq 1 -and $nb[0].state -eq 'completed' -and $na.Count -eq 1 -and $nb[0].dispatch_id -ne $na[0].dispatch_id) 'the notice that waited was not delivered in a turn of its own'
         Check (@(Get-GeminiResumeCalls $fx).Count -eq 10) "expected 10 Gemini CLI turns in this scenario (3, 1, 1, 1, 1, 1, 1, 1), got $(@(Get-GeminiResumeCalls $fx).Count)"
         Check (Test-NoOverlap $fx -Gemini) 'two Gemini CLI processes were alive at the same time'
+    }
+
+    Invoke-Scenario '31 a Claude Code agent: refusals, enrolled by name, its lists, one wake per message with the notice on standard input, pins and hop, waits while open, one session one job, rollover, the guard (and one halt for one change in the loop), the dollar cap' {
+        Assert-NoOrdersAbove
+        $fx = New-Fixture 'ca'
+        Initialize-Fixture $fx
+        Copy-MailScript $fx
+        $wren = Join-Path $fx.dir 'crew\wren'
+        $wsid = [guid]::NewGuid().ToString()
+        $wt = Write-ClaudeAgentSession $fx $wren $wsid 'Sergeant Wren'
+        # 1. Refusals: plain words, and nothing saved.
+        $bad = @(
+            @(@{ AgentName = 'Sergeant Wren'; Tool = 'claude' }, 'needs -AgentFolder'),
+            @(@{ AgentName = 'Sergeant Wren'; Tool = 'antigravity' }, 'not possible yet'),
+            @(@{ AgentName = 'Sergeant Wren'; Tool = 'claude'; AgentFolder = $wren; AgentProfile = 'admin' }, 'must be mail or files'),
+            @(@{ AgentName = "Sergeant O'Wren"; Tool = 'claude'; AgentFolder = $wren }, "may not hold '"),
+            @(@{ AgentName = 'Sergeant Wren'; Tool = 'gemini'; SessionId = $wsid }, 'Gemini CLI agents are off'))
+        foreach ($b in $bad) {
+            $r = Invoke-Relay $fx 'EnrollAgent' $b[0]
+            Check ($r.code -ne 0 -and (Test-Said $r.out $b[1])) "-EnrollAgent was not refused with '$($b[1])': $(Get-Tail $r.out)"
+        }
+        New-Item -ItemType Directory -Path (Join-Path $fx.dir 'repo\.git') -Force | Out-Null
+        Write-Text (Join-Path $fx.dir 'crew\hooked\.claude\settings.json') '{"hooks":{"Stop":[]}}'
+        Write-Text (Join-Path $fx.dir 'ordered\CLAUDE.md') "# orders above`r`n"
+        $folders = @(@((Join-Path $fx.mb 'crew'), 'inside the mailbox'), @((Join-Path $fx.dir 'repo\wren'), 'inside the Git repository'),
+            @((Join-Path $fx.dir 'crew\hooked'), 'has hooks'), @((Join-Path $fx.dir 'ordered\wren'), 'in a folder above'))
+        foreach ($f in $folders) {
+            $null = Write-ClaudeAgentSession $fx $f[0] ([guid]::NewGuid().ToString()) 'Sergeant Wren'
+            $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Wren'; Tool = 'claude'; AgentFolder = $f[0] }
+            Check ($r.code -ne 0 -and (Test-Said $r.out $f[1])) "a folder that is $($f[1]) was accepted: $(Get-Tail $r.out)"
+        }
+        # One session, one job: the coordinator's session cannot also be an agent.
+        $jobDir = Join-Path $fx.dir 'crew\job'
+        $null = Write-ClaudeAgentSession $fx $jobDir $fx.sid ''
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Job'; Tool = 'claude'; AgentFolder = $jobDir; SessionId = $fx.sid }
+        Check ($r.code -ne 0 -and (Test-Said $r.out "already this mailbox's coordinator")) "the coordinator's session was enrolled as an agent: $(Get-Tail $r.out)"
+        Check (-not (Test-Path -LiteralPath (Join-Path $fx.mb '.relay\agents.json'))) 'a refused -EnrollAgent saved agents.json'
+        # 2. Enrolled by name: the newest session of its folder with that name.
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'sergeant wren'; Tool = 'claude'; AgentFolder = $wren }
+        Check ($r.code -eq 0 -and $r.out -match 'Enrolled agent') "-EnrollAgent -Tool claude exit code $($r.code): $(Get-Tail $r.out)"
+        $ag = (Get-RelayJson $fx 'agents.json').'sergeant-wren'
+        Check ($ag -and $ag.tool -eq 'claude' -and $ag.session_id -eq $wsid -and $ag.name -eq 'Sergeant Wren' -and $ag.follow_name -eq 'Sergeant Wren' -and $ag.profile -eq 'mail' -and $ag.made_by -eq 'owner') 'agents.json does not hold the Claude Code agent as enrolled'
+        Check (Test-Path -LiteralPath (Join-Path $fx.mb 'mail\sergeant-wren\name.txt')) 'the agent got no mail folder'
+        # 3. Its lists, read-only.
+        $r = Invoke-Relay $fx 'ShowAgentArgs' @{ AgentName = 'Sergeant Wren' }
+        $j = $null
+        try { $j = ConvertFrom-Json -InputObject $r.out.Substring($r.out.IndexOf('{')) } catch { }
+        Check ($null -ne $j) "-ShowAgentArgs did not print JSON: $(Get-Tail $r.out)"
+        if ($j) {
+            $a = @($j.args)
+            Check (-not (Compare-ArgList @($a | Select-Object -First 3) @('-p', '--resume', $wsid))) 'the turn does not start with -p --resume <its session>'
+            $i = [array]::IndexOf($a, '--permission-mode'); Check ($i -ge 0 -and $a[$i + 1] -eq 'dontAsk') 'a mail agent turn is not dontAsk'
+            $i = [array]::IndexOf($a, '--tools'); Check ($i -ge 0 -and $a[$i + 1] -eq 'Read,Glob,Grep,Bash') 'a mail agent may use more than Read, Glob, Grep and Bash'
+            Check ($a -contains '--strict-mcp-config' -and $a -contains '--disable-slash-commands' -and $a -notcontains '--add-dir') 'the turn may load MCP servers or slash commands, or gets a writable folder'
+            $ps = 'powershell -NoProfile -ExecutionPolicy Bypass -File '
+            Check (@($j.allowedTools) -ccontains ("Bash($ps" + $fx.mb + "\bin\agent-mail.ps1 -Read -Me 'Sergeant Wren')")) 'the allow list does not hold the agent''s own -Read command'
+            Check (-not (@($j.allowedTools) | Where-Object { $_ -match '^(Edit|Write)\(' })) 'a mail agent may edit files'
+            foreach ($d in @('Bash(git *)', 'Bash(node *)', 'WebFetch', 'Bash(powershell * -MailboxRoot*)', 'Bash(pwsh*)')) { Check (@($j.disallowedTools) -ccontains $d) "the deny list lacks $d" }
+            $mbRule = '//' + $fx.mb.Substring(0, 1).ToLowerInvariant() + ($fx.mb.Substring(2) -replace '\\', '/')   # as scenario 8's $toRule
+            Check (@($j.disallowedTools) -ccontains "Read($mbRule/mail/**)") 'a Claude Code agent may read other agents'' mail with its Read tool'
+            Check ([string]$j.appendSystemPrompt -match 'BRIDGE RELAY MAIL TURN' -and [string]$j.appendSystemPrompt -notmatch '"') 'the rules are missing, or hold a double quote'
+        }
+        # 4. One wake per new message; the notice on standard input, never on the command line.
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-ClaudeAgentCalls $fx).Count -eq 0) 'enrolling woke the agent'
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Wren', '-Text', 'Check the notes.')
+        $r = Invoke-Relay $fx 'DryRun' $null
+        Check ($r.out -match 'would wake Sergeant Wren \(Claude Code session' -and $r.out -notmatch 'Check the notes') 'the dry run does not show the wake, or shows the mail text'
+        $null = Invoke-Relay $fx 'Once' $null
+        $null = Invoke-Relay $fx 'Once' $null
+        $s = @(Get-ClaudeAgentCalls $fx)
+        Check ($s.Count -eq 1) "expected 1 agent turn, got $($s.Count)"
+        if ($s.Count -ge 1) {
+            $c = $s[0]
+            Check ($c.resume -eq $wsid -and $c.prompt -match '\[bridge-relay M' -and $c.prompt -match "-Read -Me 'Sergeant Wren'" -and $c.prompt -match 'from Colonel') 'the notice on standard input does not say who wrote and how to read'
+            Check ($c.prompt -notmatch 'Check the notes' -and -not (@($c.args) | Where-Object { [string]$_ -match 'bridge-relay M|Check the notes' })) 'mail text or the notice is on the command line'
+            Check ($c.relay_env.name -eq 'Sergeant Wren' -and (ConvertTo-BaseText $c.relay_env.mailbox) -eq (ConvertTo-BaseText $fx.mb) -and (ConvertTo-BaseText $c.relay_env.folder) -eq (ConvertTo-BaseText $wren) -and $c.relay_env.hop -eq '1') 'the turn did not get the agent pins and hop 1'
+            Check ([string]$c.cwd -like '*\ca\crew\wren' -and -not $c.key_present -and $c.oauth_absent) 'the turn ran in another folder, or with an API key'
+        }
+        Check ((Get-NoticeCount $wt 'M') -eq 1) 'the agent''s session does not hold exactly one notice'
+        $md = @(Get-MailDispatches $fx)
+        Check ($md.Count -eq 1 -and $md[0].outcome -eq 'success' -and $md[0].tool -eq 'claude' -and [int]$md[0].hop -eq 1) 'the turn is not recorded once as a Claude Code success with hop 1'
+        Check (@(Get-CoordinatorCalls $fx).Count -eq 0) 'agent mail woke the coordinator'
+        # 5. A window has the session open: the mail waits, then goes.
+        $win = Start-OpenWindow $fx $wsid
+        try {
+            $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Wren', '-Text', 'Second.')
+            $r = Invoke-Relay $fx 'Once' $null
+            Check ((Test-Said $r.out "session $wsid is open in pid") -and @(Get-ClaudeAgentCalls $fx).Count -eq 1) 'the agent was woken while a window had its session open'
+        } finally {   # as scenario 28 does: the window must be gone before the next look
+            try { Stop-Process -Id $win.Id -Force -ErrorAction SilentlyContinue } catch { }
+            [void]$win.WaitForExit(10000)
+        }
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-ClaudeAgentCalls $fx).Count -eq 2) 'the agent was not woken after the window closed'
+        # 6. Rollover: a newer session of its folder takes the name, between turns.
+        $wsid2 = [guid]::NewGuid().ToString()
+        $null = Write-ClaudeAgentSession $fx $wren $wsid2 'Sergeant Wren' '2026-11-05T05:00:00Z'
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Wren', '-Text', 'Third.')
+        $r = Invoke-Relay $fx 'Once' $null
+        $s = @(Get-ClaudeAgentCalls $fx)
+        Check ($r.out -match 'Rollover:' -and $s.Count -eq 3 -and $s[2].resume -eq $wsid2) 'the agent did not follow its name to the newer session'
+        Check ((Get-RelayJson $fx 'agents.json').'sergeant-wren'.previous_session_id -eq $wsid) 'agents.json does not record the switch'
+        # 7. A files agent by a fixed id: its lists (no turn needed).
+        $finch = Join-Path $fx.dir 'crew\finch'
+        $fsid = [guid]::NewGuid().ToString()
+        $null = Write-ClaudeAgentSession $fx $finch $fsid ''
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Finch'; Tool = 'claude'; AgentFolder = $finch; SessionId = $fsid; AgentProfile = 'files' }
+        Check ($r.code -eq 0 -and -not (Get-RelayJson $fx 'agents.json').'sergeant-finch'.follow_name) "-EnrollAgent -SessionId -AgentProfile files exit code $($r.code), or it follows a name: $(Get-Tail $r.out)"
+        Check ((Get-BackupCount $fx 'agents.json') -ge 1) 'the second -EnrollAgent kept no copy of agents.json'
+        $r = Invoke-Relay $fx 'ShowAgentArgs' @{ AgentName = 'Sergeant Finch' }
+        $j = $null
+        try { $j = ConvertFrom-Json -InputObject $r.out.Substring($r.out.IndexOf('{')) } catch { }
+        Check ($null -ne $j) "-ShowAgentArgs did not print JSON for the files agent: $(Get-Tail $r.out)"
+        if ($j) {
+            $a = @($j.args)
+            $i = [array]::IndexOf($a, '--permission-mode'); Check ($i -ge 0 -and $a[$i + 1] -eq 'acceptEdits') 'a files agent turn is not acceptEdits'
+            $own = '//' + $finch.Substring(0, 1).ToLowerInvariant() + ($finch.Substring(2) -replace '\\', '/')
+            Check (@($j.allowedTools) -ccontains "Edit($own/**)" -and @($j.disallowedTools) -ccontains "Edit($own/CLAUDE.md)" -and @($j.disallowedTools) -ccontains "Edit($own/.claude/**)") 'a files agent may not edit its folder, or may edit its orders or settings'
+        }
+        # 8. The guard: a change to bin\agent-mail.ps1 while an agent turn runs halts the relay, until -ClearHalt.
+        $r = Invoke-Relay $fx 'Status' $null
+        Check ($r.out -match 'Relay files guard: ON') 'the guard is not on while a Claude Code agent is enrolled'
+        Set-StubMode $fx 'sleep:8'
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Wren', '-Text', 'Fourth.')
+        $null = Invoke-Relay $fx 'Once' @{ NoWait = $true }
+        Check (Wait-Until { (Get-RunningStubs $fx) -eq 1 } 20) 'the slow agent turn did not start'
+        [IO.File]::AppendAllText((Join-Path $fx.mb 'bin\agent-mail.ps1'), "`r`n# changed by the relay test`r`n", $Utf8)
+        Check (Wait-Until { (Get-RunningStubs $fx) -eq 0 } 40) 'the slow agent turn did not end'
+        Set-StubMode $fx 'ok'
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Wren', '-Text', 'Fifth.')
+        $null = Invoke-Relay $fx 'Once' $null
+        $st = Get-RelayState $fx
+        Check ([string]$st.halt -match 'agent-mail\.ps1' -and [string]$st.guard_halt -match 'while agent turn M') "a change to bin\agent-mail.ps1 during an agent turn did not halt the relay (halt '$($st.halt)')"
+        Check (@(Get-ClaudeAgentCalls $fx).Count -eq 4) 'an agent turn started while the guard had halted the relay'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-ClaudeAgentCalls $fx).Count -eq 5) 'the agent was not woken after -ClearHalt'
+        # 8b. The same kind of change, seen by a running relay loop while an agent turn runs: one halt and one alert. The
+        # turn's end does not halt the relay a second time ("during agent turn"), as the relay does for a coordinator
+        # turn. alerts.md is read only when it is there, so a missing halt above is reported here too, not as an error.
+        $af = Join-Path $fx.mb '.relay\alerts.md'
+        $stops = 0
+        if (Test-Path -LiteralPath $af) { $stops = ([regex]::Matches((Read-Shared $af), 'The relay stopped:')).Count }
+        Set-StubMode $fx 'sleep:10'
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Wren', '-Text', 'Fifth again.')
+        $loop = Start-Relay $fx 'Start' $null
+        Check (Wait-LoopStarted $fx) 'the relay loop did not start'
+        Check (Wait-Until { (Get-RunningStubs $fx) -eq 1 } 30) 'the loop did not start the slow agent turn'
+        [IO.File]::AppendAllText((Join-Path $fx.mb 'bin\agent-mail.ps1'), "`r`n# changed again by the relay test`r`n", $Utf8)
+        $halted = Wait-Until { [string](Get-RelayState $fx).halt -match 'agent-mail\.ps1' } 30
+        $settled = Wait-Until { (Get-RunningStubs $fx) -eq 0 -and @(Get-MailDispatches $fx | Where-Object { $_.state -eq 'running' -or $_.state -eq 'launching' }).Count -eq 0 } 60
+        Check (Stop-Loop $fx $loop) 'the loop did not stop on -Stop'
+        Check ($halted -and $settled) 'the loop did not halt at the change, or did not settle the slow agent turn'
+        $st = Get-RelayState $fx
+        $stopsNow = 0
+        if (Test-Path -LiteralPath $af) { $stopsNow = ([regex]::Matches((Read-Shared $af), 'The relay stopped:')).Count }
+        Check ($stopsNow -eq $stops + 1 -and [string]$st.guard_halt -notmatch 'during agent turn') "one change halted the relay $($stopsNow - $stops) time(s), want once (halt '$($st.guard_halt)')"
+        Check (@(Get-ClaudeAgentCalls $fx).Count -eq 6) 'the loop did not run the slow agent turn once'
+        Set-StubMode $fx 'ok'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        # 9. The daily dollar cap of Claude Code agents holds the next turn; the mail waits.
+        Write-Text (Join-Path $fx.mb 'bin\cost-limits.json') '{"relay_max_agent_usd_per_day":0.5}'
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Wren', '-Text', 'Sixth.')
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ((Test-Said $r.out 'the daily budget of Claude Code agents is reached') -and @(Get-ClaudeAgentCalls $fx).Count -eq 6) 'the dollar cap of Claude Code agents did not hold the turn'
+        Remove-Item -LiteralPath (Join-Path $fx.mb 'bin\cost-limits.json') -Force
+        # 10. Unenrolling keeps a copy, and the mail.
+        $r = Invoke-Relay $fx 'UnenrollAgent' @{ AgentName = 'Sergeant Finch' }
+        Check ($r.code -eq 0 -and (Get-BackupCount $fx 'agents.json') -ge 2) '-UnenrollAgent kept no copy of agents.json'
+        Check (Test-NoOverlap $fx) 'two Claude Code processes ran at the same time'
     }
 } catch {
     $script:Fail++
