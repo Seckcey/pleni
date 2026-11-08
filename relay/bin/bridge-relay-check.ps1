@@ -3404,6 +3404,148 @@ try {
         Check ($fm.Count -eq 1 -and (Read-Shared $fm[0].FullName) -match 'Seventh\.') "-UnenrollAgent did not keep Sergeant Finch's mail in mail\sergeant-finch\new ($($fm.Count) message(s), want 1)"
         Check (Test-NoOverlap $fx) 'two Claude Code processes ran at the same time'
     }
+
+    Invoke-Scenario '32 a Gemini CLI agent: off until turned on, its rules file, a turn with the notice on stdin, a changed rules file, not signed in backs off and halts, another session, the skipped turn limit, the daily total' {
+        Assert-NoOrdersAbove
+        $fx = New-Fixture 'ga'
+        Initialize-Fixture $fx
+        $kit = Join-Path $fx.dir 'crew\kit'
+        $gsid = [guid]::NewGuid().ToString()
+        $gfile = Write-GeminiSession $fx $gsid $kit
+        $kitPolicy = Join-Path $fx.mb '.relay\agent-sergeant-kit.gemini-policy.toml'
+        $kitDefaults = Join-Path $fx.mb '.relay\agent-sergeant-kit.gemini-defaults.json'
+        # 1. Off until agent_tools lists gemini, in words that say it costs money. A refusal saves nothing.
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Kit'; Tool = 'gemini'; SessionId = $gsid }
+        Check ($r.code -ne 0 -and (Test-Said $r.out 'Gemini CLI agents are off') -and (Test-Said $r.out 'costs money')) "a Gemini CLI agent was enrolled while they are off: $(Get-Tail $r.out)"
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Kit'; Tool = 'gemini'; SessionId = $gsid; Effort = 'high' }
+        Check ($r.code -ne 0 -and (Test-Said $r.out 'no effort setting')) 'a Gemini CLI agent took -Effort'
+        Check (-not (Test-Path -LiteralPath (Join-Path $fx.mb '.relay\agents.json')) -and -not (Test-Path -LiteralPath (Join-Path $fx.mb 'mail\sergeant-kit'))) 'a refused -EnrollAgent -Tool gemini saved agents.json or made a mail folder'
+        Set-RelaySettings $fx @{ agent_tools = @('codex', 'claude', 'gemini') }
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Kit'; Tool = 'gemini'; SessionId = $gsid }
+        Check ($r.code -eq 0 -and (Test-Said $r.out 'costs money')) "-EnrollAgent -Tool gemini exit code $($r.code): $(Get-Tail $r.out)"
+        $ag = (Get-RelayJson $fx 'agents.json').'sergeant-kit'
+        Check ($ag -and $ag.tool -eq 'gemini' -and $ag.session_id -eq $gsid -and [string]$ag.cwd -like '*\ga\crew\kit' -and -not $ag.follow_name -and $ag.profile -eq 'mail' -and
+            $ag.made_by -eq 'owner' -and [string]$ag.transcript_path -like ('*\chats\session-*' + $gsid.Substring(0, 8) + '.jsonl')) 'agents.json does not hold the Gemini CLI agent'
+        # Steps 3 to 7 start 7 Gemini CLI agent turns, more than the default total of 4 a day (agent_wakes_per_day),
+        # which would hold step 6. So no total (0) until step 8 sets one from the count.
+        Write-Text (Join-Path $fx.mb 'bin\cost-limits.json') '{"agent_wakes_per_day":{"gemini":0}}'
+        # 2. Its rules file: its own two commands, no -MailboxRoot, no include folders. -ShowAgentArgs writes nothing.
+        $r = Invoke-Relay $fx 'ShowAgentArgs' @{ AgentName = 'Sergeant Kit' }
+        $j = $null
+        try { $j = ConvertFrom-Json -InputObject $r.out.Substring($r.out.IndexOf('{')) } catch { }
+        Check ($null -ne $j) "-ShowAgentArgs did not print JSON: $(Get-Tail $r.out)"
+        Check ($j -and -not $j.policyProblem -and @($j.args) -contains '--resume' -and @($j.args) -contains '--admin-policy' -and @($j.args) -notcontains '--include-directories') 'the Gemini CLI agent''s command is not a resume with its rules file and no include folders'
+        if ($j) {
+            $pol = [string]$j.policy
+            $rules = @($pol -split '\[\[rule\]\]')
+            # Its own two commands, by its name. -MailboxRoot is denied by the only commandRegex rule (its letters are
+            # written as [mM][aA]..., so the word itself is not there). No rule lets a mail agent write a file.
+            Check ($pol -match "-Read -Me 'Sergeant Kit'" -and $pol -match "-Send -From 'Sergeant Kit'") 'the rules file does not allow the agent''s own two commands'
+            $box = @($rules | Where-Object { $_ -match 'commandRegex' })
+            Check ($box.Count -eq 1 -and $box[0].Contains('[mM][aA][iI][lL][bB][oO][xX][rR][oO][oO][tT]') -and $box[0] -match 'decision = "deny"') 'the rules file does not deny -MailboxRoot'
+            $writes = @($rules | Where-Object { $_ -match 'write_file' -and $_ -match 'decision = "allow"' })
+            Check ($writes.Count -eq 0) 'a mail agent''s rules let it write files'
+            Check ([string]$j.policyFile -like '*\.relay\agent-sergeant-kit.gemini-policy.toml' -and -not (Test-Path -LiteralPath $kitPolicy)) '-ShowAgentArgs does not name the agent''s own rules file, or wrote it'
+        }
+        # 3. A turn: the notice on standard input, its own rules and defaults files, the pins. Enrolling woke nothing,
+        # and a dry run shows the turn first and writes nothing, not even the rules file.
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-GeminiCalls $fx '').Count -eq 0) 'enrolling woke the Gemini CLI agent'
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Kit', '-Text', 'Check the notes.')
+        $r = Invoke-Relay $fx 'DryRun' $null
+        Check ((Test-Said $r.out 'would wake Sergeant Kit \(Gemini CLI session') -and (Test-SaidText $r.out "--resume $gsid") -and $r.out -notmatch 'Check the notes') "the dry run does not show the Gemini CLI agent's turn, or shows the mail text: $(Get-Tail $r.out)"
+        Check (-not (Test-Path -LiteralPath $kitPolicy) -and -not (Test-Path -LiteralPath $kitDefaults) -and @(Get-GeminiCalls $fx '').Count -eq 0) 'the dry run wrote the agent''s Gemini files, or started Gemini CLI'
+        $null = Invoke-Relay $fx 'Once' $null
+        $c = @(Get-GeminiResumeCalls $fx)
+        Check ($c.Count -eq 1) "expected 1 Gemini CLI agent turn, got $($c.Count)"
+        if ($c.Count -ge 1) {
+            Check ($c[0].resume -eq $gsid -and [string]$c[0].stdin -match '\[bridge-relay M' -and [string]$c[0].stdin -match "-Read -Me 'Sergeant Kit'" -and [string]$c[0].stdin -notmatch 'Check the notes') 'the notice on stdin does not say how to read, or holds mail text'
+            Check ([string]$c[0].policy_path -like '*\.relay\agent-sergeant-kit.gemini-policy.toml' -and [string]$c[0].defaults -match 'maxSessionTurns') 'the turn did not use the agent''s own rules and defaults files'
+            Check ($c[0].relay_env.name -eq 'Sergeant Kit' -and $c[0].relay_env.hop -eq '1' -and [bool]$c[0].gemini_key_present) 'the turn did not get the pins and hop, or the Gemini key did not pass through'
+            # The whole command line: C2's resume with the agent's own rules file, no include folders and no model (D5).
+            $why = Compare-ArgList @($c[0].args) @('--resume', $gsid, '-p', 'Do what the relay notice above says.', '-o', 'stream-json', '--approval-mode', 'default',
+                '--skip-trust', '--admin-policy', $kitPolicy)
+            Check (-not $why) "the Gemini CLI agent turn's command is not the relay's own: $why"
+            Check ([string]$c[0].defaults_path -like '*\.relay\agent-sergeant-kit.gemini-defaults.json' -and [string]$c[0].defaults -ceq '{"model":{"maxSessionTurns":30}}' -and
+                [string]$c[0].policy -match "-Read -Me 'Sergeant Kit'") "the turn did not read the agent's own rules, or its own defaults file with the turn limit 30 (defaults '$($c[0].defaults)')"
+            Check ((ConvertTo-BaseText $c[0].relay_env.mailbox) -eq (ConvertTo-BaseText $fx.mb) -and (ConvertTo-BaseText $c[0].relay_env.folder) -eq (ConvertTo-BaseText $kit)) 'the turn did not get the mailbox and folder pins'
+            Check ([string]$c[0].cwd -like '*\ga\crew\kit' -and [bool]$c[0].session_file -and [string]$c[0].gemini_cli_home -like '*\ga\gemini-home') "the turn did not run in the agent's folder with the relay's Gemini home, or Gemini CLI (the stub) did not find the session from there"
+        }
+        Check ((Get-NoticeCount $gfile 'M') -eq 1) 'the agent''s session file does not hold exactly one notice'
+        $md = @(Get-MailDispatches $fx)
+        $kitHash = ''
+        if (Test-Path -LiteralPath $kitPolicy) { $kitHash = (Get-FileHash -LiteralPath $kitPolicy -Algorithm SHA256).Hash.ToLowerInvariant() }
+        Check ($md.Count -eq 1 -and $md[0].outcome -eq 'success' -and $md[0].tool -eq 'gemini' -and [int]$md[0].hop -eq 1 -and $kitHash -and $md[0].policy_sha256 -eq $kitHash) 'the turn is not recorded once as a Gemini CLI success with hop 1 and its rules file''s SHA-256'
+        # 3b. A window has the session open: the mail waits, then goes once (never two programs on one session).
+        $win = Start-OpenWindow $fx $gsid
+        try {
+            $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Kit', '-Text', 'While open.')
+            $r = Invoke-Relay $fx 'Once' $null
+            Check ((Test-Said $r.out "session $gsid is open in pid") -and @(Get-GeminiResumeCalls $fx).Count -eq 1) 'the Gemini CLI agent was woken while a window had its session open'
+        } finally {   # as scenario 31 does: the window must be gone before the next look
+            try { Stop-Process -Id $win.Id -Force -ErrorAction SilentlyContinue } catch { }
+            [void]$win.WaitForExit(10000)
+        }
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-GeminiResumeCalls $fx).Count -eq 2 -and (Get-NoticeCount $gfile 'M') -eq 2) 'the Gemini CLI agent was not woken once after the window closed'
+        # 4. A rules file changed after the relay wrote it: that agent stops before the turn; the mail is kept.
+        $env:RELAY_TEST_CHANGE_POLICY = '1'   # test only
+        try {
+            $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Kit', '-Text', 'Second.')
+            $null = Invoke-Relay $fx 'Once' $null
+        } finally { Remove-Item Env:RELAY_TEST_CHANGE_POLICY -ErrorAction SilentlyContinue }
+        Check ([string](Get-RelayState $fx).mail_halts.'sergeant-kit' -match 'changed after the relay wrote it' -and @(Get-GeminiResumeCalls $fx).Count -eq 2) 'a changed rules file did not stop the agent before its turn'
+        Check (@(Get-MailNotes $fx 'sergeant-kit' | Where-Object { $_.state -eq 'pending' }).Count -eq 1) 'the mail of the stopped turn is not kept'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        # 5. Not signed in (exit 41): never delivered, backed off, and that agent halts after three in a row.
+        Set-GeminiStubMode $fx 'exit:41'
+        $loop = Start-Relay $fx 'Start' @{ BackoffSeconds = 2 }
+        $halted = Wait-Until { [string](Get-RelayState $fx).mail_halts.'sergeant-kit' -match '3 consecutive failures' } 40
+        $null = Stop-Loop $fx $loop
+        $kh = [string](Get-RelayState $fx).mail_halts.'sergeant-kit'
+        Check $halted "three not-signed-in turns in a row did not stop the agent's wakes (its halt '$kh')"
+        Check (@(Get-GeminiResumeCalls $fx).Count -eq 5 -and (Get-NoticeCount $gfile 'M') -eq 2) 'expected 3 more turns that never reached the session'
+        Check (@(Get-MailNotes $fx 'sergeant-kit' | Where-Object { $_.state -eq 'pending' }).Count -eq 1) 'the mail of turns that never reached the session is not kept'
+        Check ([string](Get-RelayState $fx).halt -eq '') 'an agent''s failures halted the whole relay'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        # 6. Another session answered: delivered, not replayed, and that agent stops.
+        Set-GeminiStubMode $fx 'wrong-session'
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ([string](Get-RelayState $fx).mail_halts.'sergeant-kit' -match 'session mismatch' -and @(Get-MailNotes $fx 'sergeant-kit' | Where-Object { $_.state -eq 'pending' }).Count -eq 0) 'a turn in another session did not stop the agent, or was kept for a replay'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        # 7. Gemini CLI skipped the relay's turn limit: the turn counts, with one alert.
+        Set-GeminiStubMode $fx 'skip-defaults'
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Kit', '-Text', 'Third.')
+        $null = Invoke-Relay $fx 'Once' $null
+        Set-GeminiStubMode $fx 'ok'
+        $af = Join-Path $fx.mb '.relay\alerts.md'
+        $skip = @()
+        if (Test-Path -LiteralPath $af) { $skip = @(((Read-Shared $af) -split "`n") | Where-Object { $_.Contains("did not use the relay's turn limit for an agent turn") }) }
+        Check ($skip.Count -eq 1) "expected 1 alert that Gemini CLI skipped the turn limit, got $($skip.Count)"
+        $last = @(Get-MailDispatches $fx) | Select-Object -Last 1
+        Check ($last -and $last.outcome -eq 'success' -and [string]$last.turn_limit -eq 'skipped by Gemini CLI') "the turn is not recorded as a success that Gemini CLI ran without the relay's turn limit (outcome '$($last.outcome)', turn_limit '$($last.turn_limit)')"
+        # 8. The daily total of Gemini CLI agent turns, set from the count so far: one more turn, then the mail waits. Every
+        # turn that started counts (1, 1, 3, 1 and 1 in steps 3 to 7); the one that step 4 stopped never started.
+        $n = [int](Get-RelayState $fx).daily.agent_tool_wakes.gemini
+        $calls = @(Get-GeminiResumeCalls $fx).Count
+        Check ($n -eq $calls) "the day's count of Gemini CLI agent turns is $n, but $calls turn(s) started"
+        Write-Text (Join-Path $fx.mb 'bin\cost-limits.json') ('{"agent_wakes_per_day":{"gemini":' + ($n + 1) + '}}')
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Kit', '-Text', 'Fourth.')
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-GeminiResumeCalls $fx).Count -eq $calls + 1) 'the last Gemini CLI agent turn of the day did not run'
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Kit', '-Text', 'Fifth.')
+        $r = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-GeminiResumeCalls $fx).Count -eq $calls + 1 -and (Test-Said $r.out 'the daily limit of Gemini CLI agent turns is reached')) 'a Gemini CLI agent turn ran past the daily total'
+        $leak = Test-NoKeyText $fx $DummyGeminiKey
+        Check (-not $leak) "the Gemini key was written into: $leak"
+        Check (Test-NoOverlap $fx -Gemini) 'two Gemini CLI processes ran at the same time'
+        Check (@(Get-Calls $fx 'start').Count -eq 0) 'agent mail woke the Claude Code coordinator'
+        # 9. Unenrolling keeps a copy of agents.json and removes the agent's own rules and defaults files.
+        Check ((Test-Path -LiteralPath $kitPolicy) -and (Test-Path -LiteralPath $kitDefaults)) 'the agent''s Gemini rules and defaults files are not in .relay after its turns'
+        $r = Invoke-Relay $fx 'UnenrollAgent' @{ AgentName = 'Sergeant Kit' }
+        Check ($r.code -eq 0 -and (Get-BackupCount $fx 'agents.json') -ge 1 -and -not (Test-Path -LiteralPath $kitPolicy) -and
+            -not (Test-Path -LiteralPath $kitDefaults)) '-UnenrollAgent kept no copy of agents.json, or left the agent''s Gemini files'
+    }
 } catch {
     $script:Fail++
     Write-Host ('FAIL harness: ' + $_.Exception.Message)
