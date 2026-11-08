@@ -48,6 +48,7 @@ const MAX_MAIL_TEXT = 1000;    // the model makes a short snippet of it
 const MAX_BROWSE = 100;        // messages the Mail page gets at once
 const MAX_FULL_TEXT = 64 * 1024; // the Mail page shows a message whole (agent-mail.ps1 sends at most 64 KB)
 const MAX_MAIL_NAME = 80;
+const MAX_TOOL_NAME = 20; // a tool name in agents.json: the longest real one is 'antigravity'
 const MAX_NAME_BYTES = 1024;
 const MAX_WAKES = 30;          // the relay keeps its last 50 mail wakes
 
@@ -762,7 +763,10 @@ function createMailReader(root, now) {
       seenFolders.add(folder);
       return listFolder(folder, kind, t, force);
     };
-    const enrolled = enrolledAgents(settingsFiles.get(path.join(root, '.relay', 'agents.json'), readJson));
+    const enrolled = enrolledAgents(
+      settingsFiles.get(path.join(root, '.relay', 'agents.json'), readJson),
+      settingsFiles.get(path.join(root, '.relay', 'codex.json'), readJson),
+    );
     const owner = shortText(settingsFiles.get(path.join(root, 'bin', 'relay-settings.json'), readJson)?.owner_name, MAX_MAIL_NAME);
     const keys = new Set(list(dir, 'dirs').filter((key) => MAIL_AGENT.test(key)));
     for (const key of enrolled.keys()) keys.add(key);
@@ -788,6 +792,8 @@ function createMailReader(root, now) {
         since: fresh.length ? fileTime(fresh[0]) : null,
         wakes: Boolean(wakes),
         threadId: wakes?.threadId ?? null,
+        tool: wakes?.tool ?? null,
+        sessionKey: wakes?.sessionKey ?? null,
       });
       const take = (files, folder, isNew, into) => {
         for (const file of files) {
@@ -836,6 +842,7 @@ function createMailReader(root, now) {
         toName: names.get(path.join(dir, p.key, 'name.txt'), readName) ?? null,
         from: p.from,
         fromName: msg.fromName,
+        ...(msg.fromBox ? { fromBox: msg.fromBox } : {}),
         at: p.at,
         unread: p.unread,
         text: hide ? null : msg.text,
@@ -897,11 +904,12 @@ function fileTime(file) {
   return toTime(y, mo, d, h, mi, s, ms, 0);
 }
 
-// "From: <name>", "To: <names>" and "Sent: <time>" lines, a blank line, then the message, kept to
-// `max` characters.
+// "From: <name>", "To: <names>", "Sent: <time>", "Box: <the sender's mailbox>" and "Hop: <n>" lines, a blank
+// line, then the message, kept to `max` characters. fromBox is there only when the head names a box id.
 function parseMail(text, max = MAX_MAIL_TEXT) {
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
   let fromName = null;
+  let fromBox = null;
   let body = 0;
   for (let i = 0; i < lines.length && i < 20; i++) {
     if (lines[i].trim() === '') {
@@ -910,11 +918,13 @@ function parseMail(text, max = MAX_MAIL_TEXT) {
     }
     const m = HEAD_LINE.exec(lines[i]);
     if (!m) break; // no head: it is all message
-    if (m[1].toLowerCase() === 'from') fromName = shortText(m[2], MAX_MAIL_NAME);
+    const field = m[1].toLowerCase();
+    if (field === 'from') fromName = shortText(m[2], MAX_MAIL_NAME);
+    else if (field === 'box' && PROJECT_ID.test(m[2].trim())) fromBox = m[2].trim();
   }
   const rest = lines.slice(body).join('\n').trim().replace(/(?![\n\t])\p{Cc}/gu, ' ');
   const chars = Array.from(rest);
-  return { fromName, text: (chars.length > max ? chars.slice(0, max).join('') : rest) || null };
+  return { fromName, text: (chars.length > max ? chars.slice(0, max).join('') : rest) || null, ...(fromBox ? { fromBox } : {}) };
 }
 
 // The turns the relay started to wake an agent for its mail (state.json "mail_dispatches"), newest
@@ -969,16 +979,40 @@ function unixMs(value) {
   return Number.isSafeInteger(value) && value > 0 ? value * 1000 : null;
 }
 
-// .relay/agents.json: the agents the relay wakes for their mail, each with the Codex thread it wakes.
-function enrolledAgents(json) {
+// .relay/agents.json: the agents the relay wakes for their mail, each with its AI tool and the session it wakes:
+// { name, threadId, tool, sessionKey }. An entry with no tool is a Codex agent, as before tools came. threadId stays
+// the Codex thread (thread_id); sessionKey is '<tool>:<id>' for claude, codex and gemini, and null for a tool Pleni
+// does not know. .relay/codex.json's mail_name adds the planner under its mail name (the relay wakes it for that
+// mail), unless an agent already has that key.
+function enrolledAgents(json, codex = null) {
   const out = new Map();
-  if (json === null || typeof json !== 'object' || Array.isArray(json)) return out;
-  for (const [key, agent] of Object.entries(json)) {
-    if (!MAIL_AGENT.test(key) || agent === null || typeof agent !== 'object') continue;
-    const id = typeof agent.thread_id === 'string' ? agent.thread_id.trim().toLowerCase() : '';
-    out.set(key, { name: shortText(agent.name, MAX_MAIL_NAME), threadId: SESSION_ID.test(id) ? id : null });
+  if (json !== null && typeof json === 'object' && !Array.isArray(json)) {
+    for (const [key, agent] of Object.entries(json)) {
+      if (!MAIL_AGENT.test(key) || agent === null || typeof agent !== 'object') continue;
+      const named = typeof agent.tool === 'string' ? agent.tool.trim().toLowerCase() : '';
+      const tool = named ? named.slice(0, MAX_TOOL_NAME) : 'codex';
+      const id = tool === 'codex' ? threadIdOf(agent.thread_id) ?? threadIdOf(agent.session_id) : threadIdOf(agent.session_id);
+      out.set(key, {
+        name: shortText(agent.name, MAX_MAIL_NAME),
+        threadId: tool === 'codex' ? id : null,
+        tool,
+        sessionKey: id && COORDINATOR_TOOLS.has(tool) ? `${tool}:${id}` : null,
+      });
+    }
+  }
+  const plannerName = shortText(codex?.mail_name, MAX_MAIL_NAME);
+  const plannerKey = plannerName ? nameKey(plannerName) : '';
+  if (plannerKey && MAIL_AGENT.test(plannerKey) && !out.has(plannerKey)) {
+    const thread = threadIdOf(codex?.thread_id);
+    out.set(plannerKey, { name: plannerName, threadId: thread, tool: 'codex', sessionKey: thread ? `codex:${thread}` : null });
   }
   return out;
+}
+
+// The folder name agent-mail.ps1 makes from a name: small letters, each run of other marks one '-'.
+function nameKey(name) {
+  const clean = name.replace(/\s+/g, ' ').trim().replace(/^[*_`"' ]+|[*_`"' ]+$/g, '');
+  return clean.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
 function readName(file, st) {
