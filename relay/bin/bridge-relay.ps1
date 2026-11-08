@@ -3015,9 +3015,13 @@ function Invoke-MailTick([hashtable]$State, [bool]$ReadOnly) {
                 Write-Note ('DRY-RUN: would wake {0} (Claude Code session {1}, folder {2}) for {3} message(s), the notice on standard input. Nothing started, nothing written.' -f $ag.name, (Get-AgentSessionId $ag), $ag.cwd, $pending.Count)
                 Write-Host ('  command: ' + $ClaudeExe + ' ' + (($cliArgs | ForEach-Object { ConvertTo-ArgToken $_ }) -join ' '))
             } elseif ($agTool -eq 'gemini') {
-                # Stage 7B: a Gemini CLI agent's rules file and command come in a later step (Start-ToolMailDispatch says so too).
-                Write-Note ('DRY-RUN: would not wake {0} (Gemini CLI session {1}): Gemini CLI agent turns come in a later step of Phase 7. Nothing started, nothing written.' -f $ag.name, (Get-AgentSessionId $ag))
-                continue
+                # No rules file is written: the command names the path a real turn writes right before it starts.
+                $target = Get-AgentGeminiTarget $ag
+                $cliArgs = Get-GeminiArguments $target ([string]$target.policy_path)   # a list, so a variable first
+                Write-Note ('DRY-RUN: would wake {0} (Gemini CLI session {1}, folder {2}) for {3} message(s), the notice on standard input. Nothing started, nothing written.' -f $ag.name, (Get-AgentSessionId $ag), $ag.cwd, $pending.Count)
+                Write-Host ('  command: ' + (Get-GeminiExePath) + ' ' + (($cliArgs | ForEach-Object { ConvertTo-ArgToken $_ }) -join ' '))
+                $policy = New-AgentGeminiPolicy $ag   # built, never written
+                if ($policy.problem) { Write-Note "DRY-RUN: the turn would not start, and this agent's wakes would stop: the relay's Gemini rules would not work: $($policy.problem)" }
             } elseif (Test-AgentRelayRules $ag) {
                 # Stage 7B: the relay's own Codex options come in a later step (Start-MailDispatch says so too).
                 Write-Note ('DRY-RUN: would not wake {0} (Codex thread {1}): a Codex agent with the relay''s rules comes in a later step of Phase 7. Nothing started, nothing written.' -f $ag.name, $ag.thread_id)
@@ -3812,6 +3816,16 @@ function Invoke-UnenrollAgent {
     foreach ($n in $drop) { [void]$state.mail_notes.Remove($n.id) }
     [void]$state.flags.Remove('last_mail_block_' + $key)
     Save-State $state
+    # Phase 7: a Gemini CLI agent's own rules and defaults files in .relay go too (each turn writes them again). Not while
+    # a turn of the agent still runs (a relay that stopped left it running): the next relay checks that turn's rules file
+    # when it settles it.
+    $runningTurns = @($state.mail_dispatches.Values | Where-Object { $_.agent -eq $key -and ($_.state -eq 'running' -or $_.state -eq 'launching') })
+    if ($runningTurns.Count -eq 0) {
+        foreach ($kind in @('policy.toml', 'defaults.json')) {
+            $gf = Get-AgentGeminiFile $key $kind
+            try { if (Test-Path -LiteralPath $gf -PathType Leaf) { Remove-Item -LiteralPath $gf -Force } } catch { Write-Log "WARNING: could not remove $gf ($($_.Exception.Message))." }
+        }
+    }
     Write-Log "Mail wakes for '$was' turned off. Its mail stays in mail\$key; a running turn is never stopped."
     if ($kept) { Write-Log "The agents.json from before is kept as $kept." }
 }
@@ -5463,7 +5477,13 @@ function Get-GeminiFolderProblem([string]$Cwd, [string]$Who = 'coordinator') {
 function Get-GeminiIncludeDirs([hashtable]$Coord) {
     # The folders a Gemini CLI coordinator turn may read besides its own (--include-directories): the projects folder,
     # the workers' worktrees folder and the mailbox, those that are there, each once (a folder inside another one is
-    # left out). The rules file decides where the turn may write, whatever this list holds.
+    # left out). The rules file decides where the turn may write, whatever this list holds. Phase 7: a record with
+    # include_dirs (an agent's turn, Get-AgentGeminiTarget: none) gets exactly that list; a coordinator record has none.
+    if ($Coord -and $Coord.ContainsKey('include_dirs')) {
+        $given = New-Object System.Collections.Generic.List[string]
+        foreach ($d in @($Coord.include_dirs)) { if ($d) { $given.Add([string]$d) } }
+        return , $given
+    }
     $list = New-Object System.Collections.Generic.List[string]
     foreach ($d in @($ProjectsDir, (Get-WorktreesDir), $Root)) {
         if (-not $d) { continue }
@@ -5484,9 +5504,12 @@ function Get-GeminiIncludeDirs([hashtable]$Coord) {
 
 function Get-GeminiArguments([hashtable]$Coord, [string]$PolicyPath) {
     # The Gemini CLI command line of one coordinator turn (design D9), each part its own argument. The notice is not on
-    # it: it goes on standard input.
+    # it: it goes on standard input. Phase 7: a record with new_session (a new agent's first turn) starts the session
+    # with that id (--session-id) instead of resuming it; a coordinator record never has it.
     $a = New-Object System.Collections.Generic.List[string]
-    foreach ($x in @('--resume', ([string]$Coord.session_id).Trim().ToLowerInvariant(), '-p', 'Do what the relay notice above says.', '-o', 'stream-json',
+    $first = '--resume'
+    if ($Coord.new_session) { $first = '--session-id' }
+    foreach ($x in @($first, ([string]$Coord.session_id).Trim().ToLowerInvariant(), '-p', 'Do what the relay notice above says.', '-o', 'stream-json',
             '--approval-mode', 'default', '--skip-trust', '--admin-policy', $PolicyPath)) { $a.Add([string]$x) }
     $dirs = Get-GeminiIncludeDirs $Coord   # a variable first: @(<function>) would keep the list as one item
     if ($dirs.Count) { $a.Add('--include-directories'); $a.Add(($dirs -join ',')) }
@@ -5498,11 +5521,14 @@ function Get-GeminiCommandProblem([hashtable]$Coord) {
     # Why the paths on a Gemini CLI coordinator turn's command line (the rules file and the include folders) cannot be
     # used, in plain words, or ''. Gemini CLI splits --admin-policy and --include-directories at commas, and reads an @
     # as a file to load. A .cmd or .bat launcher (gemini.cmd, as npm installs it) hands the command line to cmd.exe,
-    # which changes it at % ! ^ & | < and >.
+    # which changes it at % ! ^ & | < and >. Phase 7: a record with policy_path (an agent's turn) names its own rules
+    # file; a coordinator record has none, so its turn's rules file is the coordinator's.
     $exe = Get-GeminiExePath
     $viaCmd = [bool]($exe -match '\.(cmd|bat)$')
     $dirs = Get-GeminiIncludeDirs $Coord   # a variable first
-    foreach ($p in (@($GeminiPolicyFile) + @($dirs))) {
+    $pf = $GeminiPolicyFile
+    if ($Coord.policy_path) { $pf = [string]$Coord.policy_path }
+    foreach ($p in (@($pf) + @($dirs))) {
         $s = [string]$p
         if ($s.Contains(',') -or $s.Contains('@')) { return "the path $s holds a comma or an @, which Gemini CLI would read as a list or a file" }
         if ($viaCmd -and $s -match '[%!^&|<>]') { return "the path $s holds % ! ^ & | < or >, which cmd.exe would change on the Gemini CLI command line ($exe is a .cmd or .bat file)" }
@@ -5510,14 +5536,16 @@ function Get-GeminiCommandProblem([hashtable]$Coord) {
     return ''
 }
 
-function Set-GeminiEnvironment {
+function Set-GeminiEnvironment([string]$DefaultsPath = '') {
     # Process-local, for the Gemini CLI process only: the Gemini home the relay uses (when one is set) and the relay's
     # turn limit. The owner's own login, and GEMINI_API_KEY when it is set, pass through untouched, as for Gemini
-    # workers. Restore-SubscriptionEnvironment puts the old values back.
+    # workers. Restore-SubscriptionEnvironment puts the old values back. Phase 7: $DefaultsPath is an agent's own
+    # defaults file; with none, the coordinator's.
+    if (-not $DefaultsPath) { $DefaultsPath = $GeminiDefaultsFile }
     $previous = @{}
     foreach ($n in @('GEMINI_CLI_HOME', 'GEMINI_CLI_SYSTEM_DEFAULTS_PATH')) { $previous[$n] = [Environment]::GetEnvironmentVariable($n, 'Process') }
     if ($GeminiHomeDir) { [Environment]::SetEnvironmentVariable('GEMINI_CLI_HOME', $GeminiHomeDir, 'Process') }
-    [Environment]::SetEnvironmentVariable('GEMINI_CLI_SYSTEM_DEFAULTS_PATH', $GeminiDefaultsFile, 'Process')
+    [Environment]::SetEnvironmentVariable('GEMINI_CLI_SYSTEM_DEFAULTS_PATH', $DefaultsPath, 'Process')
     return $previous
 }
 
@@ -5525,7 +5553,7 @@ function Start-GeminiProcess([hashtable]$Coord, [string]$Stdin, [string]$Out, [s
     # Starts one Gemini CLI coordinator turn in the session's own folder, in its own hidden console, with the notice on
     # standard input. Returns @{ proc; error; halt }. The rules file's SHA-256 is checked right before the start, so the
     # file the turn reads is the one the relay wrote. No local here may be named $out or $err (names are not
-    # case-sensitive).
+    # case-sensitive). Phase 7: an agent's turn ($Coord from Get-AgentGeminiTarget) gets its own defaults file.
     $exe = Get-GeminiExePath
     $file = $exe
     $prefix = @()
@@ -5548,7 +5576,7 @@ function Start-GeminiProcess([hashtable]$Coord, [string]$Stdin, [string]$Out, [s
     $launchError = ''
     $previous = $null
     try {
-        $previous = Set-GeminiEnvironment
+        $previous = Set-GeminiEnvironment ([string]$Coord.defaults_path)   # '' for a coordinator record: its own file
         try {
             # Hidden own console: Ctrl+C in the relay window must never reach the coordinator turn.
             $proc = Start-Process -FilePath $file -ArgumentList $argString -WorkingDirectory ([string]$Coord.cwd) -WindowStyle Hidden -PassThru `
@@ -5781,12 +5809,13 @@ function Read-GeminiEvents([string]$Path) {
     return $r
 }
 
-function Get-GeminiExitWords($Code, [string]$Said) {
+function Get-GeminiExitWords($Code, [string]$Said, [string]$Who = 'coordinator') {
     # Plain words for Gemini CLI's exit code ($null: the relay restarted, so it has no exit code), and what it said.
+    # $Who (Phase 7): whose folder a resumed session belongs to, 'coordinator' or 'agent'.
     $w = switch ([string]$Code) {
         '1'   { 'Gemini CLI or its model service reported an error (exit 1)' }
         '41'  { 'Gemini CLI is not signed in (exit 41). Sign in once in a Gemini CLI window on this computer' }
-        '42'  { "Gemini CLI found no session with that id in the coordinator's folder, or the input was not valid (exit 42)" }
+        '42'  { "Gemini CLI found no session with that id in the $Who's folder, or the input was not valid (exit 42)" }
         '44'  { 'Gemini CLI could not start its sandbox (exit 44)' }
         '52'  { 'Gemini CLI found a problem in its settings (exit 52)' }
         '53'  { 'the turn hit its turn limit (gemini_max_session_turns in bin\cost-limits.json, or model.maxSessionTurns in your own Gemini settings), so Gemini CLI stopped it (exit 53)' }
@@ -6663,12 +6692,16 @@ function Get-SessionJobText([string]$Tool, [string]$Id, [string]$Except, [bool]$
 #   claude -p --resume <id> --output-format json --setting-sources "" --strict-mcp-config --disable-slash-commands
 #     --tools <list> --permission-mode <dontAsk or acceptEdits> --append-system-prompt <rules> [--max-budget-usd]
 #     [--model] [--effort] --allowedTools ... --disallowedTools ...
-# in the agent's own folder, with the notice on standard input and never on the command line. The notice says who
-# wrote and how to read the mail, never the mail itself. Its end is decided by evidence, as for every other turn: the
-# result and the notice's marker in the session's own file. The loop guard holds mail that came after too many
-# relay-woken turns in a row. A Gemini CLI agent's turn needs its own rules file, and a Codex agent with the relay's
-# rules its own Codex options: both come in later steps of Phase 7. Until then the relay stops before such a turn
-# starts and says so in plain words. The parts here that need nothing new already serve those tools too.
+# and a Gemini CLI agent's turn is the Gemini CLI coordinator's turn with the agent's own files:
+#   gemini --resume <id> -p <fixed words> -o stream-json --approval-mode default --skip-trust --admin-policy <its rules file>
+# with no --include-directories, and its own defaults file (the turn limit). The relay writes both right before each
+# turn (Write-AgentGeminiFiles, New-AgentGeminiPolicy). Either turn runs in the agent's own folder, with the notice on
+# standard input and never on the command line (Gemini CLI has no option for rules, so its rules ride in the notice
+# too). The notice says who wrote and how to read the mail, never the mail itself. Its end is decided by evidence, as
+# for every other turn: the result and the notice's marker in the session's own file. The loop guard holds mail that
+# came after too many relay-woken turns in a row. A Codex agent with the relay's rules needs its own Codex options,
+# which come in a later step of Phase 7: until then the relay stops before such a turn starts and says so in plain
+# words. The parts here that need nothing new already serve it too.
 
 function Get-SessionTurnText([hashtable]$State, [string]$AgTool, [string]$Id) {
     # A relay turn of any kind that runs now in session <AgTool>:<Id>, in words, or ''. A backstop: one session has one
@@ -7009,11 +7042,106 @@ function Get-AgentRules([hashtable]$Ag) {
     return (($t -replace '[\r\n]+', ' ') -replace '"', "'")
 }
 
+function New-AgentGeminiPolicy([hashtable]$Ag) {
+    # The rules file of one Gemini CLI agent turn, in the format of New-CoordinatorGeminiPolicy: every deny (900)
+    # outranks every allow (100), and anything no rule allows is denied (0). mail: the read tools and the agent's two
+    # mail commands; files: also write_file and replace under its own folder. Never a path with .., an orders file, a
+    # .gemini, .agents, .git, .codex or .claude folder, or a .env file; never -MailboxRoot. With no include folders
+    # (Get-AgentGeminiTarget), the read tools reach only its own folder, so it reads its mail through agent-mail.ps1.
+    # Returns @{ text; problem }. It only builds the text: the caller writes the file, and a dry run never does.
+    $name = [string]$Ag.name
+    $agentDir = [string]$Ag.cwd
+    $ownPath = ''
+    if ($agentDir) { try { $ownPath = ConvertTo-PathPattern $agentDir } catch { $ownPath = '' } }
+    if (-not $ownPath) { return @{ text = ''; problem = "the agent's folder '$agentDir' is not a folder path Windows can use" } }
+    $ps = 'powershell -NoProfile -ExecutionPolicy Bypass -File '
+    $allow = @()   # an array, not a List: + works on arrays only
+    foreach ($s in @(($Root + '\bin\agent-mail.ps1'), (($Root -replace '\\', '/') + '/bin/agent-mail.ps1'))) {
+        $allow += "$ps$s -Read -Me '$name'"
+        $allow += "$ps$s -Send -From '$name'"
+    }
+    $deny = @('powershell -Command', 'powershell -c', 'pwsh', 'cmd', 'node', 'npm', 'npx', 'gh', 'git', 'claude', 'codex', 'gemini', 'agy', 'curl', 'wget')
+    $file = '\x00"file_path":"'   # each top-level argument is wrapped in NUL characters in the text Gemini CLI matches
+    $sep = '(?:\\\\|/)'
+    $own = $file + $ownPath + $sep + '[^":]*"\x00'   # a file in its own folder; no : after the drive, so never a stream
+    $up = $file + '[^"]*\.\.'
+    $orderNames = @('GEMINI.md', 'AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md', 'CLAUDE.local.md')
+    $orders = $file + '(?:[^"]*\\\\|[^"]*/|)(?:' + ((@($orderNames) | ForEach-Object { ConvertTo-CasePattern $_ }) -join '|') + ')"\x00'
+    $dots = $file + '[^"]*' + $sep + '(?:' + ((@('.gemini', '.agents', '.git', '.codex', '.claude') | ForEach-Object { ConvertTo-CasePattern $_ }) -join '|') + ')(?:\\\\|/|")'
+    $envFile = $file + '[^"]*' + $sep + (ConvertTo-CasePattern '.env') + '(?:"|\.)'
+    $boxRx = '.*-' + (ConvertTo-CasePattern 'MailboxRoot')   # a commandRegex: Gemini CLI matches it after "command":"
+    $oneCommand = '[^\x00]"command":'
+    $checks = [ordered]@{ 'own folder write' = $own; 'no .. in a path' = $up; 'no orders file' = $orders; 'no tool folder' = $dots;
+        'no .env file' = $envFile; 'no -MailboxRoot' = ('"command":"' + $boxRx); 'one command argument' = $oneCommand }
+    foreach ($p in @($allow + $deny)) { $checks["prefix '$p'"] = ConvertTo-GeminiPrefixPattern $p }
+    foreach ($k in @($checks.Keys)) {
+        $why = Get-GeminiPatternProblem ([string]$checks[$k])
+        if ($why) { return @{ text = ''; problem = "the agent rule $k would be dropped by Gemini CLI: $why" } }
+    }
+    $nameLine = $name -replace '[\x00-\x1f\x7f]', ' '   # a comment line holds no line break
+    $L = New-Object System.Collections.Generic.List[string]
+    $L.Add("# Gemini CLI admin policy for the agent $nameLine of $Root, written by the relay's bin\bridge-relay.ps1 before each of its turns.")
+    $L.Add('# Every deny (900) outranks every allow (100), and anything no rule allows is denied (0).')
+    $L.Add(''); $L.Add('[[rule]]'); $L.Add('toolName = "*"'); $L.Add('decision = "deny"'); $L.Add('priority = 0')
+    $L.Add('denyMessage = ' + (ConvertTo-TomlText 'The relay does not let this agent use this. Say so by mail and end the turn.'))
+    $L.Add(''); $L.Add('[[rule]]'); $L.Add('toolName = ' + (ConvertTo-TomlList @('read_file', 'read_many_files', 'glob', 'grep_search', 'list_directory'))); $L.Add('decision = "allow"'); $L.Add('priority = 100')
+    if ((Get-AgentProfile $Ag) -eq 'files') {
+        $L.Add(''); $L.Add('[[rule]]'); $L.Add('toolName = ' + (ConvertTo-TomlList @('write_file', 'replace'))); $L.Add('argsPattern = ' + (ConvertTo-TomlText $own)); $L.Add('decision = "allow"'); $L.Add('priority = 100')
+    }
+    foreach ($pat in @($up, $orders, $dots, $envFile)) {
+        $L.Add(''); $L.Add('[[rule]]'); $L.Add('toolName = ' + (ConvertTo-TomlList @('write_file', 'replace'))); $L.Add('argsPattern = ' + (ConvertTo-TomlText $pat)); $L.Add('decision = "deny"'); $L.Add('priority = 900')
+        $L.Add('denyMessage = ' + (ConvertTo-TomlText 'The relay does not let this agent write that file.'))
+    }
+    $L.Add(''); $L.Add('[[rule]]'); $L.Add('toolName = "run_shell_command"'); $L.Add('commandPrefix = ' + (ConvertTo-TomlList $allow)); $L.Add('decision = "allow"'); $L.Add('priority = 100')
+    $L.Add(''); $L.Add('[[rule]]'); $L.Add('toolName = "run_shell_command"'); $L.Add('commandRegex = ' + (ConvertTo-TomlText $boxRx)); $L.Add('decision = "deny"'); $L.Add('priority = 900')
+    $L.Add(''); $L.Add('[[rule]]'); $L.Add('toolName = "run_shell_command"'); $L.Add('commandPrefix = ' + (ConvertTo-TomlList $deny)); $L.Add('decision = "deny"'); $L.Add('priority = 900')
+    $L.Add(''); $L.Add('[[rule]]'); $L.Add('toolName = "run_shell_command"'); $L.Add('argsPattern = ' + (ConvertTo-TomlText $oneCommand)); $L.Add('decision = "deny"'); $L.Add('priority = 900')
+    $L.Add(''); $L.Add('[[rule]]'); $L.Add('toolName = ' + (ConvertTo-TomlList @('web_fetch', 'google_web_search', 'save_memory'))); $L.Add('decision = "deny"'); $L.Add('priority = 900')
+    $L.Add(''); $L.Add('[[rule]]'); $L.Add('toolName = "*"'); $L.Add('mcpName = "*"'); $L.Add('decision = "deny"'); $L.Add('priority = 900')
+    return @{ text = (($L -join "`n") + "`n"); problem = '' }
+}
+
+function Get-AgentGeminiFile([string]$Key, [string]$Kind) {
+    # One Gemini CLI agent's own rules file or defaults file ($Kind 'policy.toml' or 'defaults.json'):
+    # .relay\agent-<key>.gemini-policy.toml or .relay\agent-<key>.gemini-defaults.json. A name key holds only a-z, 0-9
+    # and -; any other sign becomes -, so the file stays in .relay whatever a hand-edited agents.json holds.
+    $k = ([string]$Key) -replace '[^A-Za-z0-9-]', '-'
+    return [IO.Path]::Combine($RelayDir, "agent-$k.gemini-$Kind")
+}
+
+function Get-AgentGeminiTarget([hashtable]$Ag) {
+    # The record that the Gemini CLI turn functions read (session_id, cwd, transcript_path, model), with the keys an agent's
+    # turn adds (Get-GeminiIncludeDirs, Get-GeminiArguments, Get-GeminiCommandProblem, Start-GeminiProcess): no include
+    # folders, the agent's own rules file and defaults file, and new_session for a new agent's first turn. It only builds
+    # paths: it writes nothing.
+    $k = [string]$Ag.key
+    return @{ session_id = (Get-AgentSessionId $Ag); cwd = [string]$Ag.cwd; transcript_path = [string]$Ag.transcript_path; model = [string]$Ag.model;
+        include_dirs = @(); policy_path = (Get-AgentGeminiFile $k 'policy.toml'); defaults_path = (Get-AgentGeminiFile $k 'defaults.json');
+        new_session = [bool]$Ag.new_session }
+}
+
+function Write-AgentGeminiFiles([hashtable]$Ag) {
+    # Writes this turn's rules file and defaults file (the turn limit), never in a dry run. Returns @{ policy; hash; limit;
+    # problem; error }: problem, the rules would not work, so no turn may use them (the caller stops this agent's wakes);
+    # error, a file could not be written (the caller backs off and tries again). limit is the turn limit written, -1 for
+    # none. Each agent has files of its own, and one turn runs at a time per agent, so two turns never write one file.
+    $t = Get-AgentGeminiTarget $Ag
+    $policy = New-AgentGeminiPolicy $Ag
+    if ($policy.problem) { return @{ policy = [string]$t.policy_path; hash = ''; limit = 0; problem = "the relay's Gemini rules would not work: $($policy.problem)"; error = '' } }
+    $limit = [int]$script:GeminiTurns
+    if ($limit -eq 0) { $limit = -1 }   # 0 means no limit, which Gemini CLI writes as -1
+    try {
+        [IO.File]::WriteAllText([string]$t.policy_path, [string]$policy.text, $Utf8)
+        [IO.File]::WriteAllText([string]$t.defaults_path, ('{"model":{"maxSessionTurns":' + $limit + '}}'), $Utf8)
+        return @{ policy = [string]$t.policy_path; hash = (Get-FileSha256 ([string]$t.policy_path)); limit = $limit; problem = ''; error = '' }
+    } catch { return @{ policy = [string]$t.policy_path; hash = ''; limit = $limit; problem = ''; error = 'could not write the Gemini rules file: ' + $_.Exception.Message } }
+}
+
 function Start-ToolMailDispatch([hashtable]$State, [hashtable]$Ag, [object[]]$Pending) {
     # One mail turn of a Claude Code or Gemini CLI agent: the notice on standard input, a write-ahead record, the checks
     # right before the start, then the tool's own launcher. Its end is decided by evidence (Complete-ToolMailDispatch).
-    # Stage 7B starts Claude Code turns only: a Gemini CLI agent's turn needs its own rules file, which comes in a later
-    # step of Phase 7, so the relay stops before it starts (no failure counted; the mail is kept).
+    # A Gemini CLI turn also gets the agent's own rules file and turn limit, written for this turn; the rules file's
+    # SHA-256 is checked right before the start (Start-GeminiProcess).
     $agTool = Get-AgentTool $Ag
     $now = Get-Now
     if (-not (Test-Path -LiteralPath $DispatchDir)) { New-Item -ItemType Directory -Path $DispatchDir -Force | Out-Null }
@@ -7057,8 +7185,21 @@ function Start-ToolMailDispatch([hashtable]$State, [hashtable]$Ag, [object[]]$Pe
             $turnEnv = Set-AgentTurnEnvironment ([int]$d.hop) $Ag   # the agent's pins and hop, for this turn's process only
             $started = Start-ClaudeProcess $cliArgs ([string]$Ag.cwd) $stdin $out $errFile
         } elseif ($agTool -eq 'gemini') {
-            Set-MailDispatchHalted $State $d 'a Gemini CLI agent turn comes in a later step of Phase 7, so this relay does not start one yet'
-            return
+            # The agent's own rules file and turn limit, written for this turn, as for a Gemini CLI coordinator turn.
+            $target = Get-AgentGeminiTarget $Ag
+            $cp = Get-GeminiCommandProblem $target   # the rules file's path on the command line: no comma, no @, no cmd.exe signs
+            if ($cp) { Set-MailDispatchHalted $State $d $cp; return }
+            $files = Write-AgentGeminiFiles $Ag
+            if ($files.problem) { Set-MailDispatchHalted $State $d ([string]$files.problem); return }
+            if ($files.error) { $d.guard = $null; Set-MailDispatchFailed $State $d ([string]$files.error); return }
+            $d.policy_path = [string]$target.policy_path
+            $d.defaults_path = [string]$target.defaults_path
+            $d.policy_sha256 = [string]$files.hash
+            $d.turn_limit = [int]$files.limit   # a limit the relay asks for; Complete-ToolMailDispatch notes when Gemini CLI skipped it
+            Save-State $State
+            $turnEnv = Set-AgentTurnEnvironment ([int]$d.hop) $Ag   # the agent's pins and hop, for this turn's process only
+            $started = Start-GeminiProcess $target $stdin $out $errFile ([string]$target.policy_path) ([string]$files.hash)
+            if ($started.halt) { Set-MailDispatchHalted $State $d ([string]$started.halt); return }
         } else {
             # Get-AgentBlockReason holds every agent of a tool the relay does not know first, so this does not run.
             Set-MailDispatchHalted $State $d "the relay cannot wake an agent in '$agTool' (.relay\agents.json names that tool)"
@@ -7078,7 +7219,13 @@ function Start-ToolMailDispatch([hashtable]$State, [hashtable]$Ag, [object[]]$Pe
     [void]$script:MailLaunched.Add($id)
     [void]$State.flags.Remove('last_mail_block_' + $key)
     Save-State $State
-    Write-Log ('Woke agent {0} ({1} session {2}) with {3} (pid {4}) for {5} message(s); the notice is on its standard input' -f $Ag.name, (Get-ToolName $agTool), $d.session_id, $id, $proc.Id, $batch.Count)
+    $limitWord = ''
+    if ($agTool -eq 'gemini') {
+        # A limit the relay asks for: Gemini CLI may skip it (Complete-ToolMailDispatch says so when it did).
+        $limitWord = "; the agent's own rules file; no turn limit asked"
+        if ([int]$d.turn_limit -gt 0) { $limitWord = "; the agent's own rules file; turn limit $($d.turn_limit) asked, which Gemini CLI may skip" }
+    }
+    Write-Log ('Woke agent {0} ({1} session {2}) with {3} (pid {4}) for {5} message(s); the notice is on its standard input{6}' -f $Ag.name, (Get-ToolName $agTool), $d.session_id, $id, $proc.Id, $batch.Count, $limitWord)
 }
 
 function Set-MailDispatchHalted([hashtable]$State, [hashtable]$D, [string]$Why) {
@@ -7142,21 +7289,25 @@ function Complete-ToolMailDispatch([hashtable]$State, [hashtable]$D) {
             if ($errText) { $notDelivered += ": $errText" }
         }
     } else {
-        # A Gemini CLI agent turn, read as Complete-ToolDispatch reads a Gemini CLI coordinator turn. Stage 7B starts none
-        # (Start-ToolMailDispatch stops first); only a record from a later relay reaches here.
+        # A Gemini CLI agent turn, read as Complete-ToolDispatch reads a Gemini CLI coordinator turn. A running record of a
+        # tool the relay does not know (only a hand edit makes one) is read the same way: with no Gemini CLI events and no
+        # marker, it ends as not delivered.
         $ev = Read-GeminiEvents ([string]$D.out)
         $other = [string]$ev.session
         if ($ev.message) { $D.summary = Get-Short ([string]$ev.message) 300 }
         $good = ($ev.status -eq 'success' -and -not $ev.error)   # a success after an error event is an error
         $bad = [bool]($ev.error -or $ev.status -eq 'error' -or ($null -ne $exit -and @(53, 54) -contains [int]$exit))
-        $badText = Get-GeminiExitWords $exit ([string]$ev.error)
+        $badText = Get-GeminiExitWords $exit ([string]$ev.error) 'agent'
         $said = [string]$ev.error
         if (-not $said) { $said = $errText }
-        $notDelivered = Get-GeminiExitWords $exit $said
+        $notDelivered = Get-GeminiExitWords $exit $said 'agent'
+        # Gemini CLI skips a defaults file that people other than an administrator can change (as they can in a mailbox),
+        # so the relay's turn limit may not count. The turn's record and the log say so each time; the alert comes once.
         $allText = $errRaw
         try { if ($D.out -and (Test-Path -LiteralPath ([string]$D.out))) { $allText += "`n" + (Read-SharedText ([string]$D.out)) } } catch { }
         if ($allText -match 'Skipping system defaults') {
             $D.turn_limit = 'skipped by Gemini CLI'
+            Write-Log "Gemini CLI skipped the relay's turn limit in agent turn $($D.id) of $($D.name), so that turn had no limit from the relay."
             Add-Alert $State 'gemini-agent-turn-limit-skipped' ("Gemini CLI did not use the relay's turn limit for an agent turn: it skips a defaults file that people other than an administrator can change. To be sure of a turn limit, also set $(Get-GeminiOwnLimitWords).")
         }
         # The rules file is written only before a turn: a change now was made while Gemini CLI read it.
@@ -7204,14 +7355,16 @@ function Complete-ToolMailDispatch([hashtable]$State, [hashtable]$D) {
     Remove-DispatchFiles $D
 }
 
-# ---------- Phase 7: enrolling an agent in Claude Code, following its name, and -ShowAgentArgs ----------
+# ---------- Phase 7: enrolling an agent in Claude Code or Gemini CLI, following its name, and -ShowAgentArgs ----------
 # -EnrollAgent -Tool claude -AgentFolder <folder> signs up a Claude Code session as an agent with the relay's rules: its
 # own folder (it must pass every rule of Get-AgentFolderError), its profile (mail, or files with -AgentProfile files),
 # and its session: the newest session of that folder with the agent's name (/rename in Claude Code), which it then
-# follows, or a fixed session (-SessionId), closed and quiet now, which follows no name. One session has one job.
-# Enrolling wakes nothing: the mail that waits now counts as known. Every refusal comes before anything is written, so a
-# refused command saves nothing. A Gemini CLI agent and a Codex agent with -AgentProfile come in later steps of Phase 7:
-# until then this relay refuses them in plain words.
+# follows, or a fixed session (-SessionId), closed and quiet now, which follows no name. -EnrollAgent -Tool gemini
+# -SessionId <id> signs up a Gemini CLI session the same way, by its id only (a Gemini CLI session has no name to
+# follow), in the folder the session belongs to. Gemini CLI agents stay off until agent_tools in bin\relay-settings.json
+# lists gemini, because each of their turns costs money. One session has one job. Enrolling wakes nothing: the mail that
+# waits now counts as known. Every refusal comes before anything is written, so a refused command saves nothing. A Codex
+# agent with -AgentProfile comes in a later step of Phase 7: until then this relay refuses it in plain words.
 
 function Get-NewAgentNameProblem([string]$Name) {
     # Why $Name cannot name an agent of a new kind or a requested one (D26), in plain words with a closing period, or ''.
@@ -7259,6 +7412,7 @@ function Invoke-EnrollToolAgent {
     $rec = @{ name = $name; key = $key; tool = $agTool; profile = $profileWord; model = [string]$Model; effort = ([string]$Effort).ToLowerInvariant();
         made_by = 'owner'; enrolled_utc = (Get-Now); enrolled = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv) }
     $sid = ''
+    $cwdWarning = ''
     if ($agTool -eq 'claude') {
         $there = $false
         try { $there = [bool](Test-Path -LiteralPath $folder -PathType Container) } catch { $there = $false }
@@ -7301,8 +7455,50 @@ function Invoke-EnrollToolAgent {
         $rec.session_id = $sid; $rec.cwd = $folder; $rec.transcript_path = $transcript; $rec.started_ms = (Get-ClaudeStarted $transcript)
         $rec.wake_rule = 'claude -p --resume <session_id>, the notice on standard input, the profile''s fixed lists; subscription login only'
     } elseif ($agTool -eq 'gemini') {
-        # Its rules file and its turn come in a later step (stage 7C).
-        Fail 'An agent in Gemini CLI comes in a later step of Phase 7. This relay cannot wake one yet. Nothing was saved.' 64
+        # A Gemini CLI session, by its id (Gemini CLI shows it with /stats). Its folder is the one the session belongs to
+        # (.project_root), as for a Gemini CLI coordinator: Gemini CLI resumes a session only from its own folder.
+        if ($GeminiHomeError) { Fail "A Gemini CLI agent cannot be enrolled: $GeminiHomeError. Nothing was saved." }
+        if ($SessionId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') { Fail "-SessionId must be the Gemini CLI session id (a UUID; got '$SessionId'). Gemini CLI shows it with /stats. Nothing was saved." 64 }
+        $sid = $SessionId.ToLowerInvariant()
+        $found = Find-GeminiSession $sid
+        if (-not $found) { Fail "No Gemini CLI session $sid was found under $GeminiDataDir\tmp. Take the id from the session itself (/stats), and pass -GeminiCliHome if Gemini CLI keeps its files elsewhere. Nothing was saved." }
+        $cwd = [string]$found.root
+        if ($folder -and $cwd -and -not (Test-SameFolder $cwd $folder)) { Fail "Gemini CLI session $sid belongs to the folder $cwd, not $folder. Gemini CLI finds a session only from its own folder. Leave -AgentFolder out, or give $cwd. Nothing was saved." }
+        if (-not $cwd -and $folder) {
+            $cwd = $folder
+            $cwdWarning = "WARNING: Gemini CLI wrote no .project_root for this session, so the relay could not check that it belongs to $folder. A turn from the wrong folder ends with exit 42 and is not delivered."
+        }
+        if (-not $cwd) { Fail "Could not tell which folder Gemini CLI session $sid belongs to (no .project_root in $($found.project_dir)). Pass -AgentFolder <the folder you started it in>. Nothing was saved." }
+        $folder = $cwd
+        $there = $false
+        try { $there = [bool](Test-Path -LiteralPath $folder -PathType Container) } catch { $there = $false }
+        if (-not $there) { Fail "The agent's folder was not found: $folder. Nothing was saved." }
+        $why = Get-AgentFolderError $folder 'gemini' $key   # the folder first, so a bad folder is named as such
+        if ($why) { Fail "The folder $folder cannot be this agent's folder: $why. Nothing was saved." }
+        $mp = Get-AgentMailboxPathError
+        if ($mp) { Fail "$mp. Nothing was saved." }
+        $mw = Get-ToolModelError $Model 'gemini'
+        if ($mw) { Fail "$mw Nothing was saved." 64 }
+        # A fixed id must be closed and quiet now, as for a Gemini CLI coordinator.
+        $procs = Get-SessionProcesses $sid
+        if ($null -eq $procs) { Fail 'Could not read the process list to confirm the session is not running. Not enrolled.' }
+        if ($procs.Count -gt 0) { Fail ("Gemini CLI session $sid is open right now (pid " + (($procs | ForEach-Object { $_.ProcessId }) -join ',') + '). Exit it first: the relay must never resume a running session.') }
+        $rec.session_id = $sid; $rec.cwd = $folder; $rec.transcript_path = [string]$found.file; $rec.project_dir = [string]$found.project_dir
+        $rec.gemini_home = $GeminiHomeDir; $rec.follow_name = ''; $rec.effort = ''   # gemini_home is a record only: each turn uses the relay's Gemini home
+        if ($QuietSeconds -gt 0) {
+            $sessionFiles = Get-GeminiSessionFiles $rec   # a variable first: @(<function>) would keep the list as one item
+            $newest = $null
+            foreach ($sf in $sessionFiles) { if ($null -eq $newest -or $sf.LastWriteTimeUtc -gt $newest) { $newest = $sf.LastWriteTimeUtc } }
+            if ($null -ne $newest) {
+                $age = (Get-Now) - (ConvertTo-Unix $newest)
+                if ($age -lt $QuietSeconds) { Fail "Session $sid was written $age s ago; it may still be open. Exit it, wait $QuietSeconds s, then enroll again." }
+            }
+        }
+        $policy = New-AgentGeminiPolicy $rec   # built here, never written: each turn writes it again
+        if ($policy.problem) { Fail "The relay's Gemini rules would not work: $($policy.problem). Nothing was saved." }
+        $cp = Get-GeminiCommandProblem (Get-AgentGeminiTarget $rec)
+        if ($cp) { Fail "A Gemini CLI agent cannot work here: $cp. Nothing was saved." }
+        $rec.wake_rule = 'gemini --resume <session_id> -p <fixed words> -o stream-json --approval-mode default --skip-trust --admin-policy <its own rules file>, the notice on standard input; your own Gemini login, paid per use'
     } else {
         # A Codex agent with a profile runs only with the relay's own Codex options, which come in a later step (stage 7D).
         Fail 'A Codex agent with -AgentProfile, -Model or -Effort comes in a later step of Phase 7. This relay cannot wake one yet. To enroll a Codex agent now, leave out -AgentProfile, -Model and -Effort: it then works as before. Nothing was saved.' 64
@@ -7335,6 +7531,13 @@ function Invoke-EnrollToolAgent {
         if ($script:CostLimits) { Write-Log "Each wake is one Claude Code turn on your Claude plan: at most $($TurnBudgetUsd.ToString($Inv)) USD a turn, and $cap." }
         else { Write-Log 'Each wake is one Claude Code turn on your Claude plan. Cost limits are off (bin\cost-limits.json), so no dollar cap holds it.' }
     }
+    if ($agTool -eq 'gemini') {
+        $total = Get-AgentToolLimit 'gemini'
+        $totalWords = "At most $total Gemini CLI agent turns run a day, for all agents together (agent_wakes_per_day in bin\cost-limits.json)."
+        if ($total -le 0) { $totalWords = 'No daily total of Gemini CLI agent turns is set now (agent_wakes_per_day in bin\cost-limits.json).' }
+        Write-Log "Each wake is one Gemini CLI turn with your own Gemini login, and each turn costs money. $totalWords Turn limit: $(Get-GeminiTurnLimitWords)."
+    }
+    if ($cwdWarning) { Write-Log $cwdWarning }
     $orders = Get-SafePath $folder (Get-AgentOrdersName $agTool)
     if ($orders -and -not (Test-Path -LiteralPath $orders -PathType Leaf)) { Write-Log "WARNING: $orders is not there. Write the agent's standing orders there." }
     if ($kept) { Write-Log "The agents.json from before is kept as $kept." }
@@ -7400,7 +7603,11 @@ function Show-AgentArgs {
         $lists = Get-AgentClaudeLists $ag
         $o['args'] = $cliArgs.ToArray(); $o['allowedTools'] = $lists.allow; $o['disallowedTools'] = $lists.deny; $o['appendSystemPrompt'] = (Get-AgentRules $ag)
     } elseif ($agTool -eq 'gemini') {
-        $o['note'] = 'An agent in Gemini CLI comes in a later step of Phase 7. This relay does not wake it yet.'
+        # The command line and the rules file a real turn writes right before it starts: built here, never written.
+        $target = Get-AgentGeminiTarget $ag
+        $cliArgs = Get-GeminiArguments $target ([string]$target.policy_path)   # a list, so a variable first
+        $policy = New-AgentGeminiPolicy $ag
+        $o['args'] = $cliArgs.ToArray(); $o['policyFile'] = [string]$target.policy_path; $o['policyProblem'] = [string]$policy.problem; $o['policy'] = [string]$policy.text
     } elseif ($agTool -ne 'codex') {
         $o['note'] = "The relay cannot wake an agent in '$agTool' (.relay\agents.json names that tool). Enroll it again with -EnrollAgent -Tool codex, claude or gemini."
     } elseif (Test-AgentRelayRules $ag) {

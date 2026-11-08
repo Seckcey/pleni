@@ -79,13 +79,23 @@
   with the notice only on standard input, the agent's pins and hop 1 in its turn, a wait while a window has the session
   open, a rollover to a newer session with the name, a files agent by its id, the guard on the mailbox's own
   bin\agent-mail.ps1 (a change while a turn runs halts the relay until -ClearHalt, and a change that a running loop
-  sees halts it once), the daily dollar cap of Claude Code agents, and -UnenrollAgent with a copy of agents.json.
+  sees halts it once), the daily dollar cap of Claude Code agents, and -UnenrollAgent with a copy of agents.json. 32 a
+  Gemini CLI agent (-EnrollAgent -Tool gemini, with tests\stub-gemini.js): off until agent_tools lists gemini, in words
+  that say each turn costs money, and no -Effort; enrolled by its session id, in the folder its session belongs to;
+  its rules file (-ShowAgentArgs: its own two agent-mail.ps1 commands, -MailboxRoot denied, no file writes for a mail
+  agent, no include folders, nothing written); a dry run that writes nothing; a turn with the notice only on standard
+  input, in its own folder, with its own rules and defaults files, its pins and hop 1, and GEMINI_API_KEY passed
+  through; a wait while a window has the session open; a changed rules file stops that agent before its turn and keeps
+  its mail; not signed in backs off and stops only that agent after three in a row; a turn in another session stops
+  it; Gemini CLI's warning that it skipped the turn limit (one alert); the daily total of Gemini CLI agent turns
+  (agent_wakes_per_day); no key written anywhere; and -UnenrollAgent with a copy of agents.json, without the agent's
+  own Gemini files.
   It runs only the bridge-relay.ps1, agent-mail.ps1 and spawn-worker.ps1 beside it (and a fixture's own copy of that
   agent-mail.ps1), ..\tests\stub-claude.js, ..\tests\stub-codex.js, ..\tests\stub-gemini.js and ..\tests\stub-agy.js;
   other -RelayScript/-StubCli values are refused.
   Scenarios 24, 25 and 27 need git.exe, for a Git folder in their fixtures. Scenarios 24 and 29 set two test-only
-  variables that spawn-worker.ps1 and bridge-relay.ps1 read (RELAY_TEST_GEMINI_POLICY_DIR and RELAY_TEST_CHANGE_POLICY);
-  each one can only make the launcher refuse or the relay halt.
+  variables that spawn-worker.ps1 and bridge-relay.ps1 read (RELAY_TEST_GEMINI_POLICY_DIR and RELAY_TEST_CHANGE_POLICY),
+  and scenario 32 sets the second; each one can only make the launcher refuse or the relay halt.
   Prints one PASS/FAIL line per check, then a summary. Exit 0 only when every check passes (2 = could not set up).
   No network, no API key, no real claude.exe. It removes its temp folder and stops any process it started
   (only processes whose command line names this run's temp folder). Takes about 12-18 minutes.

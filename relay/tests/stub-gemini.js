@@ -28,6 +28,18 @@
 // It records each call in <RELAY_STUB_DIR>\gemini-calls.jsonl: the arguments, the stdin text, the working folder,
 // whether GEMINI_API_KEY is set (true or false only, never the value), the text of the --admin-policy file and the text
 // of the file that GEMINI_CLI_SYSTEM_DEFAULTS_PATH names.
+// Phase 7 (each gated by a call that no older test makes):
+//   An agent's mail turn (--resume <id>, the notice on stdin) runs as a coordinator turn above: the stub finds the
+//   session by its .project_root, as Gemini CLI does, so a session enrolled for another folder exits 42.
+//   A new session (--session-id) whose stdin holds a [bridge-relay A...] notice is a new agent's first turn: it is logged
+//   with kind 'agent', and in modes ok, sleep:<s> and skip-defaults (no warning here) it writes the session before init,
+//   as Gemini CLI keeps one (<GEMINI_CLI_HOME>\.gemini\tmp\<folder name>-<first 8 of the id>\.project_root, and
+//   chats\session-<time>-<first 8>.jsonl with the notice), so the agent's later turns (--resume) find it. Its folder is
+//   RELAY_AGENT_FOLDER (the relay sets it), else the folder it runs in. No other mode writes it: fail, exit:41, exit:42
+//   and exit:55 stop before anything is written, as Gemini CLI does, another exit:<n> stops after init, and
+//   wrong-session reports another id. Without GEMINI_CLI_HOME it fails (exit 1): it never writes in the home folder.
+//   Every start record also holds relay_env (RELAY_AGENT_NAME, RELAY_AGENT_MAILBOX, RELAY_AGENT_FOLDER, RELAY_MAIL_HOP)
+//   when RELAY_AGENT_NAME or RELAY_MAIL_HOP is set, which the relay does only for an agent's turns.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -51,6 +63,13 @@ const policyPath = opt('--admin-policy') || '';
 const defaultsPath = process.env.GEMINI_CLI_SYSTEM_DEFAULTS_PATH || '';
 const running = stubDir ? path.join(stubDir, 'gemini-running-' + process.pid) : null;
 const start = Date.now();
+// Phase 7: a new agent's first turn, and the variables the relay sets for an agent's turn (never a key).
+const firstTurn = !!asked && /\[bridge-relay A/.test(input);
+const sessionMode = mode === 'ok' || mode === 'skip-defaults' || /^sleep:\d+$/.test(mode);
+const relayEnv = (process.env.RELAY_AGENT_NAME || process.env.RELAY_MAIL_HOP) ? {
+  name: process.env.RELAY_AGENT_NAME || '', mailbox: process.env.RELAY_AGENT_MAILBOX || '',
+  folder: process.env.RELAY_AGENT_FOLDER || '', hop: process.env.RELAY_MAIL_HOP || ''
+} : undefined;
 
 function event(obj) { process.stdout.write(JSON.stringify({ ...obj, timestamp: new Date().toISOString() }) + '\n'); }
 function finish(code, outcome, stderrText) {
@@ -70,19 +89,25 @@ const exitMatch = /^exit:(\d+)$/.exec(mode);
 if (resumeId) runResume(); else runWorker();
 
 // bin\spawn-worker.ps1: a new session (--session-id), the prompt on stdin. The same as before the coordinator mode.
+// Phase 7: also a new agent's first turn (firstTurn), which a worker's record never is: it keeps no kind, as before.
 function runWorker() {
   log({
-    phase: 'start', t: start, pid: process.pid, mode, args: argv, stdin: input, cwd: process.cwd(), session_id_flag: asked,
-    gemini_key_present: !!process.env.GEMINI_API_KEY, policy_path: policyPath, policy: readOrNull(policyPath),
-    defaults_path: defaultsPath, defaults: readOrNull(defaultsPath), gemini_cli_home: process.env.GEMINI_CLI_HOME || ''
+    phase: 'start', kind: firstTurn ? 'agent' : undefined, t: start, pid: process.pid, mode, args: argv, stdin: input,
+    cwd: process.cwd(), session_id_flag: asked, gemini_key_present: !!process.env.GEMINI_API_KEY, policy_path: policyPath,
+    policy: readOrNull(policyPath), defaults_path: defaultsPath, defaults: readOrNull(defaultsPath),
+    gemini_cli_home: process.env.GEMINI_CLI_HOME || '', relay_env: relayEnv
   });
   if (running) fs.writeFileSync(running, String(start));
   if (mode === 'fail') {
     finish(1, 'fail', 'Error: simulated Gemini CLI failure before the session started');
   } else if (exitMatch && early[exitMatch[1]]) {
     finish(Number(exitMatch[1]), 'exit-' + exitMatch[1], early[exitMatch[1]]);
+  } else if (firstTurn && sessionMode && !process.env.GEMINI_CLI_HOME) {
+    // Never a session file in the real home folder: only in the Gemini home that the relay (or the test) names.
+    finish(1, 'no-home', 'Error: GEMINI_CLI_HOME is not set, so the stub has no folder for a new session');
   } else {
     const id = mode === 'wrong-session' ? '99999999-9999-4999-8999-999999999999' : (asked || randomUUID());
+    if (firstTurn && sessionMode) writeFirstSession();
     event({ type: 'init', session_id: id, model: 'gemini-stub' });
     if (exitMatch) {
       event({ type: 'error', severity: 'error', message: 'Maximum session turns exceeded' });
@@ -98,6 +123,19 @@ function runWorker() {
       finish(0, 'ok', null);
     }
   }
+}
+
+// A new agent's first turn: its session as Gemini CLI keeps one, in a project folder whose .project_root names the
+// agent's folder, so the agent's later turns (--resume) find it from that folder. The first line names the session.
+function writeFirstSession() {
+  const folder = process.env.RELAY_AGENT_FOLDER || process.cwd();
+  const proj = path.join(process.env.GEMINI_CLI_HOME, '.gemini', 'tmp', `${path.basename(folder)}-${asked.slice(0, 8)}`);
+  fs.mkdirSync(path.join(proj, 'chats'), { recursive: true });
+  fs.writeFileSync(path.join(proj, '.project_root'), folder);
+  const first = { sessionId: asked, projectHash: 'stub', startTime: new Date().toISOString(), kind: 'main' };
+  const user = { id: randomUUID(), timestamp: new Date().toISOString(), type: 'user', content: [{ text: input }] };
+  const file = `session-${new Date().toISOString().slice(0, 16).replace(/:/g, '-')}-${asked.slice(0, 8)}.jsonl`;
+  fs.writeFileSync(path.join(proj, 'chats', file), JSON.stringify(first) + '\n' + JSON.stringify(user) + '\n');
 }
 
 function sameFolder(a, b) {
@@ -127,14 +165,16 @@ function findSession(id, cwd) {
   return null;
 }
 
-// bin\bridge-relay.ps1: gemini --resume <id> -p <words>, the notice on stdin.
+// bin\bridge-relay.ps1: gemini --resume <id> -p <words>, the notice on stdin. A coordinator turn, and (Phase 7) an agent's
+// mail turn.
 function runResume() {
   const found = findSession(resumeId, process.cwd());
   const words = opt('-p') || '';
   log({
     phase: 'start', kind: 'resume', t: start, pid: process.pid, mode, args: argv, stdin: input, cwd: process.cwd(), resume: resumeId,
     session_file: found, gemini_key_present: !!process.env.GEMINI_API_KEY, policy_path: policyPath, policy: readOrNull(policyPath),
-    defaults_path: defaultsPath, defaults: readOrNull(defaultsPath), gemini_cli_home: process.env.GEMINI_CLI_HOME || ''
+    defaults_path: defaultsPath, defaults: readOrNull(defaultsPath), gemini_cli_home: process.env.GEMINI_CLI_HOME || '',
+    relay_env: relayEnv
   });
   if (running) fs.writeFileSync(running, String(start));
   if (mode === 'skip-defaults') {
