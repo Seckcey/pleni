@@ -3228,6 +3228,8 @@ try {
         $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Job'; Tool = 'claude'; AgentFolder = $jobDir; SessionId = $fx.sid }
         Check ($r.code -ne 0 -and (Test-Said $r.out "already this mailbox's coordinator")) "the coordinator's session was enrolled as an agent: $(Get-Tail $r.out)"
         Check (-not (Test-Path -LiteralPath (Join-Path $fx.mb '.relay\agents.json'))) 'a refused -EnrollAgent saved agents.json'
+        # Nor a mail folder for a refused name: only a sign-up that works makes one, and nothing above makes one in mail.
+        foreach ($k in @('sergeant-wren', 'sergeant-o-wren', 'sergeant-job')) { Check (-not (Test-Path -LiteralPath (Join-Path $fx.mb "mail\$k"))) "a refused -EnrollAgent made the mail folder mail\$k" }
         # 2. Enrolled by name: the newest session of its folder with that name.
         $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'sergeant wren'; Tool = 'claude'; AgentFolder = $wren }
         Check ($r.code -eq 0 -and $r.out -match 'Enrolled agent') "-EnrollAgent -Tool claude exit code $($r.code): $(Get-Tail $r.out)"
@@ -3269,6 +3271,14 @@ try {
             Check ($c.prompt -notmatch 'Check the notes' -and -not (@($c.args) | Where-Object { [string]$_ -match 'bridge-relay M|Check the notes' })) 'mail text or the notice is on the command line'
             Check ($c.relay_env.name -eq 'Sergeant Wren' -and (ConvertTo-BaseText $c.relay_env.mailbox) -eq (ConvertTo-BaseText $fx.mb) -and (ConvertTo-BaseText $c.relay_env.folder) -eq (ConvertTo-BaseText $wren) -and $c.relay_env.hop -eq '1') 'the turn did not get the agent pins and hop 1'
             Check ([string]$c.cwd -like '*\ca\crew\wren' -and -not $c.key_present -and $c.oauth_absent) 'the turn ran in another folder, or with an API key'
+            # The real turn's command line: JSON output, no settings files (the relay writes the empty value as "", and
+            # the stub gets ''), the per-turn budget (-TurnBudgetUsd is 1 unless given, and no bin\cost-limits.json is
+            # here yet), and no unsafe flag.
+            $a = @($c.args)
+            Check ($c.output_format -eq 'json') "the agent turn's output format was '$($c.output_format)', want json"
+            $i = [array]::IndexOf($a, '--setting-sources'); Check ($i -ge 0 -and $i + 1 -lt $a.Count -and $a[$i + 1] -ceq '') 'the agent turn does not have --setting-sources with an empty value'
+            Check ($c.max_budget_usd -eq '1') "the agent turn's budget was '$($c.max_budget_usd)', want 1 (the per-turn budget)"
+            Check (-not $c.bare -and -not $c.continue_flag -and -not $c.fork_session -and -not $c.no_session_persistence) 'unsafe CLI flags in the agent turn (never --bare, --continue, --fork-session, --no-session-persistence)'
         }
         Check ((Get-NoticeCount $wt 'M') -eq 1) 'the agent''s session does not hold exactly one notice'
         $md = @(Get-MailDispatches $fx)
@@ -3310,6 +3320,8 @@ try {
             $i = [array]::IndexOf($a, '--permission-mode'); Check ($i -ge 0 -and $a[$i + 1] -eq 'acceptEdits') 'a files agent turn is not acceptEdits'
             $own = '//' + $finch.Substring(0, 1).ToLowerInvariant() + ($finch.Substring(2) -replace '\\', '/')
             Check (@($j.allowedTools) -ccontains "Edit($own/**)" -and @($j.disallowedTools) -ccontains "Edit($own/CLAUDE.md)" -and @($j.disallowedTools) -ccontains "Edit($own/.claude/**)") 'a files agent may not edit its folder, or may edit its orders or settings'
+            # acceptEdits may let Claude Code run common file commands with no rule, so the relay denies them.
+            foreach ($d in @('Bash(rm *)', 'Bash(rmdir *)', 'Bash(mkdir *)', 'Bash(touch *)', 'Bash(mv *)', 'Bash(cp *)', 'Bash(sed *)')) { Check (@($j.disallowedTools) -ccontains $d) "the files agent's deny list lacks $d" }
         }
         # 8. The guard: a change to bin\agent-mail.ps1 while an agent turn runs halts the relay, until -ClearHalt.
         $r = Invoke-Relay $fx 'Status' $null
@@ -3358,9 +3370,28 @@ try {
         $r = Invoke-Relay $fx 'Once' $null
         Check ((Test-Said $r.out 'the daily budget of Claude Code agents is reached') -and @(Get-ClaudeAgentCalls $fx).Count -eq 6) 'the dollar cap of Claude Code agents did not hold the turn'
         Remove-Item -LiteralPath (Join-Path $fx.mb 'bin\cost-limits.json') -Force
+        # 9b. Turns that run now count toward the cap. At 1.5 USD a day, with 1 USD a turn and nothing spent yet (the
+        # stub's turns cost 0), Sergeant Finch goes first (the relay takes agents in the order of their keys). While its
+        # turn runs, one more turn could pass the cap, so Sergeant Wren's mail waits. -Once waits for the turn it started,
+        # so the next -Once wakes Wren.
+        Write-Text (Join-Path $fx.mb 'bin\cost-limits.json') '{"relay_max_agent_usd_per_day":1.5}'
+        $before = @(Get-ClaudeAgentCalls $fx).Count
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Finch', '-Text', 'Seventh.')
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Wren', '-Text', 'Eighth.')
+        $r = Invoke-Relay $fx 'Once' $null
+        $s = @(Get-ClaudeAgentCalls $fx)
+        Check ($s.Count -eq $before + 1 -and $s[$before].resume -eq $fsid) "the first -Once did not wake Sergeant Finch alone ($($s.Count - $before) new agent turn(s))"
+        Check (Test-Said $r.out 'could use the rest of the daily budget') "Sergeant Wren's mail did not wait while Sergeant Finch's turn ran: $(Get-Tail $r.out)"
+        $null = Invoke-Relay $fx 'Once' $null
+        $s = @(Get-ClaudeAgentCalls $fx)
+        Check ($s.Count -eq $before + 2 -and $s[$before + 1].resume -eq $wsid2) "the next -Once did not wake Sergeant Wren in its newer session ($($s.Count - $before) new agent turn(s) in all, want 2)"
+        Remove-Item -LiteralPath (Join-Path $fx.mb 'bin\cost-limits.json') -Force
         # 10. Unenrolling keeps a copy, and the mail.
         $r = Invoke-Relay $fx 'UnenrollAgent' @{ AgentName = 'Sergeant Finch' }
         Check ($r.code -eq 0 -and (Get-BackupCount $fx 'agents.json') -ge 2) '-UnenrollAgent kept no copy of agents.json'
+        # The relay and the stub never move mail, so Finch's one message (9b) is still in new\.
+        $fm = Get-MailFiles $fx 'sergeant-finch' 'new'   # a variable first: it returns , @(...)
+        Check ($fm.Count -eq 1 -and (Read-Shared $fm[0].FullName) -match 'Seventh\.') "-UnenrollAgent did not keep Sergeant Finch's mail in mail\sergeant-finch\new ($($fm.Count) message(s), want 1)"
         Check (Test-NoOverlap $fx) 'two Claude Code processes ran at the same time'
     }
 } catch {
