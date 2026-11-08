@@ -1882,6 +1882,9 @@ function Get-CodexBlockReason([hashtable]$State, [hashtable]$Cx, [object[]]$Pend
     $now = Get-Now
     if (Test-Path -LiteralPath $PauseFile) { return @{ code = 'paused'; text = "PAUSED ($PauseFile exists); pending items are kept" } }
     if ($State.codex_halt) { return @{ code = 'halted'; text = "Codex wakes STOPPED: $($State.codex_halt). Pending items are kept; check .relay\alerts.md, then run -ClearHalt" } }
+    # Phase 7 (D17): while the guard on the relay's own files holds the relay, the planner is not woken either (a planner
+    # turn may run bin\agent-mail.ps1, and a changed script must never run).
+    if ($State.guard_halt) { return @{ code = 'guard'; text = "HALTED: $($State.guard_halt). Pending items are kept; check .relay\alerts.md, then run -ClearHalt" } }
     if (-not $HqRole) {   # HQ holds back only the items of the mailbox whose coordinator turn runs (Split-HqPending)
         foreach ($d in @($State.dispatches.Values)) {
             if ($d.state -eq 'running' -or $d.state -eq 'launching') { return @{ code = 'coordinator-turn'; text = "a coordinator turn is still running ($($d.id)); the planner is woken after it ends, so it reads finished work" } }
@@ -2441,12 +2444,16 @@ function Invoke-NewProject {
             Fail "HQ's relay is running and watches its own settings. Run -StopAll first, then -NewProject, then -StartAll. Nothing was made."
         }
         # -StopAll leaves a coordinator turn running, and its record keeps the stamps of the program files from its start.
-        # The next relay compares them as soon as it starts, so a settings change now would halt it.
-        foreach ($d in @((Get-State).dispatches.Values)) {
-            if ($d -is [hashtable] -and ($d.state -eq 'running' -or $d.state -eq 'launching') -and $d.guard -is [hashtable]) {
-                Fail ("HQ's coordinator turn $($d.id) is still running or has not been settled, and the relay would halt at the change of HQ's settings. " +
-                    'Wait until -Status shows no coordinator turn in flight. Or make an empty file named PAUSE in .relay, run -Once, run -NewProject, delete PAUSE, then run -StartAll. Nothing was made.')
-            }
+        # The next relay compares them as soon as it starts, so a settings change now would halt it. Phase 7: an agent
+        # turn and a new agent's first turn keep the same stamps.
+        $st = Get-State
+        $inFlight = @()
+        foreach ($d in @($st.dispatches.Values)) { if ($d -is [hashtable] -and ($d.state -eq 'running' -or $d.state -eq 'launching') -and $d.guard -is [hashtable]) { $inFlight += "coordinator turn $($d.id)" } }
+        foreach ($d in @($st.mail_dispatches.Values)) { if ($d -is [hashtable] -and ($d.state -eq 'running' -or $d.state -eq 'launching') -and $d.guard -is [hashtable]) { $inFlight += "agent turn $($d.id)" } }
+        foreach ($d in @($st.agent_requests.Values)) { if ($d -is [hashtable] -and $d.state -eq 'making' -and $d.guard -is [hashtable]) { $inFlight += "first turn $($d.id) of a new agent" } }
+        if ($inFlight.Count) {
+            Fail ("HQ's $($inFlight[0]) is still running or has not been settled, and the relay would halt at the change of HQ's settings. " +
+                'Wait until -Status shows no turn in flight. Or make an empty file named PAUSE in .relay, run -Once, run -NewProject, delete PAUSE, then run -StartAll. Nothing was made.')
         }
     }
     $projId = ([string]$ProjectId).Trim()
@@ -3311,11 +3318,16 @@ function Update-CodexFollow([hashtable]$State, [bool]$ReadOnly) {
 
 function Update-AgentFollow([hashtable]$State, [bool]$ReadOnly) {
     # Each enrolled agent follows its name, like the planner: a newer Codex thread with the name takes over its mail.
+    # Phase 7: a Claude Code agent enrolled by name follows it in its own folder (Update-ClaudeAgentFollow); a Gemini CLI
+    # session has no name to follow.
     $agents = Get-Agents
     if ($agents.Count -eq 0) { return }
     $changed = $false
     foreach ($key in @($agents.Keys)) {
         $ag = $agents[$key]
+        $agTool = Get-AgentTool $ag
+        if ($agTool -eq 'claude') { if (Update-ClaudeAgentFollow $State $ReadOnly $key $ag) { $changed = $true }; continue }
+        if ($agTool -ne 'codex') { continue }
         $cur = [string]$ag.thread_id
         $miss = 'follow_agent_miss_' + $key
         $best = Find-NamedCodexThread ([string]$ag.name)
@@ -3784,7 +3796,9 @@ function Invoke-UnenrollAgent {
     $kept = Backup-RelayFile $AgentsFile   # Phase 7 (D21): a copy of the old record first
     Save-Json $AgentsFile $agents
     $state = Get-State
-    $drop = @($state.mail_notes.Values | Where-Object { $_.agent -eq $key -and $_.state -eq 'pending' })
+    # The notes of mail that waits (pending, or held as a possible loop) go, so no message wakes an agent that is not
+    # enrolled; the files stay in mail\<key>, and enrolling again counts them as known.
+    $drop = @($state.mail_notes.Values | Where-Object { $_.agent -eq $key -and ($_.state -eq 'pending' -or $_.state -eq 'held') })
     foreach ($n in $drop) { [void]$state.mail_notes.Remove($n.id) }
     [void]$state.flags.Remove('last_mail_block_' + $key)
     Save-State $state
@@ -3809,10 +3823,40 @@ function Invoke-ClearHalt {
     $state.mail_failures = @{}
     $state.mail_next_attempt = @{}
     foreach ($k in @($state.flags.Keys | Where-Object { $_ -like 'last_mail_block_*' })) { [void]$state.flags.Remove($k) }
+    # Phase 7: the guard's halt (it also held agent turns, new agents and planner wakes), the stop of new agents after
+    # failed first turns, and the mail held as a possible loop, which wakes its agent once more (hop_ok).
+    $gwas = [string]$state.guard_halt
+    $state.guard_halt = ''
+    $rwas = [string]$state.agent_requests_halt
+    $state.agent_requests_halt = ''
+    $state.agent_requests_failures = 0
+    [void]$state.flags.Remove('last_agent_request_block')
+    $released = @($state.mail_notes.Values | Where-Object { $_.state -eq 'held' })
+    foreach ($n in $released) { $n.state = 'pending'; $n.hop_ok = $true; $n.outcome = 'released by -ClearHalt (wakes once more)' }
+    # A made agent's orders file that changed: -ClearHalt accepts it as it is now (Get-AgentOrdersProblem), with a copy
+    # of agents.json first.
+    $agents = Get-Agents
+    $accepted = @()
+    foreach ($k in @($agents.Keys)) {
+        $ag = $agents[$k]
+        if (-not ($ag -is [hashtable]) -or [string]$ag.made_by -ne 'request' -or -not $ag.orders_sha256) { continue }
+        $p = Get-SafePath ([string]$ag.cwd) (Get-AgentOrdersName (Get-AgentTool $ag))
+        $h = ''
+        try { if ($p -and (Test-Path -LiteralPath $p -PathType Leaf)) { $h = Get-FileSha256 $p } } catch { $h = '' }
+        if ($h -and $h -ne [string]$ag.orders_sha256) { $ag.orders_sha256 = $h; $accepted += [string]$ag.name }
+    }
+    if ($accepted.Count) {
+        $kept = Backup-RelayFile $AgentsFile
+        Save-Json $AgentsFile $agents
+        Write-Log ("The changed orders files of {0} are accepted as they are now. The agents.json from before is kept as {1}." -f ($accepted -join ', '), $kept)
+    }
     Save-State $state
     Write-Log ("Halt cleared by the operator (was: {0})." -f $(if ($was) { $was } else { 'not halted' }))
     if ($cwas) { Write-Log "Codex wake halt cleared by the operator (was: $cwas)." }
     if ($mwas.Count) { Write-Log ("Mail wake halts cleared by the operator for: {0}." -f ($mwas -join ', ')) }
+    if ($gwas) { Write-Log "The guard's halt no longer holds agent turns, new agents or planner wakes." }
+    if ($rwas) { Write-Log "New agents may be made again (they had stopped: $rwas)." }
+    if ($released.Count) { Write-Log ("{0} message(s) held as a possible loop are released: the relay wakes their agents for them once more." -f $released.Count) }
 }
 
 function Invoke-Stop {
@@ -3881,7 +3925,7 @@ function Show-Status {
             @($startRecs | Where-Object { $_.state -eq 'new' }).Count, [int]$state.daily.worker_starts, $startLimit)
         foreach ($sr in @($startRecs | Select-Object -First 5)) { Write-Host ("  - {0}: {1} {2}" -f $sr.key, $sr.state, (Get-Short ([string]$sr.message) 160)) }
     }
-    if (Test-GuardWanted) { Write-Host "Relay files guard: ON (a Codex or Gemini CLI coordinator, or start requests): a change to bin, tests, the settings, the coordinator's orders file or the relay's records halts the relay." }
+    if (Test-GuardWanted) { Write-Host "Relay files guard: ON (a Codex or Gemini CLI coordinator, start requests, agents with the relay's rules, or new agents): a change to bin, tests, the settings, the coordinator's orders file or the relay's records halts the relay." }
     $recent = @($state.dispatches.Values | Sort-Object { [int64]$_.seq } -Descending | Select-Object -First 5)
     if ($recent.Count) { Write-Host 'Recent dispatches:' }
     foreach ($d in $recent) {
@@ -3927,22 +3971,57 @@ function Show-Status {
     if ($agents.Count) {
         $aLimit = $(if ($MaxAgentWakesPerDay -eq 0) { 'unlimited' } else { [string]$MaxAgentWakesPerDay })
         Write-Host ("Agent mail: ON for {0} agent(s); at most {1} agent turn(s) at once; {2} wakes a day each (mail folder {3})" -f $agents.Count, $MaxAgentTurnsAtOnce, $aLimit, $MailDir)
+        $rulesAny = $false   # Phase 7: an agent with the relay's rules shows today's agent turns and dollars below
         foreach ($key in @($agents.Keys | Sort-Object)) {
             $ag = $agents[$key]
-            $tid = [string]$ag.thread_id
             $new = Get-AgentNewMail $key
-            $open = 'no'
-            if (Test-CodexThreadLocked $tid) { $open = 'yes, in another Codex program' }
-            else {
-                $procs = Get-SessionProcesses $tid
-                if ($null -eq $procs) { $open = 'unknown' } elseif ($procs.Count -gt 0) { $open = 'yes, in pid ' + (($procs | ForEach-Object { $_.ProcessId }) -join ',') }
+            $agTool = Get-AgentTool $ag
+            if (Test-AgentRelayRules $ag) { $rulesAny = $true }
+            if ($agTool -ne 'codex') {
+                # Phase 7: a Claude Code or Gemini CLI session.
+                $sid = Get-AgentSessionId $ag
+                $open = 'no'
+                if ($agTool -eq 'claude') {
+                    $op = Get-ClaudeOpenPids $sid
+                    if ($null -eq $op) { $open = 'unknown' } elseif ($op.Count -gt 0) { $open = 'yes, in pid ' + ($op -join ',') }
+                } else {
+                    $sp = Get-SessionProcesses $sid
+                    if ($null -eq $sp) { $open = 'unknown' } elseif ($sp.Count -gt 0) { $open = 'yes, in pid ' + (($sp | ForEach-Object { $_.ProcessId }) -join ',') }
+                }
+                Write-Host ("  - {0}: {1} session {2} (folder {3}; profile {4}); {5} new message(s); today {6} wake(s); open now: {7}" -f $ag.name, (Get-ToolName $agTool), $sid, $ag.cwd, (Get-AgentProfile $ag), $new.Count, [int]$state.daily.mail_wakes[$key], $open)
+                if ($agTool -eq 'gemini') { Write-Host '    Gemini CLI costs money for every turn.' }
+            } else {
+                $tid = [string]$ag.thread_id
+                $open = 'no'
+                if (Test-CodexThreadLocked $tid) { $open = 'yes, in another Codex program' }
+                else {
+                    $procs = Get-SessionProcesses $tid
+                    if ($null -eq $procs) { $open = 'unknown' } elseif ($procs.Count -gt 0) { $open = 'yes, in pid ' + (($procs | ForEach-Object { $_.ProcessId }) -join ',') }
+                }
+                $line = ("  - {0}: Codex thread {1} (folder {2}); {3} new message(s); today {4} wake(s); open now: {5}" -f $ag.name, $tid, $ag.cwd, $new.Count, [int]$state.daily.mail_wakes[$key], $open)
+                if (Test-AgentRelayRules $ag) { $line += "; profile $(Get-AgentProfile $ag)" }
+                Write-Host $line
             }
-            Write-Host ("  - {0}: Codex thread {1} (folder {2}); {3} new message(s); today {4} wake(s); open now: {5}" -f $ag.name, $tid, $ag.cwd, $new.Count, [int]$state.daily.mail_wakes[$key], $open)
+            if ([string]$ag.made_by -eq 'request') { Write-Host "    made by the relay from agents\$key.md" }
+            $heldN = @($state.mail_notes.Values | Where-Object { $_.agent -eq $key -and $_.state -eq 'held' }).Count
+            if ($heldN) { Write-Host "    $heldN message(s) held as a possible loop (relay_max_mail_hops); -ClearHalt lets the relay wake for them once" }
             if ($state.mail_halts[$key]) { Write-Host "    STOPPED: $($state.mail_halts[$key]) (fix the cause, then run -ClearHalt)" }
             foreach ($d in @($state.mail_dispatches.Values | Where-Object { $_.agent -eq $key -and ($_.state -eq 'running' -or $_.state -eq 'launching') })) {
                 Write-Host ("    in flight: {0} pid {1} started {2}" -f $d.id, $d.pid, (Format-Unix $d.started_utc))
             }
-            if ($ag.followed) { Write-Host "    last switch $($ag.followed), from $($ag.previous_thread_id)" }
+            if ($ag.followed) {
+                # A Claude Code agent's switch keeps previous_session_id (Update-ClaudeAgentFollow); a Codex one previous_thread_id.
+                $from = [string]$ag.previous_thread_id
+                if ($agTool -ne 'codex') { $from = [string]$ag.previous_session_id }
+                Write-Host "    last switch $($ag.followed), from $from"
+            }
+        }
+        if ($rulesAny) {
+            $gl = Get-AgentToolLimit 'gemini'
+            $gLimit = $(if ($gl -gt 0) { [string]$gl } else { 'no limit' })
+            $usd = "$($state.daily.agent_cost) USD for Claude Code agents (no daily cap)"
+            if ($script:CostLimits -and $script:AgentDailyBudgetUsd -gt 0) { $usd = "$($state.daily.agent_cost) of $($script:AgentDailyBudgetUsd) USD for Claude Code agents" }
+            Write-Host ("Agent turns today ({0}): {1} Gemini CLI (limit {2}); {3}" -f $state.daily.date, [int]$state.daily.agent_tool_wakes['gemini'], $gLimit, $usd)
         }
     } else {
         Write-Host 'Agent mail: no agent enrolled (to wake an agent when mail waits for it: bridge-relay.ps1 -EnrollAgent -AgentName <its name>)'
@@ -3996,14 +4075,22 @@ function Show-CoordinatorArgs {
 # itself (.relay\coordinator.json, codex.json, agents.json). A change the relay did not make halts it with a plain
 # alert. It is a backstop, not a lock: it sees a change only when it looks (each tick, right before each worker start
 # and each Codex or Gemini CLI turn, and when the next relay starts, for a turn that an earlier relay left running).
-# With a Claude Code coordinator and start requests off (every mailbox today), the guard is off.
+# Phase 7: it is also on while an agent with the relay's rules is enrolled (such an agent runs bin\agent-mail.ps1 outside
+# any sandbox), or while new agents are on; then it looks right before each agent turn too, and an agent turn keeps the
+# program files' stamps as a coordinator turn does. Its halt (guard_halt) also holds agent turns, new agents and planner
+# wakes until -ClearHalt. With a Claude Code coordinator, start requests off and no such agent (every mailbox before
+# Phase 7), the guard is off.
 
 function Test-GuardWanted {
-    # On while .relay\coordinator.json names codex or gemini, or while start requests are on. Initialize-RelayGuard
-    # decides it once per relay process: -Enroll needs the writer lock, so the coordinator's tool cannot change meanwhile.
+    # On while .relay\coordinator.json names codex or gemini, while start requests are on, while new agents are on, or
+    # while an agent with the relay's rules is enrolled (Phase 7, D17). Initialize-RelayGuard decides it once per relay
+    # process: -Enroll and -EnrollAgent need the writer lock, so none of these can change meanwhile.
     $c = Get-Coordinator
     $t = Get-CoordTool $c
-    return [bool](($c -and ($t -eq 'codex' -or $t -eq 'gemini')) -or (Get-StartRequestsOn $c))
+    if (($c -and ($t -eq 'codex' -or $t -eq 'gemini')) -or (Get-StartRequestsOn $c)) { return $true }
+    if ($AllowNewAgents) { return $true }
+    foreach ($ag in @((Get-Agents).Values)) { if (Test-AgentRelayRules $ag) { return $true } }
+    return $false
 }
 
 function Get-GuardFiles {
@@ -4087,18 +4174,31 @@ function Initialize-RelayGuard([hashtable]$State) {
     if (-not $script:GuardOn) { return }
     $script:RelayStamps = Get-RelayFileStamps $false
     # A Codex or Gemini CLI turn that an earlier relay left running keeps the program files' stamps from its start in its
-    # record, so a change made while no relay ran is caught before anything runs.
+    # record, so a change made while no relay ran is caught before anything runs. Phase 7: so do an agent turn and a new
+    # agent's first turn. A record's stamps are dropped once they halted the relay, so the turn's end does not halt it a
+    # second time for the same change.
     $now = Get-RelayFileStamps $true
     foreach ($d in @($State.dispatches.Values)) {
         if (-not ($d -is [hashtable]) -or ($d.state -ne 'running' -and $d.state -ne 'launching') -or -not ($d.guard -is [hashtable])) { continue }
         $changed = Get-RelayFileChange $d.guard $now
         if ($changed.Count) { Set-GuardHalt $State $changed "while coordinator turn $($d.id) ran"; $d.guard = $null }
     }
+    foreach ($d in @($State.mail_dispatches.Values)) {
+        if (-not ($d -is [hashtable]) -or ($d.state -ne 'running' -and $d.state -ne 'launching') -or -not ($d.guard -is [hashtable])) { continue }
+        $changed = Get-RelayFileChange $d.guard $now
+        if ($changed.Count) { Set-GuardHalt $State $changed "while agent turn $($d.id) ran"; $d.guard = $null }
+    }
+    foreach ($r in @($State.agent_requests.Values)) {
+        if (-not ($r -is [hashtable]) -or $r.state -ne 'making' -or -not ($r.guard -is [hashtable])) { continue }
+        $changed = Get-RelayFileChange $r.guard $now
+        if ($changed.Count) { Set-GuardHalt $State $changed "while the first turn $($r.id) of a new agent ran"; $r.guard = $null }
+    }
 }
 
 function Test-RelayFiles([hashtable]$State, [string]$When) {
     # True when no watched file changed since the last look. Called once per tick, right before each worker start, and
-    # right before each Codex or Gemini CLI turn. A change halts the relay. Always true while the guard is off.
+    # right before each Codex or Gemini CLI turn and (Phase 7) each agent turn. A change halts the relay. Always true
+    # while the guard is off.
     if (-not $script:GuardOn -or $null -eq $script:RelayStamps) { return $true }
     $now = Get-RelayFileStamps $false
     $changed = Get-RelayFileChange $script:RelayStamps $now
@@ -4109,22 +4209,28 @@ function Test-RelayFiles([hashtable]$State, [string]$When) {
 
 function Set-GuardHalt([hashtable]$State, [string[]]$Changed, [string]$When, $Seen = $null) {
     # Halts the relay with a plain alert. Each change is reported once: the files as they are now ($Seen, or a new look)
-    # become the next look, here and in the record of each Codex or Gemini CLI turn that still runs or starts. Such a
-    # record keeps the program files' stamps from its start (Start-ToolDispatch), and they are compared when the turn
-    # ends or the next relay starts, so the files just reported get their stamps as they are now there too.
+    # become the next look, here and in the record of each turn that still runs or starts: a Codex or Gemini CLI
+    # coordinator turn, and (Phase 7) an agent turn or a new agent's first turn. Such a record keeps the program files'
+    # stamps from its start (Start-ToolDispatch, Start-ToolMailDispatch), and they are compared when the turn ends or the
+    # next relay starts, so the files just reported get their stamps as they are now there too. guard_halt (Phase 7, D17)
+    # holds the same words as halt: while it is set, no agent turn, new agent or planner wake starts either.
     $all = @(@($Changed) | ForEach-Object { if ($_.StartsWith($Root + '\', [StringComparison]::OrdinalIgnoreCase)) { $_.Substring($Root.Length + 1) } else { $_ } })
     $names = (@($all | Select-Object -First 10)) -join ', '
     if ($all.Count -gt 10) { $names += " and $($all.Count - 10) more" }
     $State.halt = "relay files changed ${When}: $names"
+    $State.guard_halt = $State.halt
     Add-Alert $State '' ("The relay stopped: $names changed ${When}. A session or a worker may have made the change. Look at it before you start the relay again. " +
-        'If you made it yourself, run bridge-relay.ps1 -Stop (if the loop runs), then -ClearHalt, then start the relay again. Until then no coordinator turn and no worker starts.')
+        'If you made it yourself, run bridge-relay.ps1 -Stop (if the loop runs), then -ClearHalt, then start the relay again. Until then no coordinator turn, worker, planner wake, agent turn or new agent starts.')
     Write-Log "HALT: relay files changed ${When}: $names"
     if ($script:GuardOn) {
         if ($Seen -is [hashtable]) { $script:RelayStamps = $Seen } else { $script:RelayStamps = Get-RelayFileStamps $false }
     }
     $prog = $null   # the program files' stamps now, looked at only when a turn's record needs them
-    foreach ($d in @($State.dispatches.Values)) {
-        if (-not ($d -is [hashtable]) -or ($d.state -ne 'running' -and $d.state -ne 'launching') -or -not ($d.guard -is [hashtable])) { continue }
+    # Phase 7: agent turns and first turns too; a first turn's record is 'making'.
+    $recs = @($State.dispatches.Values) + @($State.mail_dispatches.Values) + @($State.agent_requests.Values)
+    foreach ($d in $recs) {
+        if (-not ($d -is [hashtable]) -or -not ($d.guard -is [hashtable])) { continue }
+        if ($d.state -ne 'running' -and $d.state -ne 'launching' -and $d.state -ne 'making') { continue }
         if ($null -eq $prog) { $prog = Get-RelayFileStamps $true }
         foreach ($p in @($Changed)) {
             # Only program files: a record of the relay (coordinator.json, say) is never in a turn's stamps.
@@ -7075,24 +7181,220 @@ function Complete-ToolMailDispatch([hashtable]$State, [hashtable]$D) {
     Remove-DispatchFiles $D
 }
 
+# ---------- Phase 7: enrolling an agent in Claude Code, following its name, and -ShowAgentArgs ----------
+# -EnrollAgent -Tool claude -AgentFolder <folder> signs up a Claude Code session as an agent with the relay's rules: its
+# own folder (it must pass every rule of Get-AgentFolderError), its profile (mail, or files with -AgentProfile files),
+# and its session: the newest session of that folder with the agent's name (/rename in Claude Code), which it then
+# follows, or a fixed session (-SessionId), closed and quiet now, which follows no name. One session has one job.
+# Enrolling wakes nothing: the mail that waits now counts as known. Every refusal comes before anything is written, so a
+# refused command saves nothing. A Gemini CLI agent and a Codex agent with -AgentProfile come in later steps of Phase 7:
+# until then this relay refuses them in plain words.
+
+function Get-NewAgentNameProblem([string]$Name) {
+    # Why $Name cannot name an agent of a new kind or a requested one (D26), in plain words with a closing period, or ''.
+    # Never a ': the name goes inside '...' in the commands the agent runs, in Git Bash and in PowerShell.
+    if (-not $Name -or $Name -notmatch $AgentNameRe) { return "The name '$Name' is not a mail name: use 1-80 letters, digits, spaces and . _ - # + marks, starting with a letter or a digit." }
+    if ($Name.Contains("'")) { return "The name '$Name' may not hold ': it goes inside '...' in the commands the agent runs." }
+    $key = Get-AgentKey $Name
+    if (-not $key -or $key -match '^(con|prn|aux|nul|com[1-9]|lpt[1-9])$' -or @('owner', 'relay') -contains $key) { return "'$Name' cannot be an agent's name here: Windows or the relay keeps it for itself." }
+    if ($OwnerName -ne 'the owner' -and $key -eq (Get-AgentKey $OwnerName)) { return "'$Name' is the owner's mail name (owner_name in bin\relay-settings.json)." }
+    # A later step of Phase 7 (planner mail) also refuses the planner's mail name here: mail for it wakes the planner.
+    return ''
+}
+
+function Find-ClaudeTranscriptById([string]$Id) {
+    # The transcript <id>.jsonl in any project folder of Claude Code's config, or ''. -LiteralPath for each folder, so
+    # nothing in the id or the path is read as a wildcard. Read-only.
+    if ($Id -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') { return '' }
+    $projects = Get-SafePath $ClaudeConfigDir 'projects'
+    if (-not $projects -or -not (Test-Path -LiteralPath $projects -PathType Container)) { return '' }
+    foreach ($dir in @(Get-ChildItem -LiteralPath $projects -Directory -Force -ErrorAction SilentlyContinue)) {
+        $p = [IO.Path]::Combine($dir.FullName, "$Id.jsonl")
+        if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
+    }
+    return ''
+}
+
+function Invoke-EnrollToolAgent {
+    # Operator only: -EnrollAgent -Tool claude, -Tool gemini, or a Codex agent with -AgentProfile (Invoke-EnrollAgent
+    # sends those here). Records an agent with the relay's rules. A refusal saves nothing.
+    $agTool = $AgentToolWord
+    $name = Get-AgentCleanName $AgentName
+    $nw = Get-NewAgentNameProblem $name
+    if ($nw) { Fail "$nw Nothing was saved." 64 }
+    $key = Get-AgentKey $name
+    if ($AgentToolsSetting -notcontains $agTool) {
+        if ($agTool -eq 'gemini') { Fail 'Gemini CLI agents are off. Each Gemini CLI turn costs money (Gemini CLI needs a paid API key, Vertex AI or a work license). To turn them on, add "gemini" to agent_tools in bin\relay-settings.json. Nothing was saved.' }
+        Fail "$(Get-ToolName $agTool) agents are off: agent_tools in bin\relay-settings.json does not list $agTool. Nothing was saved."
+    }
+    $profileWord = $AgentProfileWord
+    if (-not $profileWord) { $profileWord = 'mail' }
+    $folder = ''
+    if ($AgentFolder) { try { $folder = [IO.Path]::GetFullPath($AgentFolder).TrimEnd('\') } catch { Fail "-AgentFolder '$AgentFolder' is not a folder path Windows can use. Nothing was saved." 64 } }
+    # A whole drive (C:\ becomes C: here) would be read as the current folder of that drive.
+    if ($folder -match '^[A-Za-z]:$') { Fail "-AgentFolder '$AgentFolder' is a whole drive. Give the agent a folder of its own. Nothing was saved." 64 }
+    $rec = @{ name = $name; key = $key; tool = $agTool; profile = $profileWord; model = [string]$Model; effort = ([string]$Effort).ToLowerInvariant();
+        made_by = 'owner'; enrolled_utc = (Get-Now); enrolled = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv) }
+    $sid = ''
+    if ($agTool -eq 'claude') {
+        $there = $false
+        try { $there = [bool](Test-Path -LiteralPath $folder -PathType Container) } catch { $there = $false }
+        if (-not $there) { Fail "The agent's folder was not found: $folder. Nothing was saved." }
+        $why = Get-AgentFolderError $folder 'claude' $key   # the folder first, so a bad folder is named as such
+        if ($why) { Fail "The folder $folder cannot be this agent's folder: $why. Nothing was saved." }
+        $mp = Get-AgentMailboxPathError
+        if ($mp) { Fail "$mp. Nothing was saved." }
+        if ($rec.model -and $rec.model -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,79}$') { Fail "-Model must be one word of letters, digits and . _ : [ ] - (got '$Model'). Nothing was saved." 64 }
+        $transcript = ''
+        if ($SessionId) {
+            if ($SessionId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') { Fail "-SessionId must be the Claude Code session id (a UUID; got '$SessionId'). Nothing was saved." 64 }
+            $sid = $SessionId.ToLowerInvariant()
+            $transcript = Get-SafePath (Get-SafePath (Get-SafePath $ClaudeConfigDir 'projects') ($folder -replace '[^A-Za-z0-9]', '-')) "$sid.jsonl"
+            $found = $false
+            try { $found = [bool]($transcript -and (Test-Path -LiteralPath $transcript -PathType Leaf)) } catch { $found = $false }
+            if (-not $found) {
+                if (Find-ClaudeTranscriptById $sid) { Fail "Claude Code session $sid belongs to another folder, not $folder. claude --resume finds a session only from its own folder; give that folder as -AgentFolder. Nothing was saved." }
+                Fail "No local Claude Code session $sid was found for the folder $folder. Take the id from the session itself. Nothing was saved."
+            }
+            # A fixed id must be closed and quiet now, as for -Enroll -SessionId.
+            $pids = Get-ClaudeOpenPids $sid
+            if ($null -eq $pids) { Fail 'Could not read the process list to confirm the session is not running. Not enrolled.' }
+            if ($pids.Count -gt 0) { Fail ("Session $sid is open right now (pid " + ($pids -join ',') + '). Exit it first: the relay must never resume a running session.') }
+            if ($QuietSeconds -gt 0) {
+                $age = (Get-Now) - (ConvertTo-Unix (Get-Item -LiteralPath $transcript).LastWriteTimeUtc)
+                if ($age -lt $QuietSeconds) { Fail "Session $sid was written $age s ago; it may still be open. Exit it, wait $QuietSeconds s, then enroll again." }
+            }
+            $rec.follow_name = ''
+        } else {
+            # The newest session of the folder with the name. It may be open now: the relay waits until it is closed.
+            $named = Find-NamedClaudeSession $name $folder
+            if (-not $named) { Fail "No Claude Code session named '$name' was found for the folder $folder. Start Claude Code there, name the session (/rename $name), then enroll again, or give -SessionId. Nothing was saved." }
+            $sid = [string]$named.id
+            $transcript = [string]$named.path
+            $own = Get-AgentCleanName (Get-ClaudeTitleRecord $transcript)   # the session's own spelling, as for a Codex agent
+            if ($own -and -not (Get-NewAgentNameProblem $own) -and (Get-AgentKey $own) -eq $key) { $name = $own; $rec.name = $own }
+            $rec.follow_name = $name
+        }
+        $rec.session_id = $sid; $rec.cwd = $folder; $rec.transcript_path = $transcript; $rec.started_ms = (Get-ClaudeStarted $transcript)
+        $rec.wake_rule = 'claude -p --resume <session_id>, the notice on standard input, the profile''s fixed lists; subscription login only'
+    } elseif ($agTool -eq 'gemini') {
+        # Its rules file and its turn come in a later step (stage 7C).
+        Fail 'An agent in Gemini CLI comes in a later step of Phase 7. This relay cannot wake one yet. Nothing was saved.' 64
+    } else {
+        # A Codex agent with a profile runs only with the relay's own Codex options, which come in a later step (stage 7D).
+        Fail 'A Codex agent with -AgentProfile comes in a later step of Phase 7. This relay cannot wake one yet. To enroll a Codex agent now, leave -AgentProfile out: it then works as before. Nothing was saved.' 64
+    }
+    # One session, one job: with the workers and the HQ family, and never the planner's thread (Get-SessionJobText).
+    $other = Get-SessionJobText $agTool $sid ('agent:' + $key) $true $true $null $true
+    if ($other) { Fail "The $(Get-ToolName $agTool) session $sid is already $other. One session has one job: pick another session. Nothing was saved." }
+    $lp = Get-MailFolderLinkProblem $key
+    if ($lp) { Fail "$lp. Nothing was saved." }
+    $agents = Get-Agents
+    $kept = Backup-RelayFile $AgentsFile   # a copy of the old record first (D21)
+    $agents[$key] = $rec
+    $dir = Join-Path $MailDir $key   # its mail folder, so bin\agent-mail.ps1 -Send knows the name
+    foreach ($d in @($dir, (Join-Path $dir 'new'), (Join-Path $dir 'read'))) { if (-not (Test-Path -LiteralPath $d -PathType Container)) { New-Item -ItemType Directory -Path $d -Force | Out-Null } }
+    $nf = Join-Path $dir 'name.txt'
+    if (-not (Test-Path -LiteralPath $nf)) { [IO.File]::WriteAllText($nf, $name, $Utf8) }
+    $state = Get-State
+    Update-Mail $state @{ $key = $rec } $true   # what waits now counts as known
+    Save-Json $AgentsFile $agents
+    foreach ($h in @($state.mail_halts, $state.mail_failures, $state.mail_next_attempt)) { [void]$h.Remove($key) }
+    [void]$state.flags.Remove('last_mail_block_' + $key)
+    Save-State $state
+    $waiting = Get-AgentNewMail $key   # a variable first: it returns , @(...)
+    Write-Log ("Enrolled agent '{0}' for mail wakes: {1} session {2} (folder {3}; profile {4}). New mail in mail\{5}\new wakes it once no program has it open; the {6} message(s) waiting now count as known." -f
+        $name, (Get-ToolName $agTool), $sid, $folder, $profileWord, $key, $waiting.Count)
+    if ($rec.follow_name) { Write-Log "It follows the name '$name': a newer session of that folder with that name takes over its mail, between its turns." }
+    if ($agTool -eq 'claude') {
+        $cap = "$($script:AgentDailyBudgetUsd) USD a day for all Claude Code agents"
+        if ($script:AgentDailyBudgetUsd -le 0) { $cap = 'no daily cap for them (relay_max_agent_usd_per_day is 0)' }
+        if ($script:CostLimits) { Write-Log "Each wake is one Claude Code turn on your Claude plan: at most $($TurnBudgetUsd.ToString($Inv)) USD a turn, and $cap." }
+        else { Write-Log 'Each wake is one Claude Code turn on your Claude plan. Cost limits are off (bin\cost-limits.json), so no dollar cap holds it.' }
+    }
+    $orders = Get-SafePath $folder (Get-AgentOrdersName $agTool)
+    if ($orders -and -not (Test-Path -LiteralPath $orders -PathType Leaf)) { Write-Log "WARNING: $orders is not there. Write the agent's standing orders there." }
+    if ($kept) { Write-Log "The agents.json from before is kept as $kept." }
+}
+
+function Update-ClaudeAgentFollow([hashtable]$State, [bool]$ReadOnly, [string]$Key, [hashtable]$Ag) {
+    # A Claude Code agent enrolled by name follows it, as the coordinator does (Update-CoordinatorFollow): the newest
+    # session of its folder with the name takes over its mail, forward in time only, between its turns, and only when that
+    # session has no other job. Find-NamedClaudeSession looks only in the agent's own folder, so the folder never changes.
+    # Returns $true when the record changed (the caller saves agents.json). Every method call is [void], so nothing else
+    # leaves the function.
+    $name = [string]$Ag.follow_name
+    if (-not $name) { return $false }
+    $cur = [string]$Ag.session_id
+    $miss = 'follow_agent_miss_' + $Key
+    $best = Find-NamedClaudeSession $name ([string]$Ag.cwd)
+    if (-not $best) {
+        if ($State.flags[$miss] -ne $cur) { $State.flags[$miss] = $cur; Write-Log "No Claude Code session named '$name' was found for $($Ag.cwd); the relay still wakes session $cur for its mail." }
+        return $false
+    }
+    [void]$State.flags.Remove($miss)
+    if ($best.id -eq $cur -or $best.started -le [int64]$Ag.started_ms) { return $false }
+    if (@($State.mail_dispatches.Values | Where-Object { $_.agent -eq $Key -and ($_.state -eq 'running' -or $_.state -eq 'launching') }).Count) {
+        $script:NextFollowCheck = 0   # between turns only: look again on the next tick
+        return $false
+    }
+    $other = Get-SessionJobText 'claude' ([string]$best.id) ('agent:' + $Key) $false $false $State
+    if ($other) {
+        $jobFlag = 'follow_agent_job_' + $Key
+        if ($State.flags[$jobFlag] -ne $best.id) { $State.flags[$jobFlag] = $best.id; Write-Log "The newest Claude Code session named '$name' ($($best.id)) is already $other. The relay still wakes session $cur for its mail." }
+        return $false
+    }
+    if ($ReadOnly) { Write-Note "DRY-RUN: would switch agent '$($Ag.name)' to Claude Code session $($best.id), the newest with that name (it wakes $cur now)."; return $false }
+    $Ag.previous_session_id = $cur
+    $Ag.session_id = [string]$best.id
+    $Ag.transcript_path = [string]$best.path
+    $Ag.started_ms = $best.started
+    $Ag.followed_utc = Get-Now
+    $Ag.followed = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv)
+    $State.mail_failures[$Key] = 0
+    $State.mail_next_attempt[$Key] = 0
+    [void]$State.flags.Remove('last_mail_block_' + $Key)
+    [void]$State.flags.Remove('follow_agent_job_' + $Key)
+    Write-Log "Rollover: agent '$($Ag.name)' is now Claude Code session $($best.id) (newest with that name), so its mail wakes that session instead of $cur."
+    return $true
+}
+
+function Show-AgentArgs {
+    # Read-only (no lock, no CLI, nothing written): one agent's turn as JSON, for the owner to look at before a turn: the
+    # tool, the session, the folder, the profile, and the command with its lists and rules. Keys go in with $o['args']:
+    # $args is an automatic variable, and the index form never touches it.
+    $key = Get-AgentKey (Get-AgentCleanName $AgentName)
+    $agents = Get-Agents
+    if (-not $key -or -not $agents.ContainsKey($key)) {
+        $have = @($agents.Values | ForEach-Object { [string]$_.name } | Sort-Object)
+        Fail ("No agent named '$AgentName' is enrolled. Enrolled: " + $(if ($have.Count) { $have -join ', ' } else { 'none' }) + '.')
+    }
+    $ag = $agents[$key]
+    $agTool = Get-AgentTool $ag
+    $o = [ordered]@{ name = [string]$ag.name; tool = $agTool; session = (Get-AgentSessionId $ag); folder = [string]$ag.cwd; profile = (Get-AgentProfile $ag); relayRules = (Test-AgentRelayRules $ag) }
+    if ($agTool -eq 'claude') {
+        $cliArgs = Get-AgentClaudeArguments $ag   # each list into a variable first, never @(<function>)
+        $lists = Get-AgentClaudeLists $ag
+        $o['args'] = $cliArgs.ToArray(); $o['allowedTools'] = $lists.allow; $o['disallowedTools'] = $lists.deny; $o['appendSystemPrompt'] = (Get-AgentRules $ag)
+    } elseif ($agTool -eq 'gemini') {
+        $o['note'] = 'An agent in Gemini CLI comes in a later step of Phase 7. This relay does not wake it yet.'
+    } elseif ($agTool -ne 'codex') {
+        $o['note'] = "The relay cannot wake an agent in '$agTool' (.relay\agents.json names that tool). Enroll it again with -EnrollAgent -Tool codex, claude or gemini."
+    } elseif (Test-AgentRelayRules $ag) {
+        $o['note'] = 'A Codex agent with the relay''s rules comes in a later step of Phase 7. This relay does not wake it yet.'
+    } else {
+        # A Codex agent with no profile, as before Phase 7: codex_exec_args, and the notice as the last argument.
+        $cliArgs = Get-CodexArguments $ag '<notice>' $null
+        $o['args'] = $cliArgs.ToArray()
+        $o['options'] = 'codex_exec_args in bin\relay-settings.json'
+    }
+    Write-Output (ConvertTo-Json -InputObject $o -Depth 4)
+}
+
 # ---------- Phase 7: placeholders for later stages ----------
 # Stage 7A built the foundations of Phase 7. What needs the later steps is accepted on the command line and in the
 # settings, and refused here in plain words until that step is built. Each later step replaces its part of this block:
 # a function name may be defined only once in this file (scripts/check.js checks it).
-
-function Show-AgentArgs {
-    # -ShowAgentArgs -AgentName <name> (design 14.6): one agent's turn as JSON, read-only.
-    Fail '-ShowAgentArgs comes in a later step of Phase 7. This relay cannot show an agent''s turn yet. -Status shows the enrolled agents.' 64
-}
-
-function Invoke-EnrollToolAgent {
-    # -EnrollAgent -Tool claude or gemini, or a Codex agent with -AgentProfile (design 14.2). Refused before anything is
-    # written: the writer lock is the only thing this command took.
-    $what = 'An agent in Claude Code'
-    if ($AgentToolWord -eq 'gemini') { $what = 'An agent in Gemini CLI' }
-    elseif ($AgentToolWord -eq 'codex') { $what = 'A Codex agent with -AgentProfile' }
-    Fail "$what comes in a later step of Phase 7. For now this relay enrolls only a Codex agent with no -AgentProfile, as before. Nothing was saved." 64
-}
 
 # allow_new_agents is read above, but the relay reads agent requests (agents\<name key>.md) only from a later step on.
 if ($AllowNewAgents -and @('Start', 'Once', 'StartAll', 'Status', 'DryRun') -contains $Mode) {
