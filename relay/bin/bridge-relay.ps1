@@ -2750,9 +2750,19 @@ function Get-AgentBlockReason([hashtable]$State, [hashtable]$Ag, [object[]]$Pend
         Add-Alert $State ('cap-agent-tool-' + $agTool + '-' + $State.daily.date) "Daily limit of $(Get-ToolName $agTool) agent turns reached ($toolLimit in all: agent_wakes_per_day in bin\cost-limits.json). Their mail stays queued until tomorrow."
         return @{ code = 'cap-tool'; text = "the daily limit of $(Get-ToolName $agTool) agent turns is reached ($([int]$State.daily.agent_tool_wakes[$agTool])/$toolLimit in all)" }
     }
-    if ($agTool -eq 'claude' -and $script:CostLimits -and $script:AgentDailyBudgetUsd -gt 0 -and ([double]$State.daily.agent_cost + $TurnBudgetUsd) -gt $script:AgentDailyBudgetUsd) {
-        Add-Alert $State ('cap-agent-cost-' + $State.daily.date) "Daily budget of Claude Code agents reached ($($State.daily.agent_cost) of $($script:AgentDailyBudgetUsd) USD; relay_max_agent_usd_per_day). Their mail stays queued until tomorrow; the relay never raises budgets."
-        return @{ code = 'cap-cost'; text = "the daily budget of Claude Code agents is reached ($($State.daily.agent_cost) + $TurnBudgetUsd > $($script:AgentDailyBudgetUsd) USD)" }
+    if ($agTool -eq 'claude' -and $script:CostLimits -and $script:AgentDailyBudgetUsd -gt 0) {
+        $spentUsd = [double]$State.daily.agent_cost
+        if (($spentUsd + $TurnBudgetUsd) -gt $script:AgentDailyBudgetUsd) {
+            Add-Alert $State ('cap-agent-cost-' + $State.daily.date) "Daily budget of Claude Code agents reached ($($State.daily.agent_cost) of $($script:AgentDailyBudgetUsd) USD; relay_max_agent_usd_per_day). Their mail stays queued until tomorrow; the relay never raises budgets."
+            return @{ code = 'cap-cost'; text = "the daily budget of Claude Code agents is reached ($($State.daily.agent_cost) + $TurnBudgetUsd > $($script:AgentDailyBudgetUsd) USD)" }
+        }
+        # A Claude Code agent turn that runs now is added to the day's cost only when it ends, and each may still cost up
+        # to the per-turn budget, so this turn waits while those could use the rest of the day's budget: the cap holds
+        # with turns at once. No alert: the mail goes when they end.
+        $inFlight = @($State.mail_dispatches.Values | Where-Object { [string]$_.tool -eq 'claude' -and ($_.state -eq 'running' -or $_.state -eq 'launching') }).Count
+        if ($inFlight -gt 0 -and ($spentUsd + ($inFlight + 1) * $TurnBudgetUsd) -gt $script:AgentDailyBudgetUsd) {
+            return @{ code = 'cost-wait'; text = "$inFlight Claude Code agent turn(s) run now and could use the rest of the daily budget of Claude Code agents ($spentUsd + $inFlight x $TurnBudgetUsd + $TurnBudgetUsd > $($script:AgentDailyBudgetUsd) USD); the mail is kept until they end" }
+        }
     }
     $busy = Get-AgentBusyReason $State $Ag
     if ($busy) { return @{ code = 'busy'; text = "$busy. Queued; no new process" } }
@@ -3977,7 +3987,10 @@ function Show-Status {
             $new = Get-AgentNewMail $key
             $agTool = Get-AgentTool $ag
             if (Test-AgentRelayRules $ag) { $rulesAny = $true }
-            if ($agTool -ne 'codex') {
+            if (@('codex', 'claude', 'gemini') -notcontains $agTool) {
+                # Phase 7: a tool the relay does not know (a hand edit of agents.json). Get-AgentBlockReason never wakes it.
+                Write-Host ("  - {0}: an agent in '{1}', a tool the relay cannot wake; {2} new message(s). Enroll it again with -EnrollAgent -Tool codex, claude or gemini" -f $ag.name, $agTool, $new.Count)
+            } elseif ($agTool -ne 'codex') {
                 # Phase 7: a Claude Code or Gemini CLI session.
                 $sid = Get-AgentSessionId $ag
                 $open = 'no'
@@ -6317,9 +6330,15 @@ function Get-SafePath([string]$Base, [string]$Child) {
 }
 
 function Get-CmdLineProblem([string]$Exe, [string]$ArgString) {
-    # A .cmd or .bat launcher hands its command line to cmd.exe, which changes it at % ! ^ & | < and >. '' when fine.
-    if ($Exe -match '\.(cmd|bat)$' -and $ArgString -match '[%!^&|<>]') {
+    # A .cmd or .bat launcher hands its command line to cmd.exe, which changes it at % ! ^ & | < and >, and which takes
+    # at most 8191 characters (with its own words around it, so a margin). '' when fine.
+    if ($Exe -notmatch '\.(cmd|bat)$') { return '' }
+    if ($ArgString -match '[%!^&|<>]') {
         return "the command line holds % ! ^ & | < or >, which cmd.exe would change ($Exe is a .cmd or .bat file)"
+    }
+    $cmdLength = $Exe.Length + $ArgString.Length + 40
+    if ($cmdLength -gt 8191) {
+        return "the command line is about $cmdLength characters long, and cmd.exe takes at most 8191 ($Exe is a .cmd or .bat file). Start the relay with -ClaudeExe set to Claude Code's claude.exe"
     }
     return ''
 }
@@ -6934,7 +6953,10 @@ function Get-AgentClaudeLists([hashtable]$Ag) {
     # coordinator's spawn-worker.ps1 rule has both); for files, edits in its own folder. Denied (a deny always wins): the
     # web, the AI tools' own folders, .ssh and .env files, writing in any mailbox, reading any mailbox's mail folder (its
     # own mail comes only through agent-mail.ps1, so it never reads another agent's mail), its orders and settings
-    # files, -MailboxRoot, and every other program it could start. Claude Code applies the Read rules to Glob and Grep.
+    # files, -MailboxRoot, and every other program it could start. acceptEdits mode may let Claude Code run common file
+    # commands (mkdir, touch, rm, rmdir, mv, cp, sed) in the working folder without a rule, so those are denied too: a
+    # files agent changes files only with Edit and Write, never its orders. Claude Code applies the Read rules to Glob
+    # and Grep.
     $ps = 'powershell -NoProfile -ExecutionPolicy Bypass -File '
     $name = [string]$Ag.name
     $own = ConvertTo-RulePath ([string]$Ag.cwd)
@@ -6963,7 +6985,8 @@ function Get-AgentClaudeLists([hashtable]$Ag) {
     foreach ($t in @('Edit', 'Write')) { $deny.Add("$t($own/.claude/**)"); $deny.Add("$t($own/.git/**)") }
     foreach ($x in @('Bash(powershell * -MailboxRoot*)', 'Bash(powershell -Command*)', 'Bash(powershell -c *)', 'Bash(pwsh*)', 'Bash(cmd *)',
             'Bash(node *)', 'Bash(git *)', 'Bash(gh *)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(claude*)', 'Bash(codex*)', 'Bash(gemini*)',
-            'Bash(agy*)', 'Bash(rm *)', 'Bash(curl*)', 'Bash(wget*)')) { $deny.Add($x) }
+            'Bash(agy*)', 'Bash(rm *)', 'Bash(rmdir *)', 'Bash(mkdir *)', 'Bash(touch *)', 'Bash(mv *)', 'Bash(cp *)', 'Bash(sed *)',
+            'Bash(curl*)', 'Bash(wget*)')) { $deny.Add($x) }
     return @{ allow = $allow.ToArray(); deny = $deny.ToArray() }
 }
 
@@ -7282,7 +7305,7 @@ function Invoke-EnrollToolAgent {
         Fail 'An agent in Gemini CLI comes in a later step of Phase 7. This relay cannot wake one yet. Nothing was saved.' 64
     } else {
         # A Codex agent with a profile runs only with the relay's own Codex options, which come in a later step (stage 7D).
-        Fail 'A Codex agent with -AgentProfile comes in a later step of Phase 7. This relay cannot wake one yet. To enroll a Codex agent now, leave -AgentProfile out: it then works as before. Nothing was saved.' 64
+        Fail 'A Codex agent with -AgentProfile, -Model or -Effort comes in a later step of Phase 7. This relay cannot wake one yet. To enroll a Codex agent now, leave out -AgentProfile, -Model and -Effort: it then works as before. Nothing was saved.' 64
     }
     # One session, one job: with the workers and the HQ family, and never the planner's thread (Get-SessionJobText).
     $other = Get-SessionJobText $agTool $sid ('agent:' + $key) $true $true $null $true
