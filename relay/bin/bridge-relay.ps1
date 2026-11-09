@@ -1738,7 +1738,7 @@ function Get-CodexArguments([hashtable]$Cx, [string]$Prompt, $Options = $null) {
         foreach ($x in $Options) { $a.Add([string]$x) }   # a coordinator turn: only the relay's own fixed options
     } else {
         foreach ($x in $CodexArgs) { $a.Add([string]$x) }
-        foreach ($d in @(Get-HqAddDirs $Cx)) { $a.Add('--add-dir'); $a.Add([string]$d) }   # HQ only: each project mailbox
+        foreach ($d in @(Get-HqAddDirs $Cx)) { $a.Add('--add-dir'); $a.Add([string]$d) }   # the planner's mail folder; HQ also each project mailbox
     }
     # Phase 7: no thread yet (a new agent's first turn, which has its own checks): a new thread, with its prompt on
     # standard input. A wake never gets here: Get-CodexPreflightError refuses an empty thread_id first.
@@ -2370,11 +2370,12 @@ function Get-HqOwnerProblem([string]$ThreadId) {
 }
 
 function Get-HqAddDirs([hashtable]$Target) {
-    # HQ only: when codex_exec_args asks for workspace-write, the orchestrator's turn may also write in each project
+    # When codex_exec_args asks for workspace-write, an HQ orchestrator's turn may also write in each project
     # mailbox (--add-dir). Each folder is checked again first, the way codex_exec_args entries are: a full path to a
     # folder that is there, with no quotes or control characters. Agents' mail wakes get none. Phase 7 (D10): in any
     # mailbox, a planner with a mail name whose thread works outside the mailbox also gets its own mail folder first,
-    # so agent-mail.ps1 -Read can move the mail it read.
+    # so agent-mail.ps1 -Read can move the mail it read. A mail folder
+    # with a sign cmd.exe treats specially (" % ! ^ & | < >) is left out.
     if (-not $Target) { return @() }
     $ww = $false
     foreach ($x in $CodexArgs) { if ([string]$x -match '(^|=)workspace-write$') { $ww = $true } }
@@ -2382,7 +2383,7 @@ function Get-HqAddDirs([hashtable]$Target) {
     $cx = Get-CodexConfig
     if (-not $cx -or [string]$cx.thread_id -ne [string]$Target.thread_id) { return @() }
     $out = New-Object System.Collections.Generic.List[string]
-    if ((Get-PlannerMailName $cx) -and $Target.cwd -and -not (Test-InFolder ([string]$Target.cwd) $Root) -and (Test-Path -LiteralPath $MailDir -PathType Container)) { $out.Add($MailDir) }
+    if ((Get-PlannerMailName $cx) -and $Target.cwd -and -not (Test-InFolder ([string]$Target.cwd) $Root) -and $MailDir -notmatch '[\x00-\x1f"%!^&|<>]' -and (Test-Path -LiteralPath $MailDir -PathType Container)) { $out.Add($MailDir) }
     if ($HqRole) {
         foreach ($p in $script:HqProjects) {
             if (Get-ProjectFolderError ([string]$p.mailbox) $true) { continue }

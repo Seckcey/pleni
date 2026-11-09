@@ -112,8 +112,22 @@ function Get-NameProblem([string]$Name) {
     return ''
 }
 
+function Join-BoxPath([string]$Base, [string[]]$Parts) {
+    # [IO.Path]::Combine for a mailbox folder. A mailbox at the top of a drive is kept as 'D:' (the trailing \ is cut), and
+    # Combine('D:', 'mail') would give 'D:mail', the current folder of drive D. So 'D:' gets its \ back first.
+    $b = $Base
+    if ($b -match '^[A-Za-z]:$') { $b += '\' }
+    return [IO.Path]::Combine([string[]](@($b) + @($Parts)))
+}
+
+function Get-DriveTop([string]$Path) {
+    # A bare 'D:' means the current folder of drive D; as a pinned path it means the top of the drive.
+    if ($Path -match '^[A-Za-z]:$') { return $Path + '\' }
+    return $Path
+}
+
 function Get-OwnerName([string]$BoxRoot = $Root) {
-    $f = [IO.Path]::Combine($BoxRoot, 'bin', 'relay-settings.json')
+    $f = Join-BoxPath $BoxRoot @('bin', 'relay-settings.json')
     if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return '' }
     try {
         $on = (Get-CleanName ([string](Get-Content -LiteralPath $f -Raw | ConvertFrom-Json).owner_name))
@@ -124,7 +138,7 @@ function Get-OwnerName([string]$BoxRoot = $Root) {
 
 function Get-EnrolledEntries([string]$BoxRoot = $Root) {
     # The entries of .relay\agents.json (written by bridge-relay.ps1), or $null. Never throws.
-    $f = [IO.Path]::Combine($BoxRoot, '.relay', 'agents.json')
+    $f = Join-BoxPath $BoxRoot @('.relay', 'agents.json')
     if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $null }
     try { return (ConvertFrom-Json -InputObject (Read-SharedText $f)) } catch { return $null }
 }
@@ -167,7 +181,7 @@ function Get-KnownName([string]$Name, [string]$Dir = $MailDir) {
 function Get-KnownNames([string]$BoxRoot = $Root) {
     # name key -> name, for every agent with a mail folder, every agent the relay wakes, and the owner, in one box.
     $known = @{}
-    $md = [IO.Path]::Combine($BoxRoot, 'mail')
+    $md = Join-BoxPath $BoxRoot @('mail')
     if (Test-Path -LiteralPath $md -PathType Container) {
         foreach ($d in @(Get-ChildItem -LiteralPath $md -Directory -ErrorAction SilentlyContinue)) {
             $nf = Join-Path $d.FullName 'name.txt'
@@ -246,7 +260,7 @@ function Read-BoxSettings([string]$Dir) {
     # bin\relay-settings.json of a mailbox, or $null. [IO.Path]::Combine, never Join-Path: hq_dir may name a drive that
     # is not there. Never throws.
     try {
-        $f = [IO.Path]::Combine($Dir, 'bin', 'relay-settings.json')
+        $f = Join-BoxPath $Dir @('bin', 'relay-settings.json')
         if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $null }
         return (ConvertFrom-Json -InputObject (Read-SharedText $f))
     } catch { return $null }
@@ -344,7 +358,7 @@ function Test-Pins($Pins) {
     # The local is $pinKey, never $me: names ignore case, so $me would be the -Me parameter itself.
     if ($null -eq $Pins) { return }
     $mb = ''
-    try { $mb = [IO.Path]::GetFullPath($Pins.mailbox).TrimEnd('\') } catch { $mb = '' }
+    try { $mb = [IO.Path]::GetFullPath((Get-DriveTop ([string]$Pins.mailbox))).TrimEnd('\') } catch { $mb = '' }
     if (-not $mb -or $mb -ne $Root) { Fail "In this relay turn you are $($Pins.name) of the mailbox $($Pins.mailbox), and this script serves only that mailbox. Nothing was read or sent." 64 }
     $pinKey = Get-NameKey $Pins.name
     if ($Mode -eq 'Send' -and (Get-NameKey $From) -ne $pinKey) { Fail "In this relay turn you are $($Pins.name): send with -From '$($Pins.name)'. Nothing was sent." 64 }
@@ -353,7 +367,7 @@ function Test-Pins($Pins) {
     if ($NewAgent) { Fail 'In this relay turn -NewAgent is not allowed: write to names that have mail there, or that wrote to you. Nothing was sent.' 64 }
     if ($TextFile) {
         $p = ''; $pinDir = ''
-        try { $p = [IO.Path]::GetFullPath($TextFile); $pinDir = [IO.Path]::GetFullPath($Pins.folder).TrimEnd('\') } catch { $p = '' }
+        try { $p = [IO.Path]::GetFullPath($TextFile); $pinDir = [IO.Path]::GetFullPath((Get-DriveTop ([string]$Pins.folder))).TrimEnd('\') } catch { $p = '' }
         if (-not $p -or -not $pinDir -or -not $p.StartsWith($pinDir + '\', [StringComparison]::OrdinalIgnoreCase)) { Fail "In this relay turn a -TextFile must be a file in your own folder $($Pins.folder). Nothing was sent." 64 }
         # No link on the way from the agent's folder to the file: a link could point at a login file.
         $d = $p
@@ -385,7 +399,7 @@ function Invoke-Send {
         if (-not $bf.boxes.Contains($want)) { Fail ("There is no mailbox '$want' here. Boxes: " + (@($bf.boxes.Keys) -join ', ') + '. Nothing was sent.') 3 }
         if ($want -ne $bf.own) { $target = [string]$bf.boxes[$want]; $wantBox = $want; $boxLine = [string]$bf.own }   # -Box naming this box sends here (D11)
     }
-    $toDir = [IO.Path]::Combine($target, 'mail')
+    $toDir = Join-BoxPath $target @('mail')
     $names = New-Object System.Collections.Generic.List[string]
     $keys = @{}
     foreach ($part in @(@($To) | ForEach-Object { ([string]$_) -split ',' })) {
