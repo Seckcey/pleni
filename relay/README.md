@@ -102,9 +102,9 @@ notepad "$mb\bin\relay-settings.json"
 
 In Notepad, put in your own folders and name, then save. The next part explains each setting.
 
-Keep the mailbox on a plain path, with no `~`. Windows can give a long folder name a short one, such
-as `ADA~1`. The relay's notes to the planner and to Codex agents turn every `~` into a space, so the
-mail command in them would break. Use the long name.
+A mailbox path may hold a `~`, as in a short name that Windows gives a long folder name (`ADA~1`).
+The relay's notes to the planner, a Codex coordinator and Codex agents keep it, so the paths and the
+mail command in them work.
 
 ## Settings
 
@@ -1208,8 +1208,7 @@ and again before every turn, and says in plain words which rule it breaks. The m
 - No folder above it may hold a `CLAUDE.md` (Claude Code) or a `GEMINI.md` (Gemini CLI), because
   the tool would read it as orders.
 - For Claude Code and Gemini CLI agents, the mailbox's own path may hold only letters, digits and
-  `. _ - ~`. A path with a space cannot host these agents: move the mailbox to a plain path. Avoid
-  `~` too (see [Set up a new mailbox](#set-up-a-new-mailbox)).
+  `. _ - ~`. A path with a space cannot host these agents: move the mailbox to a plain path.
 
 And more: the relay says why.
 
