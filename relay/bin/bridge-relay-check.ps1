@@ -17,9 +17,10 @@
   only and between turns); 16 a window whose command line does not name the session (Claude Code's own list of
   running sessions) holds the coordinator turn, and files left behind by closed windows do not; 17 agent mail
   (agent-mail.ps1: send, read and wait by name, with names, sizes and unknown agents checked); 18 agent mail wakes
-  (-EnrollAgent by name, one wake per new message, none for mail already read, waits while the thread is open, two
-  agents at once, -MaxAgentTurnsAtOnce, and the planner and an agent that share one thread, both signed up and both
-  moved to a newer thread with the name); 19-22 HQ (role hq in bin\relay-settings.json, with two project mailboxes
+  (-EnrollAgent by name, one wake per new message, a ~ in the mailbox path kept in the notice's mail command, none for
+  mail already read, waits while the thread is open, two agents at once, -MaxAgentTurnsAtOnce, and the planner and an
+  agent that share one thread, both signed up and both moved to a newer thread with the name); 19-22 HQ (role hq in
+  bin\relay-settings.json, with two project mailboxes
   that share one fake Codex home): one orchestrator wake for the items of both projects, with an --add-dir for each,
   nothing for what waited when a project was added, and a dry run that changes nothing; a project's item waits while
   that project's coordinator turn runs, the other project's goes, and never two Codex processes; a project that wakes
@@ -460,9 +461,10 @@ function Invoke-Scenario([string]$Name, [scriptblock]$Body) {
 }
 
 # ---------- fixtures ----------
-function New-Fixture([string]$Name) {
+function New-Fixture([string]$Name, [string]$Mailbox = 'mailbox') {
+    # $Mailbox: the mailbox folder, inside the fixture's folder.
     $dir = Join-Path $Base $Name
-    $fx = @{ name = $Name; dir = $dir; mb = (Join-Path $dir 'mailbox'); cfg = (Join-Path $dir 'claude-config'); stub = (Join-Path $dir 'stub');
+    $fx = @{ name = $Name; dir = $dir; mb = (Join-Path $dir $Mailbox); cfg = (Join-Path $dir 'claude-config'); stub = (Join-Path $dir 'stub');
         sid = [guid]::NewGuid().ToString(); codex = (Join-Path $dir 'codex-home'); planner = (Join-Path $dir 'planner'); tid = [guid]::NewGuid().ToString() }
     foreach ($d in @($fx.mb, $fx.cfg, $fx.stub, $fx.codex, $fx.planner)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
     Write-Text (Join-Path $fx.mb 'CODEX-QUEUE.md') "# CODEX-QUEUE (synthetic fixture)`r`n`r`n- T-BASE: assigned`r`n"
@@ -1575,8 +1577,9 @@ try {
         Check ($r.out -match 'Sergeant Two\s+1 new') '-List does not show the new message for Sergeant Two'
     }
 
-    Invoke-Scenario '18 agent mail wakes: enrolled by name, one wake per new message, none for mail already read, waits while the thread is open, a few at once' {
-        $fx = New-Fixture 'am2'
+    Invoke-Scenario '18 agent mail wakes: enrolled by name, one wake per new message, a ~ in the mailbox path kept in the notice, none for mail already read, waits while the thread is open, a few at once' {
+        # The mailbox path holds a ~, as a short 8.3 name (ADA~1) does. Here it is a folder's own name.
+        $fx = New-Fixture 'am2' 'ADA~1\mailbox'
         Initialize-Fixture $fx
         $w1 = Join-Path $fx.dir 'sergeant1'
         $w2 = Join-Path $fx.dir 'sergeant2'
@@ -1609,6 +1612,9 @@ try {
             Check ($c.thread -eq $t1) "woke thread '$($c.thread)' instead of the thread of Sergeant One"
             Check ($c.exec -and $c.json -and $c.skip_git -and -not $c.last -and -not $c.bypass) 'unsafe or missing Codex options (want exec --json --skip-git-repo-check; never --last or a sandbox bypass)'
             Check ($c.prompt -match '\[bridge-relay M' -and $c.prompt -match "-Read -Me 'Sergeant One'" -and $c.prompt -match 'from Colonel') 'the notice does not say who wrote and how to read the mail'
+            # The relay's own mailbox path, as it works it out from -MailboxRoot.
+            $ms = Join-Path ([IO.Path]::GetFullPath($fx.mb).TrimEnd('\')) 'bin\agent-mail.ps1'
+            Check ($ms.Contains('~') -and ([string]$c.prompt).Contains("-File '$ms' -Read -Me 'Sergeant One'")) "the notice's mail command does not name $ms with its ~"
             Check ($c.prompt -notmatch 'Old order') 'the notice repeats mail text'
             Check ([bool]$c.key_absent) 'the agent turn inherited an OpenAI or Codex API key'
             Check ([string]$c.cwd -like '*\am2\sergeant1') "the agent turn ran in '$($c.cwd)', not in its thread's folder"

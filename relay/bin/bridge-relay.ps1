@@ -1722,8 +1722,13 @@ function Get-CodexExePath {
 }
 
 function ConvertTo-SafeText([string]$Text) {
-    # The notice may pass through cmd.exe (codex.cmd), so it keeps only plain characters.
-    $t = [string]$Text -replace "[^A-Za-z0-9 .,:;/\\()_#@+=?'\[\]-]", ' '
+    # The notice goes on Codex's command line, which cmd.exe reads first when Codex starts from codex.cmd, so only plain
+    # characters stay. cmd.exe changes or cuts the line at % and ! (its variables), ^ (its escape mark), & | < >
+    # (another command, a pipe or a file) and " (it does not read \" as a quote inside the notice). $ ` { } * mean
+    # nothing to cmd.exe but much to PowerShell, where an agent runs the notice's commands, so they go too, as do
+    # control characters and letters outside ASCII. ~ stays, so a short 8.3 name in a path (ADA~1) still names its
+    # folder: cmd.exe reads a ~ only as part of a % or ! form (%~1, %name:~1%), and those two signs never stay.
+    $t = [string]$Text -replace "[^A-Za-z0-9 .,:;/\\()_#@+=?'\[\]~-]", ' '
     return (($t -replace '\s+', ' ').Trim())
 }
 
