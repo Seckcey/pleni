@@ -2749,8 +2749,8 @@ function Get-Agents {
 
 function Test-AgentsFileBroken {
     # $true when .relay\agents.json is there but is no JSON object (say, a mistake made while editing it by hand). Get-Agents
-    # then gives @{}, so what would trust or save that empty list waits or fails closed instead. An empty file is no list,
-    # not a broken one. Read-only; never throws.
+    # then gives @{} (or, for a list of one record, that record's fields), so what would trust or save it waits or fails
+    # closed instead. An empty file is no list, not a broken one. Read-only; never throws.
     if (-not (Test-Path -LiteralPath $AgentsFile -PathType Leaf)) { return $false }
     $a = $null
     try {
