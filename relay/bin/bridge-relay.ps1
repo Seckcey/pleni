@@ -1719,8 +1719,8 @@ function Get-CodexArguments([hashtable]$Cx, [string]$Prompt, $Options = $null) {
         foreach ($x in $CodexArgs) { $a.Add([string]$x) }
         foreach ($d in @(Get-HqAddDirs $Cx)) { $a.Add('--add-dir'); $a.Add([string]$d) }   # HQ only: each project mailbox
     }
-    # Phase 7: no thread yet (a new agent's first turn): a new thread, with its prompt on standard input. No caller
-    # passes an empty thread_id today (Get-CodexPreflightError refuses one first).
+    # Phase 7: no thread yet (a new agent's first turn, which has its own checks): a new thread, with its prompt on
+    # standard input. A wake never gets here: Get-CodexPreflightError refuses an empty thread_id first.
     if (-not [string]$Cx.thread_id) { $a.Add('-'); return , $a }
     foreach ($x in @('resume', [string]$Cx.thread_id, $Prompt)) { $a.Add([string]$x) }
     return , $a
@@ -1745,6 +1745,7 @@ function Get-CodexPreflightError([hashtable]$Cx, [string]$Reenroll = '-EnrollCod
         return "the Codex CLI was not found at $exe"
     }
     if (-not $Cx.cwd -or -not (Test-Path -LiteralPath ([string]$Cx.cwd) -PathType Container)) { return "the Codex thread's folder was not found: $($Cx.cwd)" }
+    if (-not ([string]$Cx.thread_id).Trim()) { return "no Codex thread id is saved for this turn; re-enroll with $Reenroll" }
     if (-not (Get-CodexRolloutPath $Cx)) {
         $f = Find-CodexRollout ([string]$Cx.thread_id)
         if ($f -and $f.archived) { return "Codex thread $($Cx.thread_id) is archived; unarchive it in Codex, or enroll another thread" }
