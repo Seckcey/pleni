@@ -9,7 +9,7 @@ result on GitHub.
 Description (under 350 characters):
 
 ```text
-Watch your Claude Code, Codex, Grok and Kimi Code sessions, their sub-agents, and the hand-offs between them, live in your browser. Send them messages, answer their questions, and open it from your phone with a password. Local-first, zero dependencies, read-only until you turn on a button. The simple browser edition of Plenipo, by 8 West Ventures, LLC.
+Watch your Claude Code, Codex, Grok, Kimi Code, Gemini CLI and Antigravity CLI sessions and their hand-offs live in your browser. Send messages, answer questions, and open it from your phone. Local-first, zero dependencies, read-only until you turn on a button. Plenipo's browser edition, by 8 West Ventures, LLC.
 ```
 
 Website: <https://getplenipo.com>
@@ -17,7 +17,7 @@ Website: <https://getplenipo.com>
 Topics (20, GitHub's limit):
 
 ```text
-plenipo claude-code codex ai-agents multi-agent agent-orchestration local-first developer-tools dashboard observability nodejs zero-dependencies browser sub-agents openai-codex anthropic llm-tools agent-monitoring grok kimi-code
+plenipo claude-code codex ai-agents multi-agent agent-orchestration local-first developer-tools dashboard observability nodejs zero-dependencies browser sub-agents openai-codex grok kimi-code gemini-cli antigravity-cli
 ```
 
 Topics should describe what Pleni really is and does. They help people find related
@@ -28,10 +28,11 @@ To apply the About section from a terminal:
 
 ```sh
 gh repo edit Seckcey/pleni \
-  --description "Watch your Claude Code, Codex, Grok and Kimi Code sessions, their sub-agents, and the hand-offs between them, live in your browser. Send them messages, answer their questions, and open it from your phone with a password. Local-first, zero dependencies, read-only until you turn on a button. The simple browser edition of Plenipo, by 8 West Ventures, LLC." \
+  --description "Watch your Claude Code, Codex, Grok, Kimi Code, Gemini CLI and Antigravity CLI sessions and their hand-offs live in your browser. Send messages, answer questions, and open it from your phone. Local-first, zero dependencies, read-only until you turn on a button. Plenipo's browser edition, by 8 West Ventures, LLC." \
   --homepage "https://getplenipo.com" \
   --add-topic plenipo,claude-code,codex,ai-agents,multi-agent,agent-orchestration,local-first,developer-tools,dashboard,observability \
-  --add-topic nodejs,zero-dependencies,browser,sub-agents,openai-codex,anthropic,llm-tools,agent-monitoring,grok,kimi-code
+  --add-topic nodejs,zero-dependencies,browser,sub-agents,openai-codex,grok,kimi-code,gemini-cli,antigravity-cli
+gh repo edit Seckcey/pleni --remove-topic anthropic,llm-tools,agent-monitoring
 ```
 
 ## Features

@@ -11,9 +11,12 @@ is the spec: read it before you change code, and follow its names, shapes, and f
   npm package, not even a dev one. No build step. (Only the separate `website/` folder, below, has
   packages and a build of its own.)
 - **Read-only by design.** Pleni writes nowhere on this computer except its own settings folder. It
-  never stops a session, and never writes into Claude Code's, Codex's, or a mailbox's folders,
-  except, after the person chooses so on this computer, the Models page's model lines and Answer
-  questions' own hooks (each after a copy of the file). It sends nothing to a session except Roll over's two fixed messages (`src/rollover.js`), each in a
+  never stops a session, and never writes into Claude Code's, Codex's, or a mailbox's folders, with
+  three opt-in exceptions: Connect for Answer questions (below), Connect for plan limits (below), and the Models page (`src/models.js`), which changes the model and effort values in
+  Codex's `config.toml` and Claude Code's `settings.json`, and the worker type files in their
+  `agents` folders, only after the person chooses Save on this computer. It copies each file into a
+  `backups` folder next to its settings first, changes nothing else in the file, and stops if the
+  file changed since the page looked. It sends nothing to a session except Roll over's two fixed messages (`src/rollover.js`), each in a
   window the person sees, after a click, and, with the opt-in Send messages (`src/send.js`, Windows
   only, this computer only), a message the person typed in a session's Chat tab: one hidden
   `claude -p --resume` or `codex exec resume` turn per message, started by full path without a
@@ -23,15 +26,27 @@ is the spec: read it before you change code, and follow its names, shapes, and f
   PowerShell, Roll over, New agent and Bring a cloud session here buttons (`src/open.js`,
   `src/rollover.js`, `src/newagent.js`, Windows only, this computer only): a window that runs
   `claude --resume`, `codex resume`, `claude --name`, `claude --teleport` or `codex` for the person
-  to type into, Send's hidden turns, and a hidden PowerShell that only asks when a process started. The one other
+  to type into, Send's hidden turns, a hidden PowerShell that only asks when a process started, and,
+  once Connect for plan limits is on, the status line script that Claude Code starts, which starts
+  only the person's previous status line command. The one other
   program is the GitHub CLI for opt-in Live GitHub status (`src/github.js`): `gh pr list`, and
   `gh pr merge` after the person confirms on this computer, run by full path with fixed words and
-  checked values, never through a shell. It answers a Claude Code session's question, plan or permission prompt only with what the person
+  checked values, never through a shell. The last program is the Codex CLI for opt-in Codex cloud
+  tasks (`src/cloud.js`): `codex cloud list --json --limit 20`, by full path with fixed words,
+  never through a shell, from a folder of Pleni's own (`codex-cloud` in its settings folder, where
+  Codex leaves its `error.log`), never `codex cloud diff`, `apply` or `exec`. It answers a Claude
+  Code session's question, plan or permission prompt only with what the person
   chose on this computer, through the opt-in hooks of Answer questions (`src/answers.js`): Connect
   adds Pleni's own two hooks to Claude Code's `settings.json`, with the same care as the Models page,
   and Disconnect takes exactly those out. The hooks call Pleni only on this computer, with a secret
   in `hook-key`; Pleni holds a call only for a session the person switched on or a turn Pleni sent,
-  and answers every other call at once with no decision.
+  and answers every other call at once with no decision. Connect for plan limits (`src/statusline.js`)
+  adds a small Pleni status line to Claude Code's `settings.json`, with the same care, and
+  Disconnect puts the person's old status line back exactly. Claude Code runs Pleni's script
+  (`pleni-statusline.mjs` in Pleni's own folder) after each reply; it saves only the 5-hour and
+  weekly limit numbers in `claude-limits.json`, and it runs the person's previous status line
+  command, the way Claude Code would (Git Bash or PowerShell on Windows, their shell elsewhere,
+  stopped after 10 seconds). Pleni reads no login key and calls no server for limits.
 - **The relay is separate.** The `relay/` folder holds the mailbox relay: a Windows PowerShell
   program that writes into a mailbox and starts Claude Code sessions. It is not part of Pleni.
   Pleni never runs it, and it is not in the npm package. Read `relay/README.md` before you change
@@ -50,8 +65,9 @@ is the spec: read it before you change code, and follow its names, shapes, and f
   adds its notes as `docs/releases/vX.Y.Z.md`, which the site shows under What's new.
 - **Private by default.** No telemetry, and nothing loaded from the internet. Pleni makes no
   network calls of its own: only opt-in Live GitHub status reaches GitHub, through `gh` and the
-  person's own gh login. Show session text only when `content` is `snippets`, and never show
-  thinking text.
+  person's own gh login, and opt-in Codex cloud tasks reach OpenAI, through `codex` and the
+  person's own Codex login (Pleni never reads Codex's login files). Show session text only when `content` is `snippets`, and
+  never show thinking text.
 - **Who may open it.** Pleni listens on `127.0.0.1`. Only when the person turns on Wi-Fi access on
   this computer, and only while a password is set, does it also listen on the home-network
   addresses of this computer that the person chose (`src/lan.js`: 10.x, 172.16-31.x and
