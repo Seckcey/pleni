@@ -47,7 +47,7 @@ body:
     attributes:
       label: Pleni version or commit
       description: The version, or the commit from `git rev-parse --short HEAD`.
-      placeholder: 0.1.0 or a1b2c3d
+      placeholder: 0.3.0 or a1b2c3d
     validations:
       required: true
   - type: dropdown
@@ -86,7 +86,13 @@ body:
         - Claude Code in the Claude desktop app
         - Claude Code in an editor (such as VS Code)
         - Codex
+        - Grok
+        - Kimi Code
+        - Gemini CLI
+        - Antigravity CLI
         - A coordination mailbox
+        - The mailbox relay (the relay folder)
+        - Pleni opened from my phone or another device
         - Demo mode only
     validations:
       required: true

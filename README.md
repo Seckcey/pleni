@@ -53,9 +53,12 @@ is handed down and when a report comes back up.
   [bring a cloud session here](#bring-a-cloud-session-to-this-computer). The [Models](#models)
   page changes the models Codex and Claude Code use, and [Merge](#live-github-status) merges a
   pull request, only when you ask.
-- **It stays on your computer.** It opens only on your own computer (`127.0.0.1`). It sends
-  nothing anywhere. There is no account and no tracking. The only sign-in is Pleni's own key,
-  which it keeps on your computer.
+- **It stays on your computer.** It opens only on your own computer (`127.0.0.1`), unless you
+  turn on [Wi-Fi access or Tailscale](#open-it-from-your-phone) and set a password. It makes no
+  network calls of its own. There is no account and no tracking. The only sign-ins are Pleni's own
+  key and the password you can set, both kept on your computer. Only the two opt-in features
+  [Live GitHub status](#live-github-status) and [Codex cloud tasks](#codex-cloud-tasks) reach the
+  internet, through `gh` and `codex` on your computer.
 - **It has zero dependencies.** You need only Node.js. Pleni installs nothing else from npm and has
   nothing to build.
 
@@ -434,7 +437,8 @@ on your computer goes on by itself: new work there does not go back to the cloud
 ## Live GitHub status
 
 Pleni can show each pull request's checks and reviews on the **Pull requests** page, and merge one
-for you. It is off until you turn it on, because this is the one time Pleni reaches the internet.
+for you. It is off until you turn it on, because it reaches the internet (so does
+[Codex cloud tasks](#codex-cloud-tasks), below).
 Pleni does not talk to GitHub itself: it asks the GitHub CLI (`gh`) on your computer, which uses
 your own gh sign-in.
 
@@ -448,7 +452,8 @@ your own gh sign-in.
    **Needs a review** and **Ready to merge**. **Look again** asks GitHub right away.
 
 Pleni asks about once a minute, and only while the Pull requests page is open. It asks only about
-the repositories your sessions work in.
+the repositories your sessions work in and the GitHub repositories of your
+[projects](#what-you-see).
 
 **Merge** works only on the computer that runs Pleni, and only when every check passes and GitHub
 says the pull request is ready. Pleni asks you first, then checks once more that nobody pushed
@@ -584,7 +589,9 @@ show under the same tile. Pleni only reads HQ and its project mailboxes. It neve
 
 - Pleni reads files. It writes only its own settings folder, except when you choose **Save to
   Codex** or **Save to Claude Code** on the [Models](#models) page, which changes that tool's model
-  settings after it keeps a copy.
+  settings, or **Connect** for [Answer questions](#answer-questions-from-pleni) or for plan limits
+  (see [Usage](#what-you-see)), which add Pleni's own hooks or status line to Claude Code's
+  settings. Each keeps a copy of the file first, and **Disconnect** takes Pleni's part out again.
 - It starts nothing unless you turn on **Open in PowerShell**, **Roll over**, **New agent**,
   **Bring a cloud session here** or **Send messages** and click a button. Then it opens one
   PowerShell window that runs `claude` or `codex`, or, for Send, runs the session's program once in
@@ -594,6 +601,9 @@ show under the same tile. Pleni only reads HQ and its project mailboxes. It neve
   you switch on. Pleni answers only what you choose; every other question goes to the session's own
   window as before. Connect and Disconnect change only Pleni's own hooks in Claude Code's settings,
   after a copy.
+- With **plan limits** connected, Claude Code runs Pleni's small status line script after each
+  reply. It saves only the 5-hour and weekly limit numbers, and it runs the status line you had
+  before. Pleni reads no login key.
 - Pop-ups are off until you turn them on. Your browser makes them on your own screen; nothing is
   sent over the internet.
 - It makes no network calls of its own and sends no data about you or your work. There is no
@@ -712,9 +722,11 @@ both. Both are made by 8 West Ventures, LLC.
 
 ## What comes next
 
-Version 0.2 watches, and, when you turn them on, it can open a Claude Code or Codex session in
-PowerShell for you, roll a long session over to a fresh one, start a new agent next to one, send a
-session a message, and answer a Claude Code session's questions, plans and permission prompts.
+Pleni watches six AI tools, groups their sessions by project, counts their tokens and plan
+limits, and shows your pull requests and cloud work. When you turn them on, it can open a Claude
+Code or Codex session in PowerShell for you, roll a long session over to a fresh one, start a new
+agent next to one, send a session a message, answer a Claude Code session's questions, plans and
+permission prompts, change the models your agents use, and open on your phone with a password.
 Next: answering Codex threads, checking the Claude desktop app with Answer questions, and doing
 these from your phone with a second check. The design is in
 [docs/proposals/reply-and-send.md](docs/proposals/reply-and-send.md).

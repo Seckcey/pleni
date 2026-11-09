@@ -18,7 +18,8 @@ Tell us:
 - the Pleni version, or the commit you are on (`git rev-parse --short HEAD`),
 - your system (Windows, macOS, or Linux, and its version) and your Node.js version
   (`node --version`),
-- which sources you use (Claude Code, the Claude desktop app, Codex, a mailbox),
+- which sources you use (Claude Code, the Claude desktop app, Codex, Grok, Kimi Code, Gemini CLI,
+  Antigravity CLI, a mailbox and its relay),
 - whether the problem also happens in demo mode (`node bin/pleni.js --demo`),
 - the smallest steps that make it happen, and what you expected instead.
 
@@ -32,9 +33,11 @@ closely: replace your name, your computer's name, and your folder names with mad
 ## When Pleni shows no sessions
 
 1. Try `node bin/pleni.js --demo`. If the demo works, Pleni itself is fine.
-2. Check that Claude Code or Codex ran in the last 24 hours. Pleni hides older sessions.
+2. Check that your AI tool (Claude Code, Codex, Grok, Kimi Code, Gemini CLI or Antigravity CLI)
+   ran in the last 24 hours. Pleni hides older sessions.
 3. Check the folders in **Settings** against the table in the
-   [README](README.md#where-it-looks). If you set `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, start
+   [README](README.md#where-it-looks). If you set `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, `KIMI_CODE_HOME` or
+   `GEMINI_CLI_HOME`, start
    Pleni from a terminal that has the same setting.
 4. If Pleni says a source could not be read, its message says what went wrong.
 

@@ -1,7 +1,8 @@
 # Contributing to Pleni
 
 Thanks for taking an interest. Pleni is a small local web app: a Node.js server that reads Claude
-Code and Codex session files, and a plain HTML, CSS, and JavaScript page that draws them. This page
+Code, Codex, Grok, Kimi Code, Gemini CLI and Antigravity CLI session files, and a plain HTML, CSS,
+and JavaScript page that draws them. This page
 covers how to get it running, the checks your change has to pass, and the few house rules that keep
 the code simple and safe.
 
@@ -81,17 +82,25 @@ as passing.
    which is separate from Pleni: it has its own packages, build and checks
    ([website/README.md](website/README.md)).
 3. **Read-only by design.** Pleni never writes anywhere on your computer except its own settings
-   folder, and it never stops a session. It sends a session nothing but Roll over's two fixed
-   messages and, with the opt-in Send messages, a message the person typed, as one hidden turn of an
-   idle session that nothing else has open, with the message on the program's standard input. It may
-   start only the opt-in windows (Open in PowerShell, Roll over, New agent, Bring a cloud session
-   here), which the person types into, Send's hidden turns, and the GitHub CLI (`gh`) for opt-in
-   Live GitHub status. It answers a Claude Code question, plan or permission prompt only with what
-   the person chose on this computer, through the hooks that the opt-in Connect adds to Claude
-   Code's settings (and Disconnect takes out again).
+   folder, and it never stops a session. The only exceptions are opt-in, and each makes a copy of
+   the file first: the Models page (model and effort lines in Codex's and Claude Code's settings,
+   and their worker type files), and Connect for Answer questions and for plan limits (Pleni's own
+   hooks and status line in Claude Code's settings, which Disconnect takes out again). It sends a
+   session nothing but Roll over's two fixed messages and, with the opt-in Send messages, a message
+   the person typed, as one hidden turn of an idle session that nothing else has open, with the
+   message on the program's standard input. It may start only the opt-in windows (Open in
+   PowerShell, Roll over, New agent, Bring a cloud session here), which the person types into,
+   Send's hidden turns, the status line script that Claude Code runs once plan limits are
+   connected, the GitHub CLI (`gh`) for opt-in Live GitHub status, and the Codex CLI
+   (`codex cloud list`) for opt-in Codex cloud tasks. It answers a Claude Code question, plan or
+   permission prompt only with what the person chose on this computer, through the hooks that the
+   opt-in Connect adds to Claude Code's settings.
 4. **Private by default.** No telemetry, and nothing loaded from the internet. Pleni makes no
-   network calls of its own; only opt-in Live GitHub status reaches GitHub, through `gh`. Session
-   text is shown only as text, and only when the `content` setting allows it.
+   network calls of its own; only opt-in Live GitHub status reaches GitHub, through `gh`, and
+   opt-in Codex cloud tasks reach OpenAI, through `codex`. Another device can open Pleni only
+   after the person turns on Wi-Fi access or sets up Tailscale on this computer, and signs in with
+   the password or key. Session text is shown only as text, and only when the `content` setting
+   allows it.
 5. **This repository is public.** Never commit personal names, e-mail addresses, user names,
    computer names, session ids, absolute paths from your computer, or real session content. Use
    made-up examples such as `/home/ada/project` or `C:\Users\ada\project`.

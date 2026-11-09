@@ -31,11 +31,15 @@ body:
         - The map
         - The list
         - Activity
-        - Tasks and the mailbox
+        - Projects, Usage, Pull requests or Cloud
+        - Tasks, Mail and the mailbox relay
+        - The Models page
         - The session side panel
         - Settings
+        - Buttons that act (Send, Answer questions, Roll over, Open in PowerShell)
         - Reading Claude Code sessions
         - Reading Codex sessions
+        - Reading Grok, Kimi Code, Gemini CLI or Antigravity CLI sessions
         - Opening Pleni from another device
         - Something else
     validations:
