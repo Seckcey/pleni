@@ -20,7 +20,8 @@
 //                      does anything else. It is logged as phase 'old-cli' only, never as a 'start'.
 // A missing thread file behaves like the real CLI: an error on stderr, exit 1.
 // Phase 7: every start record also holds relay_env (RELAY_AGENT_NAME, RELAY_AGENT_MAILBOX, RELAY_AGENT_FOLDER,
-// RELAY_MAIL_HOP) when RELAY_AGENT_NAME or RELAY_MAIL_HOP is set, which the relay does only for an agent's turns.
+// RELAY_MAIL_HOP) when RELAY_AGENT_NAME or RELAY_MAIL_HOP is set, which the relay does for an agent's turns and, with
+// RELAY_MAIL_HOP only, for a planner wake whose batch holds mail.
 // It records each call in <RELAY_STUB_DIR>\codex-calls.jsonl. Keys are never written: only booleans about them.
 import fs from 'node:fs';
 import path from 'node:path';
