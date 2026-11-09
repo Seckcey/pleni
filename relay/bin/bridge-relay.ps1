@@ -575,6 +575,7 @@ $script:Procs        = @{}      # dispatch id -> Process started by THIS relay p
 $script:LastLaunched = $null
 $script:LastCodexLaunched = $null
 $script:MailLaunched = New-Object System.Collections.ArrayList   # mail wakes started by the last tick
+$script:AgentReqLink = $false   # Phase 7: the agents folder is a link; Get-AgentRequestFiles sets it each tick
 $script:PlannerMailOverride = $null   # Phase 7 (D10): set only while -EnrollCodex counts what waits, before codex.json is written
 
 # ---------- small helpers ----------
@@ -7996,6 +7997,7 @@ function Get-AgentRequestFields([hashtable]$R) {
     # words with no closing period. A field line in another shape is refused, so a request never runs with a tool it did
     # not name. Only the lines above the ## Standing orders heading can be fields; everything below it is the orders.
     $q = @{ wait = $false; problem = ''; name = ''; tool = ''; profile = 'mail'; folder = ''; model = ''; effort = ''; orders = '' }
+    if ($script:AgentReqLink) { $q.wait = $true; return $q }   # the agents folder is a link (this tick's Get-AgentRequestFiles): it waits
     $fieldNames = @{ name = 'Name'; tool = 'Tool'; profile = 'Profile'; folder = 'Folder'; model = 'Model'; effort = 'Effort'; requestedby = 'Requested by' }
     $seen = @{}
     $path = [IO.Path]::Combine($AgentReqDir, "$($R.key).md")
@@ -8392,6 +8394,7 @@ function Write-AgentRequestResult([hashtable]$R) {
     if (-not $script:CanWrite) { return }
     $p = [IO.Path]::Combine($AgentReqDir, "$($R.key).result.md")
     try {
+        if ((Test-Path -LiteralPath $AgentReqDir -PathType Container) -and ((Get-Item -LiteralPath $AgentReqDir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { Write-Log "NOTE: the agents folder is a link; the relay did not write agents\$($R.key).result.md."; return }
         if ((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { Write-Log "NOTE: agents\$($R.key).result.md is a link; the relay did not write it."; return }
         $v = [string]$R.version
         if ($v.Length -gt 12) { $v = $v.Substring(0, 12) }
@@ -8423,6 +8426,7 @@ function Update-AgentRequestsMaking([hashtable]$State, [bool]$ReadOnly) {
         }
         if ($ReadOnly) { Write-Note "DRY-RUN: the first turn $($r.id) of the new agent $($r.name) has ended and would be settled"; continue }
         Complete-AgentCreation $State $r
+        Save-State $State   # at once: agents.json may hold the new agent now, so state.json must say so too
     }
 }
 
@@ -8498,6 +8502,20 @@ function Complete-AgentCreation([hashtable]$State, [hashtable]$R) {
     }
     if ($R.guard -is [hashtable]) { Test-DispatchGuard $State $R 'first turn of a new agent' }   # it only sets the halt
     $R.turn_file = $file
+    # A relay that stopped after it saved agents.json but before state.json: this version already made the agent, so it
+    # is made, not 'unknown', and it adds nothing to the three-in-a-row count. Checked after the evidence, so its cost counts.
+    $made = (Get-Agents)[[string]$R.key]
+    if ($made -and [string]$made.made_by -eq 'request' -and [string]$made.request_version -eq [string]$R.version) {
+        if (-not $R.session_id) { $R.session_id = [string]$made.session_id }
+        foreach ($h in @($State.mail_halts, $State.mail_failures, $State.mail_next_attempt)) { [void]$h.Remove([string]$R.key) }
+        [void]$State.flags.Remove('last_mail_block_' + $R.key)
+        $State.mail_last_finish[[string]$R.key] = Get-Now
+        $State.agent_requests_failures = 0
+        # The stop may have come before its mail folder was made; New-AgentMailFolder keeps what is there.
+        try { New-AgentMailFolder ([string]$R.key) ([string]$R.name) } catch { Write-Log "WARNING: could not make the mail folder mail\$($R.key) of $($R.name) ($($_.Exception.Message)). Other agents cannot write to it until that folder is there." }
+        Set-AgentRequestOutcome $State $R 'made' ("made: $(Get-ToolName $R.tool) session $($R.session_id) in $($R.folder), profile $($R.profile). From now on its mail wakes it")
+        return
+    }
     if ($other -and $other -ne $sid) { Set-AgentRequestOutcome $State $R 'unknown' "the first turn ran in $other, not in the planned session $sid; nothing was enrolled. Look at it, and enroll it by hand (-EnrollAgent) if it is right"; return }
     if ($good -and $file) { Add-MadeAgent $State $R; return }
     $because = "exit $exitWord"
@@ -8547,6 +8565,9 @@ function Add-MadeAgent([hashtable]$State, [hashtable]$R) {
     $kept = Backup-RelayFile $AgentsFile   # a copy of the old file first (D21)
     $agents[$key] = $rec
     Save-Json $AgentsFile $agents
+    foreach ($h in @($State.mail_halts, $State.mail_failures, $State.mail_next_attempt)) { [void]$h.Remove($key) }   # as -EnrollAgent does
+    [void]$State.flags.Remove('last_mail_block_' + $key)
+    $State.mail_last_finish[$key] = Get-Now   # the first turn was the relay's own: the quiet window must not blame another client
     # Its mail folder, as -EnrollAgent makes it, so other agents can write to it at once.
     try { New-AgentMailFolder $key ([string]$R.name) } catch { Write-Log "WARNING: could not make the mail folder mail\$key of $($R.name) ($($_.Exception.Message)). Other agents cannot write to it until that folder is there." }
     Update-Mail $State @{ $key = $rec } $false   # the mail that waited counts as new: it wakes the agent in its next turn
