@@ -30,7 +30,7 @@ export const DEFAULTS = deepFreeze({
   },
   people: {},
   projects: {},
-  // The Projects page: [{ id, name, folder, repo }]. Only this computer can change it.
+  // The Projects page: [{ id, name, folders: [{ path, label }], repos: [{ repo, label }] }]. Only this computer can change it.
   projectList: [],
   chain: [], // [{ match, reportsTo, role }] who reports to whom, by session name; first match wins
   remote: { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] },
@@ -74,9 +74,24 @@ const MAX_PEOPLE = 500;
 const MAX_CHAIN = 50;
 const MAX_NAME = 80;
 const MAX_PROJECTS = 200;
-// The Projects page. A folder is kept short so 50 projects fit the 64 KB limit of a save.
+// The Projects page. A project holds up to 20 folders and 20 repositories, and all projects
+// together up to 100 of each, so the whole list fits the 256 KB limit of a settings save.
 const MAX_PROJECT_LIST = 50;
 const MAX_PROJECT_FOLDER = 500;
+const MAX_PROJECT_FOLDERS = 20;
+const MAX_PROJECT_REPOS = 20;
+const MAX_ALL_FOLDERS = 100;
+const MAX_ALL_REPOS = 100;
+const MAX_PART_LABEL = 40;
+export const PROJECT_LIMITS = deepFreeze({
+  projects: MAX_PROJECT_LIST,
+  folders: MAX_PROJECT_FOLDERS,
+  repos: MAX_PROJECT_REPOS,
+  allFolders: MAX_ALL_FOLDERS,
+  allRepos: MAX_ALL_REPOS,
+  folderLength: MAX_PROJECT_FOLDER,
+  label: MAX_PART_LABEL,
+});
 const PROJECT_ID = /^[a-z0-9]{8,32}$/;
 const REPO_PATH = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 const MAX_REMOTE = 20;
@@ -268,23 +283,72 @@ function cleanProjects(raw) {
   });
 }
 
-// The Projects page: a name, a folder on this computer and an optional GitHub repository.
-// Each kept entry is exactly { id, name, folder, repo }. A bad repo becomes null; any other bad part drops the entry.
+// The Projects page: a name, the folders on this computer and the GitHub repositories of a project.
+// Each kept entry is exactly { id, name, folders: [{ path, label }], repos: [{ repo, label }] }.
+// An older entry with one `folder` and one `repo` is read as lists of one. A bad or repeated
+// folder or repository is left out; a project with no folder left is dropped.
 export function cleanProjectList(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
   const seen = new Set();
+  const room = { folders: MAX_ALL_FOLDERS, repos: MAX_ALL_REPOS };
   for (const item of raw) {
     if (out.length >= MAX_PROJECT_LIST) break;
     if (!isObject(item) || typeof item.id !== 'string' || !PROJECT_ID.test(item.id) || seen.has(item.id)) continue;
     const name = cleanText(item.name, MAX_NAME);
-    const folder = cleanRoot(item.folder, MAX_PROJECT_FOLDER);
-    if (!name || !folder) continue;
-    const repo = typeof item.repo === 'string' && isRepoName(item.repo.trim()) ? item.repo.trim() : null;
+    if (!name) continue;
+    const folders = cleanProjectFolders(listOrOne(item.folders, item.folder), Math.min(MAX_PROJECT_FOLDERS, room.folders));
+    if (!folders.length) continue;
+    const repos = cleanProjectRepos(listOrOne(item.repos, item.repo), Math.min(MAX_PROJECT_REPOS, room.repos));
+    room.folders -= folders.length;
+    room.repos -= repos.length;
     seen.add(item.id);
-    out.push({ id: item.id, name, folder, repo });
+    out.push({ id: item.id, name, folders, repos });
   }
   return out;
+}
+
+// The new list, else the older single value as a list of one.
+function listOrOne(list, one) {
+  if (Array.isArray(list)) return list;
+  return one === undefined || one === null ? [] : [one];
+}
+
+// Each folder is { path, label } (a plain string is a path with no label). `path` is an absolute
+// path for this system, checked like a source root but at most 500 characters.
+function cleanProjectFolders(list, max) {
+  const out = [];
+  const seen = new Set();
+  for (const item of list) {
+    if (out.length >= max) break;
+    const raw = isObject(item) ? item.path : item;
+    const folder = cleanRoot(raw, MAX_PROJECT_FOLDER);
+    if (!folder || seen.has(folder)) continue;
+    seen.add(folder);
+    out.push({ path: folder, label: partLabel(item) });
+  }
+  return out;
+}
+
+// Each repository is { repo, label }, `repo` as owner/name (a plain string is one with no label).
+// GitHub ignores case in names, so Example/App and example/app are the same one.
+function cleanProjectRepos(list, max) {
+  const out = [];
+  const seen = new Set();
+  for (const item of list) {
+    if (out.length >= max) break;
+    const raw = isObject(item) ? item.repo : item;
+    const repo = typeof raw === 'string' && isRepoName(raw.trim()) ? raw.trim() : null;
+    if (!repo || seen.has(repo.toLowerCase())) continue;
+    seen.add(repo.toLowerCase());
+    out.push({ repo, label: partLabel(item) });
+  }
+  return out;
+}
+
+// A short name for one folder or repository, such as the app it holds; null when there is none.
+function partLabel(item) {
+  return (isObject(item) && cleanText(item.label, MAX_PART_LABEL)) || null;
 }
 
 function isRepoName(value) {

@@ -1869,13 +1869,78 @@ test('every node has projectIds, and the other tiles have none', () => {
 });
 
 test('the snapshot lists the projects without their folders', () => {
-  const s = snap({ settings: { projectList: [APP, BETA] }, ...cast() });
+  const suite = {
+    id: 'proj0009',
+    name: 'Suite',
+    folders: [{ path: '/home/ada/code/portal', label: 'Portal' }, { path: '/home/ada/code/api', label: null }],
+    repos: [{ repo: 'example/portal', label: 'Portal' }, { repo: 'example/api', label: null }],
+  };
+  const s = snap({ settings: { projectList: [APP, BETA, suite] }, ...cast() });
   assert.deepEqual(s.projects, [
-    { id: 'proj0001', name: 'App', repo: 'example/app' },
-    { id: 'proj0002', name: 'Beta', repo: null },
+    { id: 'proj0001', name: 'App', folders: [{ label: null }], repos: [{ repo: 'example/app', label: null }] },
+    { id: 'proj0002', name: 'Beta', folders: [{ label: null }], repos: [] },
+    {
+      id: 'proj0009',
+      name: 'Suite',
+      folders: [{ label: 'Portal' }, { label: null }],
+      repos: [{ repo: 'example/portal', label: 'Portal' }, { repo: 'example/api', label: null }],
+    },
   ]);
-  assert.equal(JSON.stringify(s).includes('/home/ada/code/app'), false, 'a project folder never reaches the snapshot');
+  const json = JSON.stringify(s);
+  for (const folder of ['/home/ada/code/app', '/home/ada/code/portal', '/home/ada/code/api']) {
+    assert.equal(json.includes(folder), false, 'a project folder never reaches the snapshot');
+  }
   assert.deepEqual(snap({ ...cast() }).projects, []);
+});
+
+test('a session belongs to a project when any of its folders holds it, and counts once', () => {
+  const suite = {
+    id: 'proj0009',
+    name: 'Suite',
+    folders: [
+      { path: '/home/ada/code/portal', label: 'Portal' },
+      { path: '/home/ada/code/api', label: 'API' },
+      { path: '/home/ada/code', label: 'All code' },
+    ],
+    repos: [],
+  };
+  const s = snap({
+    settings: { projectList: [BETA, suite] },
+    claude: [
+      session(LEAD, { cwd: '/home/ada/code/portal/web' }),
+      session(OTHER, { cwd: '/home/ada/code/api/.claude/worktrees/fix-login' }),
+      session(FAR, { cwd: '/home/ada/other/portal' }),
+    ],
+  });
+  assert.deepEqual(node(s, LEAD).projectIds, ['proj0009']);
+  assert.deepEqual(node(s, OTHER).projectIds, ['proj0009']);
+  assert.deepEqual(node(s, FAR).projectIds, []);
+  const beta = snap({ settings: { projectList: [BETA, suite] }, claude: [session(LEAD, { cwd: '/home/ada/code/beta/src' })] });
+  assert.deepEqual(node(beta, LEAD).projectIds, ['proj0002', 'proj0009'], 'in list order, each project once');
+});
+
+test('a Codex worktree matches a project by any of its folders', (t) => {
+  const dir = tempDir(t);
+  const repo = path.join(dir, 'code', 'api');
+  const gitdir = path.join(repo, '.git', 'worktrees', 'api');
+  fs.mkdirSync(gitdir, { recursive: true });
+  const tree = path.join(dir, 'home', '.codex', 'worktrees', '7f3a', 'api');
+  fs.mkdirSync(tree, { recursive: true });
+  fs.writeFileSync(path.join(tree, '.git'), `gitdir: ${gitdir}\n`);
+  const suite = {
+    id: 'proj0009',
+    name: 'Suite',
+    folders: [{ path: path.join(dir, 'code', 'portal'), label: null }, { path: repo, label: null }],
+    repos: [],
+  };
+  const s = snap({ settings: { projectList: [suite] }, claude: [session(LEAD, { cwd: tree })] });
+  assert.deepEqual(node(s, LEAD).projectIds, ['proj0009']);
+  // With no .git file to read, the repository name matches the last part of any of the folders.
+  const named = snap({
+    settings: { projectList: [{ ...suite, folders: [{ path: '/home/ada/code/portal', label: null }, { path: '/home/ada/code/api', label: null }] }] },
+    claude: [session(LEAD, { cwd: '/home/ada/.codex/worktrees/7f3a/api' })],
+  });
+  assert.deepEqual(node(named, LEAD).projectIds, ['proj0009']);
 });
 
 test('inFolder tidies ".." in a typed folder, but never climbs above a drive', () => {

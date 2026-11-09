@@ -61,7 +61,7 @@ tool writes the log over or after a long gap, so a log under about 20 MB may be 
 | Codex folder, only when you click Open in PowerShell | One empty file, `thread-writer-locks/<thread id>.lock`, which Codex locks while a program writes that thread. Pleni tries to read one byte of it, only to learn whether another window has the thread open |
 | The same two folders, when you click Roll over's buttons | The same small files as for Open in PowerShell, for the same reason |
 | A session's own folder, only while its Roll over section is open | Only whether the handoff note (`HANDOFF-<name>.md`) is there, and when it last changed. Pleni never reads what is in it |
-| Pleni's own folder                      | `settings.json` (your choices, including your list of projects: each one's name, folder and GitHub repository; the folders are not part of the live view of your sessions), `key`, and `dismissed.json` (which notices you dismissed, and when) in Pleni's settings folder, `password` and `devices.json` once you set a password, and the copies of Codex's files in `backups/` |
+| Pleni's own folder                      | `settings.json` (your choices, including your list of projects: each one's name, folders, GitHub repositories and their short names; the folders are not part of the live view of your sessions), `key`, and `dismissed.json` (which notices you dismissed, and when) in Pleni's settings folder, `password` and `devices.json` once you set a password, and the copies of Codex's files in `backups/` |
 | Pleni's own program folder, if it is a git copy | Only `.git/HEAD` and the one branch file it names (or `packed-refs`), to show which commit runs |
 
 From the session files it uses: when each step happened, the working folder, the git branch, the
@@ -84,8 +84,9 @@ Always:
 
 - Your name (the one you type in Settings; "You" until you change it).
 - Session names, project folder names, git branches, models, and effort.
-- With Projects: the name and GitHub repository of each project you added, and which sessions work
-  in its folder. The folder path is not part of the live view; it is kept in Pleni's settings.
+- With Projects: the name and GitHub repositories of each project you added, the short names you
+  gave its folders and repositories, and which sessions work in its folders. The folder paths are
+  not part of the live view; they are kept in Pleni's settings.
 - Each session's state (Needs you, Working, Finished, Idle, Done, Error), the name of the tool it is
   using, and when it last did something.
 - Who started whom, and when work was handed down or reported back up.
@@ -201,10 +202,10 @@ Live GitHub status is off until you turn it on in **Settings → Sources**. Then
 - Pleni runs the GitHub CLI (`gh`) on the computer that runs Pleni. gh signs in to GitHub with
   your own gh login. Pleni never sees your GitHub password or token.
 - It asks only while a page shows the Pull requests or Cloud view, about once a minute, and only
-  about the GitHub repositories your sessions work in and those of your projects (at most 12). Each
-  time, gh sends GitHub the owner and name of each repository. It gets back the 30 newest pull
-  requests of each one: number, title, branches, state, checks, reviews, and whether it can be
-  merged.
+  about the GitHub repositories your sessions work in and those of your projects (at most 30, and
+  at most 6 at a time). Each time, gh sends GitHub the owner and name of each repository. It gets
+  back the 30 newest pull requests of each one: number, title, branches, state, checks, reviews,
+  and whether it can be merged.
 - Pleni keeps that answer in memory for a minute and shows it on the Pull requests page, and the
   pull requests on `claude/...` branches on the Cloud page, to every device that may open Pleni. It
   writes none of it to a file. Pleni never reads your Claude login to list Claude cloud sessions.

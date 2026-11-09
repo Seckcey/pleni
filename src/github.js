@@ -13,7 +13,10 @@ const PART = /^[A-Za-z0-9._-]{1,100}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const FIELDS = 'number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,updatedAt,reviewDecision,statusCheckRollup,mergeable,mergeStateStatus';
 const LIST_LIMIT = 30; // the newest pull requests of each repository, open or not
-export const MAX_REPOS = 12;
+// Enough for the sessions on the map and a project with many repositories. At most MAX_RUNS gh
+// runs go at once; the others wait their turn.
+export const MAX_REPOS = 30;
+const MAX_RUNS = 6;
 const FRESH_MS = 60 * 1000; // how long an answer is kept
 const AGAIN_MS = 10 * 1000; // "Look again" asks no more often than this
 const FIND_MS = 60 * 1000; // how long Pleni remembers where gh is
@@ -59,6 +62,19 @@ const WHY = {
   blocked: 'GitHub says it is blocked. It may need a review, or checks that GitHub requires.',
   checking: 'GitHub is still checking whether it can be merged.',
 };
+
+// The first MAX_REPOS valid repositories, each once whatever its case, in the order given.
+function firstRepos(repos) {
+  const seen = new Set();
+  const out = [];
+  for (const repo of Array.isArray(repos) ? repos : []) {
+    if (out.length >= MAX_REPOS) break;
+    if (!isRepoPath(repo) || seen.has(repo.toLowerCase())) continue;
+    seen.add(repo.toLowerCase());
+    out.push(repo);
+  }
+  return out;
+}
 
 // 'owner/name' with plain parts, such as 'ada/notes'.
 export function isRepoPath(value) {
@@ -242,6 +258,23 @@ export function createGithub({ execFile = nodeExecFile, env = process.env, platf
   const merging = new Set(); // 'owner/name#number'
   const mergeTimes = []; // when each merge was asked for, for the limit
   let found = { at: -Infinity, file: null };
+  let running = 0;
+  const waiting = [];
+
+  function inTurn(job) {
+    return new Promise((resolve, reject) => {
+      const go = () => {
+        running++;
+        job().then(resolve, reject).finally(() => {
+          running--;
+          const next = waiting.shift();
+          if (next) next();
+        });
+      };
+      if (running < MAX_RUNS) go();
+      else waiting.push(go);
+    });
+  }
 
   function gh(t) {
     if (t - found.at >= FIND_MS) found = { at: t, file: findGh(env, platform, isFile) };
@@ -262,7 +295,7 @@ export function createGithub({ execFile = nodeExecFile, env = process.env, platf
   // Two pages asking at once share one gh run.
   function ask(repo, file) {
     if (!asking.has(repo)) {
-      const answer = run(file, listArgs(repo))
+      const answer = inTurn(() => run(file, listArgs(repo)))
         .then((r) => {
           const pulls = r.ok ? parsePulls(r.stdout, repo) : null;
           const kept = { at: now(), pulls: pulls ?? [], error: r.ok ? (pulls ? null : GITHUB_MESSAGES.failed) : r.error };
@@ -276,10 +309,11 @@ export function createGithub({ execFile = nodeExecFile, env = process.env, platf
     return asking.get(repo);
   }
 
-  // { error, repos: [{ repo, at, pulls, error }] } for up to MAX_REPOS repositories. `fresh` asks
-  // again when the last answer is more than a few seconds old.
+  // { error, repos: [{ repo, at, pulls, error }] } for up to MAX_REPOS repositories: the first ones
+  // given (GitHub ignores case, so each name counts once), then sorted. `fresh` asks again when the
+  // last answer is more than a few seconds old.
   async function status({ repos = [], fresh = false } = {}) {
-    const list = [...new Set(repos.filter(isRepoPath))].sort().slice(0, MAX_REPOS);
+    const list = firstRepos(repos).sort();
     const t = now();
     const file = gh(t);
     if (!file) return { error: GITHUB_MESSAGES.noGh, repos: [] };

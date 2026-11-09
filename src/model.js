@@ -98,8 +98,13 @@ export function buildSnapshot({ now, settings, claude = null, codex = null, grok
     ...boxList(ctx.boxes),
     mail: agentMail.summary,
     hiddenSessions: hiddenSessions(all, ctx),
-    // The Projects page: no folder here, only the name and the repository.
-    projects: s.projectList.map(({ id, name, repo }) => ({ id, name, repo })),
+    // The Projects page: no folder path here, only the name, each folder's label and the repositories.
+    projects: s.projectList.map(({ id, name, folders, repos }) => ({
+      id,
+      name,
+      folders: folders.map(({ label }) => ({ label })),
+      repos: repos.map(({ repo, label }) => ({ repo, label })),
+    })),
     actions: {
       openTerminal: actions?.openTerminal === true,
       rollover: actions?.rollover === true,
@@ -248,7 +253,7 @@ function worktreeSpot(parts) {
   return null;
 }
 
-// The ids of every project whose folder holds `cwd`, in list order. A worktree outside its
+// The ids of every project with a folder that holds `cwd`, in list order. A worktree outside its
 // repository belongs to the repository's project: found from its .git file, else by the repository
 // name matching the last part of the project's folder.
 function projectIdsFor(cwd, ctx) {
@@ -272,7 +277,7 @@ function projectIdsFor(cwd, ctx) {
     let hit = here !== '' && within(here, project.folder, nocase);
     if (!hit && home) hit = within(home, project.folder, caseless(platform, home, project.folder));
     if (!hit && spot && !home && name) hit = sameName(name, project.last, caseless(platform, project.folder));
-    if (hit) ids.push(project.id);
+    if (hit && ids[ids.length - 1] !== project.id) ids.push(project.id);
   }
   if (ctx.projectIdsByCwd.size >= GIT_CACHE_MAX) ctx.projectIdsByCwd.clear();
   ctx.projectIdsByCwd.set(cwd, ids);
@@ -283,11 +288,12 @@ function sameName(a, b, nocase) {
   return nocase ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
+// One entry for each folder of each project, in list order, so a project's folders sit together.
 function projectFolders(list) {
-  return list.map((project) => {
-    const folder = tidyFolder(project.folder);
+  return list.flatMap((project) => project.folders.map((entry) => {
+    const folder = tidyFolder(entry.path);
     return { id: project.id, folder, last: folder.split('/').filter(Boolean).pop() ?? '' };
-  }).filter((project) => project.folder !== '');
+  })).filter((project) => project.folder !== '');
 }
 
 // A helper with no folder of its own works where its boss works.
