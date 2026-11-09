@@ -791,8 +791,8 @@ MailboxState = {
   `to` is the folder's key, `from` the sender's key (from the file name), `fromName` the `From:`
   line (≤80 chars), `at` the time in the file name, `text` the message after the head (≤1000
   chars, line breaks kept, only with snippets, else `null`), and `fromBox` the `Box:` line when it
-  is a box id (1 to 40 small letters, digits or hyphens; any other value is ignored), else the key
-  is not there. A file without a head is all text.
+  is a box id (1 to 40 small letters, digits or hyphens, starting with a letter or digit; any other value is
+  ignored), else the key is not there. A file without a head is all text.
 
 ### HQ: one folder that lists project mailboxes
 

@@ -4,7 +4,8 @@
 
 .DESCRIPTION
   Each agent has a folder <mailbox>\mail\<name key>. Its new\ folder holds the messages it has not read yet, and
-  read\ the ones it has. A message is a small Markdown file: a From, a To and a Sent line, a blank line, the text.
+  read\ the ones it has. A message is a small Markdown file: a From, a To and a Sent line (and a Box or Hop
+  line when they apply), a blank line, the text.
     -Send  writes one message to each agent named in -To.
     -Read  prints the agent's new messages, oldest first and at most 10 at a time, and moves them to read\.
     -Wait  waits up to -Seconds for new mail, then reads it like -Read. It takes the place of the Codex app's
@@ -12,7 +13,7 @@
     -List  shows each agent with a mail folder, how many messages wait for it, and whether the relay wakes it.
     -Box   with -Send: write to an agent in another mailbox of this HQ: hq, or a project id from HQ's list of
            projects. The message gets a Box line with this mailbox's own box id, so an answer finds its way back.
-  The relay (bridge-relay.ps1 -EnrollAgent) wakes an agent whose Codex thread is closed when mail waits for it.
+  The relay (bridge-relay.ps1 -EnrollAgent) wakes an agent whose session is closed when mail waits for it.
   An agent whose window is open reads its own mail, with -Wait or -Read.
   In a turn that the relay started for an agent with the relay's rules, the relay names the agent, its mailbox and its
   folder (RELAY_AGENT_NAME, RELAY_AGENT_MAILBOX, RELAY_AGENT_FOLDER). This script then works only for that agent: its

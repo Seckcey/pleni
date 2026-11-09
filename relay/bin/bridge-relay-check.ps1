@@ -131,7 +131,7 @@
   and scenario 32 sets the second; each one can only make the launcher refuse or the relay halt.
   Prints one PASS/FAIL line per check, then a summary. Exit 0 only when every check passes (2 = could not set up).
   No network, no API key, no real claude.exe. It removes its temp folder and stops any process it started
-  (only processes whose command line names this run's temp folder). Takes about 12-18 minutes.
+  (only processes whose command line names this run's temp folder). Takes about 16 minutes.
   Windows PowerShell 5.1. ASCII only.
 
 .EXAMPLE

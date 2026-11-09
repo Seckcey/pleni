@@ -14,13 +14,17 @@ an answer, or a review, the relay wakes the coordinator's saved session with a s
 note. When a worker finishes, the relay tells the coordinator. It also keeps a list of what waits
 for the planner, in `.relay\codex-attention.md`. If you turn it on, the relay wakes the planner's
 Codex thread too, once for each new item on that list. Then the planner and the coordinator keep
-each other going without the Codex app.
+each other going without the Codex app. Agents can write to the planner too (see
+[Mail for the planner](#mail-for-the-planner)).
 
 Other agents can talk too, with **agent mail**: one agent sends another a message by name, and the
-relay wakes the agent that gets it. This does the job of the Codex app's messages between threads,
-so a whole team can run with the app closed (see [Agent mail](#agent-mail-optional)).
+relay wakes the agent that gets it. An agent can be a Claude Code session, a Codex thread or a
+Gemini CLI session. This does the job of the Codex app's messages between threads, so a whole
+team can run with the app closed (see [Agent mail](#agent-mail-optional) and
+[Agents in any AI tool](#agents-in-any-ai-tool)). If you allow it, the planner can also ask for a
+new agent (see [New agents](#new-agents)).
 
-Pleni shows all of this on its map: planner → relay → coordinator → workers. To see it, turn on
+Pleni shows all of this on its map: planner -> relay -> coordinator -> workers. To see it, turn on
 the mailbox in Pleni's **Settings** and choose the mailbox folder.
 
 **The relay is separate from Pleni.** Pleni only reads files. The relay writes into the mailbox
@@ -48,6 +52,11 @@ Made by 8 West Ventures, LLC.
 - Only for workers in Antigravity CLI (off by default, see [Antigravity workers](#antigravity-workers-off-by-default)):
   Antigravity CLI (`agy`) signed in, and Git. Read that part first: Google's consumer terms may not
   allow it, and your Google account could be suspended or closed.
+- Only for agents (optional, see [Agents in any AI tool](#agents-in-any-ai-tool)): for Claude Code
+  agents, the same Claude login. For Gemini CLI agents, a paid API key, Vertex AI or a work license.
+  For Codex agents with a profile, the `codex` command line from April 2026 or newer and Codex's
+  Windows sandbox. For Claude Code and Gemini CLI agents, a mailbox path with only letters, digits
+  and `. _ - ~`.
 - Node.js and Git, only to run the relay's test.
 
 ## What is in this folder
@@ -65,7 +74,8 @@ Made by 8 West Ventures, LLC.
 | `tests\stub-codex.js`               | The fake Codex that the test uses.                                             |
 | `tests\stub-gemini.js`              | The fake Gemini CLI that the test uses.                                        |
 | `tests\stub-agy.js`                 | The fake Antigravity CLI that the test uses.                                   |
-| `templates\`                        | Blank task files: assignment, status, questions, answers, handoff, review, and a worker's brief, start request and report. |
+| `templates\`                        | Blank task files: assignment, status, questions, answers, handoff, review, and a worker's brief, start request and report. Also `agent-request.md`, a request for a new agent (see [New agents](#new-agents)). |
+| `agents\`                           | Requests for new agents, and the relay's answers. You make this folder only if you turn on new agents. |
 | `PROTOCOL.md`                       | The rules everyone follows. In a mailbox it is called `README.md`.             |
 | `COORDINATOR.md`                    | Standing orders for the coordinator. In a mailbox it is called `CLAUDE.md`. A Codex or Gemini CLI coordinator reads a copy in its own folder, called `AGENTS.md` or `GEMINI.md`. |
 | `ORCHESTRATOR.md`                   | Standing orders for the orchestrator, the planner of several projects. In HQ it is called `AGENTS.md`. |
@@ -92,10 +102,16 @@ notepad "$mb\bin\relay-settings.json"
 
 In Notepad, put in your own folders and name, then save. The next part explains each setting.
 
+Keep the mailbox on a plain path, with no `~`. Windows can give a long folder name a short one, such
+as `ADA~1`. The relay's notes to the planner and to Codex agents turn every `~` into a space, so the
+mail command in them would break. Use the long name.
+
 ## Settings
 
 Both settings files live in the mailbox's `bin` folder, on your computer only. This repository
-has just the examples. The relay reads them when it starts.
+has just the examples. The relay reads them when it starts. Always type a folder as a full path,
+such as `D:\mailbox`. A bare drive, such as `D:`, means the folder that drive is in right now, not
+its top.
 
 `bin\relay-settings.json`:
 
@@ -111,23 +127,29 @@ has just the examples. The relay reads them when it starts.
 | `start_requests` | `true` or `false`: whether the relay starts workers for the start requests (`W<n>-start.md`) that a coordinator writes. Leave it out and they are on for a Codex or Gemini CLI coordinator, and off for a Claude Code one. Write `true` or `false` without quotes. See [Start requests](#start-requests). |
 | `antigravity_exe` | Only for Antigravity workers: the full path of Antigravity CLI. Leave it out to use `%LOCALAPPDATA%\agy\bin\agy.exe`, or `agy` from your PATH. |
 | `antigravity_sandbox` | Only for Antigravity workers: `true` runs their commands in Antigravity CLI's terminal sandbox (`--sandbox`). Leave it out, or `false`, to keep it off. |
-| `codex_exec_args` | Only for the Codex wake: extra options for `codex exec`, one per entry, such as `["--sandbox", "workspace-write"]`. Options that turn the sandbox off are refused. |
+| `codex_exec_args` | Only for the Codex wake and for a Codex agent with no profile: extra options for `codex exec`, one per entry, such as `["--sandbox", "workspace-write"]`. Options that turn the sandbox off are refused. |
 | `role`          | Only in HQ: `"hq"`. Then the relay also wakes the orchestrator for the projects in `projects`. Leave it out in every other mailbox. |
 | `projects`      | Only in HQ: the project mailboxes, each one `{ "id": "notes", "name": "Notes", "mailbox": "C:\\Users\\ada\\mailboxes\\notes" }`. The id is 1 to 40 small letters, digits or hyphens, and never `hq`. The mailbox is the full path of a folder that is there, and not HQ itself. The relay skips a bad entry and says why in `-Status` and `relay.log`. |
-| `hq_dir`        | Only in a project mailbox: the HQ folder. `-NewProject` writes it, and `-Status` shows it. A project uses it to find HQ, so it can refuse HQ's orchestrator thread and HQ's folders for its coordinator. Set it when you add a project by hand. |
+| `hq_dir`        | Only in a project mailbox: the HQ folder. `-NewProject` writes it, and `-Status` shows it. A project uses it to find HQ, so it can refuse HQ's orchestrator thread and HQ's folders for its coordinator. Set it when you add a project by hand. `-Box` needs it too (see [Mail between mailboxes](#mail-between-mailboxes)). |
+| `agent_tools`   | The AI tools whose agents the relay may sign up, wake and make: a list from `"codex"`, `"claude"` and `"gemini"`. Leave it out for `["codex", "claude"]`. A tool that is not listed is off for agents, and its agents' mail stays where it is. An empty list turns every agent off. See [Agents in any AI tool](#agents-in-any-ai-tool). |
+| `allow_new_agents` | `true` lets the relay make new agents from requests in `agents\`. Write `true` with no quotes. Leave it out, or write `false`, and it is off. It also turns the guard on. See [New agents](#new-agents). |
 
 `bin\cost-limits.json` (if there is no such file, the limits are on):
 
 | Setting                   | What it does                                                                                       |
 | ------------------------- | -------------------------------------------------------------------------------------------------- |
-| `enabled`                 | `true`: each run has a dollar cap, and the relay has a daily cap. `false`: no caps. Costs are written down either way. |
+| `enabled`                 | `true`: each run has a dollar cap, and the relay has a daily cap. `false`: no caps (that takes away the dollar cap of Claude Code agents too, but not the Gemini CLI total or the limit on new agents). Costs are written down either way. |
 | `relay_max_wakes_per_day` | How many times a day the relay may wake the coordinator, whatever AI tool it is. The usual number is 12. `0` means no limit. |
 | `relay_max_codex_wakes_per_day` | How many times a day the relay may wake the planner's Codex thread. The usual number is 12. `0` means no limit. |
-| `relay_max_agent_wakes_per_day` | How many times a day the relay may wake each agent for its mail. The usual number is 12. `0` means no limit. |
-| `relay_max_agent_turns_at_once` | How many agents the relay may wake for mail at the same time, 1 to 10. The usual number is 3. |
+| `relay_max_agent_wakes_per_day` | How many times a day the relay may wake each agent for its mail, whatever AI tool it uses. The usual number is 12. `0` means no limit. |
+| `relay_max_agent_turns_at_once` | How many agents the relay may wake for mail at the same time, 1 to 10. The usual number is 3. The first turn of a new agent counts too. |
+| `relay_max_new_agents_per_day` | How many new agents the relay may make in one day, 0 to 20. The usual number is 2. `0` means no limit. A number below 0 is a mistake: the relay keeps 2 and says so. See [New agents](#new-agents). |
+| `relay_max_agent_usd_per_day` | How many dollars a day all Claude Code agents together may use, as Claude Code reports it. The usual number is 5. `0` means no cap. It works only while `enabled` is `true`. |
+| `agent_wakes_per_day` | How many agent turns a day all agents of one AI tool may take together, such as `{"gemini": 4}`. That is the usual number: only Gemini CLI has a total. A tool you do not name has none. `0` means no limit for that tool, so `{"gemini": 0}` takes the 4 away. A first turn of a new agent counts too. |
+| `relay_max_mail_hops` | How many turns the relay wakes in a row for agent mail, with no person in between, before it holds the mail. The usual number is 8, and the top is 99. `0` means no limit. See [Two agents that keep waking each other](#two-agents-that-keep-waking-each-other). |
 | `worker_runs_per_day`     | How many Codex, Gemini and Antigravity workers may start in one day, such as `{"codex": 12, "gemini": 4, "antigravity": 4}`. Those are the usual numbers. `0` means no limit. |
 | `relay_max_worker_starts_per_day` | How many workers the relay may start a day for start requests. The usual number is 12. `0` means no limit. A number below 0 is a mistake: the relay keeps 12 and says so. |
-| `gemini_max_session_turns` | How many turns a Gemini worker, or a Gemini CLI coordinator turn, may take. The usual number is 30. `0` means no limit. Gemini CLI may skip this limit for a coordinator: see [the turn limit](#the-turn-limit-of-a-gemini-cli-coordinator). |
+| `gemini_max_session_turns` | How many turns a Gemini worker, a Gemini CLI coordinator turn, or a Gemini CLI agent turn may take. The usual number is 30. `0` means no limit. Gemini CLI may skip this limit for a coordinator: see [the turn limit](#the-turn-limit-of-a-gemini-cli-coordinator). |
 
 A "worktree" is a second working folder of a Git repository, on its own branch. Each task gets
 one, so workers never touch your main folder.
@@ -169,23 +191,25 @@ Run these in the mailbox folder.
 
 | Command               | What it does                                                                                   |
 | --------------------- | ---------------------------------------------------------------------------------------------- |
-| `-Status`             | Shows whether the relay runs, the enrolled session, whether a window has it open, what waits, and today's turns and costs. |
-| `-DryRun`             | Shows what the relay would do now. It starts nothing and writes nothing.                       |
+| `-Status`             | Shows whether the relay runs, the enrolled session, whether a window has it open, what waits, and today's turns and costs. It also shows whether new agents are on, and the requests that wait. |
+| `-DryRun`             | Shows what the relay would do now, agent requests included. It starts nothing and writes nothing. |
 | `-Once`               | Does one round, then stops.                                                                    |
 | `-Start`              | Keeps running and watches the mailbox. Stop it with `-Stop` from another window, or Ctrl+C.    |
 | `-Stop`               | Asks a running relay to stop. A coordinator turn that is running is never cut off.             |
-| `-ClearHalt`          | Starts sending again after the relay stopped itself because of repeated errors. Fix the cause first. |
+| `-ClearHalt`          | Starts sending again after the relay stopped itself: repeated errors, a changed relay file, or a halted agent. Fix the cause first. It also lets new agents start again after three failed first turns, accepts a changed orders file of a new agent as it is now, and lets mail that was held as a possible loop wake its agent once more. |
 | `-ShowCoordinatorArgs`| Shows the commands the coordinator may and may not run. It changes nothing.                    |
 | `-Enroll -Tool codex -ThreadName <name>` | Signs up a Codex thread as the coordinator (`-ThreadId <id>` in place of the name works too; `-CodexCwd <folder>` names its folder if the relay cannot read it; `-Model` and `-Effort low`, `medium`, `high` or `xhigh` are optional). See [A coordinator in Codex or Gemini CLI](#a-coordinator-in-codex-or-gemini-cli-optional). |
 | `-Enroll -Tool gemini -SessionId <id>` | Signs up a Gemini CLI session as the coordinator (`-CoordinatorCwd <folder>` if the relay cannot tell its folder; `-Model` and `-AllowCheck` are optional). Gemini CLI has no names to follow and no effort. |
 | `-Enroll -Tool claude` | The same as `-Enroll` alone: a Claude Code coordinator. `-Tool` works only with `-Enroll`. |
 | `-MaxWorkerStartsPerDay <n>` | How many workers the relay may start for start requests in one day, just for this run (0 to 500; `0` means no limit). The usual way is `relay_max_worker_starts_per_day` in `bin\cost-limits.json`. |
 | `-GeminiExe <path>`, `-GeminiCliHome <folder>` | Where Gemini CLI is, and the folder that holds its `.gemini` folder, if they are not in the usual place (`gemini_exe` in `bin\relay-settings.json`; `GEMINI_CLI_HOME`). |
-| `-EnrollCodex -ThreadId <id>` | Turns on the Codex wake for that Codex thread. See below.                        |
-| `-EnrollCodex -ThreadName <name>` | The same, for the newest Codex thread with that name. See below.             |
+| `-EnrollCodex -ThreadId <id>` | Turns on the Codex wake for that Codex thread. Mail for the planner stays off. See below. |
+| `-EnrollCodex -ThreadName <name>` | The same, for the newest Codex thread with that name. The name is also the planner's mail name. See [Mail for the planner](#mail-for-the-planner). |
 | `-UnenrollCodex`      | Turns the Codex wake off again.                                                                |
-| `-EnrollAgent -AgentName <name>` | Wakes that agent's Codex thread when mail waits for it. See [Agent mail](#agent-mail-optional). |
-| `-UnenrollAgent -AgentName <name>` | Stops waking that agent for its mail.                                              |
+| `-EnrollAgent -AgentName <name>` | Wakes that agent's Codex thread when mail waits for it. For a Claude Code or Gemini CLI agent, or a Codex agent with the relay's rules, add `-Tool`, `-AgentFolder`, `-SessionId` or `-AgentProfile mail` or `files` (`-Model` and `-Effort` are optional). See [Agents in any AI tool](#agents-in-any-ai-tool). |
+| `-UnenrollAgent -AgentName <name>` | Stops waking that agent for its mail. Its mail stays. It saves a copy of `.relay\agents.json` first. |
+| `-ShowAgentArgs -AgentName <name>` | Shows one agent's turn as JSON: the command, the rules and the folder. It changes nothing. |
+| `-MaxNewAgentsPerDay <n>` | How many new agents the relay may make in one day, just for this run (0 to 20; `0` means no limit). The usual way is `relay_max_new_agents_per_day` in `bin\cost-limits.json`. See [New agents](#new-agents). |
 | `-NewProject -ProjectId <id> -ProjectName <name>` | Only in HQ: makes a project mailbox in `projects\<id>` (or in `-ProjectFolder <folder>`), and adds it to HQ's list. See [Run several projects](#run-several-projects-hq). |
 | `-UpdateProjects`     | Only in HQ: copies HQ's scripts into each project whose relay does not run.                    |
 | `-StartAll`           | Only in HQ: starts each project's relay in a new window, then HQ's own relay in this window.   |
@@ -240,7 +264,8 @@ It runs in the thread's own folder, and it uses your ChatGPT sign-in, never an A
   your settings say otherwise. To let a planner turn write, set `codex_exec_args` in
   `bin\relay-settings.json`. `["--sandbox", "workspace-write"]` lets it write inside the thread's
   folder. If the mailbox is in another folder, add that folder too:
-  `["--sandbox", "workspace-write", "--add-dir", "C:\\Users\\ada\\mailbox"]`.
+  `["--sandbox", "workspace-write", "--add-dir", "C:\\Users\\ada\\mailbox"]`. For the mail that
+  agents send the planner, see [Mail for the planner](#mail-for-the-planner).
 - **Errors:** after 3 failed Codex turns in a row, the relay stops waking Codex and writes an alert.
   Claude wakes go on. Fix the cause, then run `-ClearHalt`.
 - **To turn it off:** `.\bin\bridge-relay.ps1 -UnenrollCodex`.
@@ -256,8 +281,8 @@ A Codex or Gemini CLI coordinator works in **a folder of its own**, such as
 `C:\Users\ada\mailbox\coordinator`. That folder holds its standing orders and, for Codex, its
 status board. The folder must not be:
 
-- the mailbox folder itself, a folder above it, or its `bin`, `tests`, `templates`, `tasks`, `mail`
-  or `.relay` folder;
+- the mailbox folder itself, a folder above it, or its `bin`, `tests`, `templates`, `tasks`, `mail`,
+  `agents` or `.relay` folder;
 - a folder inside a code repository (a Git folder), or a `.git` folder. The mailbox's own
   repository is fine;
 - your home folder or your projects folder (or a folder that holds one of them), the workers'
@@ -484,19 +509,31 @@ how many requests wait and how many started today.
 
 ### What makes the relay stop, and why
 
-While a Codex or Gemini CLI coordinator is signed up, or start requests are on, the relay **guards
-its own files**. It runs `bin\spawn-worker.ps1` outside any sandbox when a start request asks, and
-a Codex coordinator can write in a folder of its own. So a changed script must never run. The
-relay looks at these files each round, before each worker start, and before and after each Codex or
-Gemini CLI turn:
+The relay **guards its own files** while any one of these is true:
 
-- the relay's scripts (`bin\*.ps1`) and the fake tools in `tests\*.js`;
+- a Codex or Gemini CLI coordinator is signed up;
+- start requests are on;
+- `allow_new_agents` is `true`;
+- an agent with the relay's rules is signed up: a Claude Code or Gemini CLI agent, a Codex agent
+  with a profile, or an agent the relay made.
+
+The relay decides this when it starts. It runs `bin\spawn-worker.ps1` outside any sandbox when a
+start request asks, an agent runs `bin\agent-mail.ps1` in every turn, and a Codex coordinator can
+write in a folder of its own. So a changed script must never run. The relay looks at these files
+each round, before each worker start, coordinator turn, agent turn and new agent, and after those
+turns:
+
+- the relay's scripts (`bin\*.ps1`, `agent-mail.ps1` too) and the fake tools in `tests\*.js`;
 - `bin\relay-settings.json` and `bin\cost-limits.json`;
 - the coordinator's standing orders (`AGENTS.md` or `GEMINI.md` in its folder);
 - the relay's own records: `.relay\coordinator.json`, `codex.json` and `agents.json`.
 
+The orders file of an agent the relay made is checked on its own: a change stops only that agent
+(see below).
+
 If one of them changes and the relay did not make the change, the relay **halts**. That means it
-sends no turn and starts no worker until you look. It writes an alert that names the file.
+sends no turn, wakes no planner or agent, and starts no worker and no new agent until you look. It
+writes an alert that names the file.
 **To go on:** see what changed. If you changed it yourself, run `-Stop` (if the relay runs), then
 `-ClearHalt`, then `-Start`.
 
@@ -506,9 +543,9 @@ lists a turn in flight, wait until it says `alive False`. Then, with the old scr
 place, make an empty file named `PAUSE` in the mailbox's `.relay` folder, run
 `.\bin\bridge-relay.ps1 -Once` (it settles the turn and starts nothing), and delete `PAUSE`. Now
 `-Status` says `In flight: none`. If a turn is still running when you change a file, the relay
-halts itself when you start it again, but only while its guard is on (a Codex or Gemini CLI
-coordinator, or start requests on). A Claude Code coordinator with start requests off has no
-guard, so nothing halts there.
+halts itself when you start it again, but only while its guard is on (see the list above). A
+mailbox with a Claude Code coordinator, start requests off, new agents off and no agent with the
+relay's rules has no guard, so nothing halts there.
 
 Each change halts the relay once. After the relay halted for a change and you cleared it with
 `-ClearHalt`, a turn that still runs does not halt it again for that same change, only for a newer
@@ -521,8 +558,9 @@ turn of HQ is still running, or has ended but the relay has not settled it: `-St
 turn running, and the next relay would halt at the change. Wait until `-Status` shows no coordinator
 turn in flight. Or make an empty file named `PAUSE` in `.relay`, run `-Once`, run `-NewProject`,
 delete `PAUSE`, then run `-StartAll`. The guard is off for a Claude Code coordinator with start
-requests off, which is how every mailbox works today. Then `-NewProject` works while HQ's relay
-runs, and the step it prints (run `-StopAll`, then `-StartAll`) still applies.
+requests off, new agents off and no agent with the relay's rules, which is how an older mailbox
+works. Then `-NewProject` works while HQ's relay runs, and the step it prints (run `-StopAll`, then
+`-StartAll`) still applies.
 
 The relay also halts, with an alert that says what to do. Each cause below has its own bullet.
 
@@ -542,7 +580,7 @@ For a **Codex** coordinator:
   `high` or `xhigh`. Sign up again.
 - The Codex command line is too old. Update it.
 - The thread has another job (see "One thread, one job" below). Use another thread. Only the
-  planner and a mail agent may share a thread.
+  planner and a Codex agent with no profile may share a thread.
 
 For a **Gemini CLI** coordinator:
 
@@ -568,6 +606,22 @@ For **both**:
 - The turn ran in another thread or session than the one signed up. Check the sign-up.
 - 3 turns in a row failed, or ended with an error. See the next part.
 
+An **agent** halts alone: its mail is kept, its wakes stop, and the other agents go on. The alert says
+why. The common causes:
+
+- Its folder is gone, or no longer follows the folder rules (see [The folder rules](#the-folder-rules)).
+- Its mail folder is a link (a shortcut to another place).
+- The orders file of an agent the relay made has changed.
+- Its session now has another job too (one session has one job).
+- For a Codex agent: a model or effort the relay cannot use, or a Codex command line that is too old.
+- For a Claude Code or Gemini CLI agent: the mailbox path has a space or a sign other than letters,
+  digits and `. _ - ~`. Move the mailbox to a plain path.
+- 3 turns in a row failed.
+
+The relay's own guard (above) halts everything, agents included: no agent turn starts until you
+clear it. Mail that comes in a long loop is not a halt: see
+[Two agents that keep waking each other](#two-agents-that-keep-waking-each-other).
+
 Fix the cause, then run `-ClearHalt`.
 
 **When a turn fails.** The relay waits and tries again, up to 3 turns in a row. Then it halts. The
@@ -583,10 +637,10 @@ again. For Gemini CLI, the exit number tells you what to do:
   happened. It does not send the notice again. Look at the coordinator's status files.
 
 **One thread, one job.** A Codex thread may be only one of: the planner, the coordinator, an agent,
-or HQ's orchestrator. There is one exception, as before: the planner and a mail agent may share one
-thread. The relay never wakes them at the same time, and at a rollover both move to the newer
-thread with the name. Only the coordinator and HQ's orchestrator need a thread of their own.
-Signing up refuses every other overlap, and a turn halts if it finds one. Never let two mailboxes
+or HQ's orchestrator. There is one exception, as before: the planner and a Codex agent with no profile may
+share one thread. The relay never wakes them at the same time, and at a rollover both move to the
+newer thread with the name. Only the coordinator and HQ's orchestrator need a thread of their own,
+and so does every agent of a new kind. Signing up refuses every other overlap, and a turn halts if it finds one. Never let two mailboxes
 wake the same Codex thread.
 
 **Close the coordinator's window before the relay wakes it.** The relay waits while a window has
@@ -659,8 +713,8 @@ own, with a warning: [Antigravity workers](#antigravity-workers-off-by-default).
 5. **Tell the coordinator.** Add the order "Choose the AI tool for each worker" (order 14) to the
    end of your mailbox's `CLAUDE.md`, and the `- **Tool:**` line to your `templates\worker-brief.md`.
    See [Update the relay in a mailbox](#update-the-relay-in-a-mailbox): in the lines there, set
-   `$want = 'Choose the AI tool for each worker'`, `$claudeToo = $true` and `$next`, or the lines add
-   the newest order (order 15) instead. You may also copy order 14 from `COORDINATOR.md` by hand.
+   `$want = 'Choose the AI tool for each worker'`, `$toClaude = $true`, `$toOthers = $true` and
+   `$next`, or the lines add the newest order (order 16) instead. You may also copy order 14 from `COORDINATOR.md` by hand.
 
 What each tool may do:
 
@@ -731,7 +785,7 @@ With it on, the coordinator can start a worker in Antigravity CLI (`agy`) with `
    `templates\worker-brief.md`. If your `CLAUDE.md` already has the order "Choose the AI tool for each
    worker", replace that order by hand with the new one from `COORDINATOR.md`. If it does not, add it
    as in [Update the relay in a mailbox](#update-the-relay-in-a-mailbox), with `$want` set to
-   `'Choose the AI tool for each worker'` and `$claudeToo` set to `$true`.
+   `'Choose the AI tool for each worker'`, and `$toClaude` and `$toOthers` set to `$true`.
 
 To turn it off again, take `"antigravity"` out of `worker_tools`.
 
@@ -829,9 +883,10 @@ same job with files in the mailbox and with the relay:
 - An agent sends a message by name, for example
   `agent-mail.ps1 -Send -From 'Colonel' -To 'Sergeant Lark' -Text 'Start T-12.'`. It waits in
   `mail\sergeant-lark\new`.
-- If the relay wakes that agent (step 2 below), it resumes the agent's Codex thread with a short
-  note, the same way it wakes the planner. The agent reads its mail with `-Read`, does the work, and
-  answers with `-Send`.
+- If the relay wakes that agent (step 2 below), it resumes the agent's session with a short
+  note, the same way it wakes the planner. The session is a Codex thread, a Claude Code session or
+  a Gemini CLI session. The agent reads its mail with `-Read`, does the work, and answers with
+  `-Send`.
 - An agent whose window is open reads its own mail. In a long task (a Codex goal) it runs
   `agent-mail.ps1 -Wait -Me '<its name>' -Seconds 50` where it used the app's `wait_threads`. The
   relay never wakes a thread that a window has open.
@@ -840,8 +895,10 @@ same job with files in the mailbox and with the relay:
 
 1. Update the relay in your mailbox (see [Update the relay in a mailbox](#update-the-relay-in-a-mailbox)).
    That copies `agent-mail.ps1` too.
-2. Tell the relay which agents to wake, by the names their Codex threads have. Stop the relay
-   first, and start it again after:
+2. Tell the relay which agents to wake. This part is for Codex agents, by the names their Codex
+   threads have. For Claude Code and Gemini CLI agents, and for Codex agents with the relay's own
+   rules, see [Agents in any AI tool](#agents-in-any-ai-tool). Stop the relay first, and start it
+   again after:
 
    ```powershell
    .\bin\bridge-relay.ps1 -Stop
@@ -853,23 +910,27 @@ same job with files in the mailbox and with the relay:
    The relay finds the newest Codex thread with that name, and follows the name the same way as the
    planner wake (see [Roll sessions over](#roll-sessions-over)). Enrolling wakes nothing: mail that
    already waits counts as known, and the agent sees it the next time it reads its mail.
-3. Let a woken agent write. A woken turn uses `codex exec`, which is read-only unless
-   `codex_exec_args` in `bin\relay-settings.json` says otherwise. Reading and sending mail writes in
-   the mailbox, so allow the mailbox folder:
-   `["--sandbox", "workspace-write", "--add-dir", "C:\\Users\\ada\\mailbox"]`.
+3. Let a woken Codex agent that has no profile write. A woken turn uses `codex exec`, which is
+   read-only unless `codex_exec_args` in `bin\relay-settings.json` says otherwise. Reading and
+   sending mail writes in the mailbox, so allow the mailbox folder:
+   `["--sandbox", "workspace-write", "--add-dir", "C:\\Users\\ada\\mailbox"]`. An agent with a
+   profile, and a Claude Code or Gemini CLI agent, needs no such setting: the relay sets it up.
 4. Tell your agents. Each one needs to know its own name, the names of the others, and to use agent
    mail instead of the app's thread tools (`send_message_to_thread`, `wait_threads`).
 
 ### What the relay does
 
 - It wakes an enrolled agent once for its new mail, but only while no program has the agent's
-  thread open: not the Codex app, not a `codex resume` window, not another relay turn. While the
-  Codex app has the thread open, the relay waits. Quit the app fully to hand the thread over.
+  session open: not the Codex app, not a `codex resume` or `claude --resume` window, not another
+  relay turn. While a window has the session open, the relay waits. Quit the app or close the
+  window fully to hand the session over.
 - One turn at a time for each agent, and at most 3 agents at once
   (`relay_max_agent_turns_at_once` in `bin\cost-limits.json`).
 - Up to 12 wakes a day for each agent (`relay_max_agent_wakes_per_day`).
 - After 3 failed turns in a row, it stops waking that agent and writes an alert. Other wakes go on.
   Fix the cause, then run `-ClearHalt`.
+- It holds mail that came after too many relay-woken turns in a row (see
+  [Two agents that keep waking each other](#two-agents-that-keep-waking-each-other)).
 - `-Status` lists the agents, how much new mail waits for each, and whether a window has one open.
 - It never moves or deletes a message. The agents do that with `agent-mail.ps1`.
 
@@ -881,6 +942,7 @@ extra spaces, so `sergeant lark` is Sergeant Lark.
 | Command                                         | What it does                                                                   |
 | ----------------------------------------------- | ------------------------------------------------------------------------------ |
 | `-Send -From <name> -To <name> -Text <text>`    | Sends a message. For several agents, separate the names with commas. For a long message, use `-TextFile <file>` (64 KB at most). A name that has no mail yet needs `-NewAgent` once, so a typo does not send mail nowhere. |
+| `-Send ... -Box <id>`                           | Sends to an agent in another mailbox of the same HQ: `hq`, or a project id. See [Mail between mailboxes](#mail-between-mailboxes). |
 | `-Read -Me <name>`                              | Prints the new mail, oldest first and 10 at a time, and moves it to `read`.    |
 | `-Wait -Me <name> -Seconds <n>`                 | Waits up to n seconds (50 if you leave it out) for new mail, then reads it.    |
 | `-List`                                         | Shows each agent, how much new mail waits, and whether the relay wakes it.      |
@@ -891,6 +953,98 @@ Mail to you waits in `mail\<your name>\new`; read it with `-Read -Me '<your name
 name in `owner_name` in `bin\relay-settings.json`, so Pleni knows that this mail is yours.
 
 Read messages stay in each agent's `read` folder. You may delete old ones whenever you like.
+
+### Mail between mailboxes
+
+In HQ, an agent can write to an agent in another mailbox of the same HQ. Add `-Box` and that
+mailbox's id: `hq`, or a project's id from HQ's `projects` list.
+
+```powershell
+.\bin\agent-mail.ps1 -Send -From 'Colonel' -To 'Sergeant Lark' -Box notes -Text 'Start T-12.'
+```
+
+- The message goes into the other mailbox's `mail` folder. That mailbox's own relay wakes the agent,
+  so that relay must run.
+- HQ reaches itself and each project that has a folder. A project reaches HQ and every project HQ
+  lists, but only if `hq_dir` in its `bin\relay-settings.json` names an HQ that lists it. A project
+  you added by hand without `hq_dir` has no `-Box`.
+- `-Box` works with `-Send` only. Naming your own mailbox sends here, as without it.
+- The message has a `Box:` line with the sender's own mailbox. The notice shows the sender as
+  `Sergeant Wren (box notes)`. To answer, send again with `-Box` and that id.
+- The name must already have mail in that mailbox, be an agent there, or be its `owner_name`.
+  Otherwise add `-NewAgent`, as always.
+- When it cannot send, `agent-mail.ps1` says why and ends with `Nothing was sent.` The common
+  reasons: `-Box` is not `hq` or a project id, the mailbox is not part of an HQ, or there is no such
+  mailbox.
+
+Two rules keep this safe:
+
+- A copy of `agent-mail.ps1` in a mailbox's `bin` folder serves only that mailbox. It refuses
+  another `-MailboxRoot`. To reach another mailbox, use `-Box`.
+- `agent-mail.ps1` writes and moves mail only in plain folders. If the mail folder, an agent's
+  folder, or its `new` or `read` folder is a link, it refuses, and so does the relay when it checks
+  an agent.
+
+In a turn the relay starts for an agent with the relay's rules, `agent-mail.ps1` works only for that
+agent. The relay tells it the agent's name, mailbox and folder, and the script refuses anything else:
+another mailbox, another `-From` or `-Me`, `-NewAgent` (it may write only to names that have mail
+there, or that wrote to it), and a `-TextFile` outside its own folder or behind a link.
+
+### Mail for the planner
+
+Agents can write to the planner too, and the relay wakes it for that mail. In HQ, the planner is
+the orchestrator. Give it a mail name when you sign up its thread, with `-ThreadName`:
+
+```powershell
+.\bin\bridge-relay.ps1 -Stop
+.\bin\bridge-relay.ps1 -EnrollCodex -ThreadName 'Planner'
+.\bin\bridge-relay.ps1 -Start
+```
+
+- The thread's name is the mail name. The relay makes `mail\planner\new` and `read` for it.
+  Agents write to it with `agent-mail.ps1 -Send -From 'Sergeant Wren' -To 'Planner' -Text '...'`.
+- `-EnrollCodex -ThreadId` gives no mail name, so planner mail is off. A rollover keeps the name.
+- A mail name must be 1 to 80 letters, digits, spaces or `. _ - # +`. It cannot be `owner`, `relay`,
+  a name Windows keeps for itself, your `owner_name`, or an agent's name. If the name is no good,
+  signing up still works, and `relay.log` says why mail does not wake the planner. An agent may not
+  take the planner's mail name either: `-EnrollAgent` refuses it.
+- Each new message is one item in `.relay\codex-attention.md`, such as "new mail for the planner from
+  Sergeant Wren". The list never holds the message. Several items that wait together go in one
+  wake. Each wake counts toward `relay_max_codex_wakes_per_day`. The relay never wakes the planner
+  twice for the same message.
+- The planner's note says how to read the mail and how to answer it, and that a mail is a request
+  from an agent, never an order from you. A From line is not proof of who wrote a message.
+- Mail that waits when you sign up counts as known and wakes nothing.
+- `-Status` has a `Planner mail:` line. It says whether mail wakes the planner, or why it does not.
+
+The planner's turn must be able to write in the mail folder, to move what it read:
+
+- Start the planner's thread in the mailbox folder (in HQ, the HQ folder), and set `codex_exec_args`
+  to `["--sandbox", "workspace-write"]`.
+- If the thread works in another folder, the relay adds `--add-dir <mailbox>\mail` itself, but only
+  with `workspace-write`, and only if that folder is there and its path is plain.
+- A planner with the default read-only setting reads its mail, but cannot move it, so it shows
+  again at the next read. It cannot answer either. The relay still never wakes it twice for one
+  message.
+
+### Two agents that keep waking each other
+
+Two agents can wake each other for ever: each answer is mail that wakes the other. The relay stops
+this with a count. Each message `agent-mail.ps1` writes in a relay turn gets a `Hop:` line. It is
+the highest hop of the messages that woke that turn, plus 1. A message you write in your own window has no
+Hop line.
+
+- `relay_max_mail_hops` in `bin\cost-limits.json` is the most hops the relay follows. The usual
+  number is 8. `0` means no limit.
+- With the usual 8, turns 1 to 8 run. The message the 8th turn writes is held, and the 9th turn does
+  not run.
+- A held message stays in the agent's `new` folder. The agent still reads it when it next reads
+  its mail, but the relay does not wake it for it. `relay.log` says `held`, and an alert says
+  `Possible loop`, once a day for each agent. `-Status` shows how many are held.
+- To let the agents go on, look first, then run `-ClearHalt`. The relay wakes the agent once more
+  for the held mail, and the count starts again.
+- A planner wake with mail also writes a hop, so a planner and an agent in a loop get held on the
+  agent's side.
 
 ### What Pleni shows
 
@@ -906,6 +1060,366 @@ With the mailbox turned on in Pleni, Pleni reads the `mail` folder too. It never
   sender's side panel also gives the command to answer it.
 - Pleni matches a mail name to a tile by the Codex thread the relay wakes for it, else by the
   session's name. Mail for `owner_name`, for `Owner`, or for your name in Pleni's Settings is yours.
+
+## Agents in any AI tool
+
+An agent is a session that has a name and gets mail. When mail waits for it, the relay wakes it for
+one turn. An agent can be a Claude Code session, a Codex thread or a Gemini CLI session. Agents
+from before this version are Codex agents, and they work as they did. Nothing changes until you
+sign up an agent of a new kind. The mail commands are in [Agent mail](#agent-mail-optional).
+
+### Sign up an agent
+
+Stop the relay first, and start it again after. Enrolling wakes nothing: mail that already waits
+counts as known, and the agent sees it the next time it reads its mail.
+
+```powershell
+# Codex, as before: no profile, and the relay finds the thread by its name
+.\bin\bridge-relay.ps1 -EnrollAgent -AgentName 'Sergeant Lark'
+# Codex with the relay's rules: -AgentProfile mail or files (-Model and -Effort are optional)
+.\bin\bridge-relay.ps1 -EnrollAgent -AgentName 'Sergeant Lark' -AgentProfile mail
+# Claude Code, by name: first type /rename Sergeant Wren in that session
+.\bin\bridge-relay.ps1 -EnrollAgent -AgentName 'Sergeant Wren' -Tool claude -AgentFolder 'C:\Users\ada\agents\wren'
+# Claude Code, by session id (the relay then follows no name)
+.\bin\bridge-relay.ps1 -EnrollAgent -AgentName 'Sergeant Wren' -Tool claude -AgentFolder 'C:\Users\ada\agents\wren' -SessionId <the session id>
+# Gemini CLI: the id is what /stats shows
+.\bin\bridge-relay.ps1 -EnrollAgent -AgentName 'Sergeant Kit' -Tool gemini -SessionId <the session id>
+```
+
+- **Codex.** The relay finds the newest live Codex thread with that name, and its folder is the
+  thread's folder. With no profile, the agent works as before: it uses `codex_exec_args` and
+  Codex's own model. To give a Codex agent a model or an effort, give it a profile too. Codex has
+  no `max` effort.
+- **Claude Code.** `-AgentFolder` is the folder the session works in. Claude Code finds a session
+  only from its own folder. With a name, the relay takes the newest session of that folder with
+  that name. With `-SessionId`, it uses that session and follows no name. A Claude Code agent
+  has the `mail` profile unless you give `-AgentProfile files`. `-Effort` may be `max`.
+- **Gemini CLI.** `-SessionId` is needed. Gemini CLI has no effort setting. The agent's folder is
+  the folder the session was started in (`-AgentFolder` names it if the relay cannot tell). Gemini
+  CLI agents are off until you turn them on: see
+  [Gemini CLI agents cost money](#gemini-cli-agents-cost-money).
+- **`agent_tools`.** The setting `agent_tools` in `bin\relay-settings.json` says which tools may
+  run agents. Claude Code and Codex are on by default. If you sign up an agent of a tool that is
+  off, the relay says so and saves nothing.
+- **Names.** An agent's name must be a plain mail name. It cannot be `owner`, `relay`, a name that
+  Windows keeps for itself (such as `con` or `nul`), your own mail name, or the planner's mail name.
+- **One job.** One session has one job. The relay refuses a session that is already the planner,
+  a coordinator or another agent. The one old exception stays: the planner and a Codex agent with
+  no profile may share one thread. Every new kind of agent gets a session of its own.
+- **Closed sessions only.** The relay refuses a session that is open in a window, or that was
+  written to in the last 90 seconds. Close it, wait, and try again.
+- **Following a name.** A Claude Code agent signed up by name, and a Codex agent with a profile,
+  follow a newer session with the same name, the way the coordinator does (see
+  [Roll sessions over](#roll-sessions-over)). A Claude Code agent follows only inside its own
+  folder. A Gemini CLI agent, and any agent signed up by id, never follows.
+- **Wakes.** The relay wakes an agent only as [What the relay does](#what-the-relay-does) says.
+
+To see what the relay would run for one agent, without running it:
+
+```powershell
+.\bin\bridge-relay.ps1 -ShowAgentArgs -AgentName 'Sergeant Wren'
+```
+
+It prints one agent's turn as JSON (the tool, session, folder, profile, and the command and rules
+it would use) and changes nothing. To stop waking an agent, run
+`.\bin\bridge-relay.ps1 -UnenrollAgent -AgentName 'Sergeant Wren'`. That keeps the agent's mail.
+It first saves a copy of `.relay\agents.json` in `.relay\backups`. It removes the agent's two
+Gemini files too, if it has them, but not while a turn of that agent still runs. It never stops a
+turn that runs.
+
+### The two profiles
+
+- **`mail`** reads and sends mail. It changes no file.
+- **`files`** may also change files, only in the agent's own folder.
+
+A Claude Code agent's turn starts in the agent's folder. `mail` may read files and run its mail
+commands. `files` may also use Edit and Write. Your own Claude Code settings, hooks, rules files
+and add-on tools do not apply to the turn. The notice goes on the program's input, never on a
+command line. A Gemini CLI agent runs with a rules file that the relay writes for it.
+
+### What no agent may do
+
+In an agent's turn, the relay lets it run only its own two mail commands:
+`agent-mail.ps1 -Read -Me '<its name>'` and `agent-mail.ps1 -Send -From '<its name>' ...`.
+
+- It never runs Git, Node.js, another AI tool or the web. Nobody can answer a question in its turn.
+- It never writes in a mailbox, and never reads another mailbox's `mail` folder.
+- It never changes an orders file or a settings file.
+- `agent-mail.ps1` works only for that agent in its turn (see
+  [Mail between mailboxes](#mail-between-mailboxes)). It sends only as the agent and reads only the
+  agent's own mail.
+
+For a Claude Code agent, these are on the list of what it may not do. Some are new in this
+version:
+
+- the web (`WebFetch` and `WebSearch`), and `curl`, `wget`;
+- reading the Claude Code, Codex and Gemini folders, `.ssh`, and `.env` files;
+- writing in any mailbox, and reading any mailbox's `mail` folder;
+- the orders and settings files in its own folder (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`,
+  `.mcp.json`, and the `.claude` and `.git` folders);
+- `git`, `gh`, `node`, `npm`, `npx`, another AI tool, PowerShell run with `-Command`, and `cmd`;
+- `rm`, and these, which are new in this version: `rmdir`, `mkdir`, `touch`, `mv`, `cp` and `sed`.
+  Claude Code's `acceptEdits` mode may let common file commands like these run in the working
+  folder without a rule, so a `files` agent changes files only with its Edit and Write tools.
+
+A Gemini CLI `files` agent may write only in its own folder, with its `write_file` and `replace`
+tools. It may not write a path with `..`, an orders file, a `.gemini`, `.agents`, `.git`, `.codex`
+or `.claude` folder, or a `.env` file. It has no web tools, no memory tool and no MCP.
+
+The lists are a guard, not a sealed box. Keep an eye on what your agents do.
+
+#### A Claude Code agent waits for money
+
+Each Claude Code agent turn has a dollar cap (`-TurnBudgetUsd`, 1 unless you change it), and all
+Claude Code agents together have a daily cap (`relay_max_agent_usd_per_day`, 5 unless you change
+it). A turn also waits while the turns that already run could use the rest of the day's cap. The
+mail stays where it is, and the relay sends the turn when they end. This wait raises no alert.
+
+### The folder rules
+
+An agent works in **a folder of its own**. The relay checks the folder when you sign the agent up,
+and again before every turn, and says in plain words which rule it breaks. The most common ones:
+
+- It must be a full path with a drive, to a folder that is there. Not a whole drive, a network
+  folder, or a link (a shortcut to another place).
+- It must not be a mailbox folder, or inside one (not `bin`, `tests`, `templates`, `tasks`,
+  `mail`, `.relay` or `agents`). A mailbox's folders belong to its coordinator and planner.
+- It must not be inside a Git repository. An agent works outside code repositories: workers do
+  the code work.
+- It must not be your home folder, your projects folder, the workers' worktrees folder, a folder
+  that holds one of them, or a folder where an AI tool keeps its own files.
+- It must not be HQ's folder, a project mailbox of HQ, the coordinator's folder, the planner's
+  folder, or another agent's folder.
+- It must not hold settings that could change the agent's rules: a `.codex` folder or an
+  `AGENTS.override.md` for Codex; `.gemini`, `.agents` or a `.env` file for Gemini CLI; Claude Code
+  settings with hooks for Claude Code.
+- No folder above it may hold a `CLAUDE.md` (Claude Code) or a `GEMINI.md` (Gemini CLI), because
+  the tool would read it as orders.
+- For Claude Code and Gemini CLI agents, the mailbox's own path may hold only letters, digits and
+  `. _ - ~`. A path with a space cannot host these agents: move the mailbox to a plain path. Avoid
+  `~` too (see [Set up a new mailbox](#set-up-a-new-mailbox)).
+
+And more: the relay says why.
+
+### What each tool costs
+
+| Agent in | What it costs |
+| -------- | ------------- |
+| Claude Code | Your Claude plan. A dollar cap for each turn and for each day. The cost goes into `.relay\dispatches.md`. |
+| Gemini CLI | Money for every turn. Off until you turn it on. Four turns a day in all. |
+| Codex | Your ChatGPT plan. Codex reports no cost. |
+
+### Gemini CLI agents cost money
+
+Gemini CLI needs a paid API key, Vertex AI or a work license, so every Gemini CLI agent turn costs
+money. That is why these agents are off.
+
+- **Turn them on.** Add `"gemini"` to `agent_tools` in `bin\relay-settings.json`, for example
+  `"agent_tools": ["codex", "claude", "gemini"]`. Until then, signing up, waking and making a
+  Gemini CLI agent are all refused, and the words say it costs money.
+- **The total.** At most 4 Gemini CLI agent turns run in a day, for all Gemini CLI agents
+  together. The first turns of new agents count too. Change it with `agent_wakes_per_day` in
+  `bin\cost-limits.json`, such as `{"gemini": 4}`. `0` means no limit. The usual limits for each
+  agent (12 a day) and at once (3) also apply. When the total is reached, mail waits until
+  tomorrow, and the relay writes an alert.
+- **The turn limit.** The relay asks Gemini CLI for 30 tool turns in one agent turn
+  (`gemini_max_session_turns`). Gemini CLI may skip that. Then the turn has no limit from the
+  relay. The relay writes one alert (once, not once for each turn) and says so in its log. To be
+  sure of a limit, also set `model.maxSessionTurns` in your own Gemini settings
+  (`%USERPROFILE%\.gemini\settings.json`).
+- **Your key.** `GEMINI_API_KEY` goes to Gemini CLI as it is. The relay never writes it down.
+- `-Status` says "Gemini CLI costs money for every turn." under each Gemini CLI agent.
+
+**A known gap in short file names.** A Gemini CLI `files` agent's write rule matches the text of
+a path. Windows may also give a file a short 8.3 name, such as `GEMINI~1.MD`, and a path may end
+in a dot (`GEMINI.md.`). The rule does not match those, so such a name could reach the agent's
+orders file. To close the gap, keep 8.3 short names off for the drive that holds agent folders
+(`fsutil 8dot3name set C: 1` needs an administrator; `fsutil 8dot3name query C:` checks it), or
+give the agent the `mail` profile, which has no write rule at all.
+
+### A Codex agent can change files in its folder and the mail folders
+
+A Codex agent's turn runs in Codex's `workspace-write` sandbox. The sandbox must let
+`agent-mail.ps1` write the mail folders. So it cannot tell that from the agent's own writes. A
+Codex agent, even with the `mail` profile, can still change files in its own folder and in the
+mail folders, including another agent's mail. The `mail` profile only changes its notice: it tells
+the agent to change no file itself. Give a mail agent in Codex a folder that holds nothing else.
+
+What still holds for a Codex agent with a profile: no network and no web search; none of your own
+Codex settings or command rules (`--ignore-user-config` and `--ignore-rules`); a `.codex` folder
+or an `AGENTS.override.md` in its folder stops the agent; and the caps. For an agent that must
+change nothing, use Claude Code or Gemini CLI. Give a Codex agent only work you trust it with.
+
+The relay also checks a Codex agent's model and effort before each turn. A Codex CLI that is too
+old stops with an "update Codex" message.
+
+### Check on a real install before you turn on a new kind
+
+The relay's own test uses fake programs. The rules for Claude Code and Gemini CLI agents work
+through real programs that change. Before you trust a new kind of agent, check these on your own
+computer, with an agent that has nothing you care about:
+
+- `claude -p --resume` with the notice on its input delivers one message, and the exact mail rule
+  with the agent's name in single quotes is allowed, in both path forms (`C:/` and `C:\`).
+- A command that is not on the list, a chained command, and a `$( )` are all refused.
+- With `acceptEdits`, the file commands that the list refuses (`mkdir`, `touch`, `rm`, `rmdir`,
+  `mv`, `cp`, `sed`) are refused.
+- On Windows, Claude Code may also offer a PowerShell tool. The relay's turn gives it only the
+  tools Read, Edit, Write, Glob, Grep and Bash, and every rule is a Bash rule. Check that the
+  turn offers no PowerShell tool.
+- A Gemini CLI agent may run its own mail commands, and `powershell -Command` is refused.
+
+### Why not Antigravity CLI agents yet
+
+You cannot sign up an agent in Antigravity CLI yet. `-EnrollAgent -Tool antigravity` says so.
+The reasons:
+
+- An agent must run `agent-mail.ps1` in every turn. Antigravity CLI has no rules file for one run.
+  It can allow a command only in your own Antigravity settings, and that counts for every
+  Antigravity session on this computer.
+- Google's consumer terms may not allow other programs to run Antigravity CLI, and your Google
+  account could be suspended or closed. An agent may take 12 turns a day, every day, so the risk
+  grows with each turn.
+- Its way to pick up a saved conversation for one run is not proven.
+- There is no way to tell that a conversation is open in a window.
+- Pleni cannot show it yet.
+
+### Your Gemini AI Pro plan works for Antigravity workers today
+
+If you have a Gemini AI Pro plan, it signs in to Antigravity CLI. Antigravity workers already
+exist and use it. They are off by default and carry the same risk warning: see
+[Antigravity workers](#antigravity-workers-off-by-default).
+
+## New agents
+
+A planner, HQ's orchestrator or a Claude Code coordinator can ask the relay to make a new agent.
+The relay makes its folder and its orders file, runs one first turn, and then signs it up. It is
+off until you turn it on.
+
+### Turn it on
+
+Add `"allow_new_agents": true` to `bin\relay-settings.json`. Write `true` with no quotes: the text
+`"true"` does not count. Then also check `agent_tools`, which says which tools a new agent may use.
+Set `projects_dir` too, because a new agent's folder must be inside the projects folder. In HQ,
+each project turns it on in its own `bin\relay-settings.json`: HQ's setting covers only HQ's own
+`agents` folder.
+
+While it is off, the relay still reads each request, and refuses it, with the reason in the result
+file. Turn it on first, then ask. Turning it on also turns on the guard that watches the relay's own
+files (see [What makes the relay stop, and why](#what-makes-the-relay-stop-and-why)).
+
+### Who may ask
+
+- The planner, if its sandbox can write in the mailbox's `agents` folder (start its thread in the
+  mailbox folder, with `workspace-write`).
+- HQ's orchestrator, in HQ's own `agents` folder or in a project's.
+- A Claude Code coordinator.
+
+A Codex or Gemini CLI coordinator cannot ask. Its sandbox or its rules file allows no write in
+`agents`. It asks the planner in `questions.md` instead.
+
+### How to ask
+
+1. Copy `templates\agent-request.md` to `agents\<key>.md` in the mailbox. Make the `agents`
+   folder first: the relay never makes it. The `<key>` is the agent's name in small letters, with
+   each run of other marks as one `-`. `Sergeant Wren` becomes `agents\sergeant-wren.md`. A file name
+   with a capital letter is ignored, and gets no answer.
+2. Fill in the fields at the top: `Name`, `Tool` (`claude`, `codex` or `gemini`), `Profile`
+   (`mail` or `files`; empty means `mail`), `Folder`, `Model`, `Effort` and `Requested by`. Only
+   `Name` and `Tool` are needed. A field line that is there twice: the last one wins.
+3. Under `## Standing orders`, write what the agent does, in plain words. The relay puts it in the
+   agent's orders file, after its own part about mail and what the agent may do. Mail is the only
+   way the agent hears from others.
+
+The file may be 32 KB at most, and the orders 16 KB at most. `Folder` may stay empty. The relay
+then makes `<projects_dir>\_mail-agents\<key>`. If you give a folder, it must be a full path inside
+the projects folder, and new or empty, so no settings, hooks or orders files are in it. All the
+folder rules above apply too.
+
+The relay reads a version of the file once it is 20 seconds old, and makes each version at most
+once. A request that is already in `agents` the first time the relay looks counts as known, and
+never runs. A link in place of the file or of the folder is refused.
+
+### What the relay writes back
+
+The relay writes `agents\<key>.result.md`. It has the version, the outcome, the time, and a short
+sentence. Nothing wakes the asker for it, so the asker reads the file in a later turn. The four
+outcomes:
+
+- **made.** The first turn went well, so the agent is signed up. From now on, its mail wakes it.
+  Mail that already waited for it wakes it too.
+- **refused.** The relay did not make it, and says why. This is final for that version.
+- **failed.** The first turn made no session. This is final for that version.
+- **unknown.** The first turn ran, but the relay could not be sure that the right session was
+  made. Nothing is signed up. If the session is right, sign it up yourself with `-EnrollAgent`.
+
+To ask again after one that is not `made`, change the file. The relay does not try the same version
+twice. The relay also writes an alert for each outcome.
+
+### Why a request is refused
+
+The most common reasons:
+
+- New agents are off, or the tool is off (`agent_tools`).
+- The file is not in the shape the relay reads: no `## Standing orders` part, a field line it
+  cannot read, a missing `Name` or `Tool` line, or a file that is too large.
+- The name is not allowed, is already an agent, or does not match the file name.
+- The folder breaks a rule, or is not empty, or is not inside the projects folder.
+- The daily limit is reached: new agents (`relay_max_new_agents_per_day`), Gemini CLI turns
+  (`agent_wakes_per_day`), or Claude Code agent money (`relay_max_agent_usd_per_day`).
+
+The relay says which one in the result file.
+
+### Why a request waits
+
+A waiting request is not refused. The relay tries again, and says why it waits in its log, once
+for each reason:
+
+- The relay is paused or halted.
+- Three first turns in a row did not make an agent. New agents stop until you check
+  `.relay\alerts.md` and run `-ClearHalt`.
+- A coordinator turn runs. New agents are made between coordinator turns.
+- Another new agent is being made. One at a time.
+- Three agent turns already run (the limit at once).
+- Claude Code agent turns that run now could use the rest of the day's dollar cap. The new agent
+  is made after they end.
+
+### The limits
+
+- **2 a day.** `relay_max_new_agents_per_day` in `bin\cost-limits.json` (0 to 20; `0` means no
+  limit). `-MaxNewAgentsPerDay <n>` sets it for one run.
+- **One at a time.**
+- **Three in a row.** Three failed first turns in a row stop new agents until you run
+  `-ClearHalt`. A refusal does not count. A made agent starts the count again.
+- A first turn counts as an agent turn: it counts toward the agent's 12 a day, the 3 at once, the
+  Gemini CLI total, and the dollar cap of Claude Code agents.
+
+### What the relay makes
+
+1. It saves its plan first (the day's count goes up here).
+2. It makes the agent's folder.
+3. It writes the agent's orders file: `CLAUDE.md`, `GEMINI.md` or `AGENTS.md`, with the relay's
+   own part and then your orders.
+4. It runs one first turn there. The agent only says hello, changes nothing, and sends no mail.
+5. If that went well, it signs the agent up. A made Claude Code agent follows a newer session with
+   its name only if Claude Code wrote the name and the session is in the agent's folder. A made
+   Codex or Gemini CLI agent never follows a name.
+
+The relay remembers a fingerprint of the orders file. If the file changes later, the agent's wakes
+stop, with an alert. Look at the file. If the change is right, run `-ClearHalt` to accept the file
+as it is now.
+
+### Known small gaps
+
+- A request file name with a capital letter is ignored, with no answer.
+- The alert for an `agents` folder that is a link comes only once.
+- A refusal is final for that version. Change the file to ask again.
+- A folder write that fails after the relay saved its plan still uses one of the day's slots.
+- `-DryRun` does not run the whole check that comes before an agent turn.
+- A request that is already in `agents` the first time the relay looks counts as known, and never
+  runs.
+- `-UpdateProjects` does not copy templates. A project mailbox made before this version does not
+  have `templates\agent-request.md`. Copy it by hand. `-NewProject` copies it.
 
 ## Run several projects (HQ)
 
@@ -944,12 +1458,14 @@ for several mailboxes at once:
    This makes the folder `projects\notes` in HQ, or the empty folder you name with
    `-ProjectFolder`. It copies the relay, the tests, the templates, `README.md` and `CLAUDE.md` from
    HQ, and makes `tasks`, `CODEX-QUEUE.md` and `STATUS.md`. The project's settings are HQ's, without
-   `role` and `projects`, and with `hq_dir`. Then it adds the project to HQ's `projects` list, and
+   `role` and `projects`, and with `hq_dir`. So a project made from an HQ that has `allow_new_agents`
+   on, or a changed `agent_tools`, has them too, and it gets HQ's cost limits. The templates come
+   along, `agent-request.md` too. Then it adds the project to HQ's `projects` list, and
    keeps a copy of the old settings as `relay-settings.json.bak-<time>`. It refuses an id that HQ
    already has, and a folder that is not empty.
 
-   `-NewProject` changes HQ's own settings. While HQ's relay runs with its guard on (a Codex or
-   Gemini CLI coordinator in HQ, or start requests on), it refuses and says: "HQ's relay is running
+   `-NewProject` changes HQ's own settings. While HQ's relay runs with its guard on (see
+   [What makes the relay stop, and why](#what-makes-the-relay-stop-and-why)), it refuses and says: "HQ's relay is running
    and watches its own settings. Run -StopAll first, then -NewProject, then -StartAll." It also
    refuses while a coordinator turn of HQ still runs, or has ended and is not settled yet (wait for
    `-Status` to show none, or use `PAUSE` and `-Once` to settle it). With the guard off, the step
@@ -957,7 +1473,7 @@ for several mailboxes at once:
 
    You may also add a mailbox you already have to `projects` by hand. Then also set `hq_dir` to
    HQ's folder in that mailbox's `bin\relay-settings.json`, or the project's checks of HQ's
-   orchestrator thread and HQ's folders are off. What already waits in a new project counts as
+   orchestrator thread and HQ's folders are off, and `-Box` does not work there. What already waits in a new project counts as
    known, so adding a project wakes nothing.
 4. **Enroll each project's coordinator** in that project's own folder, as in step 2 of
    [Start the relay](#start-the-relay). Never enroll the orchestrator's thread in a project (with
@@ -986,17 +1502,18 @@ for several mailboxes at once:
    `README.md` or `CLAUDE.md`. It skips a project whose relay runs, and says so.
 
    Because it copies no templates, a project made before this version has no
-   `templates\worker-start.md`, which the notices of a Codex or Gemini CLI coordinator point to.
-   Copy it into each project that lacks it (change the folder to HQ's):
+   `templates\worker-start.md`, which the notices of a Codex or Gemini CLI coordinator point to, and
+   no `templates\agent-request.md`, which a request for a new agent starts from. Copy them into each
+   project that lacks them (change the folder to HQ's):
 
    ```powershell
    $hq = 'C:\Users\ada\hq'
    $settings = Get-Content "$hq\bin\relay-settings.json" -Raw | ConvertFrom-Json
    foreach ($p in @($settings.projects)) {
      $t = "$($p.mailbox)\templates"
-     if (-not (Test-Path "$t\worker-start.md")) {
-       New-Item -ItemType Directory -Force $t | Out-Null
-       Copy-Item "$hq\templates\worker-start.md" $t
+     New-Item -ItemType Directory -Force $t | Out-Null
+     foreach ($f in 'worker-start.md', 'agent-request.md') {
+       if (-not (Test-Path "$t\$f")) { Copy-Item "$hq\templates\$f" $t }
      }
    }
    ```
@@ -1056,8 +1573,8 @@ If you enrolled by id (`-SessionId`, `-ThreadId`), the relay never switches. Run
    empty file named `PAUSE` in the mailbox's `.relay` folder, run `.\bin\bridge-relay.ps1 -Once`
    (it settles the turn and starts nothing), and delete `PAUSE`. Now `-Status` says
    `In flight: none`. If a coordinator turn is still running when you change a script, the relay
-   halts itself when you start it again, but only while its guard is on (a Codex or Gemini CLI
-   coordinator, or start requests on).
+   halts itself when you start it again, but only while its guard is on (see
+   [What makes the relay stop, and why](#what-makes-the-relay-stop-and-why)).
 2. Get the new version. In your Pleni folder, run `git pull`.
 3. Copy the scripts into the mailbox (change the two folders to yours):
 
@@ -1066,7 +1583,9 @@ If you enrolled by id (`-SessionId`, `-ThreadId`), the relay never switches. Run
    $mb   = 'C:\Users\ada\mailbox'
    Copy-Item -Force "$repo\relay\bin\*.ps1" "$mb\bin\"
    Copy-Item -Force "$repo\relay\tests\stub-*.js" "$mb\tests\"
-   if (-not (Test-Path "$mb\templates\worker-start.md")) { Copy-Item "$repo\relay\templates\worker-start.md" "$mb\templates\" }
+   foreach ($f in 'worker-start.md', 'agent-request.md') {
+     if (-not (Test-Path "$mb\templates\$f")) { Copy-Item "$repo\relay\templates\$f" "$mb\templates\" }
+   }
    ```
 
 4. If `worker_tools` lists `codex`, or a Codex coordinator is signed up: Codex now needs a newer
@@ -1076,36 +1595,53 @@ If you enrolled by id (`-SessionId`, `-ThreadId`), the relay never switches. Run
    set up (see [A coordinator in Codex or Gemini CLI](#a-coordinator-in-codex-or-gemini-cli-optional)).
 5. Start it again: `.\bin\bridge-relay.ps1 -Start`.
 
-This copies only the scripts, and the start request template if your mailbox does not have it yet.
-Your settings files, your other templates, and the coordinator's files stay as they are.
+This copies only the scripts, and the start request template and the new agent request template if
+your mailbox does not have them yet. Your settings files, your other templates, and the
+coordinator's files stay as they are.
+
+**Nothing changes in an old mailbox until you use a new part.** The new limits have usual numbers,
+so no file edit is needed. These need a step from you:
+
+- **Agents, and new agents.** Follow [Agents in any AI tool](#agents-in-any-ai-tool) and
+  [New agents](#new-agents). Every mailbox that uses agent mail needs the new `agent-mail.ps1` (the
+  lines above copy it). An old copy has no `-Box` and none of the rules for an agent's turn.
+- **Mail for the planner.** A `codex.json` from before this version has no mail name. Stop the
+  relay and sign up the planner again with `-EnrollCodex -ThreadName '<its name>'`. The relay keeps
+  a copy of the old file in `.relay\backups`.
+- **The agent request template in project mailboxes.** `-UpdateProjects` copies scripts only. Copy
+  `templates\agent-request.md` into each existing project by hand (see step 6 of
+  [Run several projects](#run-several-projects-hq)).
 
 Never copy `COORDINATOR.md` over a mailbox's `CLAUDE.md`, or the templates over the mailbox's
 `templates` folder. Over time a mailbox gets orders and brief fields of its own (who reports to whom,
 their addresses, exceptions the owner made), and a copy would lose them. To get a new order, add
 just that order to the end of your orders file.
 
-The newest order in `COORDINATOR.md` is order 15, "If you are a Codex thread or a Gemini CLI
-session". It is only for a Codex or Gemini CLI coordinator. A Claude Code coordinator does not need
-it, so the lines below do not add it to `CLAUDE.md`. They add it to the `AGENTS.md` or `GEMINI.md`
-in the coordinator's folder, if a Codex or Gemini CLI coordinator is enrolled
-(`.relay\coordinator.json` says `codex` or `gemini`). Orders 9 and 12 also have new words in
-`COORDINATOR.md` (order 9 points to start requests, and order 12 says it is for Claude Code
-coordinators only). The lines do not change them. Edit them by hand if you want the new words.
+The newest order in `COORDINATOR.md` is order 16, "New agents (Claude Code coordinators only)". Only
+a Claude Code coordinator can write an agent request, so the lines below add it to `CLAUDE.md` and
+to no other file. Order 15, "If you are a Codex thread or a Gemini CLI session", is only for a Codex
+or Gemini CLI coordinator. Orders 6, 9, 12 and 15 also have new words in `COORDINATOR.md`. The lines
+do not change them. Edit them by hand if you want the new words. (If order 16 gets another number
+in your `CLAUDE.md`, change the words "rule 16" in your order 6 to match.)
 
 The lines keep a copy of each file as `<name>.old` first, and do nothing for a file that already has
 the order. They add the newest order. To add an older one, set `$want` to a part of its title, such
-as `'Choose the AI tool for each worker'` (order 14). For an order that is for every coordinator,
-set `$claudeToo` to `$true` and `$next` to the next free order number in your `CLAUDE.md`. Run the
-lines while the relay is stopped: its guard halts a running relay when a coordinator's orders file
-changes.
+as `'Choose the AI tool for each worker'` (order 14), and set the two choices that follow. `$toClaude`
+adds the order to `CLAUDE.md`, and `$next` is the next free order number there. `$toOthers` adds it
+to the `AGENTS.md` or `GEMINI.md` in the coordinator's folder, if a Codex or Gemini CLI coordinator
+is enrolled (`.relay\coordinator.json` says `codex` or `gemini`), and `$nextCoordinator` is the next
+free number there. Order 14 is for every coordinator: set both to `$true`. Order 15 is only for
+`$toOthers`. Run the lines while the relay is stopped: its guard halts a running relay when a
+coordinator's orders file changes.
 
 ```powershell
 $repo  = 'C:\Users\ada\pleni'     # change these two to your folders
 $mb    = 'C:\Users\ada\mailbox'
-$claudeToo = $false              # order 15 is only for Codex and Gemini CLI. Use $true for an order that is for everyone, such as order 14
-$want  = ''                      # '' adds the newest order. Or part of an order's title, such as 'Choose the AI tool for each worker'
-$next  = 14                      # the next free order number in your CLAUDE.md (used only when $claudeToo is $true)
-$nextCoordinator = 16            # the next free order number in AGENTS.md or GEMINI.md (a Codex or Gemini CLI coordinator only)
+$want  = ''                      # '' adds the newest order (order 16). Or part of an order's title, such as 'Choose the AI tool for each worker'
+$toClaude = $true                # add it to CLAUDE.md (order 16 and order 14, not order 15)
+$toOthers = $false               # add it to AGENTS.md or GEMINI.md (order 14 and order 15, not order 16)
+$next  = 15                      # the next free order number in your CLAUDE.md
+$nextCoordinator = 16            # the next free order number in AGENTS.md or GEMINI.md
 $src   = @(Get-Content "$repo\relay\COORDINATOR.md")
 $starts = @($src | Select-String -Pattern '^\d+\. \*\*' | ForEach-Object { $_.LineNumber - 1 })
 $pick = $starts.Count - 1
@@ -1119,9 +1655,9 @@ if ($pick -lt $starts.Count - 1) { $last = $starts[$pick + 1] - 1 }
 $order = $src[$starts[$pick]..$last]
 $title = [regex]::Match($order[0], '\*\*(.+?)\*\*').Groups[1].Value
 $orders = @()
-if ($claudeToo) { $orders += @{ file = "$mb\CLAUDE.md"; next = $next } }
+if ($toClaude) { $orders += @{ file = "$mb\CLAUDE.md"; next = $next } }
 $coordFile = "$mb\.relay\coordinator.json"
-if (Test-Path $coordFile) {
+if ($toOthers -and (Test-Path $coordFile)) {
   $c = Get-Content $coordFile -Raw | ConvertFrom-Json
   if ($c.tool -eq 'codex')  { $orders += @{ file = (Join-Path $c.cwd 'AGENTS.md'); next = $nextCoordinator } }
   if ($c.tool -eq 'gemini') { $orders += @{ file = (Join-Path $c.cwd 'GEMINI.md'); next = $nextCoordinator } }
@@ -1141,8 +1677,9 @@ foreach ($o in $orders) {
 }
 ```
 
-In HQ, `ORCHESTRATOR.md` has a new order 11, "Never wake a project's coordinator yourself". Add it by
-hand to the end of HQ's `AGENTS.md`, while the HQ relay is stopped.
+In HQ, `ORCHESTRATOR.md` has new orders 11, "Never wake a project's coordinator yourself", 12, "Mail
+for your name", and 13, "New agents". Add what is missing by hand to the end of HQ's `AGENTS.md`,
+while the HQ relay is stopped. Order 6 has new words too, about `agents\<key>.md`.
 
 If the new order names a line for the worker brief, add that line to your own
 `templates\worker-brief.md` by hand. For the model and effort order, put this under the branch and
@@ -1176,7 +1713,7 @@ is. A Codex or Gemini CLI coordinator never uses it.
 powershell -NoProfile -ExecutionPolicy Bypass -File bin\bridge-relay-check.ps1
 ```
 
-It takes about 10 to 16 minutes. It builds fake mailboxes in your temp folder, runs the relay, agent mail
+It takes about 16 minutes. It builds fake mailboxes in your temp folder, runs the relay, agent mail
 and the worker launcher against them with a fake Claude, a fake Codex, a fake Gemini CLI and a fake
 Antigravity CLI, and removes them at the end. It covers a coordinator in Codex and in Gemini CLI,
 start requests and the guard on the relay's own files too. It never touches a real mailbox or a real session, and it costs nothing.
@@ -1192,12 +1729,24 @@ stop. Never set them yourself.
 The relay:
 
 - wakes only the sessions you enrolled: the coordinator, the planner, and the agents you enrolled
-  for mail, with one turn at a time for each;
+  for mail, with one turn at a time for each. It also wakes an agent it made, but only while
+  `allow_new_agents` is `true`;
+- wakes agents of a tool only if `agent_tools` lists it (Gemini CLI agents cost money, so they are
+  off until you list `gemini`);
 - wakes a Codex thread only if you enrolled it, never while another program has it open, and never
   with an option that turns the Codex sandbox off;
 - never wakes a session that looks open in another window, and never stops or kills a process;
-- keeps its own notes only in the mailbox's `.relay` folder, with no secrets and no copies of the
-  conversation;
+- keeps its own notes in the mailbox's `.relay` folder, with no secrets and no copies of the
+  conversation, and writes only a few other things: the planner's mail folders when you sign up its
+  mail name, the result file for a request for a new agent, the folder and orders file of an agent
+  it made (inside your projects folder), and copies of its own records in `.relay\backups`. It
+  never writes through a link;
+- writes agent mail only under a mailbox's `mail` folder (another mailbox's too, with `-Box`), and
+  holds mail that comes after too many relay-woken turns in a row (`relay_max_mail_hops`);
+- lets an agent run only its own two mail commands, and `agent-mail.ps1` works only for that agent
+  in its turn;
+- makes a new agent only when `allow_new_agents` is `true`, never more than
+  `relay_max_new_agents_per_day` a day, and never more than one at a time;
 - in HQ, only reads the project mailboxes, except when you run `-NewProject`, `-UpdateProjects` or
   `-StopAll`;
 - installs nothing: no service, no scheduled task, and no registry entry;
@@ -1207,15 +1756,19 @@ The relay:
 - starts a worker in Codex, Gemini or Antigravity only when `worker_tools` lists that tool, never
   more of them in a day than `worker_runs_per_day` allows, and a Gemini worker only with the relay's
   own policy;
+- wakes Claude Code agents only while they have not used `relay_max_agent_usd_per_day` for the day
+  (and the turns that already run could not use the rest of it), and Gemini CLI agents only up to
+  `agent_wakes_per_day` in all;
 - runs a Codex or Gemini CLI coordinator only in a folder of its own;
 - runs a Codex coordinator and Codex workers only without your own Codex settings and command
   rules, with no network and no web search (see
   [A coordinator in Codex or Gemini CLI](#a-coordinator-in-codex-or-gemini-cli-optional));
 - starts a worker for a start request only after it checked the request, never the same version
   twice, and never more than `relay_max_worker_starts_per_day` allows;
-- while a Codex or Gemini CLI coordinator is enrolled, or start requests are on, stops itself and
-  tells you when one of its own files changes, and when a Codex or Gemini CLI turn finds something
-  it must not run with (see [What makes the relay stop, and why](#what-makes-the-relay-stop-and-why));
+- while its guard is on (a Codex or Gemini CLI coordinator, start requests, new agents, or an agent
+  with the relay's rules), stops itself and tells you when one of its own files changes. It stops an
+  agent that finds something it must not run with, or whose orders file changed (see
+  [What makes the relay stop, and why](#what-makes-the-relay-stop-and-why));
 - never reads, copies or writes the login of an AI tool that runs a worker, and never changes that
   tool's own settings files.
 
@@ -1234,8 +1787,15 @@ has a turn limit that Gemini CLI may skip: see
 count toward `relay_max_worker_starts_per_day`, and Codex, Gemini and Antigravity workers toward
 `worker_runs_per_day` as well.
 
-Each planner turn and each agent turn the relay starts uses your ChatGPT plan. It gets a line in
-`.relay\dispatches.md` too, without a cost, because Codex does not report one.
+Each planner turn and each Codex agent turn the relay starts uses your ChatGPT plan. It gets a
+line in `.relay\dispatches.md` too, without a cost, because Codex does not report one. A planner
+wake for mail counts toward `relay_max_codex_wakes_per_day`. What a Claude Code agent or a Gemini
+CLI agent costs is in [What each tool costs](#what-each-tool-costs).
+
+Every agent turn, in any tool, counts toward `relay_max_agent_wakes_per_day` and toward its tool's
+`agent_wakes_per_day`. The turns of all Claude Code agents together also count toward
+`relay_max_agent_usd_per_day`, not toward the coordinator's daily dollar cap. The first turn of a new
+agent counts like any other, and each new agent counts toward `relay_max_new_agents_per_day`.
 
 A Codex worker uses your ChatGPT plan too. A Gemini worker costs money for every run. An Antigravity
 worker uses your Google plan (or your Gemini API key, if you set Antigravity CLI up with one). Their
