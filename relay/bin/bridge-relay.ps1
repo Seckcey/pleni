@@ -6828,8 +6828,8 @@ function Get-FolderLinkProblem([string]$Folder) {
 }
 
 function Get-AgentToolFolderProblem([string]$Folder, [string]$AgTool) {
-    # Files in the agent's own folder that its tool would load and that could run commands or replace its orders, in
-    # plain words with no closing period, or ''.
+    # Files in the agent's own folder that its tool would load and that could run commands, or replace or add to its
+    # orders, in plain words with no closing period, or ''.
     if ($AgTool -eq 'codex') {
         foreach ($n in @('.codex', 'AGENTS.override.md')) {
             $p = Get-SafePath $Folder $n
@@ -6846,30 +6846,50 @@ function Get-AgentToolFolderProblem([string]$Folder, [string]$AgTool) {
         try { $t = Read-HeadText $p 1048576 } catch { return "$p could not be read" }
         if ($t -match '(?i)"hooks"') { return "$p has hooks (commands Claude Code runs by itself). Move them away" }
     }
+    # Claude Code reads these as orders too, next to CLAUDE.md (in a window the owner opens, so the session the relay
+    # resumes holds them). The relay's rules name only CLAUDE.md, and a made agent's guard watches only that file.
+    foreach ($n in @('CLAUDE.local.md', '.claude\CLAUDE.md', '.claude\rules')) {
+        $p = Get-SafePath $Folder $n
+        if (-not $p) { continue }
+        if ($n -eq '.claude\rules') {
+            if (Test-Path -LiteralPath $p -PathType Container) { return "$p is there, and Claude Code reads the files in it as this agent's standing orders too, next to its CLAUDE.md (in a window you open). Move it away" }
+        } elseif (Test-Path -LiteralPath $p -PathType Leaf) { return "$p is there, and Claude Code reads it as this agent's standing orders too, next to its CLAUDE.md (in a window you open). Move it away" }
+    }
     return ''
 }
 
 function Get-ParentOrdersProblem([string]$Folder, [string]$AgTool) {
     # An orders file in a folder above $Folder that the agent's tool reads as orders in a window the owner opens (and may
-    # read in a relay turn), or ''. Claude Code reads CLAUDE.md and CLAUDE.local.md in every folder above, up to the
-    # drive's root (not the root itself); Gemini CLI reads GEMINI.md up to the first folder with .git, or the home folder.
-    # Codex reads AGENTS.md above only inside a Git repository, where an agent's folder never is. Never throws.
+    # read in a relay turn), or ''. An agent's folder is never inside a Git repository (Get-AgentFolderError checks that
+    # first), and outside one: Claude Code reads CLAUDE.md, CLAUDE.local.md, .claude\CLAUDE.md and the rules in
+    # .claude\rules in every folder above, up to the drive's root (not the root itself). The home folder's .claude (or
+    # the folder CLAUDE_CONFIG_DIR names) is Claude Code's own folder: its CLAUDE.md and rules are the owner's own orders
+    # for every session, so they do not count. Gemini CLI before 0.35 (or a later one with experimental.jitContext off)
+    # reads GEMINI.md in every folder above, up to the one above the home folder, so the home folder's own GEMINI.md
+    # counts too, and this looks up to the drive's root for both tools (newer versions read none above). The owner's own
+    # Gemini CLI orders are .gemini\GEMINI.md in the home folder, never looked at here. Codex reads AGENTS.md above only
+    # inside a Git repository. Never throws.
     if ($AgTool -eq 'codex') { return '' }
     $names = @('GEMINI.md')
-    if ($AgTool -eq 'claude') { $names = @('CLAUDE.md', 'CLAUDE.local.md') }
+    if ($AgTool -eq 'claude') { $names = @('CLAUDE.md', 'CLAUDE.local.md', '.claude\CLAUDE.md', '.claude\rules') }
     $homeDir = ''   # never $home: $HOME is automatic
     try { if ($env:USERPROFILE) { $homeDir = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') } } catch { $homeDir = '' }
     $di = $null
     try { $di = (New-Object System.IO.DirectoryInfo ([IO.Path]::GetFullPath($Folder))).Parent } catch { return '' }   # no disk access
     for ($i = 0; $i -lt 64 -and $di -and $di.Parent; $i++) {   # $di.Parent: never the drive's root
-        $d = $di.FullName
-        if ($AgTool -eq 'gemini' -and $homeDir -and $d.TrimEnd('\') -ieq $homeDir) { break }
-        foreach ($n in $names) {
-            $p = Get-SafePath $d $n
-            if ($p -and (Test-Path -LiteralPath $p -PathType Leaf)) { return "$p is in a folder above it, and $(Get-ToolName $AgTool) reads it as this agent's standing orders too (in a window you open)" }
+        $d = $di.FullName.TrimEnd('\')
+        $ownClaude = $false   # $d\.claude is Claude Code's own folder
+        if ($AgTool -eq 'claude') {
+            try { $ownClaude = (($homeDir -and $d -ieq $homeDir) -or (Test-SameFolder ($d + '\.claude') $ClaudeConfigDir)) } catch { $ownClaude = $false }
         }
-        $gitMark = Get-SafePath $d '.git'
-        if ($AgTool -eq 'gemini' -and $gitMark -and (Test-Path -LiteralPath $gitMark)) { break }
+        foreach ($n in $names) {
+            if ($ownClaude -and $n.StartsWith('.claude\', [StringComparison]::Ordinal)) { continue }
+            $p = Get-SafePath $d $n
+            if (-not $p) { continue }
+            if ($n -eq '.claude\rules') {
+                if (Test-Path -LiteralPath $p -PathType Container) { return "$p is in a folder above it, and $(Get-ToolName $AgTool) reads the files in it as this agent's standing orders too (in a window you open)" }
+            } elseif (Test-Path -LiteralPath $p -PathType Leaf) { return "$p is in a folder above it, and $(Get-ToolName $AgTool) reads it as this agent's standing orders too (in a window you open)" }
+        }
         $di = $di.Parent
     }
     return ''

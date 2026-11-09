@@ -1205,8 +1205,14 @@ and again before every turn, and says in plain words which rule it breaks. The m
 - It must not hold settings that could change the agent's rules: a `.codex` folder or an
   `AGENTS.override.md` for Codex; `.gemini`, `.agents` or a `.env` file for Gemini CLI; Claude Code
   settings with hooks for Claude Code.
-- No folder above it may hold a `CLAUDE.md` (Claude Code) or a `GEMINI.md` (Gemini CLI), because
-  the tool would read it as orders.
+- A Claude Code agent's folder may hold no other orders next to its `CLAUDE.md`: no
+  `CLAUDE.local.md`, no `.claude\CLAUDE.md` and no `.claude\rules` folder. Claude Code reads them
+  as orders too.
+- No folder above it may hold orders that its tool would read. Your home folder counts too.
+  For Claude Code, that is a `CLAUDE.md`, a `CLAUDE.local.md`, a `.claude\CLAUDE.md` or a
+  `.claude\rules` folder. For Gemini CLI, it is a `GEMINI.md`. Your own orders for all your
+  sessions are fine: the `.claude` folder in your home folder (or the folder `CLAUDE_CONFIG_DIR`
+  names) for Claude Code, and `.gemini\GEMINI.md` in your home folder for Gemini CLI.
 - For Claude Code and Gemini CLI agents, the mailbox's own path may hold only letters, digits and
   `. _ - ~`. A path with a space cannot host these agents: move the mailbox to a plain path. Avoid
   `~` too (see [Set up a new mailbox](#set-up-a-new-mailbox)).
@@ -1629,6 +1635,11 @@ so no file edit is needed. These need a step from you:
 - **The agent request template in project mailboxes.** `-UpdateProjects` copies scripts only. Copy
   `templates\agent-request.md` into each existing project by hand (see step 6 of
   [Run several projects](#run-several-projects-hq)).
+- **More orders files near an agent.** The relay now also looks for a `.claude\CLAUDE.md` and a
+  `.claude\rules` folder in and above a Claude Code agent's folder, for a `CLAUDE.local.md` in it,
+  and for a `GEMINI.md` in your home folder above a Gemini CLI agent (see
+  [The folder rules](#the-folder-rules)). If one is there, that agent's wakes stop, and the alert
+  names the file. Move the file away, then run `-ClearHalt`.
 
 Never copy `COORDINATOR.md` over a mailbox's `CLAUDE.md`, or the templates over the mailbox's
 `templates` folder. Over time a mailbox gets orders and brief fields of its own (who reports to whom,
