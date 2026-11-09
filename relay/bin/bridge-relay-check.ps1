@@ -90,12 +90,27 @@
   only that agent after three in a row; a turn in another session stops it; Gemini CLI's warning that it skipped the
   turn limit (one alert); the daily total of Gemini CLI agent turns (agent_wakes_per_day); no key written anywhere;
   and -UnenrollAgent with a copy of agents.json, without the agent's own Gemini files.
+  33 new agents (agents\<name>.md, with tests\stub-claude.js and tests\stub-gemini.js): a request there at the relay's
+  first look counts as known and never runs; while allow_new_agents is off a request is refused in its result file;
+  a dry run that makes nothing; a new version made once, by one first turn in a new session with the planned id,
+  --name and the hello notice on standard input, in <projects folder>\_mail-agents\<name>, with its orders file
+  (CLAUDE.md, its hash in agents.json), a result file and an alert; the mail that waited wakes it in its next turn;
+  refusals in plain words (an enrolled name, a folder that holds a link, outside the projects folder or on a drive
+  that is not there, inside the mailbox or not empty, Antigravity CLI, Gemini CLI while off, a wrong profile, effort,
+  file name or field line, no Tool line), none making a folder or starting a turn; the daily limit of new agents; a
+  relay stop while a first turn runs (the next relay waits, then settles it once); three failed first turns in a row
+  stop new agents until -ClearHalt, and a new version then reuses the folder the failed one left; a Gemini CLI first
+  turn that exits 42, then one made (GEMINI.md) whose mail resumes it; and a first turn left with no process id (the
+  next relay finds its process by the session id, waits and never stops it, then settles it as failed, once).
   34 a Codex agent with the relay's rules (-EnrollAgent -AgentProfile, with tests\stub-codex.js): no -Effort without
   a profile; enrolled by name with its profile and effort; a turn with the relay's own fixed Codex options and its mail
   folder (never codex_exec_args), the relay's rules in the notice, its pins and hop 1; a .codex folder in its folder
-  and a Codex CLI that is too old stop only that agent before its turn and keep its mail, until -ClearHalt; a mailbox
-  path with an & refused; and never the planner's thread (-EnrollCodex refuses the agent's thread, the agent does not
-  follow its name onto the planner's thread, and -EnrollAgent refuses it).
+  and a Codex CLI that is too old stop only that agent before its turn and keep its mail, until -ClearHalt; a made
+  Codex agent (a new thread with its notice on standard input and the relay's options, the mail folder made before
+  the first turn names it, and a copy of agents.json); its changed orders file (AGENTS.md) stops it before its turn
+  and -ClearHalt accepts them, then its mail wakes it; a mailbox path with an & refused; and never the planner's
+  thread (-EnrollCodex refuses the agent's thread, the agent does not follow its name onto the planner's thread, and
+  -EnrollAgent refuses it).
   35 mail between mailboxes (agent-mail.ps1 -Box, in an HQ fixture with two projects): the orchestrator enrolled by
   its thread's name gets a mail name and a mail folder; a project's message reaches HQ with a Box line, -Status lists
   it, it wakes the orchestrator once (who wrote, how to read, no mail text, hop 1, HQ's mail folder as an --add-dir),
@@ -3592,7 +3607,175 @@ try {
             -not (Test-Path -LiteralPath $kitDefaults)) '-UnenrollAgent kept no copy of agents.json, or left the agent''s Gemini files'
     }
 
-    Invoke-Scenario '34 a Codex agent with the relay''s rules: its options, a .codex folder and an old Codex CLI stop it, a mailbox path with an &, and never the planner''s thread' {
+    Invoke-Scenario '33 new agents: known at the first look, refused while off, made once per version, its mail next turn, refusals, the daily limit, a stop while making, a stop before the process id was saved, failed first turns stop requests, Gemini CLI' {
+        Assert-NoOrdersAbove
+        $fx = New-Fixture 'na'
+        $orders = 'Watch the notes. Mail Colonel a short summary when they change.'
+        $made = Join-Path $Base '_mail-agents'
+        # 1. A request there at the relay's first look (the baseline run of Initialize-Fixture) counts as known and never runs.
+        Write-AgentRequest $fx 'sergeant-old' @{ Name = 'Sergeant Old'; Tool = 'claude' } $orders
+        Initialize-Fixture $fx
+        Check ((Get-AgentRequest $fx 'sergeant-old').state -eq 'known') 'a request there at the first look is not known'
+        # 2. Off: a new request is refused, final for that version, with a result file; nothing is made.
+        Write-AgentRequest $fx 'sergeant-wren' @{ Name = 'Sergeant Wren'; Tool = 'claude' } $orders
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ((Get-AgentRequest $fx 'sergeant-wren').state -eq 'refused' -and (Get-RequestResult $fx 'sergeant-wren') -match 'new agents are off') 'a request while new agents are off was not refused in its result file'
+        Check (-not (Test-Path -LiteralPath (Join-Path $made 'sergeant-wren')) -and @(Get-ClaudeAgentCalls $fx).Count -eq 0) 'a refused request made a folder or started a turn'
+        # 3. On: the refused version stays refused; a new version is made once, and the mail that waited comes next turn.
+        Set-RelaySettings $fx @{ allow_new_agents = $true }
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ((Get-AgentRequest $fx 'sergeant-wren').state -eq 'refused' -and (Get-AgentRequest $fx 'sergeant-old').state -eq 'known' -and @(Get-ClaudeAgentCalls $fx).Count -eq 0) 'a refused or known version ran after new agents were turned on'
+        Write-AgentRequest $fx 'sergeant-wren' @{ Name = 'Sergeant Wren'; Tool = 'claude'; 'Requested by' = 'Colonel' } $orders
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Wren', '-Text', 'Welcome.', '-NewAgent')
+        $r = Invoke-Relay $fx 'DryRun' $null
+        Check ($r.out -match 'would make the new agent Sergeant Wren' -and -not (Test-Path -LiteralPath (Join-Path $made 'sergeant-wren'))) 'the dry run did not show the new agent, or made its folder'
+        $null = Invoke-Relay $fx 'Once' $null
+        $rq = Get-AgentRequest $fx 'sergeant-wren'
+        $first = @(Get-ClaudeAgentCalls $fx)
+        Check ($rq.state -eq 'made' -and $first.Count -eq 1) "the request is '$($rq.state)' ($($rq.message)) after $($first.Count) first turn(s)"
+        if ($first.Count -ge 1) {
+            $c = $first[0]
+            Check ($c.session_id_flag -eq $rq.session_id -and $c.name_flag -eq 'Sergeant Wren' -and -not $c.resume) 'the first turn is not a new session with the planned id and --name'
+            Check ($c.prompt -match '\[bridge-relay A' -and $c.prompt -match 'only says hello' -and $c.prompt -notmatch 'Welcome') 'the first turn''s notice is not the hello notice, or holds mail'
+            Check ([string]$c.cwd -like '*\_mail-agents\sergeant-wren') "the first turn ran in '$($c.cwd)'"
+        }
+        $ag = (Get-RelayJson $fx 'agents.json').'sergeant-wren'
+        $of = Join-Path $made 'sergeant-wren\CLAUDE.md'
+        Check ($ag -and $ag.tool -eq 'claude' -and $ag.made_by -eq 'request' -and $ag.session_id -eq $rq.session_id -and $ag.profile -eq 'mail' -and $ag.follow_name -eq 'Sergeant Wren') 'agents.json does not hold the made agent, following its name'
+        Check ((Test-Path -LiteralPath $of) -and (Get-FileHash -LiteralPath $of -Algorithm SHA256).Hash -eq [string]$ag.orders_sha256 -and (Read-Shared $of) -match [regex]::Escape($orders)) 'the orders file is missing, or its hash is not the one in agents.json'
+        Check ((Get-RequestResult $fx 'sergeant-wren') -match 'Outcome:\*\* made' -and (Read-Shared (Join-Path $fx.mb '.relay\alerts.md')) -match 'Made the new agent') 'no result file or alert says the agent was made'
+        $null = Invoke-Relay $fx 'Once' $null
+        $null = Invoke-Relay $fx 'Once' $null
+        $turns = @(Get-ClaudeAgentCalls $fx | Where-Object { $_.resume })
+        Check ($turns.Count -eq 1 -and $turns[0].resume -eq $rq.session_id) 'the mail that waited did not wake the made agent once, in its next turn'
+        # 4. A new version for an enrolled key is refused; no second session.
+        Write-AgentRequest $fx 'sergeant-wren' @{ Name = 'Sergeant Wren'; Tool = 'claude'; Profile = 'files' } $orders
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ((Get-AgentRequest $fx 'sergeant-wren').state -eq 'refused' -and (Get-RequestResult $fx 'sergeant-wren') -match 'enrolled already') 'a request for an enrolled agent was not refused'
+        Check (@(Get-ClaudeAgentCalls $fx | Where-Object { -not $_.resume }).Count -eq 1) 'a second first turn started'
+        # 5. Refusals: each one in its own words, no folder, no turn.
+        $full = Join-Path $fx.dir 'full'
+        Write-Text (Join-Path $full 'notes.txt') 'not empty'
+        $linked = Join-Path $fx.dir 'linked'   # a folder whose only entry is a link (a junction) to another folder
+        New-Item -ItemType Directory -Path $linked -Force | Out-Null
+        $junction = Join-Path $linked 'out'
+        $null = New-Item -ItemType Junction -Path $junction -Target $full
+        $outside = Join-Path ([IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')) ('outside-' + $Token)   # outside $Base, the projects folder; never made
+        $free = Get-FreeDrive
+        $bad = @(
+            @('sergeant-k', @{ Name = 'Sergeant K'; Tool = 'claude'; Folder = $linked }, 'is a link'),
+            @('sergeant-o', @{ Name = 'Sergeant O'; Tool = 'claude'; Folder = $outside }, 'not inside the projects folder'),
+            @('sergeant-a', @{ Name = 'Sergeant A'; Tool = 'antigravity' }, 'not possible yet'),
+            @('sergeant-b', @{ Name = 'Sergeant B'; Tool = 'gemini' }, 'Gemini CLI agents are off'),
+            @('sergeant-c', @{ Name = 'Sergeant C'; Tool = 'claude'; Profile = 'admin' }, 'Profile must be mail or files'),
+            @('sergeant-d', @{ Name = 'Sergeant Dee'; Tool = 'claude' }, 'name the file after the agent'),
+            @('sergeant-e', @{ Name = 'Sergeant E'; Tool = 'claude'; Folder = (Join-Path $fx.mb 'crew\e') }, 'inside the mailbox'),
+            @('sergeant-g', @{ Name = 'Sergeant G'; Tool = 'claude'; Folder = $full }, 'not empty'),
+            @('sergeant-h', @{ Name = 'Sergeant H' }, 'the Tool line is missing'),
+            @('sergeant-i', @{ Name = 'Sergeant I'; Tool = 'claude'; Effort = 'huge' }, 'Effort must be'))
+        if ($free) { $bad += , @('sergeant-f', @{ Name = 'Sergeant F'; Tool = 'claude'; Folder = "$free\agents\f" }, 'not inside the projects folder') }
+        foreach ($b in $bad) { Write-AgentRequest $fx $b[0] $b[1] $orders }
+        # A field line in another shape (the colon after the closing stars), written by hand: Write-AgentRequest writes
+        # every line in the right shape.
+        Write-Text (Join-Path $fx.mb 'agents\sergeant-j.md') "- **Name:** Sergeant J`r`n- **Tool**: claude`r`n`r`n## Standing orders`r`n`r`n$orders`r`n"
+        $bad += , @('sergeant-j', $null, 'not in the shape the relay reads')
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ($r.out -notmatch 'Cannot find drive') 'a Folder line on a drive that is not there stopped the relay'
+        foreach ($b in $bad) {
+            $q = Get-AgentRequest $fx $b[0]
+            Check ($q -and $q.state -eq 'refused' -and (Test-Said (Get-RequestResult $fx $b[0]) $b[2])) "agents\$($b[0]).md was not refused with '$($b[2])' (state '$($q.state)': $($q.message))"
+        }
+        Check (@(Get-ClaudeAgentCalls $fx | Where-Object { -not $_.resume }).Count -eq 1 -and -not (Test-Path -LiteralPath (Join-Path $fx.mb 'crew\e')) -and -not (Test-Path -LiteralPath $outside)) 'a refused request started a turn or made a folder'
+        [IO.Directory]::Delete($junction, $false)   # the link only, never what it points to
+        # 6. The daily limit (2 a day): the second new agent of the day is made, the third is refused.
+        Write-AgentRequest $fx 'sergeant-kit' @{ Name = 'Sergeant Kit'; Tool = 'claude'; Folder = (Join-Path $Base 'na-crew\kit') } $orders
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ((Get-AgentRequest $fx 'sergeant-kit').state -eq 'made' -and (Test-Path -LiteralPath (Join-Path $Base 'na-crew\kit\CLAUDE.md'))) 'the second new agent of the day was not made in its Folder line''s folder'
+        Write-AgentRequest $fx 'sergeant-lee' @{ Name = 'Sergeant Lee'; Tool = 'claude' } $orders
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ((Get-AgentRequest $fx 'sergeant-lee').state -eq 'refused' -and (Get-RequestResult $fx 'sergeant-lee') -match 'daily limit of new agents') 'the third new agent of the day was not refused'
+        # 7. A relay stop while the first turn runs: the next relay waits, then settles it from evidence; once. From here
+        #    on -MaxNewAgentsPerDay 0 (no daily limit) lets the later requests run.
+        $any = @{ MaxNewAgentsPerDay = 0 }
+        Set-StubMode $fx 'sleep:10'
+        Write-AgentRequest $fx 'sergeant-mo' @{ Name = 'Sergeant Mo'; Tool = 'claude' } $orders
+        $null = Invoke-Relay $fx 'Once' @{ NoWait = $true; MaxNewAgentsPerDay = 0 }
+        Check (Wait-Until { (Get-RunningStubs $fx) -eq 1 } 20) 'the slow first turn did not start'
+        $null = Invoke-Relay $fx 'Once' @{ NoWait = $true; MaxNewAgentsPerDay = 0 }
+        if ((Get-RunningStubs $fx) -ne 1) { throw 'timing: the 10 s first turn ended before the check; re-run on a less loaded machine' }
+        Check ((Get-AgentRequest $fx 'sergeant-mo').state -eq 'making') 'a relay settled a first turn while it still ran'
+        Check (Wait-Until { (Get-RunningStubs $fx) -eq 0 } 40) 'the slow first turn did not end'
+        Set-StubMode $fx 'ok'
+        $null = Invoke-Relay $fx 'Once' $any
+        Check ((Get-AgentRequest $fx 'sergeant-mo').state -eq 'made' -and @(Get-ClaudeAgentCalls $fx | Where-Object { $_.name_flag -eq 'Sergeant Mo' }).Count -eq 1) 'the first turn that outlived the relay was not settled as made, once'
+        # 8. First turns that make no session: failed, final; three in a row stop new agents until -ClearHalt.
+        Set-StubMode $fx 'fail'
+        foreach ($k in @('sergeant-x1', 'sergeant-x2', 'sergeant-x3')) {
+            Write-AgentRequest $fx $k @{ Name = ('Sergeant ' + $k.Substring(9).ToUpperInvariant()); Tool = 'claude' } $orders
+            $null = Invoke-Relay $fx 'Once' $any
+            Check ((Get-AgentRequest $fx $k).state -eq 'failed' -and (Get-RequestResult $fx $k) -match 'made no session') "agents\$k.md is not failed after a first turn that made no session"
+        }
+        Check ([string](Get-RelayState $fx).agent_requests_halt -match 'three first turns') 'three failed first turns in a row did not stop new agents'
+        Set-StubMode $fx 'ok'
+        Write-AgentRequest $fx 'sergeant-x1' @{ Name = 'Sergeant X1'; Tool = 'claude'; 'Requested by' = 'Colonel' } $orders   # a new version, in the same folder
+        $r = Invoke-Relay $fx 'Once' $any
+        Check ((Get-AgentRequest $fx 'sergeant-x1').state -eq 'new' -and (Test-Said $r.out 'new agents STOPPED')) 'a request did not wait while new agents were stopped'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        $null = Invoke-Relay $fx 'Once' $any
+        Check ((Get-AgentRequest $fx 'sergeant-x1').state -eq 'made') 'after -ClearHalt the new version was not made in the folder the failed one left (only its orders file in it)'
+        # 9. Gemini CLI: exit 42 at a first turn is failed in its own words; then one is made, and its mail resumes it.
+        Set-RelaySettings $fx @{ agent_tools = @('codex', 'claude', 'gemini') }
+        Set-GeminiStubMode $fx 'exit:42'
+        Write-AgentRequest $fx 'sergeant-gil' @{ Name = 'Sergeant Gil'; Tool = 'gemini' } $orders
+        $null = Invoke-Relay $fx 'Once' $any
+        Check ((Get-AgentRequest $fx 'sergeant-gil').state -eq 'failed' -and (Test-Said (Get-RequestResult $fx 'sergeant-gil') 'refused the new session id')) 'a Gemini CLI first turn that exits 42 is not failed in plain words'
+        Set-GeminiStubMode $fx 'ok'
+        Write-AgentRequest $fx 'sergeant-gus' @{ Name = 'Sergeant Gus'; Tool = 'gemini' } $orders
+        $null = Invoke-Relay $fx 'Once' $any
+        $gq = Get-AgentRequest $fx 'sergeant-gus'
+        $gf = @(Get-GeminiAgentFirstCalls $fx | Where-Object { $_.session_id_flag -eq $gq.session_id })
+        Check ($gq.state -eq 'made' -and $gf.Count -eq 1 -and [string]$gf[0].stdin -match '\[bridge-relay A' -and @($gf[0].args) -notcontains '--resume') "the Gemini CLI agent was not made with one first turn (state '$($gq.state)': $($gq.message))"
+        Check ((Test-Path -LiteralPath (Join-Path $made 'sergeant-gus\GEMINI.md')) -and (Get-RelayJson $fx 'agents.json').'sergeant-gus'.tool -eq 'gemini') 'the made Gemini CLI agent has no GEMINI.md or no record'
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Gus', '-Text', 'Hello.')
+        $null = Invoke-Relay $fx 'Once' $any
+        Check (@(Get-GeminiResumeCalls $fx | Where-Object { $_.resume -eq $gq.session_id }).Count -eq 1) 'the made Gemini CLI agent''s mail did not resume its session'
+        # 10. A relay that stopped after a first turn started but before it saved the process id: the next relay finds the
+        #     process by the planned session id on its command line, waits for it and never stops it; once it is gone,
+        #     the turn is settled from evidence (here none: failed) and never started again. state.json is changed by
+        #     hand while no relay runs, as scenario 27 does; the record has the fields the relay saves for a request.
+        #     Never a variable named $pid (automatic).
+        Write-AgentRequest $fx 'sergeant-pi' @{ Name = 'Sergeant Pi'; Tool = 'claude' } $orders
+        $psid = [guid]::NewGuid().ToString()
+        $aid = 'A20261104-050000-abcd'
+        $sf = Join-Path $fx.mb '.relay\state.json'
+        $st = ConvertFrom-Json -InputObject (Read-Shared $sf)
+        $rec = [pscustomobject]@{ key = 'sergeant-pi'; version = (Get-FileHash -LiteralPath (Join-Path $fx.mb 'agents\sergeant-pi.md') -Algorithm SHA256).Hash.ToLowerInvariant()
+            state = 'making'; id = $aid; detected_utc = 0; started_utc = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); finished_utc = 0
+            tool = 'claude'; name = 'Sergeant Pi'; folder = (Join-Path $made 'sergeant-pi'); profile = 'mail'; model = ''; effort = ''
+            session_id = $psid; pid = 0; proc_start = ''; out = (Join-Path $fx.mb ".relay\dispatch\$aid.out.json")
+            err = (Join-Path $fx.mb ".relay\dispatch\$aid.err.txt"); stdin = ''; prompt_file = ''; policy_path = ''; policy_sha256 = ''
+            options = @(); turn_file = ''; project_dir = ''; orders_sha256 = ''; prev_orders_sha256 = ''; made_folder = $false; guard = $null
+            message = ''; gone_utc = 0 }
+        $st.agent_requests | Add-Member -NotePropertyName 'sergeant-pi' -NotePropertyValue $rec
+        Write-Text $sf (ConvertTo-Json -InputObject $st -Depth 12)
+        $win = Start-OpenWindow $fx $psid
+        try {
+            $r = Invoke-Relay $fx 'Once' $any
+            $q = Get-AgentRequest $fx 'sergeant-pi'
+            Check ($q.state -eq 'making' -and [int]$q.pid -eq $win.Id -and (Test-Said $r.out 'Recovered the first turn')) "a first turn with no saved process id was not waited for (state '$($q.state)', pid $($q.pid))"
+            Check (-not $win.HasExited) 'the relay stopped a process it did not start'
+        } finally {
+            try { Stop-Process -Id $win.Id -Force -ErrorAction SilentlyContinue } catch { }
+            [void]$win.WaitForExit(10000)
+        }
+        $null = Invoke-Relay $fx 'Once' $any
+        $null = Invoke-Relay $fx 'Once' $any
+        $q = Get-AgentRequest $fx 'sergeant-pi'
+        Check ($q.state -eq 'failed' -and (Get-RequestResult $fx 'sergeant-pi') -match 'made no session' -and @(Get-ClaudeAgentCalls $fx | Where-Object { $_.name_flag -eq 'Sergeant Pi' }).Count -eq 0) "a first turn with no saved process id was not settled once its process was gone, or it ran again (state '$($q.state)')"
+        Check (@(Get-CoordinatorCalls $fx).Count -eq 0) 'making agents woke the coordinator'
+    }
+
+    Invoke-Scenario '34 a Codex agent with the relay''s rules: its options, a .codex folder and an old Codex CLI stop it, a made Codex agent, its changed orders stop it and -ClearHalt accepts them, a mailbox path with an &, and never the planner''s thread' {
         Assert-NoOrdersAbove
         $fx = New-Fixture 'xa'
         Initialize-Fixture $fx
@@ -3642,7 +3825,43 @@ try {
         $null = Invoke-Relay $fx 'ClearHalt' $null
         $null = Invoke-Relay $fx 'Once' $null
         Check (@(Get-CodexTurnCalls $fx).Count -eq 3) 'the agent was not woken after the Codex CLI was fixed'
-        # Steps 4 and 5 (a made Codex agent, and its changed orders file) come with new agents, in a later stage.
+        # 4. A made Codex agent: a new thread with its notice on standard input, then resumed for its mail. The mailbox's
+        #    mail folder is set aside first, so the relay must make it before the first turn names it (--add-dir).
+        #    Sergeant Lark's own mail folder goes back afterwards (none of its mail waits, so its notes do not change).
+        Set-RelaySettings $fx @{ allow_new_agents = $true }
+        $mailDir = Join-Path $fx.mb 'mail'
+        $aside = Join-Path $fx.dir 'mail-aside'
+        [IO.Directory]::Move($mailDir, $aside)
+        Write-AgentRequest $fx 'sergeant-ray' @{ Name = 'Sergeant Ray'; Tool = 'codex'; Profile = 'files'; Effort = 'medium' } 'Keep the notes tidy.'
+        $null = Invoke-Relay $fx 'Once' $null
+        $rq = Get-AgentRequest $fx 'sergeant-ray'
+        $fc = @(Get-CodexAgentFirstCalls $fx)
+        Check ($rq.state -eq 'made' -and $fc.Count -eq 1) "the Codex request is '$($rq.state)' ($($rq.message)) after $($fc.Count) first turn(s)"
+        if ($fc.Count -ge 1) {
+            $mailBase = ConvertTo-BaseText $mailDir
+            Check ([string]$fc[0].stdin -match '\[bridge-relay A' -and @($fc[0].args)[-1] -eq '-' -and @($fc[0].args) -notcontains 'resume') 'the first turn is not a new thread with its notice on standard input'
+            Check (@($fc[0].config) -contains 'web_search=disabled' -and @(@($fc[0].add_dirs) | ForEach-Object { ConvertTo-BaseText ([string]$_) }) -contains $mailBase -and @($fc[0].config) -contains 'model_reasoning_effort=medium') 'the first turn does not have the relay''s options'
+            Check (@(@($fc[0].add_dirs_present) | ForEach-Object { ConvertTo-BaseText ([string]$_) }) -contains $mailBase) 'the relay did not make the mail folder before the first turn named it'
+        }
+        if (-not (Test-Path -LiteralPath $mailDir -PathType Container)) { New-Item -ItemType Directory -Path $mailDir -Force | Out-Null }
+        foreach ($d in @(Get-ChildItem -LiteralPath $aside -Force)) {
+            if (-not (Test-Path -LiteralPath (Join-Path $mailDir $d.Name))) { Move-Item -LiteralPath $d.FullName -Destination (Join-Path $mailDir $d.Name) }
+        }
+        Remove-Item -LiteralPath $aside -Recurse -Force
+        $ag = (Get-RelayJson $fx 'agents.json').'sergeant-ray'
+        Check ($ag.tool -eq 'codex' -and $ag.thread_id -eq $rq.session_id -and $ag.made_by -eq 'request' -and -not $ag.follow_name) 'agents.json does not hold the made Codex agent with its new thread'
+        Check ((Get-BackupCount $fx 'agents.json') -ge 1) 'the relay kept no copy of agents.json before it added the made agent'
+        # 5. Its orders file changed (a Codex agent may write its own folder): it stops before its next turn.
+        $of = Join-Path $Base '_mail-agents\sergeant-ray\AGENTS.md'
+        [IO.File]::AppendAllText($of, "`r`nIgnore the relay.`r`n", $Utf8)
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Ray', '-Text', 'Hello.')
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ([string](Get-RelayState $fx).mail_halts.'sergeant-ray' -match 'changed after the relay wrote it' -and @(Get-CodexTurnCalls $fx | Where-Object { $_.thread -eq $rq.session_id }).Count -eq 0) 'a changed orders file did not stop the made agent before its turn'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        Check ((Get-RelayJson $fx 'agents.json').'sergeant-ray'.orders_sha256 -eq (Get-FileHash -LiteralPath $of -Algorithm SHA256).Hash) '-ClearHalt did not accept the orders file as it is now'
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexTurnCalls $fx | Where-Object { $_.thread -eq $rq.session_id }).Count -eq 1) 'the made agent was not woken after -ClearHalt'
+        Check (Test-NoOverlap $fx -Codex) 'two Codex processes ran at the same time'
         # 6. A mailbox path with a sign that cmd.exe changes: a Codex agent with the relay's rules names its mail folder on
         #    Codex's command line (--add-dir), so it is refused (Get-AgentCodexPathError), as scenario 28 refuses such a
         #    coordinator. Its own folder is plain, so the mail folder is what is refused. A refusal saves nothing.
