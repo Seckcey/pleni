@@ -770,7 +770,7 @@ MailboxState = {
   `read/` under a taken name gets `-<4 hex>` more), holding `From:`, `To:` and `Sent:` lines, a
   blank line, then the text. The relay's `agent-mail.ps1` also writes a `Box: <id>` line when a message
   comes from another mailbox of an HQ (the sender's box: `hq` or a project's id), and a `Hop: <n>`
-  line; both are head lines, never text. A message never changes once it is there; reading it only moves it
+  line in a turn the relay started for mail; both are head lines, never text. A message never changes once it is there; reading it only moves it
   from `new/` to `read/`. So each message file is read once (its first 80 KB). Each agent's `new/`
   is listed on every poll; `read/` and `mail/` again when their own times move, when a message left
   `new/`, and at least every 10 s (a folder's times can stay the same for a while after a change). `agents` are the mail folders

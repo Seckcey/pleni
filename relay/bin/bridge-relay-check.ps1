@@ -3660,33 +3660,34 @@ try {
         New-Item -ItemType Directory -Path $linked -Force | Out-Null
         $junction = Join-Path $linked 'out'
         $null = New-Item -ItemType Junction -Path $junction -Target $full
-        $outside = Join-Path ([IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')) ('outside-' + $Token)   # outside $Base, the projects folder; never made
-        $free = Get-FreeDrive
-        $bad = @(
-            @('sergeant-k', @{ Name = 'Sergeant K'; Tool = 'claude'; Folder = $linked }, 'is a link'),
-            @('sergeant-o', @{ Name = 'Sergeant O'; Tool = 'claude'; Folder = $outside }, 'not inside the projects folder'),
-            @('sergeant-a', @{ Name = 'Sergeant A'; Tool = 'antigravity' }, 'not possible yet'),
-            @('sergeant-b', @{ Name = 'Sergeant B'; Tool = 'gemini' }, 'Gemini CLI agents are off'),
-            @('sergeant-c', @{ Name = 'Sergeant C'; Tool = 'claude'; Profile = 'admin' }, 'Profile must be mail or files'),
-            @('sergeant-d', @{ Name = 'Sergeant Dee'; Tool = 'claude' }, 'name the file after the agent'),
-            @('sergeant-e', @{ Name = 'Sergeant E'; Tool = 'claude'; Folder = (Join-Path $fx.mb 'crew\e') }, 'inside the mailbox'),
-            @('sergeant-g', @{ Name = 'Sergeant G'; Tool = 'claude'; Folder = $full }, 'not empty'),
-            @('sergeant-h', @{ Name = 'Sergeant H' }, 'the Tool line is missing'),
-            @('sergeant-i', @{ Name = 'Sergeant I'; Tool = 'claude'; Effort = 'huge' }, 'Effort must be'))
-        if ($free) { $bad += , @('sergeant-f', @{ Name = 'Sergeant F'; Tool = 'claude'; Folder = "$free\agents\f" }, 'not inside the projects folder') }
-        foreach ($b in $bad) { Write-AgentRequest $fx $b[0] $b[1] $orders }
-        # A field line in another shape (the colon after the closing stars), written by hand: Write-AgentRequest writes
-        # every line in the right shape.
-        Write-Text (Join-Path $fx.mb 'agents\sergeant-j.md') "- **Name:** Sergeant J`r`n- **Tool**: claude`r`n`r`n## Standing orders`r`n`r`n$orders`r`n"
-        $bad += , @('sergeant-j', $null, 'not in the shape the relay reads')
-        $r = Invoke-Relay $fx 'Once' $null
-        Check ($r.out -notmatch 'Cannot find drive') 'a Folder line on a drive that is not there stopped the relay'
-        foreach ($b in $bad) {
-            $q = Get-AgentRequest $fx $b[0]
-            Check ($q -and $q.state -eq 'refused' -and (Test-Said (Get-RequestResult $fx $b[0]) $b[2])) "agents\$($b[0]).md was not refused with '$($b[2])' (state '$($q.state)': $($q.message))"
-        }
-        Check (@(Get-ClaudeAgentCalls $fx | Where-Object { -not $_.resume }).Count -eq 1 -and -not (Test-Path -LiteralPath (Join-Path $fx.mb 'crew\e')) -and -not (Test-Path -LiteralPath $outside)) 'a refused request started a turn or made a folder'
-        [IO.Directory]::Delete($junction, $false)   # the link only, never what it points to
+        try {
+            $outside = Join-Path ([IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')) ('outside-' + $Token)   # outside $Base, the projects folder; never made
+            $free = Get-FreeDrive
+            $bad = @(
+                @('sergeant-k', @{ Name = 'Sergeant K'; Tool = 'claude'; Folder = $linked }, 'is a link'),
+                @('sergeant-o', @{ Name = 'Sergeant O'; Tool = 'claude'; Folder = $outside }, 'not inside the projects folder'),
+                @('sergeant-a', @{ Name = 'Sergeant A'; Tool = 'antigravity' }, 'not possible yet'),
+                @('sergeant-b', @{ Name = 'Sergeant B'; Tool = 'gemini' }, 'Gemini CLI agents are off'),
+                @('sergeant-c', @{ Name = 'Sergeant C'; Tool = 'claude'; Profile = 'admin' }, 'Profile must be mail or files'),
+                @('sergeant-d', @{ Name = 'Sergeant Dee'; Tool = 'claude' }, 'name the file after the agent'),
+                @('sergeant-e', @{ Name = 'Sergeant E'; Tool = 'claude'; Folder = (Join-Path $fx.mb 'crew\e') }, 'inside the mailbox'),
+                @('sergeant-g', @{ Name = 'Sergeant G'; Tool = 'claude'; Folder = $full }, 'not empty'),
+                @('sergeant-h', @{ Name = 'Sergeant H' }, 'the Tool line is missing'),
+                @('sergeant-i', @{ Name = 'Sergeant I'; Tool = 'claude'; Effort = 'huge' }, 'Effort must be'))
+            if ($free) { $bad += , @('sergeant-f', @{ Name = 'Sergeant F'; Tool = 'claude'; Folder = "$free\agents\f" }, 'not inside the projects folder') }
+            foreach ($b in $bad) { Write-AgentRequest $fx $b[0] $b[1] $orders }
+            # A field line in another shape (the colon after the closing stars), written by hand: Write-AgentRequest writes
+            # every line in the right shape.
+            Write-Text (Join-Path $fx.mb 'agents\sergeant-j.md') "- **Name:** Sergeant J`r`n- **Tool**: claude`r`n`r`n## Standing orders`r`n`r`n$orders`r`n"
+            $bad += , @('sergeant-j', $null, 'not in the shape the relay reads')
+            $r = Invoke-Relay $fx 'Once' $null
+            Check ($r.out -notmatch 'Cannot find drive') 'a Folder line on a drive that is not there stopped the relay'
+            foreach ($b in $bad) {
+                $q = Get-AgentRequest $fx $b[0]
+                Check ($q -and $q.state -eq 'refused' -and (Test-Said (Get-RequestResult $fx $b[0]) $b[2])) "agents\$($b[0]).md was not refused with '$($b[2])' (state '$($q.state)': $($q.message))"
+            }
+            Check (@(Get-ClaudeAgentCalls $fx | Where-Object { -not $_.resume }).Count -eq 1 -and -not (Test-Path -LiteralPath (Join-Path $fx.mb 'crew\e')) -and -not (Test-Path -LiteralPath $outside)) 'a refused request started a turn or made a folder'
+        } finally { if (Test-Path -LiteralPath $junction) { [IO.Directory]::Delete($junction, $false) } }   # the link only, never what it points to
         # 6. The daily limit (2 a day): the second new agent of the day is made, the third is refused.
         Write-AgentRequest $fx 'sergeant-kit' @{ Name = 'Sergeant Kit'; Tool = 'claude'; Folder = (Join-Path $Base 'na-crew\kit') } $orders
         $null = Invoke-Relay $fx 'Once' $null

@@ -25,7 +25,8 @@ Folder may stay empty (the relay then uses <projects folder>\_mail-agents\<name 
 (C:\Users\ada\projects\_mail-agents\wren), a new or empty folder inside the projects folder, outside every mailbox and every Git repository.
 Model and Effort may stay empty. Effort is low, medium, high, xhigh or max for Claude Code, low to xhigh for Codex;
 Gemini CLI has none.
-If a field line is written twice, the last one is used.
+If a field line is written twice, the last one is used, but an empty Profile, Folder, Model or Effort line is skipped.
+A bad line is refused even if a later one fixes it.
 The agent never runs Git, Node.js, another AI tool or the web. Code work stays with the workers.
 
 ## Standing orders

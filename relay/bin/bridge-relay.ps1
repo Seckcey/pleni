@@ -36,8 +36,8 @@
                read-only Git commands and the allowed checks. Gemini CLI skips the relay's turn limit in a mailbox folder, so
                the owner's own model.maxSessionTurns is the sure limit. Each turn costs money.
     A Codex or Gemini CLI coordinator works in a folder of its own with its orders there (AGENTS.md or GEMINI.md). One Codex
-    thread has one job (planner, coordinator, agent or HQ's orchestrator), except that the planner and a mail agent may share
-    one. -Tool antigravity is refused for a coordinator and for an agent.
+    thread has one job (planner, coordinator, agent or HQ's orchestrator), except that the planner and a Codex agent with no
+    profile may share one. -Tool antigravity is refused for a coordinator and for an agent.
   Start requests (tasks\<TASK-ID>\workers\W<n>-start.md, from templates\worker-start.md): a coordinator that cannot run
     bin\spawn-worker.ps1 asks the relay to start a worker. On for a Codex or Gemini CLI coordinator, off for Claude Code unless
     start_requests is true in bin\relay-settings.json. Each version of a request (SHA-256) runs at most once, between
@@ -58,7 +58,7 @@
     in its own window) needs no wake.
       codex  : -EnrollAgent -AgentName <thread name>. The same codex exec resume command, with codex_exec_args. Add
                -AgentProfile mail|files [-Model] [-Effort low..xhigh] and the turn runs with the relay's own fixed Codex options
-               instead. Never the planner's thread.
+               instead. With a profile it never shares the planner's thread.
       claude : -EnrollAgent -Tool claude -AgentName <name> -AgentFolder <the folder its session works in> [-AgentProfile mail|files]
                [-SessionId <uuid>] [-Model] [-Effort]. By name it follows the newest session of that folder with that name.
                Each turn is claude -p --resume <id> with the notice on standard input.
@@ -2747,6 +2747,21 @@ function Get-Agents {
     return @{}
 }
 
+function Test-AgentsFileBroken {
+    # $true when .relay\agents.json is there but is no JSON object (say, a mistake made while editing it by hand). Get-Agents
+    # then gives @{}, so what would trust or save that empty list waits or fails closed instead. An empty file is no list,
+    # not a broken one. Read-only; never throws.
+    if (-not (Test-Path -LiteralPath $AgentsFile -PathType Leaf)) { return $false }
+    $a = $null
+    try {
+        # Read-Json unrolls a JSON list ([] gives $null, [{...}] its one item), so the text itself must start with {.
+        $t = Read-SharedText $AgentsFile
+        if ($t -and $t.Trim() -and -not $t.Trim().TrimStart([char]0xFEFF).StartsWith('{')) { return $true }
+        $a = Read-Json $AgentsFile
+    } catch { return $true }
+    return ($null -ne $a -and -not ($a -is [hashtable]))
+}
+
 function Get-AgentNewMail([string]$Key) {
     $dir = Join-Path (Join-Path $MailDir $Key) 'new'
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return , @() }
@@ -3185,6 +3200,7 @@ function Invoke-MailTick([hashtable]$State, [bool]$ReadOnly) {
     $running = Get-RunningMailCount $State
     foreach ($key in @($agents.Keys | Sort-Object)) {
         $ag = $agents[$key]
+        if (-not ($ag -is [hashtable])) { continue }   # a hand-edited agents.json entry that is no record
         $flag = 'last_mail_block_' + $key
         $pending = @($State.mail_notes.Values | Where-Object { $_.agent -eq $key -and $_.state -eq 'pending' } | Sort-Object { [int64]$_.detected_utc })
         $pending = Set-LoopMailHeld $State $pending $ag   # Phase 7, the loop guard; a plain variable: the function returns one array
@@ -3492,8 +3508,8 @@ function Update-CodexFollow([hashtable]$State, [bool]$ReadOnly) {
         }
         return
     }
-    # One Codex thread has one job (the planner and a mail agent may share one): a newer thread with the name that
-    # already has another job, or that works in the coordinator's folder, is not followed.
+    # One Codex thread has one job (the planner and a Codex agent with no profile may share one): a newer thread with the
+    # name that already has another job, or that works in the coordinator's folder, is not followed.
     $other = Get-ThreadJobText $best.id 'planner'
     $coordFolder = Get-CoordinatorCodexFolder
     if (-not $other -and $coordFolder -and (Test-InFolder $cwd $coordFolder)) { $other = "working in the coordinator's folder $coordFolder" }
@@ -3529,6 +3545,7 @@ function Update-AgentFollow([hashtable]$State, [bool]$ReadOnly) {
     $changed = $false
     foreach ($key in @($agents.Keys)) {
         $ag = $agents[$key]
+        if (-not ($ag -is [hashtable])) { continue }   # a hand-edited agents.json entry that is no record
         $agTool = Get-AgentTool $ag
         if ($agTool -eq 'claude') { if (Update-ClaudeAgentFollow $State $ReadOnly $key $ag) { $changed = $true }; continue }
         if ($agTool -ne 'codex') { continue }
@@ -3558,8 +3575,8 @@ function Update-AgentFollow([hashtable]$State, [bool]$ReadOnly) {
             }
             continue
         }
-        # One Codex thread has one job (the planner and a mail agent may share one): a newer thread with the name that
-        # already has another job, or that works in the coordinator's folder, is not followed.
+        # One Codex thread has one job (the planner and a Codex agent with no profile may share one): a newer thread with
+        # the name that already has another job, or that works in the coordinator's folder, is not followed.
         $other = Get-ThreadJobText $best.id ('agent:' + $key)
         $coordFolder = Get-CoordinatorCodexFolder
         if (-not $other -and $coordFolder -and (Test-InFolder $cwd $coordFolder)) { $other = "working in the coordinator's folder $coordFolder" }
@@ -3741,7 +3758,7 @@ function Invoke-OnceMode {
     $areqs = @($state.agent_requests.Values | Where-Object { ($_ -is [hashtable]) -and $_.state -ne 'known' })
     if ($AllowNewAgents -or $areqs.Count) {
         $alimit = $(if ($MaxNewAgentsPerDay -eq 0) { 'no limit' } else { [string]$MaxNewAgentsPerDay })
-        Write-Note ("Agent requests: {0} wait; {1} being made; {2} first turns started today (limit {3})" -f @($areqs | Where-Object { $_.state -eq 'new' }).Count,
+        Write-Note ("Agent requests: {0} wait; {1} being made; {2} tried today (limit {3})" -f @($areqs | Where-Object { $_.state -eq 'new' }).Count,
             @($areqs | Where-Object { $_.state -eq 'making' }).Count, [int]$state.daily.new_agents, $alimit)
     }
 }
@@ -3936,7 +3953,10 @@ function Invoke-EnrollCodex {
         $own = Get-AgentCleanName ([string]$script:IndexCache.names[$tid])
         if (-not $own -or (Get-AgentKey $own) -ne (Get-AgentKey $ThreadName)) { $own = Get-AgentCleanName $ThreadName }
         $nw = Get-PlannerNameProblem $own
-        if ($nw) { Write-Log "NOTE: mail does not wake the planner: $nw." } else { $mailName = $own }
+        if ($nw) { Write-Log "NOTE: mail does not wake the planner: $nw." } else {
+            $lp = Get-MailFolderLinkProblem (Get-AgentKey $own)   # as -EnrollAgent: never make mail folders through a link
+            if ($lp) { Write-Log "NOTE: mail does not wake the planner: $lp." } else { $mailName = $own }
+        }
     }
     $cx = @{ thread_id = $tid; cwd = $cwd; rollout_path = $found.path; codex_home = $CodexHomeDir; enrolled_utc = (Get-Now);
         enrolled = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss', $Inv);
@@ -4183,7 +4203,7 @@ function Show-Status {
             @($startRecs | Where-Object { $_.state -eq 'new' }).Count, [int]$state.daily.worker_starts, $startLimit)
         foreach ($sr in @($startRecs | Select-Object -First 5)) { Write-Host ("  - {0}: {1} {2}" -f $sr.key, $sr.state, (Get-Short ([string]$sr.message) 160)) }
     }
-    if (Test-GuardWanted) { Write-Host "Relay files guard: ON (a Codex or Gemini CLI coordinator, start requests, agents with the relay's rules, or new agents): a change to bin, tests, the settings, the coordinator's orders file or the relay's records halts the relay." }
+    if (Test-GuardWanted) { Write-Host "Relay files guard: ON (a Codex or Gemini CLI coordinator, start requests, agents with the relay's rules, new agents, or an agents.json that cannot be read): a change to bin, tests, the settings, the coordinator's orders file or the relay's records halts the relay." }
     $recent = @($state.dispatches.Values | Sort-Object { [int64]$_.seq } -Descending | Select-Object -First 5)
     if ($recent.Count) { Write-Host 'Recent dispatches:' }
     foreach ($d in $recent) {
@@ -4296,7 +4316,7 @@ function Show-Status {
     $reqs = @($state.agent_requests.Values | Where-Object { ($_ -is [hashtable]) -and $_.state -ne 'known' } | Sort-Object { [int64]$_.detected_utc } -Descending)
     if ($AllowNewAgents -or $reqs.Count) {
         $nl = $(if ($MaxNewAgentsPerDay -eq 0) { 'no limit' } else { [string]$MaxNewAgentsPerDay })
-        Write-Host ("New agents: {0}; {1} wait; {2} first turns started today (limit {3}); tools: {4}" -f $(if ($AllowNewAgents) { 'ON' } else { 'OFF (allow_new_agents in bin\relay-settings.json)' }),
+        Write-Host ("New agents: {0}; {1} wait; {2} tried today (limit {3}); tools: {4}" -f $(if ($AllowNewAgents) { 'ON' } else { 'OFF (allow_new_agents in bin\relay-settings.json)' }),
             @($reqs | Where-Object { $_.state -eq 'new' }).Count, [int]$state.daily.new_agents, $nl, ($AgentToolsSetting -join ', '))
         if ($state.agent_requests_halt) { Write-Host "  STOPPED: $($state.agent_requests_halt) (fix the cause, then run -ClearHalt)" }
         foreach ($rq in @($reqs | Select-Object -First 5)) { Write-Host ("  - agents\{0}.md: {1} {2}" -f $rq.key, $rq.state, (Get-Short ([string]$rq.message) 160)) }
@@ -4366,6 +4386,7 @@ function Test-GuardWanted {
     $t = Get-CoordTool $c
     if (($c -and ($t -eq 'codex' -or $t -eq 'gemini')) -or (Get-StartRequestsOn $c)) { return $true }
     if ($AllowNewAgents) { return $true }
+    if (Test-AgentsFileBroken) { return $true }   # fail closed: the agents in it may have the relay's rules
     foreach ($ag in @((Get-Agents).Values)) { if (Test-AgentRelayRules $ag) { return $true } }
     return $false
 }
@@ -8186,6 +8207,9 @@ function Get-AgentRequestProblem([hashtable]$State, [hashtable]$R, [hashtable]$Q
     if ($MaxNewAgentsPerDay -gt 0 -and [int]$State.daily.new_agents -ge $MaxNewAgentsPerDay) { return "the daily limit of new agents is reached ($MaxNewAgentsPerDay a day: relay_max_new_agents_per_day in bin\cost-limits.json)" }
     $tl = Get-AgentToolLimit $Q.tool
     if ($tl -gt 0 -and [int]$State.daily.agent_tool_wakes[$Q.tool] -ge $tl) { return "the daily limit of $(Get-ToolName $Q.tool) agent turns is reached ($tl in all: agent_wakes_per_day in bin\cost-limits.json)" }
+    $keyWakes = 0   # the first turn counts as one of the agent's wakes today (a key used again the same day)
+    if ($State.daily.mail_wakes -is [hashtable]) { $keyWakes = [int]$State.daily.mail_wakes[[string]$R.key] }
+    if ($MaxAgentWakesPerDay -gt 0 -and $keyWakes -ge $MaxAgentWakesPerDay) { return "the daily wake limit of the agent '$($R.key)' is reached ($MaxAgentWakesPerDay a day: relay_max_agent_wakes_per_day in bin\cost-limits.json)" }
     if ($Q.tool -eq 'claude' -and $script:CostLimits -and $script:AgentDailyBudgetUsd -gt 0 -and ([double]$State.daily.agent_cost + $TurnBudgetUsd) -gt $script:AgentDailyBudgetUsd) {
         return "the daily budget of Claude Code agents is reached ($($State.daily.agent_cost) of $($script:AgentDailyBudgetUsd) USD: relay_max_agent_usd_per_day in bin\cost-limits.json)"
     }
@@ -8231,6 +8255,7 @@ function Get-AgentRequestBlockReason([hashtable]$State) {
     if (Test-Path -LiteralPath $PauseFile) { return @{ code = 'paused'; text = "PAUSED ($PauseFile exists)" } }
     if ($State.halt) { return @{ code = 'halted'; text = "HALTED: $($State.halt)" } }
     if ($State.agent_requests_halt) { return @{ code = 'stopped'; text = "new agents STOPPED: $($State.agent_requests_halt). Check .relay\alerts.md, then run -ClearHalt" } }
+    if (Test-AgentsFileBroken) { return @{ code = 'agents-unreadable'; text = '.relay\agents.json could not be read; new agents wait until it can' } }   # else Add-MadeAgent would save only the new agent
     foreach ($d in @($State.dispatches.Values)) {
         if ($d.state -eq 'running' -or $d.state -eq 'launching') { return @{ code = 'coordinator-turn'; text = "a coordinator turn runs ($($d.id)); new agents are made after it ends" } }
     }
@@ -8434,7 +8459,11 @@ function Write-AgentRequestResult([hashtable]$R) {
     $p = [IO.Path]::Combine($AgentReqDir, "$($R.key).result.md")
     try {
         if ((Test-Path -LiteralPath $AgentReqDir -PathType Container) -and ((Get-Item -LiteralPath $AgentReqDir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { Write-Log "NOTE: the agents folder is a link; the relay did not write agents\$($R.key).result.md."; return }
-        if ((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { Write-Log "NOTE: agents\$($R.key).result.md is a link; the relay did not write it."; return }
+        # The entry's own attributes: they never follow a link, so a link whose target is gone counts too (Test-Path says
+        # $false for it). A missing file has none.
+        $fa = $null
+        try { $fa = [IO.File]::GetAttributes($p) } catch { $fa = $null }
+        if ($null -ne $fa -and ($fa -band [IO.FileAttributes]::ReparsePoint)) { Write-Log "NOTE: agents\$($R.key).result.md is a link; the relay did not write it."; return }
         $v = [string]$R.version
         if ($v.Length -gt 12) { $v = $v.Substring(0, 12) }
         $t = "# Agent request result - $($R.key)   (written by bin\bridge-relay.ps1; owner: relay)`r`n`r`n" +
@@ -8576,6 +8605,7 @@ function Add-MadeAgent([hashtable]$State, [hashtable]$R) {
     # Enrolls the new agent (D14, D21): a copy of agents.json first, its record, its mail folder. The mail that waits for
     # it now is not counted as known: it wakes the agent in its next turn (D15).
     $key = [string]$R.key
+    if (Test-AgentsFileBroken) { Set-AgentRequestOutcome $State $R 'unknown' ".relay\agents.json could not be read when the first turn ended; the new session $($R.session_id) was not enrolled. Fix the file, then enroll it yourself with -EnrollAgent"; return }
     $agents = Get-Agents
     if ($agents.ContainsKey($key)) { Set-AgentRequestOutcome $State $R 'unknown' "an agent named '$($agents[$key].name)' was enrolled while the first turn ran; the new session $($R.session_id) was not enrolled"; return }
     $rec = @{ name = [string]$R.name; key = $key; tool = [string]$R.tool; session_id = [string]$R.session_id; profile = [string]$R.profile;

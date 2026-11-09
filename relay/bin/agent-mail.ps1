@@ -20,7 +20,7 @@
   own name in -From and -Me, its own mailbox, a -TextFile in its own folder, and no -NewAgent. A copy of this script in
   a mailbox's bin folder serves only that mailbox. In the turns it starts, the relay also sets RELAY_MAIL_HOP; -Send
   then writes a Hop line, so the relay can see two agents that keep waking each other.
-  It never writes or moves mail through a folder that is a link.
+  It never writes or moves mail through a mail folder, an agent's folder, or its new or read folder that is a link.
   Names: 1-80 letters, digits, spaces and the marks . _ - # + ', starting with a letter or a digit. Case, runs of
   spaces and marks around a name (* _ ` " ') do not count, the same way the relay compares names.
   It writes only under <mailbox>\mail, and with -Box under the other mailbox's mail folder. Windows PowerShell 5.1

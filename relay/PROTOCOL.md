@@ -101,7 +101,8 @@ A message starts with a head, before the first blank line, in this order:
 
 - `From:`, `To:` and `Sent:`.
 - `Box:`, only when the message goes to another mailbox. It is the sender's own box.
-- `Hop:`, only when the sender is a turn the relay started. It counts the relay-woken turns in a
+- `Hop:`, only when the sender is a turn the relay started for mail (an agent's mail turn, or a planner
+  wake whose batch holds mail), not a first turn, a coordinator turn, or a planner wake for task items only. It counts the relay-woken turns in a
   row. When it reaches `relay_max_mail_hops` (8 unless the owner changes it), the relay holds the
   mail and tells the owner, in case two agents keep waking each other.
 
@@ -246,9 +247,9 @@ tasks.
 
 A Codex coordinator or a Gemini CLI coordinator gets the same wakes. A Codex thread has one job
 only: it may be the planner, the coordinator, an agent or the orchestrator, never two of them. There
-is one exception, as before: the planner and a mail agent may share one thread. The relay never
+is one exception, as before: the planner and a Codex agent with no profile may share one thread. The relay never
 wakes them at the same time, and at a rollover both move to the newer thread with the name. Only
-the coordinator and the orchestrator need a thread of their own. A Codex coordinator also needs a
+the coordinator, the orchestrator and every agent of a new kind need a thread of their own. A Codex coordinator also needs a
 folder with no `AGENTS.md` or `AGENTS.override.md` above it, up to the top of its Git repository:
 Codex reads every `AGENTS.md` from there down, so it would get those orders too.
 
