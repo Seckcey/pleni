@@ -19,6 +19,8 @@
 //                      clap's "unexpected argument '--ignore-user-config' found" on stderr and exit code 2, before it
 //                      does anything else. It is logged as phase 'old-cli' only, never as a 'start'.
 // A missing thread file behaves like the real CLI: an error on stderr, exit 1.
+// Phase 7: every start record also holds relay_env (RELAY_AGENT_NAME, RELAY_AGENT_MAILBOX, RELAY_AGENT_FOLDER,
+// RELAY_MAIL_HOP) when RELAY_AGENT_NAME or RELAY_MAIL_HOP is set, which the relay does only for an agent's turns.
 // It records each call in <RELAY_STUB_DIR>\codex-calls.jsonl. Keys are never written: only booleans about them.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -54,6 +56,11 @@ if (mode === 'old-cli' && argv[0] === 'exec') {
 }
 
 const start = Date.now();
+// Phase 7: the variables the relay sets for an agent's turn (never a key).
+const relayEnv = (process.env.RELAY_AGENT_NAME || process.env.RELAY_MAIL_HOP) ? {
+  name: process.env.RELAY_AGENT_NAME || '', mailbox: process.env.RELAY_AGENT_MAILBOX || '',
+  folder: process.env.RELAY_AGENT_FOLDER || '', hop: process.env.RELAY_MAIL_HOP || ''
+} : undefined;
 const worker = argv[0] === 'exec' && !argv.includes('resume') && argv[argv.length - 1] === '-';
 const running = stubDir ? path.join(stubDir, 'codex-running-' + process.pid) : null;
 
@@ -78,7 +85,8 @@ function runWorker() {
   log({
     phase: 'start', kind: 'worker', t: start, pid: process.pid, mode, args: argv, stdin: input, thread,
     sandbox: opt('--sandbox'), add_dirs: all('--add-dir'), model: opt('-m'), config: all('-c'),
-    key_absent: !process.env.OPENAI_API_KEY && !process.env.CODEX_API_KEY, codex_home: home, cwd: process.cwd()
+    key_absent: !process.env.OPENAI_API_KEY && !process.env.CODEX_API_KEY, codex_home: home, cwd: process.cwd(),
+    relay_env: relayEnv
   });
   if (running) fs.writeFileSync(running, String(start));
   if (mode === 'fail') {
@@ -133,7 +141,8 @@ function runResume() {
     json: before.includes('--json'), skip_git: before.includes('--skip-git-repo-check'),
     extra: before.slice(1).filter((a) => a !== '--json' && a !== '--skip-git-repo-check'),
     last: options.includes('--last'), bypass: options.some((a) => /danger|bypass|yolo/i.test(a)),
-    key_absent: !process.env.OPENAI_API_KEY && !process.env.CODEX_API_KEY, codex_home: home, cwd: process.cwd()
+    key_absent: !process.env.OPENAI_API_KEY && !process.env.CODEX_API_KEY, codex_home: home, cwd: process.cwd(),
+    relay_env: relayEnv
   });
   if (running) fs.writeFileSync(running, String(start));
 

@@ -90,6 +90,12 @@
   only that agent after three in a row; a turn in another session stops it; Gemini CLI's warning that it skipped the
   turn limit (one alert); the daily total of Gemini CLI agent turns (agent_wakes_per_day); no key written anywhere;
   and -UnenrollAgent with a copy of agents.json, without the agent's own Gemini files.
+  34 a Codex agent with the relay's rules (-EnrollAgent -AgentProfile, with tests\stub-codex.js): no -Effort without
+  a profile; enrolled by name with its profile and effort; a turn with the relay's own fixed Codex options and its mail
+  folder (never codex_exec_args), the relay's rules in the notice, its pins and hop 1; a .codex folder in its folder
+  and a Codex CLI that is too old stop only that agent before its turn and keep its mail, until -ClearHalt; a mailbox
+  path with an & refused; and never the planner's thread (-EnrollCodex refuses the agent's thread, the agent does not
+  follow its name onto the planner's thread, and -EnrollAgent refuses it).
   It runs only the bridge-relay.ps1, agent-mail.ps1 and spawn-worker.ps1 beside it (and a fixture's own copy of that
   agent-mail.ps1), ..\tests\stub-claude.js, ..\tests\stub-codex.js, ..\tests\stub-gemini.js and ..\tests\stub-agy.js;
   other -RelayScript/-StubCli values are refused.
@@ -3572,6 +3578,88 @@ try {
         $r = Invoke-Relay $fx 'UnenrollAgent' @{ AgentName = 'Sergeant Kit' }
         Check ($r.code -eq 0 -and (Get-BackupCount $fx 'agents.json') -ge 1 -and -not (Test-Path -LiteralPath $kitPolicy) -and
             -not (Test-Path -LiteralPath $kitDefaults)) '-UnenrollAgent kept no copy of agents.json, or left the agent''s Gemini files'
+    }
+
+    Invoke-Scenario '34 a Codex agent with the relay''s rules: its options, a .codex folder and an old Codex CLI stop it, a mailbox path with an &, and never the planner''s thread' {
+        Assert-NoOrdersAbove
+        $fx = New-Fixture 'xa'
+        Initialize-Fixture $fx
+        $lark = Join-Path $fx.dir 'crew\lark'
+        New-Item -ItemType Directory -Path $lark -Force | Out-Null
+        $lt = [guid]::NewGuid().ToString()
+        Write-Thread $fx $lt '2026-11-04T06:00:00Z' $lark 'Sergeant Lark'
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Lark'; Effort = 'high' }
+        Check ($r.code -ne 0 -and (Test-Said $r.out 'give it a profile too')) 'a Codex agent with no profile took -Effort'
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Lark'; AgentProfile = 'mail'; Effort = 'high' }
+        Check ($r.code -eq 0) "-EnrollAgent -AgentProfile mail exit code $($r.code): $(Get-Tail $r.out)"
+        $ag = (Get-RelayJson $fx 'agents.json').'sergeant-lark'
+        Check ($ag.tool -eq 'codex' -and $ag.profile -eq 'mail' -and $ag.thread_id -eq $lt -and $ag.session_id -eq $lt -and $ag.effort -eq 'high') 'agents.json does not hold the Codex agent with its profile'
+        # 1. Its turn runs with C3's fixed options and its mail folder, never codex_exec_args.
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Lark', '-Text', 'Report.')
+        $null = Invoke-Relay $fx 'Once' $null
+        $c = @(Get-CodexTurnCalls $fx)
+        Check ($c.Count -eq 1) "expected 1 Codex agent turn, got $($c.Count)"
+        if ($c.Count -ge 1) {
+            $want = @('--ignore-user-config', '--ignore-rules', '--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=false',
+                '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'web_search=disabled', '--add-dir', (Join-Path $fx.mb 'mail'), '-c', 'model_reasoning_effort=high')
+            $why = Compare-ArgList @($c[0].extra) $want
+            Check (-not $why) "the Codex agent's options are not the relay's own: $why"
+            Check ($c[0].thread -eq $lt -and $c[0].prompt -match "The relay's rules for you" -and $c[0].relay_env.name -eq 'Sergeant Lark' -and $c[0].relay_env.hop -eq '1') 'the turn does not carry the relay''s rules, the pins and hop 1'
+            Check ((ConvertTo-BaseText $c[0].relay_env.mailbox) -eq (ConvertTo-BaseText $fx.mb) -and (ConvertTo-BaseText $c[0].relay_env.folder) -eq (ConvertTo-BaseText $lark)) 'the turn did not get the mailbox and folder pins'
+        }
+        # 2. A .codex folder in its folder stops it before the next turn; the mail is kept.
+        New-Item -ItemType Directory -Path (Join-Path $lark '.codex') -Force | Out-Null
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Lark', '-Text', 'Second.')
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ([string](Get-RelayState $fx).mail_halts.'sergeant-lark' -match '\.codex' -and @(Get-CodexTurnCalls $fx).Count -eq 1) 'a .codex folder in the agent''s folder did not stop it before a turn'
+        Check (@(Get-MailNotes $fx 'sergeant-lark' | Where-Object { $_.state -eq 'pending' }).Count -eq 1) 'the mail of the stopped turn is not kept'
+        Remove-Item -LiteralPath (Join-Path $lark '.codex') -Recurse -Force
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexTurnCalls $fx).Count -eq 2) 'the agent was not woken after the .codex folder went and -ClearHalt'
+        # 3. An old Codex CLI: that agent stops with C3's words; the mail is kept. The old CLI ran once, and its turn
+        #    never reached the thread.
+        $lf = Get-ThreadFile $fx $lt
+        $seen = Get-NoticeCount $lf 'M'
+        Set-CodexStubMode $fx 'old-cli'
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Lark', '-Text', 'Third.')
+        $null = Invoke-Relay $fx 'Once' $null
+        Check ([string](Get-RelayState $fx).mail_halts.'sergeant-lark' -match 'too old' -and @(Get-MailNotes $fx 'sergeant-lark' | Where-Object { $_.state -eq 'pending' }).Count -eq 1) 'an old Codex CLI did not stop the agent with its mail kept'
+        Check (@(Get-CodexCalls $fx 'old-cli').Count -eq 1 -and @(Get-CodexTurnCalls $fx).Count -eq 2 -and (Get-NoticeCount $lf 'M') -eq $seen) 'the old Codex CLI was not started exactly once, or a notice reached the agent''s thread'
+        Set-CodexStubMode $fx 'ok'
+        $null = Invoke-Relay $fx 'ClearHalt' $null
+        $null = Invoke-Relay $fx 'Once' $null
+        Check (@(Get-CodexTurnCalls $fx).Count -eq 3) 'the agent was not woken after the Codex CLI was fixed'
+        # Steps 4 and 5 (a made Codex agent, and its changed orders file) come with new agents, in a later stage.
+        # 6. A mailbox path with a sign that cmd.exe changes: a Codex agent with the relay's rules names its mail folder on
+        #    Codex's command line (--add-dir), so it is refused (Get-AgentCodexPathError), as scenario 28 refuses such a
+        #    coordinator. Its own folder is plain, so the mail folder is what is refused. A refusal saves nothing.
+        $amp = New-Fixture 'xa2&x'
+        $ampDir = Join-Path $Base 'xa2-amp'
+        New-Item -ItemType Directory -Path $ampDir -Force | Out-Null
+        $at = [guid]::NewGuid().ToString()
+        Write-Thread $amp $at '2026-11-04T06:00:00Z' $ampDir 'Sergeant Amp'
+        $r = Invoke-Relay $amp 'EnrollAgent' @{ AgentName = 'Sergeant Amp'; AgentProfile = 'mail' }
+        Check ($r.code -ne 0 -and (Test-SaidText $r.out 'cmd.exe treats specially') -and -not (Test-Path -LiteralPath (Join-Path $amp.mb '.relay\agents.json'))) "a Codex agent with the relay's rules was enrolled in a mailbox whose path has an &: $(Get-Tail $r.out 200)"
+        Check (-not (Test-Path -LiteralPath (Join-Path $amp.mb 'mail\sergeant-amp'))) 'a refused -EnrollAgent -AgentProfile made a mail folder'
+        # 7. An agent with the relay's rules never shares the planner's thread (main lets only an agent with no relay rules
+        #    do that, 9.3): -EnrollCodex refuses Sergeant Lark's thread. With the planner on a newer thread named Sergeant
+        #    Lark (its folder is its own; -CodexCwd names the planner's), Lark does not follow that thread, and
+        #    -EnrollAgent refuses it. The planner is signed off again at the end.
+        $r = Invoke-Relay $fx 'EnrollCodex' @{ ThreadId = $lt }
+        Check ($r.code -ne 0 -and (Test-SaidText $r.out "is already the agent 'Sergeant Lark'")) "-EnrollCodex took the thread of an agent with the relay's rules: $(Get-Tail $r.out 200)"
+        $lark2 = Join-Path $fx.dir 'crew\lark2'
+        New-Item -ItemType Directory -Path $lark2 -Force | Out-Null
+        $px = [guid]::NewGuid().ToString()
+        Write-Thread $fx $px '2026-11-04T07:00:00Z' $lark2 'Sergeant Lark'
+        $r = Invoke-Relay $fx 'EnrollCodex' @{ ThreadId = $px; CodexCwd = $fx.planner }
+        Check ($r.code -eq 0) "-EnrollCodex -CodexCwd exit code $($r.code): $(Get-Tail $r.out 200)"
+        $r = Invoke-Relay $fx 'Once' $null
+        Check ((Get-RelayJson $fx 'agents.json').'sergeant-lark'.thread_id -eq $lt -and (Test-SaidText $r.out "is already this mailbox's planner")) "an agent with the relay's rules followed its name onto the planner's thread: $(Get-Tail $r.out 200)"
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Lark'; AgentProfile = 'mail' }
+        Check ($r.code -ne 0 -and (Test-SaidText $r.out "is already this mailbox's planner")) "-EnrollAgent put an agent with the relay's rules on the planner's thread: $(Get-Tail $r.out 200)"
+        $r = Invoke-Relay $fx 'UnenrollCodex' $null
+        Check ($r.code -eq 0) "-UnenrollCodex exit code $($r.code): $(Get-Tail $r.out 200)"
     }
 } catch {
     $script:Fail++
