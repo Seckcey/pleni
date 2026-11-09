@@ -57,6 +57,8 @@ const TS_HOST = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9]
 const KNOCK_LOGIN = /^[^\s@]{1,128}@[^\s@]{1,125}$/;
 const MAX_KNOCKS = 5;
 const MAX_BODY_BYTES = 64 * 1024;
+// A settings save holds the project list too: up to 100 folder paths and 100 repositories in all.
+const MAX_SETTINGS_BYTES = 256 * 1024;
 // A hook call holds the tool's whole input, which can be a large file Claude Code wants to write.
 const MAX_HOOK_BYTES = 4 * 1024 * 1024;
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
@@ -680,7 +682,7 @@ async function settingsPayload(app, state) {
 // The same goes for Codex cloud tasks (codexCloud): turning them on makes Pleni run codex on this
 // computer, so only this computer can change that switch, and the demo never changes the saved one.
 async function postSettings(app, req, res, host) {
-  const body = await readJsonPost(req, res, host);
+  const body = await readJsonPost(req, res, host, MAX_SETTINGS_BYTES);
   if (body === undefined) return undefined;
   const clean = cleanSettings(body);
   const { remote, actions, projectList, codexCloud } = app.readSettings().settings;
@@ -1161,16 +1163,18 @@ function modelsOnMap(store, platform) {
   return [...count].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([model]) => model);
 }
 
-// The GitHub repositories the sessions on the map work in (node.github), not counting reviewers.
-// The GitHub repositories of the sessions on the map, then of the person's projects (so pull requests
-// that cloud sessions opened in a project's repository show even when no session here works in it).
+// The GitHub repositories of the sessions on the map (node.github, not counting reviewers), then
+// every repository of each of the person's projects, in list order (so pull requests that cloud
+// sessions opened in a project's repository show even when no session here works in it).
 function reposOnMap(app) {
   const repos = new Set();
   for (const n of app.store.snapshot()?.nodes ?? []) {
     if (n && typeof n.github === 'string' && n.kind !== 'reviewer') repos.add(n.github);
   }
   for (const project of app.readSettings().settings.projectList ?? []) {
-    if (project && typeof project.repo === 'string' && project.repo) repos.add(project.repo);
+    for (const entry of project?.repos ?? []) {
+      if (entry && typeof entry.repo === 'string' && entry.repo) repos.add(entry.repo);
+    }
   }
   return [...repos];
 }
@@ -1289,16 +1293,16 @@ async function saveAndReload(app, req, res, clean, answer) {
 
 // The checks every change must pass: the X-Pleni header, the same origin, JSON and the size limit.
 // On a failed check it sends the error itself and returns undefined.
-async function readJsonPost(req, res, host) {
+async function readJsonPost(req, res, host, limit = MAX_BODY_BYTES) {
   const fail = (status, message) => void sendError(req, res, status, message);
   if (req.headers['x-pleni'] !== 'settings') return fail(403, MESSAGES.notPage);
   const origin = req.headers.origin;
   if (origin !== undefined && originHost(origin) !== host.host) return fail(403, MESSAGES.notPage);
   if (!/^application\/json\s*(;|$)/i.test(req.headers['content-type'] ?? '')) return fail(415, MESSAGES.notJson);
-  if (Number(req.headers['content-length']) > MAX_BODY_BYTES) return void sendTooBig(req, res);
+  if (Number(req.headers['content-length']) > limit) return void sendTooBig(req, res);
   let raw;
   try {
-    raw = await readBody(req, MAX_BODY_BYTES);
+    raw = await readBody(req, limit);
   } catch (err) {
     if (err.code === 'TOO_BIG') return void sendTooBig(req, res);
     throw err;

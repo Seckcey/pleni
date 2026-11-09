@@ -2201,12 +2201,17 @@ function renderList() {
 // projects
 // ---------------------------------------------------------------------------------------------
 
-// A project is a name, a folder on this computer and an optional GitHub repository. The snapshot
-// names the project and which sessions belong to it (node.projectIds) but never holds the folder.
-// The folder comes from GET /api/settings, and only the computer that runs Pleni may change it.
+// A project is a name, one or more folders on this computer and any number of GitHub repositories
+// (up to 20 of each), each with an optional short name. The snapshot names the project, its
+// repositories, the short names of its folders and which sessions belong to it (node.projectIds),
+// but never holds a folder path. The paths come from GET /api/settings, and only the computer that
+// runs Pleni may change them.
 const PROJECT_ID = /^[a-z0-9]{8,32}$/;
 const MAX_PROJECT_FOLDER = 500;
 const MAX_PROJECT_LIST = 50;
+const MAX_PROJECT_PARTS = 20; // folders, and repositories, in one project
+const MAX_ALL_PARTS = 100; // folders, and repositories, in all projects together
+const MAX_PART_LABEL = 40;
 const PROJECT_ONLY_HERE = `Projects can be added and changed only on the computer that runs Pleni. ${HERE_HOW}`;
 const PROJECT_DEMO = 'In the demo, the projects are made up, so they cannot be changed.';
 
@@ -2220,7 +2225,16 @@ function projectsNoteHtml() {
   if (S.snap && S.snap.demo === true) return `<p class="note">${esc(PROJECT_DEMO)}</p>`;
   return LOCAL_PAGE ? '' : `<p class="note">${esc(PROJECT_ONLY_HERE)}</p>`;
 }
-const PROJECT_FIELDS = { 'pf-name': 'name', 'pf-folder': 'folder', 'pf-repo': 'repo' };
+// An input's id -> where its text lives in the form: pf-name, pf-folder-<i> and pf-flabel-<i> (a
+// folder's path and short name), pf-repo-<i> and pf-rlabel-<i> (a repository and its short name).
+const PROJECT_PARTS = { folder: ['folders', 'path'], flabel: ['folders', 'label'], repo: ['repos', 'repo'], rlabel: ['repos', 'label'] };
+function projectField(id) {
+  if (id === 'pf-name') return { key: 'name' };
+  const m = /^pf-(folder|flabel|repo|rlabel)-(\d+)$/.exec(id || '');
+  if (!m) return null;
+  const [list, field] = PROJECT_PARTS[m[1]];
+  return { key: `${m[1]}-${m[2]}`, list, index: Number(m[2]), field };
+}
 
 // #/projects is all projects, #/projects/<id> is one.
 function projectRoute() {
@@ -2279,12 +2293,48 @@ function projectLastAt(rows) {
   return at;
 }
 
-function projectRepoHtml(p) {
-  return typeof p.repo === 'string' && GITHUB_PATH.test(p.repo) ? `<span class="links">${githubLink(p.repo, '', p.repo)}</span>` : '';
+// The project's repositories as the snapshot names them, each { repo, label } with a plain owner/name.
+function projectRepos(p) {
+  const list = Array.isArray(p.repos) ? p.repos : [];
+  return list.filter((r) => r && typeof r.repo === 'string' && GITHUB_PATH.test(r.repo))
+    .map((r) => ({ repo: r.repo, label: typeof r.label === 'string' && r.label ? r.label : '' }));
 }
 
-function projectSummaryHtml(rows) {
-  if (!rows.length) return '<p class="pcounts quiet">No sessions in this folder right now.</p>';
+// How many folders the project has, and their short names (never their paths).
+function projectFolderInfo(p) {
+  const list = Array.isArray(p.folders) ? p.folders : [];
+  return { count: list.length, labels: list.map((x) => (x && typeof x.label === 'string' ? x.label : '')).filter(Boolean) };
+}
+
+// A card's links: one for each repository, named by its owner/name.
+function projectRepoHtml(p) {
+  const repos = projectRepos(p);
+  return repos.length ? `<span class="links">${repos.map((r) => githubLink(r.repo, '', r.repo)).join('')}</span>` : '';
+}
+
+// The project page lists every repository, with its short name when it has one.
+function projectReposListHtml(p) {
+  const repos = projectRepos(p);
+  if (!repos.length) return '';
+  const items = repos.map((r) => `<li>${r.label ? `<span class="plabel">${esc(r.label)}</span> ` : ''}${githubLink(r.repo, '', r.repo)}</li>`);
+  return `<h3 class="phead">${repos.length === 1 ? 'GitHub repository' : 'GitHub repositories'}</h3><ul class="prepos">${items.join('')}</ul>`;
+}
+
+function projectFoldersHtml(p) {
+  const { count, labels } = projectFolderInfo(p);
+  if (!count) return '';
+  const rest = count - labels.length;
+  const named = labels.map(esc).join(', ');
+  const more = labels.length && rest ? ` and ${plural(rest, 'other', 'others')}` : '';
+  return `<p class="quiet pfolders">${plural(count, 'folder', 'folders')} on this computer${named ? `: ${named}${more}` : ''}</p>`;
+}
+
+function noSessionsText(p) {
+  return projectFolderInfo(p).count > 1 ? 'No sessions in these folders right now.' : 'No sessions in this folder right now.';
+}
+
+function projectSummaryHtml(p, rows) {
+  if (!rows.length) return `<p class="pcounts quiet">${esc(noSessionsText(p))}</p>`;
   const at = projectLastAt(rows);
   return `<p class="pcounts">${projectCountsHtml(rows)}</p>${at ? `<p class="quiet plast">Last active ${agoHtml(at)}</p>` : ''}`;
 }
@@ -2333,13 +2383,13 @@ function newProjectButton() {
 function allProjectsHtml(list) {
   const here = projectsNoteHtml();
   if (!list.length) {
-    return `<p class="empty">No projects yet. A project groups the sessions that work in one folder.</p>${newProjectButton()}${here}`;
+    return `<p class="empty">No projects yet. A project groups the sessions that work in its folders, such as the apps of one product, and can list its GitHub repositories.</p>${newProjectButton()}${here}`;
   }
   const cards = list.map((p) => {
     const rows = projectRows(p.id);
     return (
       `<li class="project"><div class="repo-head"><h2><a href="#/projects/${esc(p.id)}">${esc(p.name)}</a></h2>${projectRepoHtml(p)}</div>` +
-      `${projectSummaryHtml(rows)}</li>`
+      `${projectSummaryHtml(p, rows)}</li>`
     );
   });
   return `${newProjectButton()}<ul class="projects">${cards.join('')}</ul>${here}`;
@@ -2366,16 +2416,29 @@ function oneProjectHtml(p) {
     : '';
   return (
     '<p class="pback"><a href="#/projects">All projects</a></p>' +
-    `<div class="repo-head"><h2 class="ptitle">${esc(p.name)}</h2>${projectRepoHtml(p)}</div>` +
-    `${buttons}${confirm}${rows.length ? `<p class="pcounts">${projectCountsHtml(rows)}</p>` : '<p class="pcounts quiet">No sessions in this folder right now.</p>'}${table}`
+    `<h2 class="ptitle">${esc(p.name)}</h2>${projectFoldersHtml(p)}${projectReposListHtml(p)}` +
+    `${buttons}${confirm}${rows.length ? `<p class="pcounts">${projectCountsHtml(rows)}</p>` : `<p class="pcounts quiet">${esc(noSessionsText(p))}</p>`}${table}`
   );
 }
 
 // ---- the form ----
 
+// `entry` is { name, folders: [{ path, label }], repos: [{ repo, label }] }, with text for every part.
 function newProjectForm(mode, id, entry) {
   S.proj.v++;
-  return { mode, id, name: entry.name, folder: entry.folder, repo: entry.repo || '', errors: {}, msg: null, busy: false, v: S.proj.v };
+  const folders = entry.folders.length ? entry.folders : [blankFolder()];
+  return { mode, id, name: entry.name, folders, repos: entry.repos, errors: {}, msg: null, busy: false, v: S.proj.v };
+}
+
+const blankFolder = () => ({ path: '', label: '' });
+const blankRepo = () => ({ repo: '', label: '' });
+
+// A saved project as text for the form; an empty project for New.
+function projectFormEntry(saved) {
+  const text = (v) => (typeof v === 'string' ? v : '');
+  const folders = Array.isArray(saved && saved.folders) ? saved.folders.filter(Boolean).map((x) => ({ path: text(x.path), label: text(x.label) })) : [];
+  const repos = Array.isArray(saved && saved.repos) ? saved.repos.filter(Boolean).map((x) => ({ repo: text(x.repo), label: text(x.label) })) : [];
+  return { name: text(saved && saved.name), folders, repos: saved ? repos : [blankRepo()] };
 }
 
 // The form belongs to one page: a new project to the list, an edit to that project.
@@ -2384,8 +2447,8 @@ function syncProjectForm(route) {
   if (f && (f.mode === 'new' ? route.id !== null : f.id !== route.id)) S.proj.form = null;
 }
 
-// The form's inputs are drawn only when the form opens, closes or shows an error, never on the
-// 4-second poll, so what the person is typing is never reset.
+// The form's inputs are drawn only when the form opens, closes, gains or loses a row, or shows an
+// error, never on the 4-second poll, so what the person is typing is never reset.
 function paintProjectForm() {
   const st = S.proj;
   const f = st.form;
@@ -2397,24 +2460,74 @@ function paintProjectForm() {
   setHtml(slot, f ? projectFormHtml(f) : '');
 }
 
-function formField(f, key, id, label, help, extra = '') {
+// Draws the form again, for example after a row was added or removed.
+function repaintProjectForm() {
+  const f = S.proj.form;
+  if (!f) return;
+  S.proj.v++;
+  f.v = S.proj.v;
+  paintProjectForm();
+  focusProjectPart();
+}
+
+function inputHtml(f, key, id, value, describedBy) {
   const err = f.errors[key];
-  const described = `${id}-help${err ? ` ${id}-err` : ''}`;
+  const described = [describedBy, err ? `${id}-err` : ''].filter(Boolean).join(' ');
+  return (
+    `<input class="field" id="${id}" type="text" value="${esc(value)}" autocomplete="off" spellcheck="false" autocapitalize="off"` +
+    `${err ? ' aria-invalid="true"' : ''}${described ? ` aria-describedby="${described}"` : ''}>` +
+    `${err ? `<p class="field-error" id="${id}-err">${esc(err)}</p>` : ''}`
+  );
+}
+
+function formField(f, key, id, label, help, value) {
   return (
     `<div class="prow"><label for="${id}">${esc(label)}</label>` +
-    `<input class="field" id="${id}" type="text" value="${esc(f[key])}" autocomplete="off" spellcheck="false" autocapitalize="off"${extra}` +
-    `${err ? ' aria-invalid="true"' : ''} aria-describedby="${described}">` +
-    `<p class="help" id="${id}-help">${esc(help)}</p>` +
-    `${err ? `<p class="field-error" id="${id}-err">${esc(err)}</p>` : ''}</div>`
+    `${inputHtml(f, key, id, value, `${id}-help`)}<p class="help" id="${id}-help">${esc(help)}</p></div>`
+  );
+}
+
+// One folder or repository: its path or owner/name, its short name, and Remove.
+function partRowHtml(f, kind, i, total) {
+  const folder = kind === 'folder';
+  const item = folder ? f.folders[i] : f.repos[i];
+  const n = i + 1;
+  const main = folder ? `folder-${i}` : `repo-${i}`;
+  const label = folder ? `flabel-${i}` : `rlabel-${i}`;
+  const name = folder ? `Folder ${n}` : `Repository ${n}`;
+  const canRemove = !folder || total > 1;
+  return (
+    `<div class="ppart" role="group" aria-label="${esc(name)}">` +
+    `<div class="prow"><label for="pf-${main}">${esc(name)}</label>${inputHtml(f, main, `pf-${main}`, folder ? item.path : item.repo, folder ? 'pf-folders-help' : 'pf-repos-help')}</div>` +
+    `<div class="prow"><label for="pf-${label}">Short name (optional)</label>${inputHtml(f, label, `pf-${label}`, item.label, 'pf-labels-help')}</div>` +
+    (canRemove ? `<button type="button" class="btn" id="pf-${kind}-remove-${i}" data-proj="${kind}-remove" data-id="${i}">Remove<span class="sr-only"> ${esc(name.toLowerCase())}</span></button>` : '') +
+    '</div>'
+  );
+}
+
+function partsHtml(f, kind) {
+  const folder = kind === 'folder';
+  const list = folder ? f.folders : f.repos;
+  const rows = list.map((_, i) => partRowHtml(f, kind, i, list.length)).join('');
+  const add = list.length < MAX_PROJECT_PARTS
+    ? `<button type="button" class="btn" id="pf-${kind}-add" data-proj="${kind}-add">${folder ? 'Add a folder' : 'Add a repository'}</button>`
+    : `<p class="help">${folder ? `A project can have up to ${MAX_PROJECT_PARTS} folders.` : `A project can have up to ${MAX_PROJECT_PARTS} repositories.`}</p>`;
+  const help = folder
+    ? 'Type the full path of each folder, such as /home/ada/project or C:\\Users\\ada\\project. Pleni shows the sessions working in any of these folders, or in a folder inside one.'
+    : 'Optional. Type each one as owner/name, such as example/app. You can also paste the github.com address.';
+  return (
+    `<fieldset class="pgroup"><legend>${folder ? 'Folders on this computer' : 'GitHub repositories'}</legend>` +
+    `<p class="help" id="pf-${kind}s-help">${esc(help)}</p>${rows}<div class="pbar">${add}</div></fieldset>`
   );
 }
 
 function projectFormHtml(f) {
   return (
     `<form class="panel pform" id="pform" novalidate aria-labelledby="pf-title"><h2 id="pf-title">${f.mode === 'new' ? 'New project' : 'Edit project'}</h2>` +
-    formField(f, 'name', 'pf-name', 'Name', `Up to ${MAX_NAME} letters.`) +
-    formField(f, 'folder', 'pf-folder', 'Folder on this computer', 'Pleni shows the sessions working in this folder or in a folder inside it.') +
-    formField(f, 'repo', 'pf-repo', 'GitHub repository (optional)', 'Type it as owner/name, such as example/app. You can also paste the github.com address.') +
+    formField(f, 'name', 'pf-name', 'Name', `Up to ${MAX_NAME} letters.`, f.name) +
+    partsHtml(f, 'folder') +
+    partsHtml(f, 'repo') +
+    `<p class="help" id="pf-labels-help">A short name tells the parts apart, such as the name of the app in that folder. Up to ${MAX_PART_LABEL} letters.</p>` +
     '<div class="pbar"><button type="submit" class="btn primary" id="pf-save">Save</button>' +
     '<button type="button" class="btn" id="pf-cancel" data-proj="cancel">Cancel</button>' +
     `<span id="pf-msg" role="status">${f.msg ? `<span class="saved ${esc(f.msg.kind)}">${esc(f.msg.text)}</span>` : ''}</span></div></form>`
@@ -2445,21 +2558,66 @@ function readRepo(text) {
   return { repo: plain ? v : '', bad: !plain };
 }
 
+const tooLong = (text, max) => `Type ${max} letters or fewer. This has ${Array.from(text).length}.`;
+
+// The rows the person filled in (a row with nothing typed is left out), trimmed.
+function filledFolders(f) {
+  return f.folders.map((x, i) => ({ i, path: x.path.trim(), label: x.label.trim() })).filter((x) => x.path || x.label);
+}
+
+function filledRepos(f) {
+  return f.repos.map((x, i) => ({ i, text: x.repo.trim(), label: x.label.trim() })).filter((x) => x.text || x.label);
+}
+
+// Plain messages for what is wrong, keyed like the inputs: name, folder-<i>, flabel-<i>, repo-<i>, rlabel-<i>.
 function projectProblems(f) {
   const errors = {};
   const name = f.name.trim();
-  const folder = f.folder.trim();
   if (!name) errors.name = 'Type a name for this project.';
   else if (Array.from(name).length > MAX_NAME) errors.name = `Type ${MAX_NAME} letters or fewer. This name has ${Array.from(name).length}.`;
-  if (!folder || !FULL_PATH.test(folder)) {
-    errors.folder = 'Type the full path of the folder, such as /home/ada/project or C:\\Users\\ada\\project.';
-  } else if (folder.length > MAX_PROJECT_FOLDER) {
-    errors.folder = `Type ${MAX_PROJECT_FOLDER} letters or fewer. This path has ${folder.length}.`;
-  } else if (/\p{Cc}/u.test(folder)) {
-    errors.folder = 'The path has a character that cannot be used. Type it again.';
+  const folders = filledFolders(f);
+  if (!folders.length) errors['folder-0'] = 'Type the full path of at least one folder, such as /home/ada/project or C:\\Users\\ada\\project.';
+  const paths = new Set();
+  for (const x of folders) {
+    const key = `folder-${x.i}`;
+    if (!x.path) errors[key] = 'Type the full path of this folder, or remove it.';
+    else if (!FULL_PATH.test(x.path)) errors[key] = 'Type the full path of the folder, such as /home/ada/project or C:\\Users\\ada\\project.';
+    else if (x.path.length > MAX_PROJECT_FOLDER) errors[key] = `Type ${MAX_PROJECT_FOLDER} letters or fewer. This path has ${x.path.length}.`;
+    else if (/\p{Cc}/u.test(x.path)) errors[key] = 'The path has a character that cannot be used. Type it again.';
+    else if (paths.has(x.path)) errors[key] = 'This folder is in the list already.';
+    paths.add(x.path);
+    if (Array.from(x.label).length > MAX_PART_LABEL) errors[`flabel-${x.i}`] = tooLong(x.label, MAX_PART_LABEL);
   }
-  if (readRepo(f.repo).bad) errors.repo = 'Type the repository as owner/name, such as example/app. A github.com address works too.';
+  const repos = new Set();
+  for (const x of filledRepos(f)) {
+    const key = `repo-${x.i}`;
+    const { repo, bad } = readRepo(x.text);
+    if (!x.text) errors[key] = 'Type the repository as owner/name, or remove it.';
+    else if (bad) errors[key] = 'Type the repository as owner/name, such as example/app. A github.com address works too.';
+    else if (repos.has(repo.toLowerCase())) errors[key] = 'This repository is in the list already.';
+    if (repo) repos.add(repo.toLowerCase());
+    if (Array.from(x.label).length > MAX_PART_LABEL) errors[`rlabel-${x.i}`] = tooLong(x.label, MAX_PART_LABEL);
+  }
   return errors;
+}
+
+// What the form saves: { id, name, folders: [{ path, label }], repos: [{ repo, label }] }.
+function projectFromForm(f) {
+  return {
+    id: f.id,
+    name: f.name.trim(),
+    folders: filledFolders(f).map((x) => ({ path: x.path, label: x.label || null })),
+    repos: filledRepos(f).map((x) => ({ repo: readRepo(x.text).repo, label: x.label || null })),
+  };
+}
+
+// All projects together keep up to 100 folders and 100 repositories; `list` is the saved list.
+function roomProblem(list, entry) {
+  const others = list.filter((x) => x && x.id !== entry.id);
+  const count = (key) => others.reduce((n, x) => n + (Array.isArray(x[key]) ? x[key].length : 0), 0);
+  if (count('folders') + entry.folders.length > MAX_ALL_PARTS) return `All your projects together can have up to ${MAX_ALL_PARTS} folders. Remove some first.`;
+  if (count('repos') + entry.repos.length > MAX_ALL_PARTS) return `All your projects together can have up to ${MAX_ALL_PARTS} GitHub repositories. Remove some first.`;
+  return '';
 }
 
 function randomProjectId(taken) {
@@ -2511,10 +2669,19 @@ function changeProjectList(change) {
 // What Pleni changed in the project it kept, in plain words.
 function projectChanges(sent, kept) {
   const out = [];
+  const folders = Array.isArray(kept.folders) ? kept.folders : [];
+  const repos = Array.isArray(kept.repos) ? kept.repos : [];
   if (kept.name !== sent.name) out.push(`the name is now "${kept.name}"`);
-  if (kept.folder !== sent.folder) out.push('the folder was changed');
-  if (sent.repo && !kept.repo) out.push('the GitHub repository was left out because it is not a repository name');
-  else if ((kept.repo || null) !== (sent.repo || null)) out.push(`the GitHub repository is now ${kept.repo}`);
+  const lostFolders = sent.folders.length - folders.length;
+  if (lostFolders > 0) out.push(`${plural(lostFolders, 'folder was', 'folders were')} left out`);
+  else if (sent.folders.some((x, i) => x.path !== folders[i].path)) out.push('a folder was changed');
+  const lostRepos = sent.repos.length - repos.length;
+  if (lostRepos > 0) out.push(`${plural(lostRepos, 'GitHub repository was', 'GitHub repositories were')} left out`);
+  else if (sent.repos.some((x, i) => x.repo !== repos[i].repo)) out.push('a GitHub repository was changed');
+  const labels = (list) => list.map((x) => x.label || null).join('\n');
+  if ((lostFolders <= 0 && labels(sent.folders) !== labels(folders)) || (lostRepos <= 0 && labels(sent.repos) !== labels(repos))) {
+    out.push('a short name was changed');
+  }
   return out;
 }
 
@@ -2531,7 +2698,7 @@ async function saveProject() {
     focusProjectPart();
     return;
   }
-  const entry = { id: f.id, name: f.name.trim(), folder: f.folder.trim(), repo: readRepo(f.repo).repo || null };
+  const entry = projectFromForm(f);
   f.busy = true;
   const button = $('#pf-save');
   if (button) button.disabled = true;
@@ -2539,6 +2706,8 @@ async function saveProject() {
   try {
     const isNew = f.mode === 'new';
     const kept = await changeProjectList((list) => {
+      const room = roomProblem(list, entry);
+      if (room) throw new Error(room);
       if (isNew) {
         if (list.length >= MAX_PROJECT_LIST) throw new Error(`Pleni keeps up to ${MAX_PROJECT_LIST} projects. Delete one first.`);
         entry.id = randomProjectId(new Set(list.map((x) => x && x.id)));
@@ -2548,7 +2717,7 @@ async function saveProject() {
       return list.map((x) => (x && x.id === entry.id ? entry : x));
     });
     const got = kept.find((x) => x && x.id === entry.id);
-    if (!got) throw new Error('Pleni did not keep it. Check that the folder is a full path on the computer that runs Pleni.');
+    if (!got) throw new Error('Pleni did not keep it. Check that each folder is a full path on the computer that runs Pleni.');
     const changed = projectChanges(entry, got);
     S.proj.msg = {
       id: isNew ? null : entry.id,
@@ -2573,7 +2742,7 @@ async function editProject(id) {
     const entry = list.find((x) => x && x.id === id);
     if (!entry) throw new Error('This project is gone. It may have been deleted.');
     st.msg = null;
-    st.form = newProjectForm('edit', id, { name: String(entry.name || ''), folder: String(entry.folder || ''), repo: entry.repo || '' });
+    st.form = newProjectForm('edit', id, projectFormEntry(entry));
     st.focus = '#pf-name';
   } catch (err) {
     st.msg = { id, kind: 'err', text: `Could not open the project. ${plainError(err)}` };
@@ -2610,7 +2779,7 @@ function projectClick(what, id) {
       return;
     }
     st.msg = null;
-    st.form = newProjectForm('new', null, { name: '', folder: '', repo: '' });
+    st.form = newProjectForm('new', null, projectFormEntry(null));
     st.focus = '#pf-name';
     renderProjects();
   } else if (what === 'edit') {
@@ -2630,20 +2799,52 @@ function projectClick(what, id) {
     if (again) again.focus();
   } else if (what === 'delete-yes') {
     deleteProject(id);
+  } else if (st.form && !st.form.busy && /^(folder|repo)-(add|remove)$/.test(what)) {
+    changeProjectParts(what, Number(id));
   }
+}
+
+// Add a folder, Add a repository and Remove. Focus goes to the new row, or near the removed one.
+function changeProjectParts(what, index) {
+  const f = S.proj.form;
+  const [kind, act] = what.split('-');
+  const key = kind === 'folder' ? 'folders' : 'repos';
+  const list = f[key];
+  if (act === 'add') {
+    if (list.length >= MAX_PROJECT_PARTS) return;
+    list.push(kind === 'folder' ? blankFolder() : blankRepo());
+    S.proj.focus = `#pf-${kind}-${list.length - 1}`;
+  } else {
+    if (!Number.isInteger(index) || index < 0 || index >= list.length || (kind === 'folder' && list.length <= 1)) return;
+    list.splice(index, 1);
+    // The rows below move up, so their errors would point at the wrong row; check again on Save.
+    f.errors = {};
+    S.proj.focus = list.length ? `#pf-${kind}-${Math.min(index, list.length - 1)}` : `#pf-${kind}-add`;
+  }
+  f.msg = null;
+  repaintProjectForm();
 }
 
 const projectsForm = $('#projects-form');
 projectsForm.addEventListener('input', (ev) => {
   const f = S.proj.form;
-  const key = PROJECT_FIELDS[ev.target.id];
-  if (!f || !key) return;
-  f[key] = ev.target.value;
+  const spot = projectField(ev.target.id);
+  if (!f || !spot) return;
+  const { key } = spot;
+  if (spot.list) {
+    const item = f[spot.list][spot.index];
+    if (!item) return;
+    item[spot.field] = ev.target.value;
+  } else {
+    f[key] = ev.target.value;
+  }
   if (f.errors[key]) {
     // Take the error away in place, so the box the person is typing in stays as it is.
     delete f.errors[key];
     ev.target.removeAttribute('aria-invalid');
-    ev.target.setAttribute('aria-describedby', `${ev.target.id}-help`);
+    const described = (ev.target.getAttribute('aria-describedby') || '').split(' ').filter((x) => x && x !== `${ev.target.id}-err`);
+    if (described.length) ev.target.setAttribute('aria-describedby', described.join(' '));
+    else ev.target.removeAttribute('aria-describedby');
     const note = $(`#${ev.target.id}-err`);
     if (note) note.remove();
   }

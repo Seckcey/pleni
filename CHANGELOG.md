@@ -8,6 +8,15 @@ All notable changes to Pleni are listed here, newest first. The format is based 
 
 ### Added
 
+- **A project can hold several folders and GitHub repositories.** On the Projects page, a project
+  now has a list of folders on your computer and a list of GitHub repositories, up to 20 of each,
+  so a product made of several apps that work together can be one project. Each folder and
+  repository can have a short name, such as the app's name. A session belongs to the project when
+  it works in any of its folders. The project's page lists every repository with its link, and
+  Live GitHub status covers all of them (now up to 30 repositories in all, at most 6 asked at a
+  time). Your old projects, with one folder and one repository, keep working: Pleni reads them as
+  lists of one and saves the new shape the next time you save settings. All projects together can
+  have up to 100 folders and 100 repositories, and a settings save may now be up to 256 KB.
 - **A coordinator in Codex or Gemini CLI.** The mailbox relay can now wake a Codex thread or a
   Gemini CLI session as a project's coordinator, not only a Claude Code session. You pick the tool
   when you sign the coordinator up (`-Enroll -Tool codex` or `-Enroll -Tool gemini`), and Pleni

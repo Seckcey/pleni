@@ -560,8 +560,8 @@ export function demoSettings(settings) {
   // its repository name, because its folder is not on this disk.
   clean.projectList = cleanSettings({
     projectList: [
-      { id: 'demobilling01', name: 'Billing service', folder: BILLING, repo: GITHUB.billing },
-      { id: 'demofieldapp1', name: 'Field app', folder: FIELD, repo: GITHUB.field },
+      { id: 'demobilling01', name: 'Billing service', folders: [{ path: BILLING, label: null }], repos: [{ repo: GITHUB.billing, label: null }] },
+      { id: 'demofieldapp1', name: 'Field app', folders: [{ path: FIELD, label: null }], repos: [{ repo: GITHUB.field, label: null }] },
     ],
   }).projectList;
   for (const [key, role] of [[PLANNER, 'superintendent'], [COORDINATOR, 'coordinator'], [FIELD_LEAD, 'coordinator'], [DOWNLOADS, 'worker']]) {

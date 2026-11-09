@@ -682,12 +682,12 @@ test('POST /api/settings refuses requests that did not come from the page', asyn
   assert.equal(store.reloads.length, 0);
 });
 
-test('POST /api/settings refuses bodies over 64 KB and bodies that are not settings', async (t) => {
+test('POST /api/settings refuses bodies over 256 KB and bodies that are not settings', async (t) => {
   const { port, memory } = await startServer(t);
   const pad = (size) => JSON.stringify({ displayName: 'x'.repeat(size - 18) });
   assert.equal(Buffer.byteLength(pad(1000)), 1000);
 
-  const tooBig = await postSettings(port, pad(64 * 1024 + 1));
+  const tooBig = await postSettings(port, pad(256 * 1024 + 1));
   assertPlainError(tooBig, 413);
   assert.equal(tooBig.headers.connection, 'close');
 
@@ -695,7 +695,7 @@ test('POST /api/settings refuses bodies over 64 KB and bodies that are not setti
     method: 'POST',
     path: '/api/settings',
     headers: { 'x-pleni': 'settings', 'content-type': 'application/json' },
-    body: pad(200 * 1024),
+    body: pad(300 * 1024),
     chunked: true,
   });
   assertPlainError(streamed, 413);
@@ -705,9 +705,37 @@ test('POST /api/settings refuses bodies over 64 KB and bodies that are not setti
   assertPlainError(await postSettings(port, '"settings"'), 400);
   assert.equal(memory.saved.length, 0);
 
-  const atLimit = await postSettings(port, pad(64 * 1024));
+  const atLimit = await postSettings(port, pad(256 * 1024));
   assert.equal(atLimit.status, 200);
   assert.equal(memory.saved.length, 1);
+
+  // Only a settings save may be that big; every other change keeps the 64 KB limit.
+  const other = await request(port, {
+    method: 'POST',
+    path: '/api/placement',
+    headers: { 'x-pleni': 'settings', 'content-type': 'application/json' },
+    body: pad(64 * 1024 + 1),
+  });
+  assertPlainError(other, 413);
+});
+
+test('POST /api/settings fits the biggest project list Pleni keeps', async (t) => {
+  const { port, memory } = await startServer(t);
+  // 50 projects, 100 folders of 500 characters and 100 of the longest repository names, all labelled.
+  // A backslash is a plain character in a Linux path, and it takes two characters in JSON.
+  const long = (i) => `/${String(i).padStart(3, '0')}${'\\'.repeat(496)}`;
+  const projectList = Array.from({ length: 50 }, (_, p) => ({
+    id: `proj${String(p).padStart(4, '0')}`,
+    name: 'n'.repeat(80),
+    folders: [0, 1].map((f) => ({ path: long(p * 2 + f), label: 'l'.repeat(40) })),
+    repos: [0, 1].map((r) => ({ repo: `${'o'.repeat(96)}${String(p * 2 + r).padStart(4, '0')}/${'r'.repeat(100)}`, label: 'l'.repeat(40) })),
+  }));
+  assert.equal(long(0).length, 500);
+  const res = await postSettings(port, { projectList });
+  assert.equal(res.status, 200);
+  assert.equal(memory.state.settings.projectList.length, 50);
+  assert.equal(memory.state.settings.projectList.flatMap((p) => p.folders).length, 100);
+  assert.equal(memory.state.settings.projectList.flatMap((p) => p.repos).length, 100);
 });
 
 test('POST /api/settings saves into PLENI_HOME and reloads the store', async (t) => {
@@ -1343,11 +1371,21 @@ test('GitHub status also asks about the repositories of the person\'s projects',
     { id: 'proj0001', name: 'Notes', folder: '/home/ada/code/notes', repo: 'ada/notes' },
     { id: 'proj0002', name: 'Cloud only', folder: '/home/ada/code/cloud', repo: 'ada/cloud-only' },
     { id: 'proj0003', name: 'No repo', folder: '/home/ada/code/plain', repo: null },
+    {
+      id: 'proj0004',
+      name: 'Suite',
+      folders: [{ path: '/home/ada/code/suite', label: null }],
+      repos: [{ repo: 'ada/portal', label: 'Portal' }, { repo: 'ada/notes', label: null }, { repo: 'ada/api', label: 'API' }],
+    },
   ];
   const { port } = await startServer(t, { store: githubStore(), github, settings: { github: { live: true }, projectList } });
   const res = await request(port, { path: '/api/github' });
   assert.equal(res.status, 200);
-  assert.deepEqual(github.calls[0], ['status', { repos: ['ada/notes', 'ada/site', 'ada/cloud-only'], fresh: false }], 'the map first, then each project repository once');
+  assert.deepEqual(
+    github.calls[0],
+    ['status', { repos: ['ada/notes', 'ada/site', 'ada/cloud-only', 'ada/portal', 'ada/api'], fresh: false }],
+    'the map first, then every repository of each project once',
+  );
 });
 
 test('GitHub status in the demo is made up, and asks nothing', async (t) => {
@@ -2476,8 +2514,13 @@ test('the demo never opens to the Wi-Fi', async (t) => {
 
 // ---- projects ----
 
-const PROJECT_ONE = { id: 'proj0001', name: 'App', folder: '/home/ada/code/app', repo: 'example/app' };
-const PROJECT_TWO = { id: 'proj0002', name: 'Beta', folder: '/home/ada/code/beta', repo: null };
+const PROJECT_ONE = {
+  id: 'proj0001',
+  name: 'App',
+  folders: [{ path: '/home/ada/code/app', label: 'Web' }, { path: '/home/ada/code/app-api', label: null }],
+  repos: [{ repo: 'example/app', label: 'Web' }, { repo: 'example/app-api', label: 'API' }],
+};
+const PROJECT_TWO = { id: 'proj0002', name: 'Beta', folders: [{ path: '/home/ada/code/beta', label: null }], repos: [] };
 
 // A store that builds the real snapshot from the saved settings, with one session in the first project.
 function projectStore(memory) {
@@ -2508,12 +2551,17 @@ test('POST /api/settings from this computer saves the project list, and the snap
 
   const snapshot = await request(port, { path: '/api/snapshot' });
   assert.deepEqual(snapshot.json.projects, [
-    { id: 'proj0001', name: 'App', repo: 'example/app' },
-    { id: 'proj0002', name: 'Beta', repo: null },
+    { id: 'proj0001', name: 'App', folders: [{ label: 'Web' }, { label: null }], repos: [{ repo: 'example/app', label: 'Web' }, { repo: 'example/app-api', label: 'API' }] },
+    { id: 'proj0002', name: 'Beta', folders: [{ label: null }], repos: [] },
   ]);
   const mine = snapshot.json.nodes.find((n) => n.key === SESSION_KEY);
   assert.deepEqual(mine.projectIds, ['proj0001']);
   assert.equal(snapshot.text.includes('/home/ada/code/app'), false, 'the folder is not in the snapshot');
+
+  // An older entry with one folder and one repository is saved in the new shape.
+  const old = await postSettings(port, { projectList: [{ id: 'proj0003', name: 'Old', folder: '/home/ada/code/old', repo: 'example/old' }] });
+  assert.deepEqual(old.json.settings.projectList, [{ id: 'proj0003', name: 'Old', folders: [{ path: '/home/ada/code/old', label: null }], repos: [{ repo: 'example/old', label: null }] }]);
+  assert.deepEqual(memory.state.settings.projectList, old.json.settings.projectList);
 });
 
 test('POST /api/settings from another device keeps the saved project list', async (t) => {
@@ -2539,8 +2587,8 @@ test('the demo snapshot has two made-up projects, and Field app holds the Codex 
   const { port } = await startServer(t, { store, memory: memorySettings() });
   const snapshot = await request(port, { path: '/api/snapshot' });
   assert.deepEqual(snapshot.json.projects, [
-    { id: 'demobilling01', name: 'Billing service', repo: 'example/billing-service' },
-    { id: 'demofieldapp1', name: 'Field app', repo: 'example/field-app' },
+    { id: 'demobilling01', name: 'Billing service', folders: [{ label: null }], repos: [{ repo: 'example/billing-service', label: null }] },
+    { id: 'demofieldapp1', name: 'Field app', folders: [{ label: null }], repos: [{ repo: 'example/field-app', label: null }] },
   ]);
   const withIds = (id) => snapshot.json.nodes.filter((n) => n.projectIds.includes(id)).map((n) => n.title);
   assert.ok(withIds('demobilling01').includes('Billing API refactor'));
@@ -2551,7 +2599,7 @@ test('the demo snapshot has two made-up projects, and Field app holds the Codex 
 });
 
 test('the demo never changes the saved project list, and never shows it', async (t) => {
-  const own = { id: 'mine0001', name: 'Mine', folder: '/home/ada/code/mine', repo: null };
+  const own = { id: 'mine0001', name: 'Mine', folders: [{ path: '/home/ada/code/mine', label: null }], repos: [] };
   const settings = cleanSettings({ projectList: [own] });
   const store = createStore({ settings, roots: resolveRoots(settings), demo: true, now: () => Date.UTC(2026, 0, 15, 12, 3, 7) });
   t.after(() => store.close());

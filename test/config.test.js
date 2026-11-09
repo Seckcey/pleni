@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   DEFAULTS,
+  PROJECT_LIMITS,
   cleanProjectList,
   cleanSettings,
   configDir,
@@ -73,7 +74,7 @@ test('cleanSettings keeps good values', () => {
     },
     people: { you: { label: 'Ada' }, [`claude:${UUID}`]: { label: 'Builder', role: 'coordinator', watch: true, answer: true }, relay: { watch: true } },
     projects: { pleni: { label: 'Pleni', hidden: false } },
-    projectList: [{ id: 'abcd1234ef56', name: 'App', folder: '/home/ada/code/app', repo: 'example/app' }],
+    projectList: [{ id: 'abcd1234ef56', name: 'App', folders: [{ path: '/home/ada/code/app', label: 'Web app' }], repos: [{ repo: 'example/app', label: null }] }],
     chain: [{ match: 'Sergeant', reportsTo: 'Colonel', role: 'coordinator' }, { match: 'Colonel', reportsTo: 'you', role: null }],
     remote: { hosts: ['box.example.ts.net'], tailscaleUsers: ['ada@example.com'], lan: true, lanAddresses: ['192.168.1.23'] },
     actions: { openTerminal: true, rollover: true, newAgent: true, teleport: true, send: true, answers: true, limits: true },
@@ -598,29 +599,71 @@ test('rollSoon limits are whole numbers in range, and 0 turns one off', () => {
   assert.deepEqual(cleanSettings({ rollSoon: 'soon' }).rollSoon, { memoryPercent: 70, squeezes: 2, days: 7 });
 });
 
-test('cleanProjectList keeps good entries as exactly { id, name, folder, repo }', () => {
+// A project in the shape Pleni saves, with one folder and maybe one repository.
+const project = (id, name, folder, repo = null) => ({
+  id,
+  name,
+  folders: [{ path: folder, label: null }],
+  repos: repo ? [{ repo, label: null }] : [],
+});
+
+test('cleanProjectList keeps good entries as exactly { id, name, folders, repos }', () => {
   const list = cleanProjectList([
-    { id: 'abcd1234', name: '  Billing  ', folder: ' /home/ada/code/billing ', repo: ' example/billing ', extra: 'dropped' },
-    { id: 'zz99zz99zz99', name: 'Field app', folder: '/home/ada/code/field', repo: null },
+    {
+      id: 'abcd1234',
+      name: '  Billing ',
+      folders: [{ path: ' /home/ada/code/billing ', label: ' API ', extra: 1 }, '/home/ada/code/billing-web'],
+      repos: [{ repo: ' example/billing ', label: 'API' }, 'example/billing-web'],
+      extra: true,
+    },
+    { id: 'zz99zz99zz99', name: 'Field app', folders: [{ path: '/home/ada/code/field' }], repos: [] },
   ]);
   assert.deepEqual(list, [
-    { id: 'abcd1234', name: 'Billing', folder: '/home/ada/code/billing', repo: 'example/billing' },
-    { id: 'zz99zz99zz99', name: 'Field app', folder: '/home/ada/code/field', repo: null },
+    {
+      id: 'abcd1234',
+      name: 'Billing',
+      folders: [{ path: '/home/ada/code/billing', label: 'API' }, { path: '/home/ada/code/billing-web', label: null }],
+      repos: [{ repo: 'example/billing', label: 'API' }, { repo: 'example/billing-web', label: null }],
+    },
+    project('zz99zz99zz99', 'Field app', '/home/ada/code/field'),
   ]);
   assert.deepEqual(DEFAULTS.projectList, []);
   assert.deepEqual(cleanSettings({}).projectList, []);
   for (const bad of [null, undefined, 'x', {}, 7]) assert.deepEqual(cleanProjectList(bad), []);
 });
 
+test('cleanProjectList reads an older entry with one folder and one repository as lists of one', () => {
+  const list = cleanProjectList([
+    { id: 'abcd1234', name: 'App', folder: '/home/ada/code/app', repo: 'example/app' },
+    { id: 'abcd5678', name: 'Notes', folder: '/home/ada/code/notes', repo: null },
+    { id: 'abcd9999', name: 'Odd', folder: '/home/ada/code/odd', repo: 'not a repo' },
+    { id: 'abcd0000', name: 'Lost', folder: 'code/lost', repo: 'example/lost' },
+  ]);
+  assert.deepEqual(list, [
+    project('abcd1234', 'App', '/home/ada/code/app', 'example/app'),
+    project('abcd5678', 'Notes', '/home/ada/code/notes'),
+    project('abcd9999', 'Odd', '/home/ada/code/odd'),
+  ]);
+  // The new lists win over the older single values, and a save keeps only the new shape.
+  const both = cleanProjectList([{ id: 'abcd1234', name: 'App', folder: '/home/ada/old', repo: 'example/old', folders: ['/home/ada/new'], repos: [] }]);
+  assert.deepEqual(both, [project('abcd1234', 'App', '/home/ada/new')]);
+  const saved = cleanSettings({ projectList: [{ id: 'abcd1234', name: 'App', folder: '/home/ada/code/app', repo: 'example/app' }] });
+  assert.equal('folder' in saved.projectList[0], false);
+  assert.equal('repo' in saved.projectList[0], false);
+});
+
 test('cleanProjectList drops what cannot be used', () => {
-  const good = { id: 'abcd1234', name: 'App', folder: '/home/ada/code/app', repo: null };
+  const good = project('abcd1234', 'App', '/home/ada/code/app');
+  const one = (folder) => ({ ...good, folders: [{ path: folder, label: null }] });
   const list = cleanProjectList([
     { ...good, id: 'abcd0001', name: '   ' },
     { ...good, id: 'abcd0002', name: undefined },
-    { ...good, id: 'abcd0003', folder: 'code/app' },
-    { ...good, id: 'abcd0004', folder: `/home/ada/${'a'.repeat(500)}` },
-    { ...good, id: 'abcd0005', folder: '/home/ada/co\u0000de' },
-    { ...good, id: 'abcd0006', folder: 42 },
+    { ...one('code/app'), id: 'abcd0003' },
+    { ...one(`/home/ada/${'a'.repeat(500)}`), id: 'abcd0004' },
+    { ...one('/home/ada/co\u0000de'), id: 'abcd0005' },
+    { ...one(42), id: 'abcd0006' },
+    { ...good, id: 'abcd0007', folders: [] },
+    { ...good, id: 'abcd0008', folders: 'not a list' },
     { ...good, id: 'BAD ID!' },
     { ...good, id: 'short' },
     { ...good, id: 'x'.repeat(33) },
@@ -633,28 +676,64 @@ test('cleanProjectList drops what cannot be used', () => {
   assert.deepEqual(list, [good]);
   // A folder of exactly 500 characters is kept.
   const edge = `/${'a'.repeat(499)}`;
-  assert.equal(cleanProjectList([{ ...good, folder: edge }])[0].folder, edge);
+  assert.equal(cleanProjectList([one(edge)])[0].folders[0].path, edge);
 });
 
-test('cleanProjectList turns a bad repository into null and keeps the entry', () => {
-  const repo = (value) => cleanProjectList([{ id: 'abcd1234', name: 'App', folder: '/home/ada/code/app', repo: value }])[0].repo;
-  assert.equal(repo('example/app'), 'example/app');
-  for (const bad of ['app', 'a/b/c', 'https://github.com/example/app', 'example/', '/app', 'exa mple/app', '../app', './app', 'example/..', '', 5, {}, undefined]) {
-    assert.equal(repo(bad), null, String(bad));
-  }
+test('cleanProjectList leaves out bad and repeated folders and repositories, and keeps the entry', () => {
+  const [kept] = cleanProjectList([{
+    id: 'abcd1234',
+    name: 'App',
+    folders: ['code/app', '/home/ada/code/app', { path: '/home/ada/code/app', label: 'Again' }, null, { label: 'No path' }, '/home/ada/code/api'],
+    repos: ['example/app', 'Example/App', 'app', 'a/b/c', 'https://github.com/example/app', 'example/', '/app', 'exa mple/app', '../app', './app', 'example/..', '', 5, {}, null, { repo: 'example/api', label: 'x'.repeat(60) }],
+  }]);
+  assert.deepEqual(kept.folders, [{ path: '/home/ada/code/app', label: null }, { path: '/home/ada/code/api', label: null }]);
+  assert.deepEqual(kept.repos.map((r) => r.repo), ['example/app', 'example/api']);
+  // A label is clipped to 40 characters; an empty or blank one is null.
+  assert.equal(kept.repos[1].label, 'x'.repeat(PROJECT_LIMITS.label));
+  const blank = cleanProjectList([{ ...project('abcd1234', 'App', '/home/ada/code/app'), repos: [{ repo: 'example/app', label: '  ' }] }]);
+  assert.equal(blank[0].repos[0].label, null);
+});
+
+test('cleanProjectList keeps at most 20 folders and 20 repositories a project, and 100 of each in all', () => {
+  assert.deepEqual(PROJECT_LIMITS, { projects: 50, folders: 20, repos: 20, allFolders: 100, allRepos: 100, folderLength: 500, label: 40 });
+  const big = (id) => ({
+    id,
+    name: id,
+    folders: Array.from({ length: 25 }, (_, i) => `/home/ada/${id}/f${i}`),
+    repos: Array.from({ length: 25 }, (_, i) => `example/${id}-r${i}`),
+  });
+  const kept = cleanProjectList(['proj0001', 'proj0002', 'proj0003', 'proj0004', 'proj0005', 'proj0006'].map(big));
+  assert.deepEqual(kept.map((p) => p.folders.length), [20, 20, 20, 20, 20]);
+  assert.deepEqual(kept.map((p) => p.repos.length), [20, 20, 20, 20, 20]);
+  assert.equal(kept[0].folders[19].path, '/home/ada/proj0001/f19');
+  // The sixth project has no room for a folder left, so it is not kept.
+  assert.equal(kept.some((p) => p.id === 'proj0006'), false);
+  // When only the repositories run out, a later project is kept with no repositories.
+  const manyRepos = (id) => ({ ...big(id), folders: [`/home/ada/${id}`] });
+  const late = cleanProjectList([
+    ...['proj0001', 'proj0002', 'proj0003', 'proj0004', 'proj0005'].map(manyRepos),
+    { id: 'proj0009', name: 'Late', folders: ['/home/ada/late'], repos: ['example/late'] },
+  ]);
+  assert.equal(late.length, 6);
+  assert.deepEqual(late[5], { id: 'proj0009', name: 'Late', folders: [{ path: '/home/ada/late', label: null }], repos: [] });
 });
 
 test('cleanProjectList keeps at most 50 entries and clips a long name', () => {
-  const many = Array.from({ length: 60 }, (_, i) => ({ id: `proj${String(i).padStart(4, '0')}`, name: `P${i}`, folder: `/home/ada/code/p${i}`, repo: null }));
+  const many = Array.from({ length: 60 }, (_, i) => project(`proj${String(i).padStart(4, '0')}`, `P${i}`, `/home/ada/code/p${i}`));
   const kept = cleanProjectList(many);
   assert.equal(kept.length, 50);
   assert.equal(kept[49].id, 'proj0049');
-  const long = cleanProjectList([{ id: 'abcd1234', name: 'n'.repeat(120), folder: '/home/ada/code/app', repo: null }]);
+  const long = cleanProjectList([project('abcd1234', 'n'.repeat(120), '/home/ada/code/app')]);
   assert.equal(Array.from(long[0].name).length, 80);
 });
 
 test('a saved project list survives cleaning and is part of cleanSettings', () => {
-  const projectList = [{ id: 'abcd1234', name: 'App', folder: '/home/ada/code/app', repo: 'example/app' }];
+  const projectList = [{
+    id: 'abcd1234',
+    name: '8 West example',
+    folders: [{ path: '/home/ada/code/portal', label: 'Portal' }, { path: '/home/ada/code/api', label: null }],
+    repos: [{ repo: 'example/portal', label: 'Portal' }, { repo: 'example/api', label: 'API' }, { repo: 'example/shared', label: null }],
+  }];
   const clean = cleanSettings({ projectList });
   assert.deepEqual(clean.projectList, projectList);
   assert.deepEqual(cleanSettings(clean), clean);

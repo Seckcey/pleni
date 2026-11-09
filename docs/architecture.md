@@ -138,7 +138,7 @@ export const DEFAULTS = {
   },
   people: {},      // { [nodeKey]: { label?: string (≤80), role?: Role, reportsTo?: nodeKey | 'you', watch?: true, answer?: true } }  max 500
   projects: {},    // { [projectName]: { label?: string (≤80), hidden?: boolean } }  max 200 (renames and hides a folder name on the map; not the Projects page)
-  projectList: [], // the Projects page: [{ id, name, folder, repo }]  max 50, only this computer can change it
+  projectList: [], // the Projects page: [{ id, name, folders: [{ path, label }], repos: [{ repo, label }] }]  max 50, only this computer can change it
   chain: [],       // [{ match, reportsTo: 'you' | name, role: Role | null }]  max 50, first match wins
   remote: { hosts: [], tailscaleUsers: [], lan: false, lanAddresses: [] }, // hosts and logins: each max 20 entries, lower-cased; lan: Wi-Fi access, true only when set to true; lanAddresses: the chosen Wi-Fi addresses, IPv4 only, the newest 10
   actions: { openTerminal: false, rollover: false, newAgent: false, teleport: false, send: false, answers: false, limits: false }, // the window buttons, Send, Answer questions and plan limits (the last two set by Connect and Disconnect); each true only when set to true
@@ -164,14 +164,21 @@ Exports:
   `github.merge`, `codexCloud.live` and `models.edit`. `send.mode` is `'edit'` only when it is exactly that, else
   `'read'`. `answers.waitMinutes` is clamped to 1–60.
 - `projectList` (`cleanProjectList(raw)`, also exported) keeps arrays only, at most 50 entries, each
-  exactly `{ id, name, folder, repo }`. `id` is a string of 8–32 lower-case letters and digits (the
-  page makes 12 at random); an entry with a bad or repeated id is dropped. `name` is clipped to 80
-  characters, with control characters turned into spaces; an empty name drops the entry. `folder` is
-  an absolute path for the system Pleni runs on, checked like a source `root` but at most 500
-  characters (lower than the 4096 of a root, so 50 projects fit the 64 KB limit of a save), kept
-  trimmed and as typed; a bad one drops the entry. `repo` is `owner/name` (the rule of `isRepoPath`
-  in `src/github.js`); anything else becomes `null` and the entry stays. This is not the older
-  `projects` map above, which renames and hides a folder name that sessions already have.
+  exactly `{ id, name, folders: [{ path, label }], repos: [{ repo, label }] }`. `id` is a string of
+  8–32 lower-case letters and digits (the page makes 12 at random); an entry with a bad or repeated
+  id is dropped. `name` is clipped to 80 characters, with control characters turned into spaces; an
+  empty name drops the entry. A folder's `path` is an absolute path for the system Pleni runs on,
+  checked like a source `root` but at most 500 characters, kept trimmed and as typed. A
+  repository's `repo` is `owner/name` (the rule of `isRepoPath` in `src/github.js`), trimmed. A
+  `label` is an optional short name for that folder or repository, such as the app it holds:
+  clipped to 40 characters like `name`, else `null`. A bad folder or repository is left out, and so
+  is a repeated one (the same `path`, or the same `repo` in any case). A project keeps at most 20
+  folders and 20 repositories, and all projects together at most 100 of each (`PROJECT_LIMITS`,
+  also exported), counted in list order; a project with no folder left is dropped. An older entry
+  with one `folder` and one `repo` (`null` or a string) is read as lists of one, with no labels,
+  when it has no `folders` or `repos` list; every save writes the new shape. At these limits the
+  biggest list is about 140 KB, which fits the 256 KB limit of a settings save. This is not the
+  older `projects` map above, which renames and hides a folder name that sessions already have.
 - `loadSettings(file)` returns `{ settings, file, error }` and never throws (a missing file gives
   defaults and no error; a broken file gives defaults and an `error` string).
 - `saveSettings(settings, file)` writes `cleanSettings(settings)` atomically (temp file, then rename),
@@ -849,7 +856,7 @@ Snapshot = {
   boxes?: [{ id, name, root: null, error, project }],  // only for an HQ: HQ first ({ id: 'hq', name: 'HQ' }), then each project mailbox; error: why Pleni cannot read it, else null; project: the name of its tile (null for HQ); never a folder path
   mail: null | { name, unread, lastAt },  // agent mail: the person's mail name, their new mail, the newest message's time
   hiddenSessions: [{ key, title, platform, kind }],  // recent sessions with Role "Hide it": off the map, named in Settings
-  projects: [{ id, name, repo }],  // the Projects page, in projectList order; never a folder path (the folder stays in settings)
+  projects: [{ id, name, folders: [{ label }], repos: [{ repo, label }] }],  // the Projects page, in projectList order; each folder's short name only, never a folder path (the paths stay in settings)
   actions: { openTerminal: boolean, rollover: boolean, newAgent: boolean, teleport: boolean, send: boolean, answers: boolean },  // the page may show each button (setting on, Pleni on Windows; answers on any system)
   asks: Ask[],  // the questions Pleni holds for the person (src/answers.js), oldest first
   codexCloud: { live: boolean },  // settings.codexCloud.live: the Cloud page lists Codex cloud tasks only while it is true
@@ -966,16 +973,17 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
   `\\?\UNC\` prefix dropped like `projectName` does, backslashes turned into `/`, repeated `/`
   collapsed, a trailing `/` dropped (a bare root such as `/` or `C:/` stays). Case is ignored on
   Windows and macOS and for any path that starts with a drive letter, and kept otherwise. `/a/app`
-  does not hold `/a/apple`. A session's `projectIds` are the ids of all projects that hold its `cwd`,
-  in `projectList` order. A `<repo>/.claude/worktrees/<name>` folder is inside its repository, so it
-  matches as it is. A `<home>/.codex/worktrees/<id>/<repo>` or `<anywhere>/_worktrees/<name>` folder
-  is not: Pleni reads its `.git` file (`gitdir: <repo>/.git/worktrees/<name>`, with the same care as
-  the `_worktrees` name above: local drives only, `stat` first, at most 4 KB, cached, never throws)
-  and the project matches when that repository folder is inside the project's folder. When the file
-  cannot be read, the worktree matches a project whose folder's last part equals the worktree's
-  repository name (`projectName(cwd)`), compared with the same case rule. A session with no `cwd`
-  takes the `projectIds` of its parent session once the tree is built. Every other node has
-  `projectIds: []`, so all nodes have the same shape.
+  does not hold `/a/apple`. A session's `projectIds` are the ids of all projects with a folder
+  that holds its `cwd`, in `projectList` order, each id once however many of its folders match. A
+  `<repo>/.claude/worktrees/<name>` folder is inside its repository, so it matches as it is. A
+  `<home>/.codex/worktrees/<id>/<repo>` or `<anywhere>/_worktrees/<name>` folder is not: Pleni
+  reads its `.git` file (`gitdir: <repo>/.git/worktrees/<name>`, with the same care as the
+  `_worktrees` name above: local drives only, `stat` first, at most 4 KB, cached, never throws)
+  and the project matches when that repository folder is inside one of the project's folders. When
+  the file cannot be read, the worktree matches a project with a folder whose last part equals the
+  worktree's repository name (`projectName(cwd)`), compared with the same case rule. A session
+  with no `cwd` takes the `projectIds` of its parent session once the tree is built. Every other
+  node has `projectIds: []`, so all nodes have the same shape.
 - GitHub repository (`github`): `githubRepo(cwd)` in `src/repos.js` climbs from the session's
   folder (at most 16 folders, local drives only) to the first `.git`. A folder's git settings are
   `.git/config`; a worktree's `.git` file (at most 4 KB) points to its git folder, whose
@@ -1451,7 +1459,7 @@ export function mergeArgs(repo, number, method, head)    // -> gh pr merge argum
 export function parsePulls(text, repo)                   // -> Pull[], or null when it is not a list
 export function ghOutcome(err, stdout, stderr)           // -> { ok, stdout, error }
 export function isRepoPath(value)                        // plain 'owner/name'
-export const GITHUB_MESSAGES, MAX_REPOS /* 12 */, MERGE_METHODS /* ['squash', 'merge', 'rebase'] */
+export const GITHUB_MESSAGES, MAX_REPOS /* 30 */, MERGE_METHODS /* ['squash', 'merge', 'rebase'] */
 
 // Pull
 {
@@ -1479,10 +1487,12 @@ export const GITHUB_MESSAGES, MAX_REPOS /* 12 */, MERGE_METHODS /* ['squash', 'm
   `github.com/<owner>/<name>`, so a `GH_HOST` setting cannot send it to another server.
 - **Asking:** `gh pr list --repo github.com/<repo> --state all --limit 30 --json
   number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,updatedAt,reviewDecision,statusCheckRollup,mergeable,mergeStateStatus`.
-  `status({ repos, fresh })` asks about at most `MAX_REPOS` valid repositories, sorted, and answers
-  `{ error, repos: [{ repo, at, pulls, error }] }`; the outer `error` is set (and `repos` empty) when
-  gh cannot be found. Each answer, a failed one too, is kept for a minute; `fresh` asks again once
-  it is 10 seconds old. Two pages asking at once share one gh run.
+  `status({ repos, fresh })` asks about the first `MAX_REPOS` valid repositories it is given (each
+  name once, in any case, the first spelling kept), so the map's and then the projects' come first,
+  and answers them sorted: `{ error, repos: [{ repo, at, pulls, error }] }`; the outer `error` is
+  set (and `repos` empty) when gh cannot be found. Each answer, a failed one too, is kept for a
+  minute; `fresh` asks again once it is 10 seconds old. Two pages asking at once share one gh run,
+  and at most 6 gh runs go at once; the others wait their turn.
 - **Checks:** a check run passes when it completed with `SUCCESS`, `NEUTRAL` or `SKIPPED`, and is
   running until it completes; a commit status passes with `SUCCESS` and is running while `PENDING`
   or `EXPECTED`. Anything else counts as failed, so Merge is never offered by mistake.
@@ -2005,11 +2015,12 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   under `refs/`, else its line in `packed-refs`) in Pleni's own folder. A branch name with a part
   that starts with a dot is not read. `createServer({ version, build })` can set both for tests.
 - **POST /api/settings** requires the key cookie, `X-Pleni: settings`, `Content-Type:
-  application/json`, a body of at most 64 KB, and an `Origin` (when present) whose host equals the
+  application/json`, a body of at most 256 KB (room for the longest project list; every other
+  `POST` below takes at most 64 KB), and an `Origin` (when present) whose host equals the
   request host. The body is cleaned with `cleanSettings`, saved, and the store reloaded. Who may
   open Pleni changes only on this computer: `remote.lan` and `remote.lanAddresses` always keep
   their saved values (only `POST /api/lan` changes them), and a request that is not from this
-  computer keeps all of `remote`. The project list (names and folders on this computer) changes only
+  computer keeps all of `remote`. The project list (names, folders on this computer and repositories) changes only
   on this computer too: a request that is not from this computer keeps the saved `projectList`, and
   so does every save in the demo, whose projects are made up. `actions.limits` always keeps its saved
   value too (only `POST /api/statusline` changes it), from any device.
@@ -2096,8 +2107,9 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   are both on and the request is from this computer (like `/api/open`); `method` is
   `settings.github.mergeMethod`. When `on` is false, `repos` is empty and nothing runs. Otherwise
   `error` and `repos` come from `github.status` for the repositories on the map (`node.github`,
-  reviewers left out), then those of the person's projects (`settings.projectList[].repo`, each
-  once), or from `demoGithub` in the demo. Another device gets the same status, with
+  reviewers left out), then every repository of each of the person's projects
+  (`settings.projectList[].repos[].repo`, in list order, each once), or from `demoGithub` in the
+  demo. The same list is the `known` set a merge must be in. Another device gets the same status, with
   `merge: false`. `createServer({ github })` lets tests replace `createGithub()`.
 - **GET /api/cloud** (`?fresh=1` for Look again) needs the key cookie and answers any signed-in
   device `{ on, demo, at, tasks, error }`. `on` is `settings.codexCloud.live` (always true in the
@@ -2274,28 +2286,38 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **List:** a table of sessions grouped by project with status filters; it is also the accessible
   alternative to the map.
 - **Projects:** `#/projects` lists the projects of `snapshot.projects`, one card each: the name
-  (a link to `#/projects/<id>`), the repository as a link to `https://github.com/<repo>` (new tab,
+  (a link to `#/projects/<id>`), each repository as a link to `https://github.com/<repo>` (new tab,
   `rel="noopener noreferrer"`), what its sessions are doing in the List's words (working, need you,
   idle, errors) and when the newest was last active; a project with no sessions says "No sessions in
-  this folder right now." With no projects, it says "No projects yet. A project groups the sessions
-  that work in one folder." `#/projects/<id>` has an **All projects** link, the name, the repository
-  link, **Edit** and **Delete**, then the sessions whose `projectIds` hold the id, in the List's
+  this folder right now." ("in these folders" when it has more than one). With no projects, it says
+  "No projects yet. A project groups the sessions that work in its folders, such as the apps of one
+  product, and can list its GitHub repositories." `#/projects/<id>` has an **All projects** link,
+  the name, how many folders it has on this computer with their short names ("2 folders on this
+  computer: Portal, API", never a path), every repository as a link, after its short name when it
+  has one, **Edit** and **Delete**, then the sessions whose `projectIds` hold the id, in the List's
   table and order (a row is indented only when the session it reports to is also shown); a click
   opens the side panel as on the List. An id that is not in the snapshot says "This project is gone.
-  It may have been deleted." **New project** and **Edit** open a form on the page (not a pop-up): Name
-  (required, up to 80), Folder on this computer (required, a full path, up to 500 characters; "Pleni
-  shows the sessions working in this folder or in a folder inside it.") and GitHub repository
-  (optional; `owner/name`, and a pasted `https://github.com/owner/name` address is cut down to that).
-  A wrong field gets a plain message under it (`aria-invalid`, `aria-describedby`). Saving reads
-  `GET /api/settings` (the snapshot never has folders), changes only `projectList` (a new entry gets
-  12 random lower-case letters and digits as its id) and posts the whole settings object like the
-  Settings page does, then asks for a new snapshot. It says "Saved.", or "Not saved. <reason>", and
-  names anything Pleni changed in what was sent (a repository it dropped, a name it clipped). The
-  form's text lives in page state, not in the markup that the 4-second poll repaints, so a poll never
-  resets what the person is typing. **Delete** asks first, in place ("Delete this project? Pleni only
-  forgets it. No files or sessions change.", **Delete**, **Keep it**). On another device
-  (not `localhost`) there is no New, Edit or Delete, only "Projects can be added and changed only on
-  the computer that runs Pleni." The Settings page's **Restore defaults** keeps the project list.
+  It may have been deleted." **New project** and **Edit** open a form on the page (not a pop-up):
+  Name (required, up to 80); **Folders on this computer**, one row each, at least one: Folder <n> (a
+  full path, up to 500 characters; "Pleni shows the sessions working in any of these folders, or in
+  a folder inside one.") and Short name (optional, up to 40); and **GitHub repositories**
+  (optional), one row each: Repository <n> (`owner/name`, and a pasted
+  `https://github.com/owner/name` address is cut down to that) and Short name. **Add a folder** and
+  **Add a repository** add a row (up to 20 of each, then a note says so) and move focus to it;
+  **Remove** takes a row out (a project keeps at least one folder row). A row left empty is not
+  saved. A wrong field gets a plain message under it (`aria-invalid`, `aria-describedby`), and so
+  does a folder or repository that is in the list twice. Saving reads `GET /api/settings` (the
+  snapshot never has folders), changes only `projectList` (a new entry gets 12 random lower-case
+  letters and digits as its id), refuses in plain words when all projects together would pass 100
+  folders or 100 repositories, and posts the whole settings object like the Settings page does, then
+  asks for a new snapshot. It says "Saved.", or "Not saved. <reason>", and names anything Pleni
+  changed in what was sent (folders or repositories it left out, a name it clipped). The form's text
+  lives in page state, not in the markup that the 4-second poll repaints, so a poll never resets
+  what the person is typing; adding or removing a row draws the form again from that state.
+  **Delete** asks first, in place ("Delete this project? Pleni only forgets it. No files or sessions
+  change.", **Delete**, **Keep it**). On another device (not `localhost`) there is no New, Edit or
+  Delete, only "Projects can be added and changed only on the computer that runs Pleni." The
+  Settings page's **Restore defaults** keeps the project list.
 - **Activity:** the event feed, newest first.
 - **Mail:** shown when the mailbox has agent mail (`snapshot.mail`), with the number of new
   messages beside its name. It asks `GET /api/mail` when it shows and again when `snapshot.mail`

@@ -206,7 +206,7 @@ test('detail returns recent events oldest first and follows the cursor', () => {
 
 test('demoSettings always shows its two made-up projects, never the person\'s own', () => {
   const settings = demoSettings(cleanSettings({}));
-  assert.deepEqual(settings.projectList.map((p) => [p.id, p.name, p.repo]), [
+  assert.deepEqual(settings.projectList.map((p) => [p.id, p.name, p.repos.map((r) => r.repo).join()]), [
     ['demobilling01', 'Billing service', 'example/billing-service'],
     ['demofieldapp1', 'Field app', 'example/field-app'],
   ]);

@@ -200,16 +200,50 @@ test('status runs gh by its full path, away from any repository, and keeps answe
   assert.equal(gh.calls.length, 3);
 });
 
-test('status shares one gh run between pages and asks about at most twelve repositories', async () => {
+test('status shares one gh run between pages and asks about at most thirty repositories', async () => {
   const gh = fakeGh(() => ({ stdout: '[]' }));
   const g = github(gh);
   const [a, b] = await Promise.all([g.status({ repos: ['ada/notes'] }), g.status({ repos: ['ada/notes'] })]);
   assert.equal(gh.calls.length, 1);
   assert.deepEqual(a, b);
-  const many = Array.from({ length: 20 }, (_, i) => `ada/repo${String(i).padStart(2, '0')}`);
+  assert.equal(MAX_REPOS, 30);
+  const many = Array.from({ length: 40 }, (_, i) => `ada/repo${String(i).padStart(2, '0')}`);
   const answer = await g.status({ repos: many });
   assert.equal(answer.repos.length, MAX_REPOS);
   assert.equal(answer.repos[0].repo, 'ada/repo00');
+});
+
+test('status keeps the first repositories it is given, each once whatever its case, and answers them sorted', async () => {
+  const gh = fakeGh(() => ({ stdout: '[]' }));
+  const g = github(gh);
+  // The map's repositories come first, then the projects'; the last ones are cut when there are too many.
+  const given = ['zed/first', 'Ada/Notes', 'ada/notes', ...Array.from({ length: 40 }, (_, i) => `ada/p${String(i).padStart(2, '0')}`)];
+  const answer = await g.status({ repos: given });
+  const names = answer.repos.map((r) => r.repo);
+  assert.equal(names.length, MAX_REPOS);
+  assert.ok(names.includes('zed/first'));
+  assert.ok(names.includes('Ada/Notes'));
+  assert.equal(names.includes('ada/notes'), false);
+  assert.equal(names.includes('ada/p28'), false);
+  assert.deepEqual(names, [...names].sort());
+});
+
+test('status runs at most six gh at once', async () => {
+  let now = 0;
+  let most = 0;
+  const execFile = (file, args, options, done) => {
+    now++;
+    most = Math.max(most, now);
+    setTimeout(() => {
+      now--;
+      done(null, '[]', '');
+    }, 5);
+  };
+  const g = github({ execFile });
+  const answer = await g.status({ repos: Array.from({ length: 20 }, (_, i) => `ada/r${i}`) });
+  assert.equal(answer.repos.length, 20);
+  assert.ok(answer.repos.every((r) => r.error === null));
+  assert.equal(most, 6);
 });
 
 test('status says when gh is missing or not signed in', async () => {
