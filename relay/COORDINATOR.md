@@ -19,7 +19,8 @@ You are the **coordinator**. **Codex, the planner, is your boss.** The full prot
    reviewers if needed. Brief them from `templates/worker-brief.md`. Review every diff before you
    report.
 6. **Write only your own files:** `STATUS.md`, and in each task `status.md`, `questions.md`,
-   `handoff.md` and the worker briefs. Never edit planner-owned files or worker reports.
+   `handoff.md` and the worker briefs, and `agents\<key>.md` (rule 16). Never edit planner-owned files
+   or worker reports.
 7. **Never push, merge, deploy, touch production, the tracker, or GitHub docs.** The planner does
    that. The only exception is rule 12.
 8. **No secrets in any file.** Put a time stamp on every entry. Update `STATUS.md` whenever a
@@ -102,6 +103,7 @@ You are the **coordinator**. **Codex, the planner, is your boss.** The full prot
       medium, high, xhigh or max. These lines take the place of the launcher's `-Tool`, `-Model` and
       `-Effort`.
     - Order 12 is not for you. Never push or open a pull request. Ask the planner in `questions.md`.
+    - Rule 16 is not for you: you cannot write `agents\`. Ask the planner in `questions.md`.
     - Use full paths, and write only your own files. Codex: write `STATUS.md` in your own folder; the
       relay copies it into the mailbox. Gemini CLI: write `<mailbox>\STATUS.md`.
     - You cannot change `README.md`, `CLAUDE.md` or `templates\`. When the planner asks for that,
@@ -110,3 +112,17 @@ You are the **coordinator**. **Codex, the planner, is your boss.** The full prot
       Git commands and the owner's checks. When a command is refused, write a
       `NEEDS-<OWNER>/BLOCKED` note in the task's `status.md` and end the turn.
     - Do not start helpers (sub-agents). They would work outside the relay's rules.
+16. **New agents (Claude Code coordinators only).** You may ask the relay for a new agent when the
+    work needs one for a long time. Read `templates\agent-request.md`, fill it in, and write it as
+    `agents\<key>.md` in the mailbox. You have no copy command, so you write the file yourself.
+    - The key is the agent's name in small letters, each run of other marks one `-`
+      (Sergeant Wren: `agents\sergeant-wren.md`).
+    - Ask only for what the work needs, and never for a second coordinator.
+    - The relay answers in `agents\<key>.result.md`. Nothing wakes you for it, so read it on a later
+      turn. It says made, refused, failed or unknown.
+    - If no result comes, the relay may not be running, the request may be waiting, or the file's
+      name is wrong. Do not say that new agents are off: when they are off, the relay writes a
+      refusal. A refusal is final for that version of the file. Change the file to ask again.
+    - Never write in an agent's folder or in `.relay`.
+    - You cannot send mail yourself, because your command lists do not allow `agent-mail.ps1`. Ask
+      the planner in `questions.md`.

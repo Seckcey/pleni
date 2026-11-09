@@ -693,10 +693,10 @@ work and a **coordinator** reports back.
 <root>/tasks/<taskId>/workers/W<n>.run.json, W<n>-report.md   optional worker runs; tool names the AI tool the run used, such as claude, codex or gemini (none means claude), and session_id its session
 <root>/NEEDS-<NAME>.md                optional notes for the person, such as NEEDS-ADA.md
 <root>/.relay/coordinator.json        optional: { tool?, session_id, follow_name?, ... } of the coordinator's session; tool is claude (also when missing), codex or gemini
-<root>/.relay/codex.json              optional: { thread_id, follow_name?, ... } of the planner's Codex thread, if the relay wakes it (Pleni reads it only in an HQ)
+<root>/.relay/codex.json              optional: { thread_id, mail_name?, follow_name?, ... } of the planner's Codex thread, if the relay wakes it (Pleni reads thread_id for the orchestrator only in an HQ, and mail_name in every mailbox)
 <root>/.relay/state.json, relay.lock, PAUSE, STOP   optional relay state
 <root>/.relay/alerts.md               optional: the relay's alerts for the person
-<root>/.relay/agents.json             optional: the agents the relay wakes for their mail, by name key: { name, thread_id, ... }
+<root>/.relay/agents.json             optional: the agents the relay wakes for their mail, by name key: { name, tool?, session_id?, thread_id?, ... }; tool is claude, codex or gemini (none means codex)
 <root>/mail/<name key>/name.txt       optional agent mail (relay/bin/agent-mail.ps1): the agent's name
 <root>/mail/<name key>/new/*.md       its unread messages; read/*.md the ones it has read
 <root>/bin/relay-settings.json        the relay's settings; Pleni reads only owner_name, the person's mail name, and role and projects (an HQ)
@@ -724,8 +724,8 @@ MailboxState = {
   },
   mail: null | {                                                 // null without a mail folder
     owner,                                                       // owner_name from bin/relay-settings.json, else null
-    agents: [{ key, name, unread, since, wakes, threadId }],     // by key, at most 50
-    messages: [{ to, from, fromName, at, unread, text }],        // newest first, at most 300
+    agents: [{ key, name, unread, since, wakes, threadId, tool, sessionKey }],  // by key, at most 50
+    messages: [{ to, from, fromName, at, unread, text, fromBox? }],  // newest first, at most 300
   },
 }
 ```
@@ -768,18 +768,31 @@ MailboxState = {
   other marks one `-` (`Sergeant Ada` → `sergeant-ada`); keys match `/^[a-z0-9][a-z0-9-]{0,99}$/`.
   A message is one file, `<yyyyMMdd-HHmmss-fff UTC>-<sender's key>-<6 hex>.md` (a copy moved to
   `read/` under a taken name gets `-<4 hex>` more), holding `From:`, `To:` and `Sent:` lines, a
-  blank line, then the text. A message never changes once it is there; reading it only moves it
+  blank line, then the text. The relay's `agent-mail.ps1` also writes a `Box: <id>` line when a message
+  comes from another mailbox of an HQ (the sender's box: `hq` or a project's id), and a `Hop: <n>`
+  line in a turn the relay started for mail; both are head lines, never text. A message never changes once it is there; reading it only moves it
   from `new/` to `read/`. So each message file is read once (its first 80 KB). Each agent's `new/`
   is listed on every poll; `read/` and `mail/` again when their own times move, when a message left
   `new/`, and at least every 10 s (a folder's times can stay the same for a while after a change). `agents` are the mail folders
   plus the agents in `.relay/agents.json`: `name` from `name.txt` (≤1 KB), else from
   `agents.json`; `unread` counts every file in `new/`, `since` is the oldest one's time; `wakes` is
-  true when the relay wakes it, and `threadId` is the Codex thread it wakes (from `thread_id`, kept
-  current when the relay follows a newer thread with the same name). `messages` are the newest 100
+  true when the relay wakes it. `tool` is the AI tool of the session it wakes, from the entry's
+  `tool` (trimmed, small letters; none or empty means `codex`, so a mailbox from before tools came
+  reads as it always did; a made-up one is clipped to 20 characters), and `sessionKey` is that
+  session's tile key, `<tool>:<id>`, for `claude`, `codex` and `gemini`, else `null` (a tool Pleni
+  does not know is never a session). A Claude Code or Gemini CLI agent's id is its `session_id`; a
+  Codex agent's is `thread_id` (kept current when the relay follows a newer thread with the same
+  name), else `session_id`. `threadId` is the Codex thread (`null` for any other tool, and for a
+  Codex agent without one). `.relay/codex.json`'s `mail_name` adds the planner as an agent under
+  its mail name's key (`Orchestrator` → `orchestrator`, made as `agent-mail.ps1` makes a key) with
+  `wakes: true`, `tool: 'codex'` and its `thread_id`, unless an agent in `agents.json` already has
+  that key. `messages` are the newest 100
   unread and the newest 30 read for each agent, unread ones first when there are more than 300:
   `to` is the folder's key, `from` the sender's key (from the file name), `fromName` the `From:`
   line (≤80 chars), `at` the time in the file name, `text` the message after the head (≤1000
-  chars, line breaks kept, only with snippets, else `null`). A file without a head is all text.
+  chars, line breaks kept, only with snippets, else `null`), and `fromBox` the `Box:` line when it
+  is a box id (1 to 40 small letters, digits or hyphens, starting with a letter or digit; any other value is
+  ignored), else the key is not there. A file without a head is all text.
 
 ### HQ: one folder that lists project mailboxes
 
@@ -820,7 +833,7 @@ export function readHqProjects(root, { platform = process.platform, relaySetting
   A skipped entry gets a plain `why` and no folder path.
 - `mail()` gives the Mail page HQ's mail and every project's, newest first, at most 100, each message
   with `box` (`'hq'` or the project's id) and `boxName`; a project's message ids start with
-  `<id>:`. A lone mailbox's messages keep their shape.
+  `<id>:`. A message that came from another mailbox also has `fromBox` (the `Box:` line). A lone mailbox's messages keep their shape.
 
 ## Snapshot (`src/model.js`)
 
@@ -986,8 +999,10 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
   the planner → relay part follows the tree lines when the planner is above the relay (a project
   mailbox's runs orchestrator → project tile → `relay:<box>`), else is one line of its own.
 - Agent mail: each mail name (an agent's key) is matched to a tile: the person (`you`) for the
-  key of `mail.owner`, `owner`, or the key of `displayName`; else the Codex thread the relay wakes
-  for it (`codex:<threadId>`), when listed; else the newest listed session (by `lastAt`) whose
+  key of `mail.owner`, `owner`, or the key of `displayName`; else the session the relay wakes for
+  it, when listed: the agent's `sessionKey` (a Claude Code, Codex or Gemini CLI session; any other
+  key is ignored), else `codex:<threadId>` for an agent with no `sessionKey` field, no tool or Codex
+  (an older snapshot); else the newest listed session (by `lastAt`) whose
   title, or the name the person gave it, has that same key. A tile with a mail name gets
   `mail = { name, unread, since, wakes, toYou }`: `toYou` counts the unread messages it sent the
   person; a tile with two names adds them up. Mail the person marked as read on the Mail page
@@ -1000,7 +1015,10 @@ Event = { at, kind: 'spawn' | 'report' | 'message' | 'mailbox' | 'mail' | 'wake'
   (the tree line itself, a `contains` edge, when the session hangs right under the person). A
   message never dims a line something newer lit. In an HQ, each mailbox's mail names are its own
   (the same name in two mailboxes can be two tiles), and the person's mail from all of them adds up
-  in `you.mail`, `snapshot.mail` and the `mail` notices.
+  in `you.mail`, `snapshot.mail` and the `mail` notices. A message with a `fromBox` that names
+  another mailbox of the snapshot finds its sender among that mailbox's agents first (so mail a
+  project's agent sends HQ's orchestrator lights the line from that agent's tile), else among the
+  agents of the mailbox it is in.
 - Relay wakes: `relay.wakes` comes from the relay's `state.json` (`mail_dispatches`: `agent`,
   `name`, `state`, `items`, `started_utc` and `finished_utc` in seconds). Each wake of an agent on
   the map lights the line from the relay to it, labelled "Woke it to read N new messages": along
@@ -2093,7 +2111,8 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
 - **GET /api/mail** (`?all=1` for every message) needs the key cookie. It answers `{ on: false, name:
   null, readAt: null, messages: [] }` without agent mail, else `{ on: true, name, readAt, messages }`
   from `store.mail({ all })`: the person's mail name, the `you|mailread` time (or null), and up to
-  100 messages, newest first: `{ id, to, toName, from, fromName, at, unread, text, toYou, fromYou }`.
+  100 messages, newest first: `{ id, to, toName, from, fromName, at, unread, text, toYou, fromYou }`
+  (and `fromBox`, `box` and `boxName` where they apply, above).
   Without `all`, only messages to or from one of the person's mail names (`personMailKeys`: the
   relay's `owner_name`, `owner`, the name in Settings). `text` is the whole message (at most 64 KB),
   null when `content` is `none`. The mailbox source reads these files only for this request
@@ -2285,7 +2304,10 @@ export async function start({ port, configFile, demo, open, renewKey })  // -> {
   the person is **New** while it waits in `new/` and is newer than `readAt`; a message to an agent
   still in `new/` says **Not read yet**. Each message to the person has the command that answers
   it, with a Copy button: `& '<mailbox>\bin\agent-mail.ps1' -Send -From '<name>' -To '<sender>'
-  -Text 'your answer'` (`.\bin\agent-mail.ps1` when Pleni does not know the mailbox folder).
+  -Text 'your answer'` (`.\bin\agent-mail.ps1` when Pleni does not know the mailbox folder). A
+  message that came from another mailbox (`fromBox` is not the box it is in) adds `-Box '<fromBox>'`
+  before `-Text`, so the answer goes back to the sender's mailbox; a lone mailbox's message from HQ
+  gets `-Box 'hq'`.
   **Mark all as read** posts `you|mailread` with the newest new message's time; the files stay
   where they are. A "Mail for you" notice opens this page, and so does its pop-up.
 - **Tasks:** mailbox tasks with state and attention. In an HQ (`snapshot.boxes`), one group for each

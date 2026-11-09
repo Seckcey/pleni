@@ -36,8 +36,10 @@ makes it safe for everyone to work at the same time.
 | `tasks/<TASK-ID>/workers/W<n>-report.md`               | That worker only                          |
 | `tasks/<TASK-ID>/workers/W<n>.log`, `W<n>.run.json`, `runs.md` | The worker launcher (machine-written) |
 | `README.md`, `CLAUDE.md`, `templates/`                 | Coordinator (changes asked for by the planner in `CODEX-QUEUE.md`). A Codex or Gemini CLI coordinator cannot change these: it writes a `NEEDS` note for the owner. |
+| `agents/<key>.md`                                      | The requester: the planner, HQ's orchestrator or a Claude Code coordinator (a request for a new agent; the relay only reads it) |
+| `agents/<key>.result.md`                               | The relay (what happened to the request); never edit it |
 | `bin/`, `tests/`, `.relay/`                            | The owner and the relay; sessions never edit them |
-| `mail/<agent>/new/`, `mail/<agent>/read/`              | `bin/agent-mail.ps1` only; never edit a message by hand |
+| `mail/<agent>/new/`, `mail/<agent>/read/`              | Messages: `bin/agent-mail.ps1` only; never edit a message by hand. The relay makes only the empty folders and `name.txt`. |
 
 Add new entries at the **bottom** of a file, with a time stamp (`YYYY-MM-DD HH:MM`, local time).
 Never rewrite someone else's history.
@@ -65,6 +67,8 @@ tasks/
       W1-report.md   worker -> coordinator: what it did, a diff summary, check output
 coordinator/         optional: the folder of a Codex or Gemini CLI coordinator (its orders, and for
                      Codex its own copy of STATUS.md). It may be another folder, outside this one.
+agents/              requests for new agents (optional): <key>.md from the requester, <key>.result.md from
+                     the relay
 mail/                agent mail (optional): one folder per agent
   <agent>/
     new/             messages the agent has not read yet
@@ -85,9 +89,31 @@ messages by name with `bin/agent-mail.ps1`:
 - `-Send -From <your name> -To <name> -Text <message>` (or `-TextFile <file>` for a long one).
 - `-Read -Me <your name>` prints your new mail and files it.
 - `-Wait -Me <your name> -Seconds <n>` waits for new mail, then reads it.
+- `-Box <hq or a project id>` with `-Send` sends to an agent in another mailbox of the same HQ.
+  To answer a message that has a Box line, use `-Send` with `-Box` and that id.
 
-The relay wakes an agent it knows when mail waits for it. Never write or move a mail file yourself:
-always use the script, so nobody reads half a message.
+The relay wakes an agent it knows when mail waits for it. The planner can be a mail name too, when
+the owner enrolled it with a mail name. Never write or move a mail file yourself: always use the
+script, so nobody reads half a message. Only the script writes and moves messages. The relay makes
+only the empty mail folders and `name.txt`.
+
+A message starts with a head, before the first blank line, in this order:
+
+- `From:`, `To:` and `Sent:`.
+- `Box:`, only when the message goes to another mailbox. It is the sender's own box.
+- `Hop:`, only when the sender is a turn the relay started for mail (an agent's mail turn, or a planner
+  wake whose batch holds mail), not a first turn, a coordinator turn, or a planner wake for task items only. It counts the relay-woken turns in a
+  row. When it reaches `relay_max_mail_hops` (8 unless the owner changes it), the relay holds the
+  mail and tells the owner, in case two agents keep waking each other.
+
+A `From` line is not proof of who wrote a message.
+
+## New agents
+
+The planner, HQ's orchestrator or a Claude Code coordinator may ask for a new agent. It writes
+`agents/<key>.md` from `templates/agent-request.md`. The relay reads it, only while the owner has
+turned new agents on, and writes what happened in `agents/<key>.result.md`. See rule 16 in
+`CLAUDE.md`.
 
 ## Task lifecycle
 
@@ -221,9 +247,9 @@ tasks.
 
 A Codex coordinator or a Gemini CLI coordinator gets the same wakes. A Codex thread has one job
 only: it may be the planner, the coordinator, an agent or the orchestrator, never two of them. There
-is one exception, as before: the planner and a mail agent may share one thread. The relay never
+is one exception, as before: the planner and a Codex agent with no profile may share one thread. The relay never
 wakes them at the same time, and at a rollover both move to the newer thread with the name. Only
-the coordinator and the orchestrator need a thread of their own. A Codex coordinator also needs a
+the coordinator, the orchestrator and every agent of a new kind need a thread of their own. A Codex coordinator also needs a
 folder with no `AGENTS.md` or `AGENTS.override.md` above it, up to the top of its Git repository:
 Codex reads every `AGENTS.md` from there down, so it would get those orders too.
 
