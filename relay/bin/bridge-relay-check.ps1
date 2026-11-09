@@ -881,15 +881,25 @@ function Invoke-OwnCopy([hashtable]$Fx, [string[]]$MailArgs) {
 }
 
 function Assert-NoOrdersAbove {
-    # A CLAUDE.md or GEMINI.md in a folder above this run's temp folder would make the relay refuse every agent folder
-    # here, rightly (D3), and so would a temp folder path with a space or another sign that a Claude Code or Gemini CLI
-    # agent's mailbox path may not hold (D23, Get-AgentMailboxPathError). Say so plainly instead of failing checks one by one.
+    # A CLAUDE.md, CLAUDE.local.md, .claude\CLAUDE.md, .claude\rules folder or GEMINI.md in a folder above this run's temp
+    # folder would make the relay refuse every agent folder here, rightly (D3), and so would a temp folder path with a
+    # space or another sign that a Claude Code or Gemini CLI agent's mailbox path may not hold (D23,
+    # Get-AgentMailboxPathError). As in the relay (Get-ParentOrdersProblem), the home folder's .claude is Claude Code's
+    # own and does not count. Say so plainly instead of failing checks one by one.
     if ($Base -notmatch '^[A-Za-z]:\\[A-Za-z0-9\\._~-]*$') { throw "setup: the temp folder path $Base holds a space or a sign other than letters, digits and . _ - ~, which a mailbox of a Claude Code or Gemini CLI agent may not hold. Re-run with a TEMP folder that has a plain path." }
+    $homeDir = ''   # never $home: $HOME is automatic
+    if ($env:USERPROFILE) { $homeDir = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') }
     $d = (New-Object System.IO.DirectoryInfo $Base).Parent
     while ($d -and $d.Parent) {
+        $found = @()
         foreach ($n in @('CLAUDE.md', 'CLAUDE.local.md', 'GEMINI.md')) {
-            if (Test-Path -LiteralPath (Join-Path $d.FullName $n) -PathType Leaf) { throw "setup: $(Join-Path $d.FullName $n) is in a folder above the test folder, so no agent folder can be under it. Run with a TEMP folder that has no such file above it." }
+            if (Test-Path -LiteralPath (Join-Path $d.FullName $n) -PathType Leaf) { $found += (Join-Path $d.FullName $n) }
         }
+        if ($d.FullName.TrimEnd('\') -ine $homeDir) {
+            if (Test-Path -LiteralPath (Join-Path $d.FullName '.claude\CLAUDE.md') -PathType Leaf) { $found += (Join-Path $d.FullName '.claude\CLAUDE.md') }
+            if (Test-Path -LiteralPath (Join-Path $d.FullName '.claude\rules') -PathType Container) { $found += (Join-Path $d.FullName '.claude\rules') }
+        }
+        if ($found.Count) { throw "setup: $($found[0]) is in a folder above the test folder, so no agent folder can be under it. Run with a TEMP folder that has no such file above it." }
         $d = $d.Parent
     }
 }
@@ -3264,13 +3274,30 @@ try {
         New-Item -ItemType Directory -Path (Join-Path $fx.dir 'repo\.git') -Force | Out-Null
         Write-Text (Join-Path $fx.dir 'crew\hooked\.claude\settings.json') '{"hooks":{"Stop":[]}}'
         Write-Text (Join-Path $fx.dir 'ordered\CLAUDE.md') "# orders above`r`n"
+        # Claude Code also reads .claude\CLAUDE.md and the rules in .claude\rules, in the folder and above it, and a
+        # CLAUDE.local.md next to the agent's CLAUDE.md. (In the patterns a . also stands for the \ of a path.)
+        Write-Text (Join-Path $fx.dir 'dotted\.claude\CLAUDE.md') "# orders above`r`n"
+        Write-Text (Join-Path $fx.dir 'ruled\.claude\rules\style.md') "# a rule above`r`n"
+        Write-Text (Join-Path $fx.dir 'crew\inner\.claude\CLAUDE.md') "# more orders`r`n"
+        Write-Text (Join-Path $fx.dir 'crew\local\CLAUDE.local.md') "# more orders`r`n"
         $folders = @(@((Join-Path $fx.mb 'crew'), 'inside the mailbox'), @((Join-Path $fx.dir 'repo\wren'), 'inside the Git repository'),
-            @((Join-Path $fx.dir 'crew\hooked'), 'has hooks'), @((Join-Path $fx.dir 'ordered\wren'), 'in a folder above'))
+            @((Join-Path $fx.dir 'crew\hooked'), 'has hooks'), @((Join-Path $fx.dir 'ordered\wren'), 'in a folder above'),
+            @((Join-Path $fx.dir 'dotted\wren'), 'claude.CLAUDE.md is in a folder above'), @((Join-Path $fx.dir 'ruled\wren'), 'claude.rules is in a folder above'),
+            @((Join-Path $fx.dir 'crew\inner'), 'claude.CLAUDE.md is there'), @((Join-Path $fx.dir 'crew\local'), 'CLAUDE.local.md is there'))
         foreach ($f in $folders) {
             $null = Write-ClaudeAgentSession $fx $f[0] ([guid]::NewGuid().ToString()) 'Sergeant Wren'
             $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Wren'; Tool = 'claude'; AgentFolder = $f[0] }
             Check ($r.code -ne 0 -and (Test-Said $r.out $f[1])) "a folder that is $($f[1]) was accepted: $(Get-Tail $r.out)"
         }
+        # Claude Code's own folder above (the home folder's .claude, or here the one -ClaudeConfigDir names) holds the
+        # owner's own orders for every session: they do not count, so this sign-up gets past the folder rules and stops
+        # only because the folder has no session yet. Nothing is saved.
+        $ownCfg = Join-Path $fx.dir 'owner\.claude'
+        Write-Text (Join-Path $ownCfg 'CLAUDE.md') "# the owner's own orders`r`n"
+        Write-Text (Join-Path $ownCfg 'rules\style.md') "# the owner's own rule`r`n"
+        New-Item -ItemType Directory -Path (Join-Path $fx.dir 'owner\wren') -Force | Out-Null
+        $r = Invoke-Relay $fx 'EnrollAgent' @{ AgentName = 'Sergeant Wren'; Tool = 'claude'; AgentFolder = (Join-Path $fx.dir 'owner\wren'); ClaudeConfigDir = $ownCfg }
+        Check ($r.code -ne 0 -and (Test-Said $r.out 'No Claude Code session named')) "Claude Code's own CLAUDE.md and rules above the agent's folder were counted as its orders: $(Get-Tail $r.out)"
         # One session, one job: the coordinator's session cannot also be an agent.
         $jobDir = Join-Path $fx.dir 'crew\job'
         $null = Write-ClaudeAgentSession $fx $jobDir $fx.sid ''
@@ -3656,6 +3683,7 @@ try {
         # 5. Refusals: each one in its own words, no folder, no turn.
         $full = Join-Path $fx.dir 'full'
         Write-Text (Join-Path $full 'notes.txt') 'not empty'
+        Write-Text (Join-Path $fx.dir 'dotted\.claude\CLAUDE.md') "# orders above`r`n"   # Claude Code would read it as the new agent's orders too
         $linked = Join-Path $fx.dir 'linked'   # a folder whose only entry is a link (a junction) to another folder
         New-Item -ItemType Directory -Path $linked -Force | Out-Null
         $junction = Join-Path $linked 'out'
@@ -3672,6 +3700,7 @@ try {
                 @('sergeant-d', @{ Name = 'Sergeant Dee'; Tool = 'claude' }, 'name the file after the agent'),
                 @('sergeant-e', @{ Name = 'Sergeant E'; Tool = 'claude'; Folder = (Join-Path $fx.mb 'crew\e') }, 'inside the mailbox'),
                 @('sergeant-g', @{ Name = 'Sergeant G'; Tool = 'claude'; Folder = $full }, 'not empty'),
+                @('sergeant-m', @{ Name = 'Sergeant M'; Tool = 'claude'; Folder = (Join-Path $fx.dir 'dotted\m') }, 'claude.CLAUDE.md is in a folder above'),
                 @('sergeant-h', @{ Name = 'Sergeant H' }, 'the Tool line is missing'),
                 @('sergeant-i', @{ Name = 'Sergeant I'; Tool = 'claude'; Effort = 'huge' }, 'Effort must be'))
             if ($free) { $bad += , @('sergeant-f', @{ Name = 'Sergeant F'; Tool = 'claude'; Folder = "$free\agents\f" }, 'not inside the projects folder') }
