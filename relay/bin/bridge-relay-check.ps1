@@ -79,9 +79,11 @@
   with the notice only on standard input, the agent's pins and hop 1 in its turn, a wait while a window has the session
   open, a rollover to a newer session with the name, a files agent by its id, the guard on the mailbox's own
   bin\agent-mail.ps1 (a change while a turn runs halts the relay until -ClearHalt, and a change that a running loop
-  sees halts it once), the daily dollar cap of Claude Code agents, and -UnenrollAgent with a copy of agents.json. 32 a
-  Gemini CLI agent (-EnrollAgent -Tool gemini, with tests\stub-gemini.js): off until agent_tools lists gemini, in words
-  that say each turn costs money, no -Effort, and no session whose folder is gone, each refusal saving nothing;
+  sees halts it once), the daily dollar cap of Claude Code agents, -UnenrollAgent with a copy of agents.json, and an
+  agents.json that cannot be read keeps the guard on (a new loop starts with its guard on and halts at a change to
+  bin\agent-mail.ps1, and the relay never writes over the file). 32 a Gemini CLI agent (-EnrollAgent -Tool gemini,
+  with tests\stub-gemini.js): off until agent_tools lists gemini, in words that say each turn costs money, no -Effort,
+  and no session whose folder is gone, each refusal saving nothing;
   enrolled by its session id, in the folder its session belongs to; its rules file (-ShowAgentArgs: its own two
   agent-mail.ps1 commands, -MailboxRoot denied, no file writes for a mail agent, no include folders, nothing written);
   a dry run that writes nothing; a turn with the notice only on standard input, in its own folder, with its own rules
@@ -89,7 +91,8 @@
   open; a changed rules file stops that agent before its turn and keeps its mail; not signed in backs off and stops
   only that agent after three in a row; a turn in another session stops it; Gemini CLI's warning that it skipped the
   turn limit (one alert); the daily total of Gemini CLI agent turns (agent_wakes_per_day); no key written anywhere;
-  and -UnenrollAgent with a copy of agents.json, without the agent's own Gemini files.
+  -UnenrollAgent with a copy of agents.json, without the agent's own Gemini files; and with no agent left the guard is
+  off, on while agents.json holds a list ([]), and off again once the file can be read.
   33 new agents (agents\<name>.md, with tests\stub-claude.js and tests\stub-gemini.js): a request there at the relay's
   first look counts as known and never runs; while allow_new_agents is off a request is refused in its result file;
   a dry run that makes nothing; a new version made once, by one first turn in a new session with the planned id,
@@ -100,8 +103,12 @@
   file name or field line, no Tool line), none making a folder or starting a turn; the daily limit of new agents; a
   relay stop while a first turn runs (the next relay waits, then settles it once); three failed first turns in a row
   stop new agents until -ClearHalt, and a new version then reuses the folder the failed one left; a Gemini CLI first
-  turn that exits 42, then one made (GEMINI.md) whose mail resumes it; and a first turn left with no process id (the
-  next relay finds its process by the session id, waits and never stops it, then settles it as failed, once).
+  turn that exits 42, then one made (GEMINI.md) whose mail resumes it; a first turn left with no process id (the next
+  relay finds its process by the session id, waits and never stops it, then settles it as failed, once); a first turn
+  counts as one of that name's wakes today (at 1 a day the made agent's mail waits, and a new version for a name whose
+  first turn ran today is refused); a result file that is a link whose target is gone is not written through; and
+  while agents.json cannot be read, new agents wait, and a first turn that ends then enrolls nothing and leaves the
+  file as it is.
   34 a Codex agent with the relay's rules (-EnrollAgent -AgentProfile, with tests\stub-codex.js): no -Effort without
   a profile; enrolled by name with its profile and effort; a turn with the relay's own fixed Codex options and its mail
   folder (never codex_exec_args), the relay's rules in the notice, its pins and hop 1; a .codex folder in its folder
@@ -578,10 +585,17 @@ function Initialize-GitRepo([string]$Dir) {
     return $sha
 }
 
-function Wait-LoopStarted([hashtable]$Fx) {
-    # The loop writes 'Relay loop started' after the guard's first look, so a file the test changes after this is seen.
+function Get-LoopStarts([hashtable]$Fx) {
+    # The 'Relay loop started' lines of the fixture's relay.log, oldest first (none when there is no log yet).
     $log = Join-Path $Fx.mb '.relay\relay.log'
-    return (Wait-Until { (Test-Path -LiteralPath $log) -and ((Read-Shared $log) -match 'Relay loop started') } 30)
+    if (-not (Test-Path -LiteralPath $log)) { return , @() }
+    return , @(((Read-Shared $log) -split "`r?`n") | Where-Object { $_ -match 'Relay loop started' })
+}
+
+function Wait-LoopStarted([hashtable]$Fx, [int]$Before = 0) {
+    # The loop writes 'Relay loop started' after the guard's first look, so a file the test changes after this is seen.
+    # $Before: how many such lines the log held before this loop was started, when an earlier loop wrote one too.
+    return (Wait-Until { (Get-LoopStarts $Fx).Count -gt $Before } 30)
 }
 
 function Start-Spawn([hashtable]$Fx, [string[]]$SpawnArgs) {
@@ -3242,7 +3256,7 @@ try {
         Check (Test-NoOverlap $fx -Gemini) 'two Gemini CLI processes were alive at the same time'
     }
 
-    Invoke-Scenario '31 a Claude Code agent: refusals, enrolled by name, its lists, one wake per message with the notice on standard input, pins and hop, waits while open, one session one job, rollover, the guard (and one halt for one change in the loop), the dollar cap' {
+    Invoke-Scenario '31 a Claude Code agent: refusals, enrolled by name, its lists, one wake per message with the notice on standard input, pins and hop, waits while open, one session one job, rollover, the guard (and one halt for one change in the loop), the dollar cap, and the guard stays on while agents.json cannot be read' {
         Assert-NoOrdersAbove
         $fx = New-Fixture 'ca'
         Initialize-Fixture $fx
@@ -3441,10 +3455,35 @@ try {
         # The relay and the stub never move mail, so Finch's one message (9b) is still in new\.
         $fm = Get-MailFiles $fx 'sergeant-finch' 'new'   # a variable first: it returns , @(...)
         Check ($fm.Count -eq 1 -and (Read-Shared $fm[0].FullName) -match 'Seventh\.') "-UnenrollAgent did not keep Sergeant Finch's mail in mail\sergeant-finch\new ($($fm.Count) message(s), want 1)"
+        # 11. An agents.json that cannot be read keeps the guard on (it fails closed): Sergeant Wren, an agent with the
+        #     relay's rules, may still be in it. The file is cut off while no relay runs, so it is no change for the guard,
+        #     which takes a new look in each relay run. A new loop then starts with no agent it can read and its guard on,
+        #     halts at a change to bin\agent-mail.ps1 (as in 8b), and never writes over the file.
+        $agf = Join-Path $fx.mb '.relay\agents.json'
+        $keep = Read-Shared $agf
+        $cut = '{"sergeant-wren": {"name": "Sergeant Wren",'   # broken JSON, as a hand edit could leave it
+        Write-Text $agf $cut
+        $r = Invoke-Relay $fx 'Status' $null
+        Check ($r.out -match 'Relay files guard: ON') "the guard is off while agents.json cannot be read: $(Get-Tail $r.out)"
+        $startsBefore = (Get-LoopStarts $fx).Count   # 8b's loop wrote one already
+        $loop = Start-Relay $fx 'Start' $null
+        Check (Wait-LoopStarted $fx $startsBefore) 'the relay loop did not start'
+        $starts = Get-LoopStarts $fx   # a variable first: it returns , @(...)
+        $line = ''
+        if ($starts.Count) { $line = [string]$starts[$starts.Count - 1] }
+        Check ($line -match 'AgentMail=OFF\.' -and $line -match 'Guard=ON\.') "the loop did not start with no agent it can read and its guard on: $line"
+        [IO.File]::AppendAllText((Join-Path $fx.mb 'bin\agent-mail.ps1'), "`r`n# changed a third time by the relay test`r`n", $Utf8)
+        $halted = Wait-Until { [string](Get-RelayState $fx).guard_halt -match 'agent-mail\.ps1' } 30
+        Check (Stop-Loop $fx $loop) 'the loop did not stop on -Stop'
+        $gh = [string](Get-RelayState $fx).guard_halt
+        Check ($halted -and $gh -match 'while the relay ran') "a change to bin\agent-mail.ps1 did not halt the loop while agents.json could not be read (halt '$gh')"
+        Check ((Read-Shared $agf) -ceq $cut) 'the relay wrote over an agents.json that cannot be read'
+        Write-Text $agf $keep
+        $null = Invoke-Relay $fx 'ClearHalt' $null
         Check (Test-NoOverlap $fx) 'two Claude Code processes ran at the same time'
     }
 
-    Invoke-Scenario '32 a Gemini CLI agent: off until turned on, its rules file, a turn with the notice on stdin, a changed rules file, not signed in backs off and halts, another session, the skipped turn limit, the daily total' {
+    Invoke-Scenario '32 a Gemini CLI agent: off until turned on, its rules file, a turn with the notice on stdin, a changed rules file, not signed in backs off and halts, another session, the skipped turn limit, the daily total, and an agents.json that cannot be read turns the guard on' {
         Assert-NoOrdersAbove
         $fx = New-Fixture 'ga'
         Initialize-Fixture $fx
@@ -3605,9 +3644,22 @@ try {
         $r = Invoke-Relay $fx 'UnenrollAgent' @{ AgentName = 'Sergeant Kit' }
         Check ($r.code -eq 0 -and (Get-BackupCount $fx 'agents.json') -ge 1 -and -not (Test-Path -LiteralPath $kitPolicy) -and
             -not (Test-Path -LiteralPath $kitDefaults)) '-UnenrollAgent kept no copy of agents.json, or left the agent''s Gemini files'
+        # 10. With no agent left in agents.json, nothing here turns the guard on. A list in agents.json ([]) is no record
+        #     the relay can read, so the guard turns on (it fails closed: the agents in it may have the relay's rules), and
+        #     it goes off again once the file can be read. Each file is written while no relay runs.
+        $agf = Join-Path $fx.mb '.relay\agents.json'
+        $keep = Read-Shared $agf
+        $r = Invoke-Relay $fx 'Status' $null
+        Check ($r.out -notmatch 'Relay files guard: ON') "the guard is on with no agent left: $(Get-Tail $r.out)"
+        Write-Text $agf '[]'
+        $r = Invoke-Relay $fx 'Status' $null
+        Check ($r.out -match 'Relay files guard: ON') "the guard is off while agents.json holds a list: $(Get-Tail $r.out)"
+        Write-Text $agf $keep
+        $r = Invoke-Relay $fx 'Status' $null
+        Check ($r.out -notmatch 'Relay files guard: ON') "the guard stayed on after agents.json could be read again: $(Get-Tail $r.out)"
     }
 
-    Invoke-Scenario '33 new agents: known at the first look, refused while off, made once per version, its mail next turn, refusals, the daily limit, a stop while making, a stop before the process id was saved, failed first turns stop requests, Gemini CLI' {
+    Invoke-Scenario '33 new agents: known at the first look, refused while off, made once per version, its mail next turn, refusals, the daily limit, a stop while making, a stop before the process id was saved, failed first turns stop requests, Gemini CLI, a first turn counts as a wake, a broken link for a result file, and an agents.json that cannot be read' {
         Assert-NoOrdersAbove
         $fx = New-Fixture 'na'
         $orders = 'Watch the notes. Mail Colonel a short summary when they change.'
@@ -3773,6 +3825,74 @@ try {
         $null = Invoke-Relay $fx 'Once' $any
         $q = Get-AgentRequest $fx 'sergeant-pi'
         Check ($q.state -eq 'failed' -and (Get-RequestResult $fx 'sergeant-pi') -match 'made no session' -and @(Get-ClaudeAgentCalls $fx | Where-Object { $_.name_flag -eq 'Sergeant Pi' }).Count -eq 0) "a first turn with no saved process id was not settled once its process was gone, or it ran again (state '$($q.state)')"
+        # 11. A first turn counts as one of that name's wakes today (relay_max_agent_wakes_per_day). Sergeant Mo has had
+        #     only its first turn (step 7), so at 1 wake a day its mail waits, and at 12 it goes. The first turn of Sergeant
+        #     X2 failed today (step 8), so at 1 wake a day a new version of its request is refused, and no turn starts.
+        $moSid = [string](Get-RelayJson $fx 'agents.json').'sergeant-mo'.session_id
+        $moWakes = [int](Get-RelayState $fx).daily.mail_wakes.'sergeant-mo'
+        $null = Invoke-Mail $fx @('-Send', '-From', 'Colonel', '-To', 'Sergeant Mo', '-Text', 'Report.')
+        Write-AgentRequest $fx 'sergeant-x2' @{ Name = 'Sergeant X2'; Tool = 'claude'; 'Requested by' = 'Colonel' } $orders   # a new version
+        $r = Invoke-Relay $fx 'Once' @{ MaxNewAgentsPerDay = 0; MaxAgentWakesPerDay = 1 }
+        Check ($moSid -and $moWakes -eq 1 -and (Test-Said $r.out 'daily mail wake limit reached \(1/1\)') -and @(Get-ClaudeAgentCalls $fx | Where-Object { $_.resume -eq $moSid }).Count -eq 0) "the first turn of Sergeant Mo did not count as its one wake today ($moWakes wake(s) recorded): $(Get-Tail $r.out)"
+        $q = Get-AgentRequest $fx 'sergeant-x2'
+        Check ($q.state -eq 'refused' -and (Test-Said (Get-RequestResult $fx 'sergeant-x2') "daily wake limit of the agent 'sergeant-x2' is reached") -and
+            @(Get-ClaudeAgentCalls $fx | Where-Object { $_.name_flag -eq 'Sergeant X2' }).Count -eq 1) "a new version for a name whose first turn ran today was not refused at 1 wake a day (state '$($q.state)': $($q.message))"
+        $null = Invoke-Relay $fx 'Once' $any
+        Check (@(Get-ClaudeAgentCalls $fx | Where-Object { $_.resume -eq $moSid }).Count -eq 1) 'at 12 wakes a day, the mail that waited did not wake Sergeant Mo once'
+        # 12. A result file that is a link whose target is gone is never written through: the request is still refused,
+        #     the relay says why it did not write the result file, the link stays, and nothing appears where it pointed.
+        #     A junction needs no admin rights. Its target folder is removed once the link is made.
+        $gone = Join-Path $fx.dir 'gone'
+        New-Item -ItemType Directory -Path $gone -Force | Out-Null
+        $rl = Join-Path $fx.mb 'agents\sergeant-ln.result.md'
+        $null = New-Item -ItemType Junction -Path $rl -Target $gone
+        try {
+            [IO.Directory]::Delete($gone, $false)   # the target only: the link now points nowhere
+            $fa = $null
+            try { $fa = [IO.File]::GetAttributes($rl) } catch { $fa = $null }   # the entry's own attributes, as the relay reads them
+            if ($null -eq $fa -or -not ($fa -band [IO.FileAttributes]::ReparsePoint) -or (Test-Path -LiteralPath $gone)) { throw 'setup: could not make a link whose target is gone' }
+            Write-AgentRequest $fx 'sergeant-ln' @{ Name = 'Sergeant Ln'; Tool = 'antigravity' } $orders
+            $r = Invoke-Relay $fx 'Once' $any
+            $q = Get-AgentRequest $fx 'sergeant-ln'
+            Check ($q.state -eq 'refused' -and [string]$q.message -match 'not possible yet') "the request whose result file is a broken link was not refused (state '$($q.state)': $($q.message))"
+            Check (Test-SaidText $r.out 'agents\sergeant-ln.result.md is a link; the relay did not write it') "the relay did not say that it left the broken link alone: $(Get-Tail $r.out)"
+            $fa = $null
+            try { $fa = [IO.File]::GetAttributes($rl) } catch { $fa = $null }
+            Check ($null -ne $fa -and ($fa -band [IO.FileAttributes]::ReparsePoint) -and -not (Test-Path -LiteralPath $gone)) 'the relay wrote the result file through a link whose target is gone, or put a file in place of the link'
+        } finally {
+            # The link only, never what it pointed to. The entry's own attributes say whether it is still there.
+            $fa = $null
+            try { $fa = [IO.File]::GetAttributes($rl) } catch { $fa = $null }
+            if ($null -ne $fa -and ($fa -band [IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($rl, $false) }
+        }
+        # 13. An agents.json that cannot be read. While it holds a list ([]), new agents wait. A first turn that ends
+        #     while it is cut off enrolls nothing and leaves the file as it is: else the relay would save a new agents.json
+        #     with only the new agent in it. Each change is made while no relay runs, so the guard (on here, as new agents
+        #     are on) sees no change: it takes a new look in each relay run, and a first turn's record keeps the stamps of
+        #     the program files only.
+        $agf = Join-Path $fx.mb '.relay\agents.json'
+        $keep = Read-Shared $agf
+        Write-Text $agf '[]'
+        Write-AgentRequest $fx 'sergeant-ru' @{ Name = 'Sergeant Ru'; Tool = 'claude' } $orders
+        $r = Invoke-Relay $fx 'Once' $any
+        Check ((Get-AgentRequest $fx 'sergeant-ru').state -eq 'new' -and (Test-Said $r.out 'agents\.json could not be read; new agents wait') -and
+            @(Get-ClaudeAgentCalls $fx | Where-Object { $_.name_flag -eq 'Sergeant Ru' }).Count -eq 0) "a request did not wait while agents.json held a list: $(Get-Tail $r.out)"
+        Check ((Read-Shared $agf) -ceq '[]') 'the relay wrote over an agents.json that holds a list'
+        Write-Text $agf $keep
+        Set-StubMode $fx 'sleep:5'
+        $null = Invoke-Relay $fx 'Once' @{ NoWait = $true; MaxNewAgentsPerDay = 0 }
+        Check (Wait-Until { (Get-RunningStubs $fx) -eq 1 } 20) 'the first turn of Sergeant Ru did not start once agents.json could be read again'
+        $cut = '{"sergeant-wren": {"name": "Sergeant Wren",'   # broken JSON, as a hand edit could leave it
+        Write-Text $agf $cut
+        Check (Wait-Until { (Get-RunningStubs $fx) -eq 0 } 40) 'the first turn of Sergeant Ru did not end'
+        Set-StubMode $fx 'ok'
+        $null = Invoke-Relay $fx 'Once' $any
+        $q = Get-AgentRequest $fx 'sergeant-ru'
+        $rr = Get-RequestResult $fx 'sergeant-ru'
+        Check ($q.state -eq 'unknown' -and $rr -match 'Outcome:\*\* unknown' -and (Test-Said $rr 'agents\.json could not be read when the first turn ended')) "a first turn that ended while agents.json could not be read was not settled as unknown (state '$($q.state)': $($q.message))"
+        Check ((Read-Shared $agf) -ceq $cut) 'the relay wrote over agents.json when the first turn ended'
+        Write-Text $agf $keep
+        Check (-not (Get-RelayJson $fx 'agents.json').'sergeant-ru' -and @(Get-ClaudeAgentCalls $fx | Where-Object { $_.name_flag -eq 'Sergeant Ru' }).Count -eq 1) 'Sergeant Ru was enrolled, or its first turn ran more than once'
         Check (@(Get-CoordinatorCalls $fx).Count -eq 0) 'making agents woke the coordinator'
     }
 
